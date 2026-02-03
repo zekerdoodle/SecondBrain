@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Connect Bank to Antigravity</title>
+    <script src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"></script>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            background-color: #f7f9fb;
+            margin: 0;
+        }
+
+        .card {
+            background: white;
+            padding: 2rem;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            max-width: 400px;
+            width: 100%;
+            text-align: center;
+        }
+
+        h1 {
+            margin-bottom: 1.5rem;
+            color: #333;
+        }
+
+        p {
+            color: #666;
+            margin-bottom: 2rem;
+            line-height: 1.5;
+        }
+
+        .success-box {
+            display: none;
+            background: #e6fffa;
+            border: 1px solid #38b2ac;
+            color: #234e52;
+            padding: 1rem;
+            border-radius: 4px;
+            word-break: break-all;
+            margin-top: 1rem;
+        }
+
+        .error-box {
+            display: none;
+            background: #fff5f5;
+            border: 1px solid #e53e3e;
+            color: #c53030;
+            padding: 1rem;
+            border-radius: 4px;
+            word-break: break-all;
+            margin-top: 1rem;
+        }
+
+        button {
+            background: #111;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+
+        button:hover {
+            background: #333;
+        }
+
+        .spinner {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid rgba(255, 255, 255, .3);
+            border-radius: 50%;
+            border-top-color: #fff;
+            animation: spin 1s ease-in-out infinite;
+            margin-right: 8px;
+            display: none;
+        }
+
+        @keyframes spin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <div class="card">
+        <h1>Link Your Bank</h1>
+        <div id="intro">
+            <p>Antigravity needs your permission to access financial data.</p>
+            <button id="link-button">Open Safe Link</button>
+        </div>
+
+        <div id="processing" style="display:none;">
+            <p>🔄 Securing connection...</p>
+        </div>
+
+        <div id="success" class="success-box">
+            <h3>✅ Connected!</h3>
+            <p>Your bank has been linked successfully.</p>
+            <p>You can close this tab.</p>
+        </div>
+
+        <div id="error" class="error-box">
+            <h3>❌ Error</h3>
+            <p id="error-msg">Something went wrong.</p>
+        </div>
+    </div>
+
+    <script>
+        const linkToken = "{{LINK_TOKEN}}";
+
+        const handler = Plaid.create({
+            token: linkToken,
+            onSuccess: async (public_token, metadata) => {
+                document.getElementById('intro').style.display = 'none';
+                document.getElementById('processing').style.display = 'block';
+
+                try {
+                    const response = await fetch('/exchange', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ public_token: public_token })
+                    });
+
+                    const result = await response.json();
+                    document.getElementById('processing').style.display = 'none';
+
+                    if (result.success) {
+                        document.getElementById('success').style.display = 'block';
+                    } else {
+                        throw new Error(result.error || 'Unknown error');
+                    }
+                } catch (e) {
+                    document.getElementById('processing').style.display = 'none';
+                    document.getElementById('error').style.display = 'block';
+                    document.getElementById('error-msg').textContent = e.message;
+                }
+            },
+            onLoad: () => { console.log('Link loaded'); },
+            onExit: (err, metadata) => { if (err) console.error(err); },
+            onEvent: (eventName, metadata) => { console.log(eventName, metadata); }
+        });
+
+        document.getElementById('link-button').addEventListener('click', () => {
+            handler.open();
+        });
+
+        // Auto open
+        handler.open();
+    </script>
+</body>
+
+</html>

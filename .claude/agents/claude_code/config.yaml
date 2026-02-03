@@ -1,0 +1,5 @@
+name: claude_code
+type: cli
+model: opus
+timeout_seconds: 900
+description: "Expert coding agent for software development. Handles code writing, debugging, refactoring, and technical implementation. Uses full Claude Code capabilities."

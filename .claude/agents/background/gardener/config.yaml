@@ -1,0 +1,11 @@
+name: gardener
+model: sonnet
+description: "Memory maintenance agent - identifies duplicates, consolidates threads, adjusts importance, and flags stale content."
+
+# Background agents don't use tools - they process structured input and return structured output
+tools: []
+
+# Output format for structured responses
+output_format:
+  type: json_schema
+  schema_ref: gardener_output_schema.json

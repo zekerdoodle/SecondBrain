@@ -1,0 +1,13 @@
+name: your_agent_name
+type: sdk                    # sdk | cli
+model: sonnet               # sonnet | opus | haiku
+description: "Brief description of what this agent does."
+tools:
+  - Read
+  - Write
+  - Edit
+  - Glob
+  - Grep
+  - Bash
+  # Add more tools as needed. MCP tools use prefix: mcp__brain__tool_name
+timeout_seconds: 300

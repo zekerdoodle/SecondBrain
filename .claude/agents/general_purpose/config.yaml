@@ -1,0 +1,13 @@
+name: general_purpose
+type: sdk
+model: sonnet
+description: "Flexible agent for general tasks. Can read/write files, run commands, and handle miscellaneous work that doesn't fit other specialists."
+tools:
+  - Read
+  - Write
+  - Edit
+  - Glob
+  - Grep
+  - Bash
+  - WebFetch
+timeout_seconds: 300

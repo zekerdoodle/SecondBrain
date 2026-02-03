@@ -1,0 +1,693 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root,
+[data-theme="light"] {
+  /* Claude-inspired warm palette - Light Mode */
+  --bg-primary: #FAF9F7;
+  --bg-secondary: #FFFFFF;
+  --bg-tertiary: #F5F4F2;
+  --text-primary: #1a1a1a;
+  --text-secondary: #6B6B6B;
+  --text-muted: #9CA3AF;
+  --border-color: #E8E6E3;
+  --border-hover: #D4D2CF;
+
+  /* Claude's warm accent - terracotta/coral (can be overridden by theme customizer) */
+  --accent-primary: #D97757;
+  --accent-hover: #C4684A;
+  --accent-light: #FDF4F1;
+
+  /* User message blue */
+  --user-bg: #2563EB;
+  --user-hover: #1D4ED8;
+
+  /* Status colors */
+  --success: #10B981;
+  --warning: #F59E0B;
+  --error: #EF4444;
+
+  /* Code blocks */
+  --code-bg: #F3F4F6;
+  --code-text: var(--accent-primary);
+  --pre-bg: #1F2937;
+  --pre-text: #E5E7EB;
+
+  /* Scrollbar */
+  --scrollbar-thumb: #D4D2CF;
+  --scrollbar-thumb-hover: #B8B6B3;
+
+  /* Override library variables for theming */
+  --color-canvas-default: var(--bg-secondary);
+  --color-canvas-subtle: var(--bg-tertiary);
+  --color-border-default: var(--border-color);
+  --color-border-muted: var(--border-color);
+  --color-fg-default: var(--text-primary);
+
+  /* Typography System - customizable via settings */
+  --font-ui: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-chat: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-editor: 'Merriweather', Georgia, 'Times New Roman', serif;
+  --font-code: 'JetBrains Mono', 'Fira Code', Consolas, Monaco, monospace;
+  --font-size-base: 16px;
+  --font-size-scale: 1;
+
+  font-family: var(--font-ui);
+  font-size: var(--font-size-base);
+  color-scheme: light;
+}
+
+[data-theme="dark"] {
+  /* Dark Mode Palette */
+  --bg-primary: #1a1a1a;
+  --bg-secondary: #242424;
+  --bg-tertiary: #2d2d2d;
+  --text-primary: #f5f5f5;
+  --text-secondary: #a0a0a0;
+  --text-muted: #6b6b6b;
+  --border-color: #3d3d3d;
+  --border-hover: #4d4d4d;
+
+  /* Accent colors are set dynamically via JS, but provide fallbacks */
+  --accent-light: rgba(217, 119, 87, 0.15);
+
+  /* User message blue - slightly adjusted for dark mode */
+  --user-bg: #3B82F6;
+  --user-hover: #2563EB;
+
+  /* Status colors - slightly brighter for dark mode */
+  --success: #34D399;
+  --warning: #FBBF24;
+  --error: #F87171;
+
+  /* Code blocks */
+  --code-bg: #2d2d2d;
+  --code-text: var(--accent-primary);
+  --pre-bg: #0d0d0d;
+  --pre-text: #E5E7EB;
+
+  /* Scrollbar */
+  --scrollbar-thumb: #4d4d4d;
+  --scrollbar-thumb-hover: #5d5d5d;
+
+  /* Override library variables for theming */
+  --color-canvas-default: var(--bg-secondary);
+  --color-canvas-subtle: var(--bg-tertiary);
+  --color-border-default: var(--border-color);
+  --color-border-muted: var(--border-color);
+  --color-fg-default: var(--text-primary);
+
+  /* Typography System - inherits from root, can be overridden */
+  /* font variables are set dynamically via JS */
+
+  color-scheme: dark;
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+/* Ensure flex parents grow */
+.h-full { height: 100%; }
+.flex-1 { flex: 1 1 0%; }
+
+/* Custom Scrollbar - subtle and warm */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+
+/* Typography enhancements */
+.font-display {
+  font-family: var(--font-ui);
+  letter-spacing: -0.02em;
+}
+
+/* Font family utility classes */
+.font-ui {
+  font-family: var(--font-ui);
+}
+
+.font-chat {
+  font-family: var(--font-chat);
+}
+
+.font-editor {
+  font-family: var(--font-editor);
+}
+
+.font-code {
+  font-family: var(--font-code);
+}
+
+/* Markdown Content Styling - Light theme */
+.prose {
+  color: var(--text-primary);
+  line-height: 1.7;
+  font-family: var(--font-editor);
+}
+.prose h1, .prose h2, .prose h3 {
+  color: var(--text-primary);
+  font-weight: 600;
+  margin-top: 1.5em;
+  margin-bottom: 0.5em;
+}
+.prose h1 { font-size: 1.5rem; }
+.prose h2 { font-size: 1.25rem; }
+.prose h3 { font-size: 1.1rem; }
+.prose p {
+  margin-bottom: 1em;
+}
+.prose code {
+  background-color: var(--code-bg);
+  border-radius: 4px;
+  padding: 0.2em 0.4em;
+  font-size: 0.875em;
+  color: var(--accent-primary);
+  font-family: var(--font-code);
+}
+.prose pre {
+  background-color: var(--pre-bg);
+  color: var(--pre-text);
+  padding: 1rem;
+  border-radius: 8px;
+  overflow-x: auto;
+  margin: 1em 0;
+}
+.prose pre code {
+  background: none;
+  color: inherit;
+  padding: 0;
+}
+/* Link styling - base */
+.prose a {
+  color: var(--accent-primary);
+  text-decoration: underline;
+  text-decoration-color: rgba(217, 119, 87, 0.3);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.prose a:hover {
+  text-decoration-color: var(--accent-primary);
+  filter: brightness(1.1);
+}
+
+/* Internal links - subtle indicator */
+.prose a.internal-link {
+  text-decoration-style: solid;
+}
+.prose a.internal-link:hover {
+  background-color: var(--accent-light);
+  border-radius: 2px;
+  padding: 0 2px;
+  margin: 0 -2px;
+}
+
+/* Wiki-style links */
+.prose a.wiki-link {
+  text-decoration-style: dashed;
+}
+
+/* External links - with icon */
+.prose a.external-link {
+  text-decoration-style: dotted;
+}
+.prose a.external-link .inline-link-icon {
+  display: inline-block;
+  margin-left: 3px;
+  vertical-align: middle;
+  opacity: 0.5;
+  transition: opacity 0.15s ease;
+}
+.prose a.external-link:hover .inline-link-icon {
+  opacity: 1;
+}
+.prose blockquote {
+  border-left: 3px solid var(--accent-primary);
+  padding-left: 1em;
+  margin-left: 0;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+.prose strong {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+/* Fix for list styles in Markdown */
+.wmde-markdown ul,
+.prose ul {
+  list-style-type: disc !important;
+  padding-left: 1.5em !important;
+  margin-bottom: 1em !important;
+}
+.wmde-markdown ol,
+.prose ol {
+  list-style-type: decimal !important;
+  padding-left: 1.5em !important;
+  margin-bottom: 1em !important;
+}
+.wmde-markdown li,
+.prose li {
+  margin-bottom: 0.35em !important;
+}
+
+/* Animations */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes slideIn {
+  from { opacity: 0; transform: translateX(-10px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+@keyframes slide-in-right {
+  from { opacity: 0; transform: translateX(100%); }
+  to { opacity: 1; transform: translateX(0); }
+}
+.animate-slide-in {
+  animation: slide-in-right 0.3s ease-out forwards;
+}
+@keyframes pulse-subtle {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+.animate-in {
+  animation: fadeIn 0.3s ease-out forwards;
+}
+.animate-slide {
+  animation: slideIn 0.2s ease-out forwards;
+}
+.animate-pulse-subtle {
+  animation: pulse-subtle 2s ease-in-out infinite;
+}
+
+/* Message bubble styles */
+.message-bubble {
+  transition: all 0.2s ease;
+}
+.message-bubble:hover {
+  transform: translateY(-1px);
+}
+
+/* Input focus states */
+.input-focus {
+  transition: all 0.2s ease;
+}
+.input-focus:focus-within {
+  box-shadow: 0 0 0 3px rgba(217, 119, 87, 0.15);
+  border-color: var(--accent-primary);
+}
+
+/* Button hover effects */
+.btn-primary {
+  transition: all 0.15s ease;
+}
+.btn-primary:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(217, 119, 87, 0.25);
+}
+.btn-primary:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+/* Status indicator pulse */
+.status-dot {
+  position: relative;
+}
+.status-dot::after {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.3;
+  animation: pulse-subtle 2s ease-in-out infinite;
+}
+
+/* Warm shadows */
+.shadow-warm {
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05), 0 1px 2px rgba(0, 0, 0, 0.03);
+}
+.shadow-warm-lg {
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.04), 0 2px 4px rgba(0, 0, 0, 0.03);
+}
+
+/* Editor overrides for light theme */
+.w-md-editor {
+  background-color: var(--bg-secondary) !important;
+  color: var(--text-primary) !important;
+  border: none !important;
+  box-shadow: none !important;
+  height: 100% !important;
+}
+.w-md-editor-toolbar {
+  background-color: var(--bg-tertiary) !important;
+  border-bottom: 1px solid var(--border-color) !important;
+  padding: 6px 10px !important;
+}
+.w-md-editor-content {
+  background-color: var(--bg-secondary) !important;
+  height: calc(100% - 40px) !important;
+}
+.w-md-editor-preview {
+  background-color: var(--bg-secondary) !important;
+  box-shadow: none !important;
+  padding: 24px !important;
+}
+
+/* Wmde markdown light theme overrides */
+[data-color-mode="light"] .wmde-markdown,
+.wmde-markdown {
+  background-color: transparent !important;
+  color: var(--text-primary) !important;
+}
+
+.wmde-markdown h1,
+.wmde-markdown h2,
+.wmde-markdown h3,
+.wmde-markdown h4 {
+  color: var(--text-primary) !important;
+  border-bottom: none !important;
+  margin-top: 1.25em !important;
+  margin-bottom: 0.5em !important;
+}
+
+.wmde-markdown code {
+  background-color: var(--code-bg) !important;
+  color: var(--accent-primary) !important;
+  padding: 0.2em 0.4em !important;
+  border-radius: 4px !important;
+}
+
+.wmde-markdown pre {
+  background-color: var(--pre-bg) !important;
+  border-radius: 8px !important;
+}
+
+.wmde-markdown pre code {
+  background-color: transparent !important;
+  color: var(--pre-text) !important;
+}
+
+/* Link styling for wmde-markdown */
+.wmde-markdown a {
+  color: var(--accent-primary) !important;
+  cursor: pointer !important;
+  transition: all 0.15s ease !important;
+}
+.wmde-markdown a:hover {
+  filter: brightness(1.1);
+}
+.wmde-markdown a.internal-link:hover {
+  background-color: var(--accent-light) !important;
+  border-radius: 2px !important;
+  padding: 0 2px !important;
+  margin: 0 -2px !important;
+}
+.wmde-markdown a.wiki-link {
+  text-decoration-style: dashed !important;
+}
+.wmde-markdown a.external-link {
+  text-decoration-style: dotted !important;
+}
+.wmde-markdown a.external-link .inline-link-icon {
+  display: inline-block;
+  margin-left: 3px;
+  vertical-align: middle;
+  opacity: 0.5;
+  transition: opacity 0.15s ease;
+}
+.wmde-markdown a.external-link:hover .inline-link-icon {
+  opacity: 1;
+}
+
+.wmde-markdown blockquote {
+  border-left-color: var(--accent-primary) !important;
+  color: var(--text-secondary) !important;
+  background-color: transparent !important;
+}
+
+/* Dark mode specific overrides for markdown editor */
+[data-theme="dark"] .w-md-editor {
+  background-color: var(--bg-secondary) !important;
+  color: var(--text-primary) !important;
+}
+
+[data-theme="dark"] .w-md-editor-toolbar {
+  background-color: var(--bg-tertiary) !important;
+  border-bottom-color: var(--border-color) !important;
+}
+
+[data-theme="dark"] .w-md-editor-content {
+  background-color: var(--bg-secondary) !important;
+}
+
+[data-theme="dark"] .w-md-editor-preview {
+  background-color: var(--bg-secondary) !important;
+}
+
+[data-theme="dark"] .wmde-markdown,
+[data-theme="dark"] [data-color-mode="light"] .wmde-markdown {
+  background-color: transparent !important;
+  color: var(--text-primary) !important;
+}
+
+[data-theme="dark"] .wmde-markdown h1,
+[data-theme="dark"] .wmde-markdown h2,
+[data-theme="dark"] .wmde-markdown h3,
+[data-theme="dark"] .wmde-markdown h4 {
+  color: var(--text-primary) !important;
+}
+
+/* Table styles for markdown - theme aware */
+.wmde-markdown table,
+.prose table {
+  border-collapse: collapse !important;
+  width: 100% !important;
+  margin: 1em 0 !important;
+  background-color: var(--bg-secondary) !important;
+}
+
+.wmde-markdown table tbody,
+.prose table tbody {
+  background-color: var(--bg-secondary) !important;
+}
+
+.wmde-markdown table tr,
+.prose table tr {
+  background-color: var(--bg-secondary) !important;
+  border-top: 1px solid var(--border-color) !important;
+}
+
+.wmde-markdown table tr:nth-child(2n),
+.prose table tr:nth-child(2n) {
+  background-color: var(--bg-tertiary) !important;
+}
+
+.wmde-markdown table th,
+.wmde-markdown table td,
+.prose table th,
+.prose table td {
+  border: 1px solid var(--border-color) !important;
+  padding: 0.5em 0.75em !important;
+  text-align: left !important;
+  color: var(--text-primary) !important;
+  background-color: inherit !important;
+}
+
+.wmde-markdown table th,
+.prose table th {
+  background-color: var(--bg-tertiary) !important;
+  font-weight: 600 !important;
+}
+
+.wmde-markdown table tr:hover,
+.prose table tr:hover {
+  background-color: var(--bg-tertiary) !important;
+}
+
+/* Dark mode table overrides - extra specificity */
+[data-theme="dark"] .wmde-markdown table,
+[data-theme="dark"] .prose table {
+  background-color: var(--bg-secondary) !important;
+}
+
+[data-theme="dark"] .wmde-markdown table tbody,
+[data-theme="dark"] .prose table tbody {
+  background-color: var(--bg-secondary) !important;
+}
+
+[data-theme="dark"] .wmde-markdown table tr,
+[data-theme="dark"] .prose table tr {
+  background-color: var(--bg-secondary) !important;
+}
+
+[data-theme="dark"] .wmde-markdown table tr:nth-child(2n),
+[data-theme="dark"] .prose table tr:nth-child(2n) {
+  background-color: var(--bg-tertiary) !important;
+}
+
+[data-theme="dark"] .wmde-markdown table th,
+[data-theme="dark"] .wmde-markdown table td,
+[data-theme="dark"] .prose table th,
+[data-theme="dark"] .prose table td {
+  border-color: var(--border-color) !important;
+  color: var(--text-primary) !important;
+  background-color: inherit !important;
+}
+
+[data-theme="dark"] .wmde-markdown table th,
+[data-theme="dark"] .prose table th {
+  background-color: var(--bg-tertiary) !important;
+}
+
+/* Chat markdown - theme-aware overrides for MDEditor.Markdown in chat messages */
+.chat-markdown .wmde-markdown {
+  background-color: transparent !important;
+  color: var(--text-primary) !important;
+}
+
+.chat-markdown .wmde-markdown table {
+  background-color: var(--bg-secondary) !important;
+}
+
+.chat-markdown .wmde-markdown table tbody {
+  background-color: var(--bg-secondary) !important;
+}
+
+.chat-markdown .wmde-markdown table tr {
+  background-color: var(--bg-secondary) !important;
+  border-top: 1px solid var(--border-color) !important;
+}
+
+.chat-markdown .wmde-markdown table tr:nth-child(2n) {
+  background-color: var(--bg-tertiary) !important;
+}
+
+.chat-markdown .wmde-markdown table th,
+.chat-markdown .wmde-markdown table td {
+  border: 1px solid var(--border-color) !important;
+  padding: 0.5em 0.75em !important;
+  color: var(--text-primary) !important;
+  background-color: inherit !important;
+}
+
+.chat-markdown .wmde-markdown table th {
+  background-color: var(--bg-tertiary) !important;
+  font-weight: 600 !important;
+}
+
+.chat-markdown .wmde-markdown table tr:hover {
+  background-color: var(--bg-tertiary) !important;
+}
+
+/* Dark mode - extra specificity for chat markdown tables */
+[data-theme="dark"] .chat-markdown .wmde-markdown table,
+[data-theme="dark"] .chat-markdown .wmde-markdown table tbody,
+[data-theme="dark"] .chat-markdown .wmde-markdown table tr {
+  background-color: var(--bg-secondary) !important;
+}
+
+[data-theme="dark"] .chat-markdown .wmde-markdown table tr:nth-child(2n) {
+  background-color: var(--bg-tertiary) !important;
+}
+
+[data-theme="dark"] .chat-markdown .wmde-markdown table th,
+[data-theme="dark"] .chat-markdown .wmde-markdown table td {
+  border-color: var(--border-color) !important;
+  color: var(--text-primary) !important;
+}
+
+[data-theme="dark"] .chat-markdown .wmde-markdown table th {
+  background-color: var(--bg-tertiary) !important;
+}
+
+/* Modal animations */
+@keyframes modal-backdrop-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes modal-content-in {
+  from {
+    opacity: 0;
+    transform: scale(0.95) translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.animate-modal-backdrop {
+  animation: modal-backdrop-in 0.15s ease-out forwards;
+}
+
+.animate-modal-content {
+  animation: modal-content-in 0.2s ease-out forwards;
+}
+
+/* Context menu animation */
+@keyframes context-menu-in {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.animate-context-menu {
+  animation: context-menu-in 0.1s ease-out forwards;
+  transform-origin: top left;
+}
+
+/* Update notification slide up animation */
+@keyframes slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(100%);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-slide-up {
+  animation: slide-up 0.3s ease-out forwards;
+}
+
+/* Command palette animation */
+@keyframes command-palette-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.command-palette-in {
+  animation: command-palette-in 0.15s ease-out forwards;
+}

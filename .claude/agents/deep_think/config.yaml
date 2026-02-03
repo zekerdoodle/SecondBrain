@@ -1,0 +1,12 @@
+name: deep_think
+type: sdk
+model: opus
+description: "Deep reasoning specialist for complex problems. Use for architecture decisions, strategic planning, thorough analysis, and multi-angle investigation."
+tools:
+  - Read
+  - Glob
+  - Grep
+  - Write
+  - mcp__brain__web_search
+  - mcp__brain__page_parser
+timeout_seconds: 600

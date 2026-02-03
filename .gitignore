@@ -1,0 +1,113 @@
+# ============================================
+# Environment & Secrets
+# ============================================
+.env
+.secrets/
+.claude/secrets/
+*.pem
+*.key
+
+# ============================================
+# Python
+# ============================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+.venv/
+ENV/
+*.egg-info/
+dist/
+build/
+
+# ============================================
+# Node.js
+# ============================================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.npm
+package-lock.json
+
+# ============================================
+# Build Outputs
+# ============================================
+dist/
+build/
+*.log
+
+# ============================================
+# Database & Data Files
+# ============================================
+*.db
+*.sqlite
+*.sqlite3
+
+# ============================================
+# Runtime Data (Personal/Sensitive)
+# ============================================
+# Memory systems
+long_term_memory/
+memory.md
+.claude/memory/
+.claude/wal/
+
+# Working state
+working_memory.json
+push_subscriptions.json
+executions.json
+scheduled_tasks.json
+
+# Conversation history
+.claude/chats/
+chats/
+chat_search/
+
+# Logs
+logs/
+*.log
+
+# Temporary files
+.claude/tmp/
+tmp/
+
+# Personal vault data
+.claude/vault/
+vault/
+
+# Settings with personal data
+settings.local.json
+ui_config.json
+context_overhead.json
+
+# ============================================
+# Personal Content Directories
+# ============================================
+00_Inbox/
+10_Active_Projects/
+20_Areas/
+30_Incubator/
+.99_Archive/
+Labs/
+docs/research/
+
+# ============================================
+# IDE & OS
+# ============================================
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ============================================
+# Google OAuth Tokens
+# ============================================
+token.json
+credentials.json

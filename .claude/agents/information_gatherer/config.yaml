@@ -1,0 +1,13 @@
+name: information_gatherer
+type: sdk
+model: sonnet
+description: "General-purpose explorer for finding ANY information - web or local. Use when other agents need context without pulling massive file contents. Searches codebase, knowledge base, web, docs. The go-to for 'find me X' tasks."
+tools:
+  - Read
+  - Glob
+  - Grep
+  - Bash
+  - Write
+  - mcp__brain__web_search
+  - mcp__brain__page_parser
+timeout_seconds: 300
