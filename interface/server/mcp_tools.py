@@ -6,8 +6,6 @@ All tools have been migrated to the mcp_tools/ module.
 
 New code should import from mcp_tools/ directly:
     from mcp_tools import create_mcp_server, create_second_brain_tools
-
-The original monolithic file has been archived to mcp_tools_legacy.py.
 """
 
 import warnings
