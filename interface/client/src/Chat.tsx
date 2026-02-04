@@ -2,10 +2,10 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Send, Loader2, Plus, History, ChevronLeft, Pencil, RotateCcw, X,
   File as FileIcon, Trash2, MessageCircle, Sparkles, Clock, Square, Search,
-  Check, CheckCheck, AlertCircle
+  Check, CheckCheck, AlertCircle, Crown
 } from 'lucide-react';
 import { ChatSearch } from './ChatSearch';
-import { useClaude, type NotificationData } from './useClaude';
+import { useClaude, type NotificationData, type ChessGameState } from './useClaude';
 import { useToast } from './Toast';
 import { useTabFlash } from './hooks/useTabFlash';
 import type { ChatMessage, FormField } from './types';
@@ -15,6 +15,7 @@ import { API_URL } from './config';
 import { InlineForm } from './components/InlineForm';
 import { CommandPalette } from './components/CommandPalette';
 import { ConfirmModal } from './components/ConfirmModal';
+import { ChessGame, useChessGame } from './components/ChessGame';
 import {
   isCommandInput,
   getCommandQuery,
@@ -137,6 +138,9 @@ const TOOL_DISPLAY_NAMES: Record<string, string> = {
   'mcp__brain__moltbook_comment': 'Commenting on Moltbook',
   'mcp__brain__moltbook_get_post': 'Reading Moltbook post',
   'mcp__brain__moltbook_notifications': 'Checking Moltbook notifications',
+
+  // MCP Brain tools - Chess
+  'mcp__brain__chess': 'Playing chess',
 };
 
 // Get a human-friendly display name for a tool
@@ -178,6 +182,9 @@ export const Chat: React.FC<{ isMobile?: boolean }> = ({ isMobile = false }) => 
   const [attachments, setAttachments] = useState<{ name: string, path: string }[]>([]);
   const [showSearch, setShowSearch] = useState(false);
   const { showToast } = useToast();
+
+  // Chess game state
+  const chessGame = useChessGame();
 
   // Command palette state
   const [showCommandPalette, setShowCommandPalette] = useState(false);
@@ -232,6 +239,12 @@ export const Chat: React.FC<{ isMobile?: boolean }> = ({ isMobile = false }) => 
     console.log('Form request received (inline):', data);
   }, []);
 
+  // Chess game update handler
+  const handleChessUpdate = useCallback((game: ChessGameState) => {
+    console.log('Chess game update:', game?.id);
+    chessGame.updateGame(game);
+  }, [chessGame]);
+
   // Callback for new message notifications
   const handleNewMessageNotification = useCallback((data: NotificationData) => {
     // Start tab flashing if window not focused
@@ -278,17 +291,24 @@ export const Chat: React.FC<{ isMobile?: boolean }> = ({ isMobile = false }) => 
     toolName,
     startNewChat,
     loadChat,
+    sessionId,
     connectionStatus,
     tokenUsage
   } = useClaude({
     onScheduledTaskComplete: handleScheduledTaskComplete,
     onChatTitleUpdate: handleChatTitleUpdate,
     onNewMessageNotification: handleNewMessageNotification,
-    onFormRequest: handleFormRequest
+    onFormRequest: handleFormRequest,
+    onChessUpdate: handleChessUpdate
   });
 
   // Keep ref updated
   loadChatRef.current = loadChat;
+
+  // Reset chess game when session changes (new chat or loading different chat)
+  useEffect(() => {
+    chessGame.resetGame();
+  }, [sessionId]);
 
   // Handle ?chat= URL parameter on mount (for push notification deep links)
   useEffect(() => {
@@ -734,6 +754,21 @@ export const Chat: React.FC<{ isMobile?: boolean }> = ({ isMobile = false }) => 
         <div className="flex items-center gap-3">
           <ContextMeter />
           <ConnectionIndicator />
+          {/* Chess button - only show if game exists */}
+          {chessGame.game && (
+            <button
+              onClick={chessGame.openGame}
+              className={clsx(
+                "p-2 rounded-lg transition-colors",
+                chessGame.game.game_over
+                  ? "text-[var(--text-muted)] hover:bg-[var(--bg-tertiary)]"
+                  : "text-[var(--accent-primary)] hover:bg-[var(--accent-light)]"
+              )}
+              title={chessGame.game.game_over ? "View completed game" : "Open chess game"}
+            >
+              <Crown size={18} />
+            </button>
+          )}
           <button
             onClick={startNewChat}
             className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg transition-colors hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)]"
@@ -766,6 +801,11 @@ export const Chat: React.FC<{ isMobile?: boolean }> = ({ isMobile = false }) => 
 
             // Skip form submission messages - the InlineForm already shows the summary
             if (isUser && msg.content.startsWith('[FORM_SUBMISSION:')) {
+              return null;
+            }
+
+            // Skip scheduled automation trigger messages - only show the assistant response
+            if (isUser && msg.content.includes('[SCHEDULED AUTOMATION]')) {
               return null;
             }
 
@@ -850,7 +890,7 @@ export const Chat: React.FC<{ isMobile?: boolean }> = ({ isMobile = false }) => 
                           {msg.content.split('\n').filter(line => !line.startsWith('[CONTEXT:')).join('\n').trim()}
                         </div>
                       ) : (
-                        <div className="prose prose-sm max-w-none chat-markdown font-chat" style={{ fontFamily: 'var(--font-chat)' }}>
+                        <div className="prose max-w-none chat-markdown font-chat" style={{ fontFamily: 'var(--font-chat)', fontSize: 'var(--font-size-base)' }}>
                           <MDEditor.Markdown
                             source={msg.content}
                             style={{
@@ -999,8 +1039,8 @@ export const Chat: React.FC<{ isMobile?: boolean }> = ({ isMobile = false }) => 
                     }
                   }
                 }}
-                className="flex-1 bg-transparent border-none text-[15px] text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:ring-0 focus:outline-none resize-none py-1.5 px-1"
-                style={{ minHeight: '24px', maxHeight: '150px' }}
+                className="flex-1 bg-transparent border-none text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:ring-0 focus:outline-none resize-none py-1.5 px-1 font-chat"
+                style={{ minHeight: '24px', maxHeight: '150px', fontFamily: 'var(--font-chat)', fontSize: 'var(--font-size-base)' }}
               />
 
               {status !== 'idle' ? (
@@ -1049,6 +1089,22 @@ export const Chat: React.FC<{ isMobile?: boolean }> = ({ isMobile = false }) => 
           destructive={confirmModal.destructive}
           onConfirm={confirmModal.onConfirm}
           onCancel={() => setConfirmModal(null)}
+        />
+      )}
+
+      {/* Chess Game Modal */}
+      {chessGame.isOpen && (
+        <ChessGame
+          game={chessGame.game}
+          onClose={chessGame.closeGame}
+          onMove={async (move) => {
+            const claudePrompt = await chessGame.makeMove(move);
+            // If it's Claude's turn, inject the position into the chat
+            if (claudePrompt) {
+              sendMessage(claudePrompt);
+            }
+          }}
+          onNewGame={chessGame.startNewGame}
         />
       )}
     </div>

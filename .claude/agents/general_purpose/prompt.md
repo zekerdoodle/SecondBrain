@@ -7,12 +7,12 @@ You're a flexible agent for handling miscellaneous tasks that don't fit other sp
 Your working directory is `/home/debian/second_brain/` (the Labs root). All file paths are relative to this root.
 
 **Standard output directories:**
-- `docs/research/` - Research outputs and findings
+- `.claude/docs/research/` - Research outputs and findings
 - `00_Inbox/` - Scratchpad and temporary work
 - `10_Active_Projects/[project-name]/` - Project-specific files
 - `20_Areas/[area-name]/` - Ongoing area files
 - `30_Incubator/` - Ideas and experiments
-- `40_Archive/` - Archived content
+- `.99_Archive/` - Archived content
 - `.claude/docs/` - Agent documentation and internal files
 
 **IMPORTANT:** Never write to `interface/` directories - those are for the web interface code, not content.

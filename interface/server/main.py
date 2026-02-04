@@ -691,6 +691,68 @@ def unsubscribe_push(request: PushSubscriptionRequest):
     return {"status": "ok", "removed": success}
 
 
+# --- Chess Game API ---
+
+class ChessMoveRequest(BaseModel):
+    move: str  # Move in UCI format (e.g., "e2e4") or SAN (e.g., "e4")
+
+
+@app.get("/api/chess/game")
+def get_chess_game():
+    """Get current chess game state."""
+    from mcp_tools.chess.chess import get_current_game
+    game = get_current_game()
+    if not game:
+        return {"active": False}
+    return {"active": True, "game": game}
+
+
+@app.post("/api/chess/move")
+async def make_chess_move(request: ChessMoveRequest):
+    """Make a move for Zeke (the user)."""
+    from mcp_tools.chess.chess import make_zeke_move
+
+    result = make_zeke_move(request.move)
+
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+
+    game_state = result.get("game_state", {})
+
+    # Broadcast to all connected clients
+    for ws in client_sessions:
+        try:
+            await ws.send_json({
+                "type": "chess_update",
+                "game": game_state
+            })
+        except:
+            pass
+
+    # Return context for Claude if it's now Claude's turn
+    response = {
+        "success": True,
+        "game": game_state,
+        "status": result.get("status", {})
+    }
+
+    # If it's Claude's turn and game isn't over, include a prompt
+    if not game_state.get("game_over"):
+        current_turn = "white" if "w" in game_state.get("fen", "").split()[1] else "black"
+        if current_turn == game_state.get("claude_color"):
+            response["claude_prompt"] = f"Current position: {game_state['fen']}. Your turn."
+
+    return response
+
+
+@app.delete("/api/chess/game")
+def cancel_chess_game():
+    """Cancel the current chess game."""
+    from mcp_tools.chess.chess import delete_game
+    delete_game()
+    return {"status": "ok"}
+
+
 # --- WebSocket Chat ---
 
 # Track connected clients with their visibility state
@@ -1687,6 +1749,29 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
                     except Exception as form_err:
                         logger.warning(f"Error broadcasting form_request: {form_err}")
 
+                # ========== Check for chess tool completion ==========
+                if tool_name.endswith("chess") and not is_error:
+                    try:
+                        # Check for pending chess board update
+                        chess_update_file = os.path.join(ROOT_DIR, ".claude", "chess", "pending_update.json")
+                        if os.path.exists(chess_update_file):
+                            with open(chess_update_file, 'r') as f:
+                                chess_game = json.load(f)
+                            os.remove(chess_update_file)
+                            logger.info(f"Broadcasting chess_update to all clients")
+
+                            # Broadcast to ALL connected clients (not just session)
+                            for ws in client_sessions:
+                                try:
+                                    await ws.send_json({
+                                        "type": "chess_update",
+                                        "game": chess_game
+                                    })
+                                except:
+                                    pass
+                    except Exception as chess_err:
+                        logger.warning(f"Error broadcasting chess_update: {chess_err}")
+
                 current_tool_name = None
                 # ========== WAL: Clear tool in progress ==========
                 if not is_system_continuation:
@@ -2214,14 +2299,10 @@ You are running as a scheduled task, not a live invocation. Your output will be 
                     if event.get("type") == "session_init":
                         actual_session_id = event.get("id", session_id)
                     elif event.get("type") == "content":
+                        # Only capture text content - tool calls are hidden (same as normal messages)
                         assistant_content.append(event.get("text", ""))
-                    elif event.get("type") == "tool_start":
-                        tool_name = event.get("name", "tool")
-                        assistant_content.append(f"\n\n*Running: `{tool_name}`...*\n")
-                    elif event.get("type") == "tool_end":
-                        output = event.get("output", "")
-                        display_output = output[:500] + "..." if len(output) > 500 else output
-                        assistant_content.append(f"\n*Result:* ```\n{display_output}\n```\n")
+                    # tool_start and tool_end are NOT included in saved content
+                    # This matches how normal messages work - only final text is shown
                     elif event.get("type") == "error":
                         assistant_content.append(f"\n\n**Error:** {event.get('text')}\n")
 

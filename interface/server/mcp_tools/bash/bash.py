@@ -127,7 +127,7 @@ ENV_ALLOWLIST_PATTERNS = [
 
 # Output configuration
 MAX_OUTPUT_CHARS = 50000  # ~12k tokens
-LOG_DIR = Path("/home/debian/second_brain/logs/bash_outputs")
+LOG_DIR = Path("/home/debian/second_brain/.claude/logs")
 DEFAULT_CWD = "/home/debian/second_brain"
 DEFAULT_TIMEOUT = 120
 MAX_TIMEOUT = 600
@@ -292,7 +292,7 @@ Blocked by security policy:
 
 Output:
 - Truncated at ~50k chars with head+tail strategy
-- Full output saved to logs/bash_outputs/ when truncated
+- Full output saved to .claude/logs/ when truncated
 
 Examples:
 - "ls -la /home/debian"

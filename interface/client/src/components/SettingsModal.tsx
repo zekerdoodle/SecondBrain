@@ -9,22 +9,32 @@ const UI_FONTS = [
   { name: 'Inter', value: "'Inter', -apple-system, BlinkMacSystemFont, sans-serif", category: 'Sans-serif' },
   { name: 'Source Sans', value: "'Source Sans 3', -apple-system, BlinkMacSystemFont, sans-serif", category: 'Sans-serif' },
   { name: 'System Default', value: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif", category: 'Sans-serif' },
+  { name: 'JetBrains Mono', value: "'JetBrains Mono', 'Fira Code', Consolas, monospace", category: 'Monospace' },
 ];
 
 const CHAT_FONTS = [
   { name: 'Inter', value: "'Inter', -apple-system, BlinkMacSystemFont, sans-serif", category: 'Sans-serif' },
   { name: 'Source Sans', value: "'Source Sans 3', -apple-system, BlinkMacSystemFont, sans-serif", category: 'Sans-serif' },
+  { name: 'Atkinson Hyperlegible', value: "'Atkinson Hyperlegible', -apple-system, BlinkMacSystemFont, sans-serif", category: 'Accessible' },
+  { name: 'OpenDyslexic', value: "'OpenDyslexic', -apple-system, BlinkMacSystemFont, sans-serif", category: 'Accessible' },
   { name: 'Merriweather', value: "'Merriweather', Georgia, serif", category: 'Serif' },
   { name: 'Lora', value: "'Lora', Georgia, serif", category: 'Serif' },
   { name: 'Crimson Pro', value: "'Crimson Pro', Georgia, serif", category: 'Serif' },
+  { name: 'Georgia', value: "Georgia, 'Times New Roman', serif", category: 'Serif' },
+  { name: 'JetBrains Mono', value: "'JetBrains Mono', 'Fira Code', Consolas, monospace", category: 'Monospace' },
+  { name: 'Fira Code', value: "'Fira Code', Consolas, Monaco, monospace", category: 'Monospace' },
 ];
 
 const EDITOR_FONTS = [
   { name: 'Merriweather', value: "'Merriweather', Georgia, serif", category: 'Serif' },
   { name: 'Lora', value: "'Lora', Georgia, serif", category: 'Serif' },
   { name: 'Crimson Pro', value: "'Crimson Pro', Georgia, serif", category: 'Serif' },
+  { name: 'Georgia', value: "Georgia, 'Times New Roman', serif", category: 'Serif' },
   { name: 'Inter', value: "'Inter', -apple-system, BlinkMacSystemFont, sans-serif", category: 'Sans-serif' },
   { name: 'Source Sans', value: "'Source Sans 3', -apple-system, BlinkMacSystemFont, sans-serif", category: 'Sans-serif' },
+  { name: 'Atkinson Hyperlegible', value: "'Atkinson Hyperlegible', -apple-system, BlinkMacSystemFont, sans-serif", category: 'Accessible' },
+  { name: 'OpenDyslexic', value: "'OpenDyslexic', -apple-system, BlinkMacSystemFont, sans-serif", category: 'Accessible' },
+  { name: 'JetBrains Mono', value: "'JetBrains Mono', 'Fira Code', Consolas, monospace", category: 'Monospace' },
 ];
 
 const FONT_SIZES = [
@@ -601,9 +611,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
             <>
               {/* Font Size */}
               <div>
-                <label className="block text-sm font-medium text-[var(--text-primary)] mb-3">
+                <label className="block text-sm font-medium text-[var(--text-primary)] mb-2">
                   Font Size
                 </label>
+                <p className="text-xs text-[var(--text-muted)] mb-3">
+                  Applies to all chat messages (yours and Claude's) and the message input
+                </p>
                 <div className="flex gap-2">
                   {FONT_SIZES.map(({ name, value, scale }) => (
                     <button
@@ -629,7 +642,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
                   Interface Font
                 </label>
                 <p className="text-xs text-[var(--text-muted)] mb-3">
-                  Used for buttons, labels, and navigation
+                  Applies to buttons, menus, sidebar, headers, and all UI elements outside of content areas
                 </p>
                 <select
                   value={typography.fontUI}
@@ -648,7 +661,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
                   Chat Font
                 </label>
                 <p className="text-xs text-[var(--text-muted)] mb-3">
-                  Used for messages in the chat panel
+                  Applies to all chat messages (both your messages and Claude's responses) and the message input area
                 </p>
                 <select
                   value={typography.fontChat}
@@ -667,7 +680,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
                   Editor Font
                 </label>
                 <p className="text-xs text-[var(--text-muted)] mb-3">
-                  Used for reading and editing documents
+                  Applies to the document editor for reading and writing notes, markdown files, and long-form content
                 </p>
                 <select
                   value={typography.fontEditor}

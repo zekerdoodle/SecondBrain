@@ -137,6 +137,10 @@ LLM_TOOLS = [
     "consult_llm",
 ]
 
+CHESS_TOOLS = [
+    "chess",
+]
+
 
 # =============================================================================
 # Category Mapping - Maps category names to tool lists
@@ -158,6 +162,7 @@ TOOL_CATEGORIES = {
     "forms": FORMS_TOOLS,
     "moltbook": MOLTBOOK_TOOLS,
     "llm": LLM_TOOLS,
+    "chess": CHESS_TOOLS,
 }
 
 
@@ -176,7 +181,8 @@ ALL_TOOL_NAMES = (
     AGENT_TOOLS +
     BASH_TOOLS +
     FORMS_TOOLS +
-    MOLTBOOK_TOOLS
+    MOLTBOOK_TOOLS +
+    CHESS_TOOLS
 )
 
 # Set for O(1) lookup

@@ -103,6 +103,7 @@ def _load_all_tools():
     from . import forms
     from . import moltbook
     from . import llm
+    from . import chess
 
 
 # Auto-load tools when module is imported

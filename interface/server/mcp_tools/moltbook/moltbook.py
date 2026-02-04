@@ -15,7 +15,7 @@ from ..registry import register_tool
 
 # Base URL for Moltbook API
 MOLTBOOK_BASE_URL = "https://www.moltbook.com/api/v1"
-SECRETS_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))), ".secrets", "moltbook.env")
+SECRETS_PATH = "/home/debian/second_brain/.claude/.secrets/moltbook.env"
 
 
 def _get_api_key() -> str:
@@ -112,12 +112,11 @@ async def moltbook_feed(args: Dict[str, Any]) -> Dict[str, Any]:
 
         params = {"sort": sort, "limit": limit}
 
-        # Determine endpoint based on submolt
+        # Filter by submolt if specified (via query param, not separate endpoint)
         if submolt:
-            endpoint = f"/submolts/{submolt}/posts"
-        else:
-            endpoint = "/posts"
+            params["submolt"] = submolt
 
+        endpoint = "/posts"
         data = await _make_request("GET", endpoint, params=params)
 
         posts = data.get("posts", data) if isinstance(data, dict) else data
@@ -133,10 +132,14 @@ async def moltbook_feed(args: Dict[str, Any]) -> Dict[str, Any]:
         for post in posts:
             post_id = post.get("id", "unknown")
             title = post.get("title", "Untitled")
-            author = post.get("author", post.get("agent_name", "unknown"))
-            votes = post.get("score", post.get("votes", 0))
+            author_data = post.get("author", {})
+            author = author_data.get("name", "unknown") if isinstance(author_data, dict) else str(author_data)
+            upvotes = post.get("upvotes", 0)
+            downvotes = post.get("downvotes", 0)
+            votes = upvotes - downvotes
             comments = post.get("comment_count", post.get("num_comments", 0))
-            post_submolt = post.get("submolt", post.get("subreddit", "general"))
+            submolt_data = post.get("submolt", {})
+            post_submolt = submolt_data.get("name", "general") if isinstance(submolt_data, dict) else str(submolt_data)
             content = post.get("content", post.get("body", ""))
             url = post.get("url")
 
@@ -215,8 +218,10 @@ async def moltbook_post(args: Dict[str, Any]) -> Dict[str, Any]:
 
         result = await _make_request("POST", "/posts", json_data=post_data)
 
-        post_id = result.get("id", result.get("post_id", "unknown"))
-        post_url = result.get("url", f"https://www.moltbook.com/m/{submolt}/posts/{post_id}")
+        # API returns: {"success": true, "message": "...", "post": {...}}
+        post = result.get("post", result)
+        post_id = post.get("id", post.get("post_id", "unknown"))
+        post_url = post.get("url", f"https://www.moltbook.com/post/{post_id}")
 
         return {"content": [{"type": "text", "text": f"Post created successfully!\n\n**ID:** `{post_id}`\n**Title:** {title}\n**Submolt:** m/{submolt}\n**URL:** {post_url}"}]}
 
@@ -266,7 +271,9 @@ async def moltbook_comment(args: Dict[str, Any]) -> Dict[str, Any]:
 
         result = await _make_request("POST", f"/posts/{post_id}/comments", json_data=comment_data)
 
-        comment_id = result.get("id", result.get("comment_id", "unknown"))
+        # API returns: {"success": true, "message": "...", "comment": {...}}
+        comment = result.get("comment", result)
+        comment_id = comment.get("id", comment.get("comment_id", "unknown"))
 
         reply_note = f" (reply to `{parent_id}`)" if parent_id else ""
         return {"content": [{"type": "text", "text": f"Comment posted{reply_note}!\n\n**Comment ID:** `{comment_id}`\n**Post ID:** `{post_id}`\n**Content:** {content[:200]}{'...' if len(content) > 200 else ''}"}]}
@@ -308,23 +315,35 @@ async def moltbook_get_post(args: Dict[str, Any]) -> Dict[str, Any]:
         if not post_id:
             return {"content": [{"type": "text", "text": "Error: post_id is required"}], "is_error": True}
 
-        # Get the post
-        post = await _make_request("GET", f"/posts/{post_id}")
+        # Get the post (API returns: {"success": true, "post": {...}, "comments": [...]})
+        data = await _make_request("GET", f"/posts/{post_id}")
+        post = data.get("post", data)
 
-        # Get comments
-        comments_data = await _make_request(
-            "GET",
-            f"/posts/{post_id}/comments",
-            params={"sort": comment_sort}
-        )
-        comments = comments_data.get("comments", comments_data) if isinstance(comments_data, dict) else comments_data
+        # The post endpoint includes comments, but we can also fetch separately with sort
+        comments = data.get("comments", [])
+        if comment_sort != "top" or not comments:
+            # Fetch comments with specified sort
+            try:
+                comments_data = await _make_request(
+                    "GET",
+                    f"/posts/{post_id}/comments",
+                    params={"sort": comment_sort}
+                )
+                comments = comments_data.get("comments", comments_data) if isinstance(comments_data, dict) else comments_data
+            except Exception:
+                # Fall back to comments from post response
+                pass
 
         # Format output
         title = post.get("title", "Untitled")
-        author = post.get("author", post.get("agent_name", "unknown"))
-        votes = post.get("score", post.get("votes", 0))
+        author_data = post.get("author", {})
+        author = author_data.get("name", "unknown") if isinstance(author_data, dict) else str(author_data)
+        upvotes = post.get("upvotes", 0)
+        downvotes = post.get("downvotes", 0)
+        votes = upvotes - downvotes
         comment_count = post.get("comment_count", post.get("num_comments", 0))
-        submolt = post.get("submolt", post.get("subreddit", "general"))
+        submolt_data = post.get("submolt", {})
+        submolt = submolt_data.get("name", "general") if isinstance(submolt_data, dict) else str(submolt_data)
         content = post.get("content", post.get("body", ""))
         url = post.get("url")
         created = post.get("created_at", post.get("created", ""))
@@ -347,9 +366,12 @@ async def moltbook_get_post(args: Dict[str, Any]) -> Dict[str, Any]:
         def format_comment(comment: Dict, depth: int = 0) -> str:
             """Format a comment with indentation for threading."""
             indent = "  " * depth
-            author = comment.get("author", comment.get("agent_name", "unknown"))
+            author_data = comment.get("author", {})
+            author = author_data.get("name", "unknown") if isinstance(author_data, dict) else str(author_data)
             text = comment.get("content", comment.get("body", ""))
-            votes = comment.get("score", comment.get("votes", 0))
+            upvotes = comment.get("upvotes", 0)
+            downvotes = comment.get("downvotes", 0)
+            votes = upvotes - downvotes
             cid = comment.get("id", "")
 
             lines = [f"{indent}**{author}** ({votes} points) `{cid}`"]
@@ -382,7 +404,8 @@ async def moltbook_get_post(args: Dict[str, Any]) -> Dict[str, Any]:
     name="moltbook_notifications",
     description="""Check Moltbook notifications and replies.
 
-See replies to your posts and comments, mentions, and other notifications.""",
+Note: The Moltbook API does not currently support a notifications endpoint.
+This tool will inform you of this limitation.""",
     input_schema={
         "type": "object",
         "properties": {
@@ -401,75 +424,14 @@ See replies to your posts and comments, mentions, and other notifications.""",
 )
 async def moltbook_notifications(args: Dict[str, Any]) -> Dict[str, Any]:
     """Check notifications and replies."""
-    try:
-        unread_only = args.get("unread_only", False)
-        limit = args.get("limit", 25)
-
-        params = {"limit": limit}
-        if unread_only:
-            params["unread"] = "true"
-
-        # Try common notification endpoint patterns
-        try:
-            data = await _make_request("GET", "/notifications", params=params)
-        except Exception:
-            # Fallback: try /agents/me/notifications
-            try:
-                data = await _make_request("GET", "/agents/me/notifications", params=params)
-            except Exception:
-                # Another fallback: try /inbox
-                data = await _make_request("GET", "/inbox", params=params)
-
-        notifications = data.get("notifications", data.get("items", data)) if isinstance(data, dict) else data
-
-        if not notifications:
-            return {"content": [{"type": "text", "text": "No notifications found."}]}
-
-        output = ["## Moltbook Notifications\n"]
-        if unread_only:
-            output.append("*Showing unread only*\n")
-
-        for notif in notifications:
-            notif_type = notif.get("type", "notification")
-            is_read = notif.get("read", notif.get("is_read", False))
-            created = notif.get("created_at", notif.get("created", ""))
-
-            read_marker = "" if is_read else " [UNREAD]"
-
-            # Format based on notification type
-            if notif_type == "comment_reply" or notif_type == "reply":
-                author = notif.get("author", notif.get("from", "unknown"))
-                content = notif.get("content", notif.get("body", ""))[:200]
-                post_id = notif.get("post_id", "")
-                output.append(f"**Reply from {author}**{read_marker}")
-                output.append(f"{content}")
-                if post_id:
-                    output.append(f"Post ID: `{post_id}`")
-            elif notif_type == "mention":
-                author = notif.get("author", notif.get("from", "unknown"))
-                content = notif.get("content", notif.get("body", ""))[:200]
-                output.append(f"**Mentioned by {author}**{read_marker}")
-                output.append(f"{content}")
-            elif notif_type == "post_reply":
-                author = notif.get("author", notif.get("from", "unknown"))
-                content = notif.get("content", notif.get("body", ""))[:200]
-                post_title = notif.get("post_title", "")
-                output.append(f"**Comment on your post by {author}**{read_marker}")
-                if post_title:
-                    output.append(f"Post: {post_title}")
-                output.append(f"{content}")
-            else:
-                # Generic notification
-                message = notif.get("message", notif.get("content", str(notif)))
-                output.append(f"**{notif_type}**{read_marker}")
-                output.append(f"{message[:200]}")
-
-            if created:
-                output.append(f"*{created}*")
-            output.append("---")
-
-        return {"content": [{"type": "text", "text": "\n".join(output)}]}
-
-    except Exception as e:
-        import traceback
-        return {"content": [{"type": "text", "text": f"Error: {str(e)}\n{traceback.format_exc()}"}], "is_error": True}
+    # The Moltbook API does not currently expose a notifications endpoint
+    return {
+        "content": [{
+            "type": "text",
+            "text": "## Moltbook Notifications\n\n"
+                    "The Moltbook API does not currently support a notifications endpoint.\n\n"
+                    "**Workaround:** To check for replies to your posts, use `moltbook_get_post` "
+                    "with the post ID to see if there are new comments.\n\n"
+                    "You can also browse the feed with `moltbook_feed` to see recent activity."
+        }]
+    }

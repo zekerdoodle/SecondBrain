@@ -1,0 +1,26 @@
+{
+  "_comment": "UI visibility configuration for Second Brain file explorer",
+  "exclude_dirs": [
+    ".git",
+    "node_modules",
+    "__pycache__",
+    "venv",
+    ".vite",
+    "interface",
+    "site-packages",
+    "chat_search"
+  ],
+  "exclude_files": [
+    ".DS_Store"
+  ],
+  "exclude_patterns": [
+    ".*\\.pyc$"
+  ],
+  "_usage": {
+    "exclude_dirs": "Exact directory names to hide (matched at any level)",
+    "exclude_files": "Exact file names to hide (matched at any level)",
+    "exclude_patterns": "Regex patterns applied to full relative paths",
+    "default_editor_file": "File path to open by default when editor loads (relative to root)"
+  },
+  "default_editor_file": "00_Inbox/scratchpad.md"
+}

@@ -1,7 +1,7 @@
 """
 Critical Notification tool.
 
-Sends urgent notifications via all channels: in-app toast, push notification, AND email.
+Sends urgent notifications via email with high-priority formatting.
 """
 
 import os
@@ -21,7 +21,7 @@ if SCRIPTS_DIR not in sys.path:
 @register_tool("utilities")
 @tool(
     name="send_critical_notification",
-    description="""Send a critical notification that triggers ALL channels: in-app toast, push notification, AND email.
+    description="""Send a critical notification via email.
 
 Use this ONLY for genuinely urgent situations:
 - Time-sensitive deadlines (interview in 30 min, urgent blocker)
@@ -30,7 +30,7 @@ Use this ONLY for genuinely urgent situations:
 
 The bar is HIGH. Normal notifications go through automatically. This is for escalation.
 
-The email will have subject "URGENT: Claude needs your attention" and will be sent to the authenticated Gmail account.""",
+The email will be sent to zekethurston@gmail.com with urgent formatting.""",
     input_schema={
         "type": "object",
         "properties": {
@@ -47,11 +47,8 @@ The email will have subject "URGENT: Claude needs your attention" and will be se
     }
 )
 async def send_critical_notification(args: Dict[str, Any]) -> Dict[str, Any]:
-    """Send a critical notification via all channels including email."""
+    """Send a critical notification via email."""
     try:
-        import google_tools
-        import sys
-        import os
         import asyncio
 
         message = args.get("message", "").strip()
@@ -60,54 +57,29 @@ async def send_critical_notification(args: Dict[str, Any]) -> Dict[str, Any]:
         if not message:
             return {"content": [{"type": "text", "text": "Error: message is required"}], "is_error": True}
 
-        # Get authenticated user's email
-        creds = google_tools.authenticate()
-        service = google_tools._get_gmail_service(creds)
-
-        # Get user's email from profile
-        profile = service.users().getProfile(userId='me').execute()
-        user_email = profile.get('emailAddress')
-
-        if not user_email:
-            return {"content": [{"type": "text", "text": "Error: Could not determine user email"}], "is_error": True}
-
-        # Compose email body
+        # Compose full message
         full_message = message
         if context:
             full_message += f"\n\nContext: {context}"
 
-        # Send email
-        email_result = google_tools.gmail_send(
-            service,
-            to=user_email,
-            subject="URGENT: Claude needs your attention",
-            body=f"""This is an urgent notification from Claude.
+        # Use the email notification service (which replaced push_service)
+        server_path = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        if server_path not in sys.path:
+            sys.path.insert(0, server_path)
+        from push_service import send_push_notification
 
-{full_message}
-
----
-This email was sent because Claude marked this message as critical.
-Open Second Brain to respond."""
+        # Send email notification (send_push_notification now sends email)
+        result = await send_push_notification(
+            title="Claude needs your attention",
+            body=full_message,
+            chat_id="",
+            critical=True
         )
 
-        # Also send push notification
-        try:
-            server_path = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-            if server_path not in sys.path:
-                sys.path.insert(0, server_path)
-            from push_service import send_push_notification
-
-            asyncio.create_task(send_push_notification(
-                title="URGENT: Claude needs your attention",
-                body=message[:100],
-                chat_id="",
-                critical=True
-            ))
-        except Exception as push_err:
-            # Push is optional, don't fail the whole call
-            pass
-
-        return {"content": [{"type": "text", "text": f"Critical notification sent!\n- Email sent to: {user_email}\n- Push notification triggered\n\nMessage: {message}"}]}
+        if result:
+            return {"content": [{"type": "text", "text": f"Critical notification sent via email!\n\nMessage: {message}"}]}
+        else:
+            return {"content": [{"type": "text", "text": "Failed to send notification email. Check logs for details."}], "is_error": True}
 
     except Exception as e:
         import traceback

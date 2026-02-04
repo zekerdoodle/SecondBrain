@@ -161,6 +161,20 @@ html, body, #root {
   line-height: 1.7;
   font-family: var(--font-editor);
 }
+
+/* Chat-specific prose - use chat font, not editor font */
+.chat-markdown.prose {
+  font-family: var(--font-chat);
+  font-size: var(--font-size-base);
+}
+.chat-markdown.prose p,
+.chat-markdown.prose li,
+.chat-markdown.prose blockquote {
+  font-size: var(--font-size-base);
+}
+.chat-markdown.prose h1 { font-size: calc(var(--font-size-base) * 1.5); }
+.chat-markdown.prose h2 { font-size: calc(var(--font-size-base) * 1.25); }
+.chat-markdown.prose h3 { font-size: calc(var(--font-size-base) * 1.1); }
 .prose h1, .prose h2, .prose h3 {
   color: var(--text-primary);
   font-weight: 600;

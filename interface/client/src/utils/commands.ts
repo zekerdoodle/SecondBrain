@@ -163,6 +163,15 @@ export const commands: Command[] = [
       sendMessage: '/status',
     }),
   },
+  {
+    name: 'compact',
+    description: 'Compact conversation to free context space',
+    hint: 'Summarize older messages to free up context window',
+    execute: () => ({
+      handled: true,
+      sendMessage: '/compact',
+    }),
+  },
 ];
 
 /**

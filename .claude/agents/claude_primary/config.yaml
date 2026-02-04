@@ -32,6 +32,9 @@ mcp_tools:
     - bash             # Shell access with sudo for system operations
     - forms            # Structured data collection via UI modals
     - moltbook         # AI social platform (Moltbook) integration
+    - llm
+    - chess              # Chess game vs Claude
+    - llm              # Consult other AI models (Gemini, GPT) as colleagues
 
   # Additional tools beyond categories (optional)
   include: []

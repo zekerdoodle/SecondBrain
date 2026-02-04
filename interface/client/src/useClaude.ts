@@ -74,11 +74,31 @@ export interface FormRequestData {
   version?: number;
 }
 
+export interface ChessGameState {
+  id: string;
+  fen: string;
+  claude_color: 'white' | 'black';
+  zeke_color: 'white' | 'black';
+  moves: Array<{
+    san: string;
+    uci: string;
+    player: 'claude' | 'zeke';
+    timestamp: string;
+  }>;
+  game_over: boolean;
+  result: string | null;
+  captured: {
+    white: string[];
+    black: string[];
+  };
+}
+
 export interface ClaudeOptions {
   onScheduledTaskComplete?: (data: { session_id: string; title: string }) => void;
   onChatTitleUpdate?: (data: { session_id: string; title: string; confidence: number }) => void;
   onNewMessageNotification?: (data: NotificationData) => void;
   onFormRequest?: (data: FormRequestData) => void;
+  onChessUpdate?: (game: ChessGameState) => void;
 }
 
 export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
@@ -744,6 +764,12 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
             prefill: data.prefill,
             version: data.version
           });
+          break;
+
+        case 'chess_update':
+          // Chess game state update
+          console.log('Chess game update received:', data.game?.id);
+          options.onChessUpdate?.(data.game);
           break;
 
         case 'server_restarted':

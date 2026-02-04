@@ -32,7 +32,7 @@ SYSTEM_PROMPT_TEMPLATE = "You are {model}. You are talking with Claude."
 PROVIDERS = {
     "gemini": {
         "command": "gemini",
-        "default_model": "gemini-2.5-flash",
+        "default_model": "gemini-2.5-pro",
         "available_models": [
             "gemini-2.5-flash",
             "gemini-2.5-pro", 
@@ -98,7 +98,7 @@ async def run_llm_command(
     try:
         # Source the venv to get the CLI tools in PATH
         venv_activate = os.path.expanduser("~/second_brain/venv/bin/activate")
-        full_command = f"source {venv_activate} && {shlex.join(command)}"
+        full_command = f". {venv_activate} && {shlex.join(command)}"
         
         logger.info(f"Running LLM command: {command[0]} ...")
         

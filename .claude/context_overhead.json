@@ -1,0 +1,29 @@
+{
+  "total_tokens": 10830,
+  "percentage_of_200k": 5.4,
+  "breakdown": {
+    "claude_md": {
+      "chars": 7321,
+      "tokens": 1830
+    },
+    "skills": {
+      "count": 1,
+      "chars": 2053,
+      "tokens": 513
+    },
+    "memory_budget": {
+      "tokens": 4000,
+      "note": "Assumed 4k budget for semantic memory injection"
+    },
+    "mcp_tools": {
+      "tokens": 5000,
+      "note": "Estimated overhead for MCP tool schemas"
+    }
+  },
+  "notes": [
+    "Skills overhead is estimated at 30% of total (assuming 1-2 active skills)",
+    "Memory budget is assumed constant at 4k tokens",
+    "MCP tools overhead is estimated",
+    "Actual overhead may vary based on active skills and memory content"
+  ]
+}

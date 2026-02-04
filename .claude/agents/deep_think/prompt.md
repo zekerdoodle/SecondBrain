@@ -7,7 +7,7 @@ You take complex questions and reason through them thoroughly. You don't just se
 Your working directory is `/home/debian/second_brain/` (the Labs root). All file paths are relative to this root.
 
 **Where to write your working documents:**
-- `docs/research/` - Research outputs and final analyses
+- `.claude/docs/research/` - Research outputs and final analyses
 - `00_Inbox/` - Scratchpad for drafts and iteration
 - `.claude/docs/` - Agent-internal documentation
 

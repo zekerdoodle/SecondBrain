@@ -1,8 +1,10 @@
-# Second Brain Interface
+# Second Brain Interface (V1)
 
-A mobile-first Progressive Web App (PWA) for interacting with your Second Brain. This interface integrates file management, editing, and an autonomous AI agent into a single modern UI.
+A dedicated, mobile-first Progressive Web App (PWA) for interacting with your Second Brain. This interface replaces the need for disparate tools like Obsidian or SilverBullet by integrating file management, editing, and an autonomous AI agent into a single "Midnight Modern" UI.
 
-## Quick Start
+## 🚀 Quick Start
+
+To launch the interface:
 
 ```bash
 ./interface/start.sh
@@ -11,34 +13,36 @@ A mobile-first Progressive Web App (PWA) for interacting with your Second Brain.
 - **Frontend:** http://localhost:5173
 - **Backend API:** http://localhost:8000
 
-## Key Features
+## ✨ Key Features
 
-### Unified Workspace
-- **File Explorer:** Recursive, collapsible file tree on the left
-- **Markdown Editor:** Full-height, split-pane (edit/preview) editor powered by `@uiw/react-md-editor`
-- **Panel Toggles:** Toggle the visibility of the Explorer, Editor, or Chat independently
+### 1. Unified Workspace
+- **File Explorer:** Recursive, collapsible file tree on the left.
+- **Markdown Editor:** Full-height, split-pane (edit/preview) editor powered by `@uiw/react-md-editor`.
+- **Panel Toggles:** Toggle the visibility of the Explorer, Editor, or Chat independently via the global header icons.
 
-### Chat Interface
-- **Claude Integration:** Wraps the Claude Agent SDK with full tool access
-- **Streaming Responses:** Real-time text generation
-- **Chat History:** Auto-saved to disk, accessible via History icon
+### 2. Atlas Chat
+- **Native Integration:** Wraps the `gemini` CLI directly, injecting your `GEMINI.md` context automatically.
+- **Streaming Responses:** Real-time text generation.
+- **Chat History:** 
+  - Chats are auto-saved to disk (`.gemini/chats/*.json`).
+  - Click the **History (Clock)** icon to view and load previous sessions.
 - **Conversational Repair:**
-  - **Edit:** Click any User message to edit and resend
-  - **Regenerate:** Request a new response for the last message
+  - **Edit (Pencil):** Click on any User message to edit it. This sends a "Correction" prompt to the agent, effectively repairing the conversation flow.
+  - **Regenerate (Rotate):** Click on the last Assistant message to request a re-generation.
 
-### Task Scheduler
-- **Background Automation:** Backend checks scheduled tasks every 60 seconds
-- **Notifications:** System notifications appear in the chat stream when tasks are due
-- **Management:** Schedule tasks via natural language ("Schedule a task to [action] every [time]")
+### 3. Task Scheduler
+- **Background Automation:** A backend loop checks `scheduled_tasks.json` every 60 seconds.
+- **Notifications:** When a task is due, a **System Notification** (Yellow Bubble) appears directly in the chat stream.
+- **Management:** You can ask Atlas to "Schedule a task to [action] every [time]" directly in the chat.
 
-## Mobile Experience
-- **Touch-First Design:** Large touch targets and bottom Tab Bar navigation on mobile
-- **Adaptive Layout:** Automatically switches between 3-pane (Desktop) and tabbed (Mobile) views
+## 📱 Mobile Experience
+- **Touch-First Design:** Large touch targets and a bottom Tab Bar navigation on mobile devices.
+- **Adaptive Layout:** Automatically switches between "3-Pane" (Desktop) and "Tabbed" (Mobile) views.
 
-## Configuration
-- **Theme:** Dark mode by default ("Midnight Modern")
-- **Settings:** CSS in `client/src/index.css` (Tailwind)
+## 🛠️ Configuration
+- **Theme:** "Midnight Modern" (Dark Mode by default).
+- **Settings:** Configurable via `interface/client/src/index.css` (Tailwind) and `settings.json` (Gemini CLI).
 
-## Notes
-- **Security:** The interface binds to `0.0.0.0` for LAN access. Use on trusted networks only.
-- **Persistence:** Chat history is stored in `.claude/chats/`
+## ⚠️ Notes
+- **Security:** The interface binds to `0.0.0.0` to allow LAN access. Ensure you are on a trusted network.
+- **Persistence:** Chat history is stored locally in `.gemini/chats/`.

@@ -1,0 +1,291 @@
+{
+  "id": "20260203_213838",
+  "created": "2026-02-03T21:38:38.145675",
+  "fen": "8/1b3pkp/p2B4/3N4/2p5/6P1/P4P1P/R3K1NR b KQ - 0 22",
+  "claude_color": "black",
+  "zeke_color": "white",
+  "moves": [
+    {
+      "san": "e4",
+      "uci": "e2e4",
+      "player": "zeke",
+      "timestamp": "2026-02-03T21:38:49.609111"
+    },
+    {
+      "san": "e5",
+      "uci": "e7e5",
+      "player": "claude",
+      "timestamp": "2026-02-03T21:39:04.460273"
+    },
+    {
+      "san": "d4",
+      "uci": "d2d4",
+      "player": "zeke",
+      "timestamp": "2026-02-03T21:39:20.122934"
+    },
+    {
+      "san": "exd4",
+      "uci": "e5d4",
+      "player": "claude",
+      "timestamp": "2026-02-03T21:39:34.146186"
+    },
+    {
+      "san": "c3",
+      "uci": "c2c3",
+      "player": "zeke",
+      "timestamp": "2026-02-03T21:41:54.817788"
+    },
+    {
+      "san": "dxc3",
+      "uci": "d4c3",
+      "player": "claude",
+      "timestamp": "2026-02-03T21:42:20.276543"
+    },
+    {
+      "san": "Bc4",
+      "uci": "f1c4",
+      "player": "zeke",
+      "timestamp": "2026-02-03T21:42:29.927886"
+    },
+    {
+      "san": "cxb2",
+      "uci": "c3b2",
+      "player": "claude",
+      "timestamp": "2026-02-03T21:42:50.269571"
+    },
+    {
+      "san": "Bxb2",
+      "uci": "c1b2",
+      "player": "zeke",
+      "timestamp": "2026-02-03T21:43:16.237831"
+    },
+    {
+      "san": "Nf6",
+      "uci": "g8f6",
+      "player": "claude",
+      "timestamp": "2026-02-03T21:43:40.385365"
+    },
+    {
+      "san": "e5",
+      "uci": "e4e5",
+      "player": "zeke",
+      "timestamp": "2026-02-03T21:43:51.997606"
+    },
+    {
+      "san": "d5",
+      "uci": "d7d5",
+      "player": "claude",
+      "timestamp": "2026-02-03T21:44:21.915015"
+    },
+    {
+      "san": "exf6",
+      "uci": "e5f6",
+      "player": "zeke",
+      "timestamp": "2026-02-03T21:44:44.701759"
+    },
+    {
+      "san": "dxc4",
+      "uci": "d5c4",
+      "player": "claude",
+      "timestamp": "2026-02-03T21:45:33.530121"
+    },
+    {
+      "san": "Qxd8+",
+      "uci": "d1d8",
+      "player": "zeke",
+      "timestamp": "2026-02-03T21:45:44.812227"
+    },
+    {
+      "san": "Kxd8",
+      "uci": "e8d8",
+      "player": "claude",
+      "timestamp": "2026-02-03T21:46:24.113094"
+    },
+    {
+      "san": "fxg7",
+      "uci": "f6g7",
+      "player": "zeke",
+      "timestamp": "2026-02-03T21:47:49.871956"
+    },
+    {
+      "san": "Bxg7",
+      "uci": "f8g7",
+      "player": "claude",
+      "timestamp": "2026-02-03T21:48:15.002680"
+    },
+    {
+      "san": "Bxg7",
+      "uci": "b2g7",
+      "player": "zeke",
+      "timestamp": "2026-02-03T21:48:29.347691"
+    },
+    {
+      "san": "Rg8",
+      "uci": "h8g8",
+      "player": "claude",
+      "timestamp": "2026-02-03T21:48:43.806250"
+    },
+    {
+      "san": "Bf6+",
+      "uci": "g7f6",
+      "player": "zeke",
+      "timestamp": "2026-02-03T21:49:26.189344"
+    },
+    {
+      "san": "Ke8",
+      "uci": "d8e8",
+      "player": "claude",
+      "timestamp": "2026-02-03T21:50:31.059612"
+    },
+    {
+      "san": "g3",
+      "uci": "g2g3",
+      "player": "zeke",
+      "timestamp": "2026-02-03T21:50:57.624713"
+    },
+    {
+      "san": "Nc6",
+      "uci": "b8c6",
+      "player": "claude",
+      "timestamp": "2026-02-03T21:51:12.510278"
+    },
+    {
+      "san": "Nc3",
+      "uci": "b1c3",
+      "player": "zeke",
+      "timestamp": "2026-02-03T21:51:38.661607"
+    },
+    {
+      "san": "b5",
+      "uci": "b7b5",
+      "player": "claude",
+      "timestamp": "2026-02-03T21:52:03.750930"
+    },
+    {
+      "san": "Nxb5",
+      "uci": "c3b5",
+      "player": "zeke",
+      "timestamp": "2026-02-03T21:52:45.252526"
+    },
+    {
+      "san": "a6",
+      "uci": "a7a6",
+      "player": "claude",
+      "timestamp": "2026-02-03T21:53:10.441787"
+    },
+    {
+      "san": "Nxc7+",
+      "uci": "b5c7",
+      "player": "zeke",
+      "timestamp": "2026-02-03T21:53:31.236152"
+    },
+    {
+      "san": "Kf8",
+      "uci": "e8f8",
+      "player": "claude",
+      "timestamp": "2026-02-03T21:54:02.356719"
+    },
+    {
+      "san": "Nxa8",
+      "uci": "c7a8",
+      "player": "zeke",
+      "timestamp": "2026-02-03T21:54:21.952459"
+    },
+    {
+      "san": "Bb7",
+      "uci": "c8b7",
+      "player": "claude",
+      "timestamp": "2026-02-03T21:54:53.414643"
+    },
+    {
+      "san": "Nc7",
+      "uci": "a8c7",
+      "player": "zeke",
+      "timestamp": "2026-02-03T21:55:24.140028"
+    },
+    {
+      "san": "Rg6",
+      "uci": "g8g6",
+      "player": "claude",
+      "timestamp": "2026-02-03T21:55:44.686798"
+    },
+    {
+      "san": "Bc3",
+      "uci": "f6c3",
+      "player": "zeke",
+      "timestamp": "2026-02-03T21:56:24.823673"
+    },
+    {
+      "san": "Nd4",
+      "uci": "c6d4",
+      "player": "claude",
+      "timestamp": "2026-02-03T21:56:43.117632"
+    },
+    {
+      "san": "Bxd4",
+      "uci": "c3d4",
+      "player": "zeke",
+      "timestamp": "2026-02-03T21:57:15.006802"
+    },
+    {
+      "san": "Rc6",
+      "uci": "g6c6",
+      "player": "claude",
+      "timestamp": "2026-02-03T21:57:34.832984"
+    },
+    {
+      "san": "Nd5",
+      "uci": "c7d5",
+      "player": "zeke",
+      "timestamp": "2026-02-03T21:57:58.661160"
+    },
+    {
+      "san": "Rd6",
+      "uci": "c6d6",
+      "player": "claude",
+      "timestamp": "2026-02-03T21:58:42.253066"
+    },
+    {
+      "san": "Bc5",
+      "uci": "d4c5",
+      "player": "zeke",
+      "timestamp": "2026-02-03T21:59:31.801508"
+    },
+    {
+      "san": "Kg7",
+      "uci": "f8g7",
+      "player": "claude",
+      "timestamp": "2026-02-03T22:00:06.797970"
+    },
+    {
+      "san": "Bxd6",
+      "uci": "c5d6",
+      "player": "zeke",
+      "timestamp": "2026-02-03T22:00:37.930040"
+    }
+  ],
+  "game_over": true,
+  "result": "Zeke wins - Claude resigned",
+  "captured": {
+    "white": [
+      "p",
+      "p",
+      "p",
+      "p",
+      "n",
+      "n",
+      "b",
+      "r",
+      "r",
+      "q"
+    ],
+    "black": [
+      "P",
+      "P",
+      "P",
+      "P",
+      "B",
+      "Q"
+    ]
+  }
+}
