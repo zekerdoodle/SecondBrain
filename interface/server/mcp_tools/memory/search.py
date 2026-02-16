@@ -194,7 +194,7 @@ Examples:
 - memory_search("chess") - find memories about chess games
 - memory_search("Gemini conversation") - find memories about talking with Gemini
 - memory_search("user preference") - find stored user preferences
-- memory_search("Zeke") - find memories mentioning Zeke
+- memory_search("the user") - find memories mentioning the user
 
 Returns atoms (individual facts) and threads (organized collections) with:
 - Content/title

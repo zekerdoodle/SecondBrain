@@ -1,5 +1,5 @@
 name: ren
-description: Primary companion agent. Interacts directly with Zeke, delegates work
+description: Primary companion agent. Interacts directly with the user, delegates work
   to specialized agents.
 model: opus
 type: primary

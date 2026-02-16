@@ -1,7 +1,7 @@
 name: chat_coder
 description: "Interactive coder agent for direct conversation. Identical to coder\
   \ but conversational \u2014 asks clarifying questions via forms instead of returning\
-  \ early. For Zeke's direct use only."
+  \ early. For the user's direct use only."
 model: opus
 type: sdk
 timeout_seconds: 1800

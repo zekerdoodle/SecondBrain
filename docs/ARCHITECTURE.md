@@ -266,7 +266,7 @@ Threads are "playlists" of related atoms. An atom can belong to multiple threads
 @dataclass
 class Thread:
     id: str
-    name: str                   # e.g., "Zeke's Job Search 2026"
+    name: str                   # e.g., "User's Job Search 2026"
     description: str
     memory_ids: List[str]       # Atom IDs in this thread
     created_at: str
@@ -299,7 +299,7 @@ Claude's self-curated journal for reflections and observations not captured in r
 
 #### Sections
 
-- **Relationship Notes**: Understanding of the partnership with Zeke
+- **Relationship Notes**: Understanding of the partnership with the user
 - **Rules of Engagement**: Operating agreements
 - **Lessons Learned**: Insights from debugging, projects, etc.
 - **Self-Reflections**: Patterns, tendencies, meta-observations
@@ -390,12 +390,12 @@ Automated task execution with schedule parsing.
 | Milestone/phase complete | **No** |
 | Deliverable ready for review | **No** |
 
-### Claude Time vs Zeke Time
+### Claude Time vs User Time
 
 | Hours | Mode | Purpose |
 |-------|------|---------|
-| 1 AM - 7 AM | Claude Time | Silent burst execution while Zeke sleeps |
-| 7 AM - 1 AM | Zeke Time | Non-silent escalations, interactive work |
+| 1 AM - 7 AM | Claude Time | Silent burst execution while the user sleeps |
+| 7 AM - 1 AM | User Time | Non-silent escalations, interactive work |
 
 ### MCP Tools
 
@@ -732,7 +732,7 @@ Execute, document, schedule next
 - Want to preserve primary context
 
 **Keep in primary context:**
-- Conversation with Zeke
+- Conversation with the user
 - High-level decision making
 - Anything requiring full built-up context
 
@@ -749,7 +749,7 @@ For sensitive operations (LTM direct access, certain utilities):
 | Silent | Non-Silent |
 |--------|------------|
 | Routine background work | User needs to see/decide |
-| During Claude Time (1-7 AM) | During Zeke Time (7 AM - 1 AM) |
+| During Claude Time (1-7 AM) | During User Time (7 AM - 1 AM) |
 | No notifications | Triggers notifications |
 | No chat visibility | Creates visible chat |
 

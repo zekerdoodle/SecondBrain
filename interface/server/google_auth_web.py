@@ -33,7 +33,7 @@ SCOPES = [
     "https://www.googleapis.com/auth/youtube",
 ]
 
-REDIRECT_URI = "https://brain.zekethurston.org/api/auth/google/callback"
+REDIRECT_URI = "https://brain.username.org/api/auth/google/callback"
 
 # In-memory store for pending auth sessions: {state: {flow, created_at}}
 _pending_flows: dict = {}

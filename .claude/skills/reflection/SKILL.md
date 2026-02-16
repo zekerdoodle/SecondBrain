@@ -60,5 +60,5 @@ No required deliverable. The value is in the process and what gets captured natu
 
 If something significant emerges, consider:
 - Promoting it to permanent memory
-- Discussing it with Zeke
+- Discussing it with the user
 - Updating the self-development project

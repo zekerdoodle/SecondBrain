@@ -523,7 +523,7 @@ Based on established permissions:
 - Chains through entire project phases overnight
 - Non-urgent work gets queued here
 
-**Zeke Time (7 AM - 1 AM)**:
+**User Time (7 AM - 1 AM)**:
 - Active collaboration mode
 - Notifications and escalations allowed
 

@@ -105,7 +105,7 @@ export interface ChessGameState {
   id: string;
   fen: string;
   claude_color: 'white' | 'black';
-  zeke_color: 'white' | 'black';
+  user_color: 'white' | 'black';
   moves: Array<{
     san: string;
     uci: string;

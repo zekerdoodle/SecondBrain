@@ -35,7 +35,7 @@ updated: 2026-02-06
 ## Prompt Template
 
 ```
-Hey Zeke! Picking up where we left off:
+Hey the user! Picking up where we left off:
 
 **Topic:** [What we were discussing]
 

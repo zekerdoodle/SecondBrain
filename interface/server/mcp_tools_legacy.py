@@ -1067,7 +1067,7 @@ Use this ONLY for genuinely urgent situations:
 
 The bar is HIGH. Normal notifications go through automatically. This is for escalation.
 
-The email will be sent to zekethurston@gmail.com with urgent formatting.""",
+The email will be sent to username@gmail.com with urgent formatting.""",
     input_schema={
         "type": "object",
         "properties": {
@@ -1134,7 +1134,7 @@ USE FOR:
 - Self-reflections and introspection ("I notice I keep making this mistake...")
 - Opinions and working theories ("I think the root cause is...")
 - Blockers and frustrations encountered
-- Meta-observations about patterns ("Zeke tends to...")
+- Meta-observations about patterns ("the user tends to...")
 - Relationship notes and partnership dynamics
 - Lessons learned from debugging sessions
 

@@ -15,7 +15,7 @@ An atom can appear in multiple decisions (assigned to multiple threads).
 ## Thread Philosophy
 Threads are abstractions that group atoms for useful retrieval. Valid thread types include:
 - **Narrative threads**: Story arcs with temporal/causal flow (e.g., "Job Search 2026")
-- **Entity threads**: Everything about a person/project/thing (e.g., "About Zeke")
+- **Entity threads**: Everything about a person/project/thing (e.g., "About the user")
 - **Topical threads**: Related facts about a domain (e.g., "Chess Strategy")
 - **Temporal threads**: Events in a time period (e.g., "February 2026 Updates")
 
@@ -68,4 +68,4 @@ Atoms in conversation threads are also assigned to your topical threads — the 
 2. Use exact thread names from the overview — names must match exactly
 3. When creating threads, write clear scopes that describe what belongs there
 4. Check if the atom contradicts or updates information in its candidate threads → supersede
-5. Prefer specificity: "Zeke's Chess Games" is better than "Games & Hobbies"
+5. Prefer specificity: "User's Chess Games" is better than "Games & Hobbies"

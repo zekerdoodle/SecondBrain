@@ -1,6 +1,6 @@
 # The Second Brain (Agent)
 
-This is the repository for Zeke's "Second Brain," an AI-enhanced Personal Knowledge Management (PKM) system.
+This is the repository for the user's "Second Brain," an AI-enhanced Personal Knowledge Management (PKM) system.
 
 ## 🌟 New Interface (V1)
 

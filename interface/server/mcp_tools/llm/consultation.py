@@ -213,7 +213,7 @@ Use this to get external opinions from differently-trained models:
 
 These are colleagues, not subordinates. Ask for their genuine opinion.
 
-The response is for YOUR use - synthesize and share with Zeke in your own words.
+The response is for YOUR use - synthesize and share with the user in your own words.
 
 Providers:
 - gemini: Google's Gemini 3 Pro (default: gemini-3-pro-preview)

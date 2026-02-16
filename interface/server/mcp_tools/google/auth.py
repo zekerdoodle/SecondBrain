@@ -17,7 +17,7 @@ SERVER_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 if SERVER_DIR not in sys.path:
     sys.path.insert(0, SERVER_DIR)
 
-AUTH_URL = "https://brain.zekethurston.org/api/auth/google/login"
+AUTH_URL = "https://brain.username.org/api/auth/google/login"
 
 
 @register_tool("google")
@@ -73,7 +73,7 @@ After completing the Google sign-in, your Google tools (Gmail, Calendar, Tasks, 
 
 Web OAuth credentials are not configured yet. To enable browser-based re-auth:
 1. Create a "Web Application" OAuth client in Google Cloud Console
-2. Set redirect URI to: https://brain.zekethurston.org/api/auth/google/callback
+2. Set redirect URI to: https://brain.username.org/api/auth/google/callback
 3. Save the downloaded JSON to: .claude/secrets/credentials_web.json
 
 Until then, re-auth requires SSH access to the server."""

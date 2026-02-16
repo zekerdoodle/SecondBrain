@@ -136,7 +136,7 @@ def broadcast_board_update(game_state: Dict[str, Any]):
 @register_tool("chess")
 @tool(
     name="chess",
-    description="""Play chess with Zeke. Use this tool for all chess game actions.
+    description="""Play chess with the user. Use this tool for all chess game actions.
 
 Actions:
 - start: Start a new game. Specify which color you (Claude) want to play.
@@ -151,7 +151,7 @@ IMPORTANT - UI Behavior:
 - The tool return is minimal because the board UI already updates in real-time
 
 Examples:
-- chess(action="start", color="black") - Start game, you play black (Zeke moves first)
+- chess(action="start", color="black") - Start game, you play black (the user moves first)
 - chess(action="move", move="e4") - Play e4
 - chess(action="move", move="Nxf7") - Capture on f7 with knight
 - chess(action="resign") - Give up""",
@@ -215,7 +215,7 @@ async def handle_start(args: Dict[str, Any]) -> Dict[str, Any]:
         "created": datetime.now().isoformat(),
         "fen": board.fen(),
         "claude_color": color,
-        "zeke_color": "black" if color == "white" else "white",
+        "user_color": "black" if color == "white" else "white",
         "moves": [],
         "game_over": False,
         "result": None,
@@ -263,7 +263,7 @@ async def handle_move(args: Dict[str, Any]) -> Dict[str, Any]:
     current_turn = "white" if board.turn == python_chess.WHITE else "black"
     if current_turn != game_state["claude_color"]:
         return {
-            "content": [{"type": "text", "text": f"It's not your turn. Waiting for Zeke ({game_state['zeke_color']}) to move."}],
+            "content": [{"type": "text", "text": f"It's not your turn. Waiting for the user ({game_state['user_color']}) to move."}],
             "is_error": True
         }
 
@@ -340,7 +340,7 @@ async def handle_resign(args: Dict[str, Any]) -> Dict[str, Any]:
         }
 
     game_state["game_over"] = True
-    game_state["result"] = f"Zeke wins - Claude resigned"
+    game_state["result"] = f"the user wins - Claude resigned"
 
     save_game(game_state)
     broadcast_board_update(game_state)
@@ -374,11 +374,11 @@ async def handle_cancel(args: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-# --- Helper for Zeke's moves (called by WebSocket handler) ---
+# --- Helper for the user's moves (called by WebSocket handler) ---
 
 def make_zeke_move(move_san: str) -> Dict[str, Any]:
     """
-    Make a move for Zeke (the user).
+    Make a move for the user (the user).
     Called from WebSocket handler when user makes a move on the board.
     Returns updated game state or error.
     """
@@ -391,9 +391,9 @@ def make_zeke_move(move_san: str) -> Dict[str, Any]:
 
     board = get_board_from_fen(game_state["fen"])
 
-    # Check if it's Zeke's turn
+    # Check if it's the user's turn
     current_turn = "white" if board.turn == python_chess.WHITE else "black"
-    if current_turn != game_state["zeke_color"]:
+    if current_turn != game_state["user_color"]:
         return {"error": "It's Claude's turn"}
 
     # Try to parse move - could be SAN or UCI

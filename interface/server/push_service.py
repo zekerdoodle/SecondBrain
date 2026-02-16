@@ -21,8 +21,8 @@ CLAUDE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.cla
 SCRIPTS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.claude/scripts"))
 
 # Notification recipient
-NOTIFICATION_EMAIL = "zekethurston@gmail.com"
-BASE_URL = "https://brain.zekethurston.org"
+NOTIFICATION_EMAIL = "username@gmail.com"
+BASE_URL = "https://brain.username.org"
 
 # Add scripts directory to path for google_tools
 if SCRIPTS_DIR not in sys.path:
@@ -145,7 +145,7 @@ def _build_email_html(title: str, body: str, chat_id: str, critical: bool = Fals
                     <tr>
                         <td style="padding: 20px 32px; background-color: #f9fafb; border-top: 1px solid #e5e7eb; border-radius: 0 0 12px 12px;">
                             <p style="margin: 0; font-size: 12px; color: #9ca3af; text-align: center;">
-                                Second Brain &bull; <a href="{BASE_URL}" style="color: #6b7280;">brain.zekethurston.org</a>
+                                Second Brain &bull; <a href="{BASE_URL}" style="color: #6b7280;">brain.username.org</a>
                             </p>
                         </td>
                     </tr>

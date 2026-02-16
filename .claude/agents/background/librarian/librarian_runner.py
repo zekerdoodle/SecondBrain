@@ -56,7 +56,7 @@ LIBRARIAN_OUTPUT_SCHEMA = {
                 "properties": {
                     "content": {
                         "type": "string",
-                        "description": "Clear, standalone fact about Zeke or our conversation"
+                        "description": "Clear, standalone fact about the user or our conversation"
                     },
                     "tags": {
                         "type": "array",

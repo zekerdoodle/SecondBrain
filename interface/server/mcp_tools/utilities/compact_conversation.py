@@ -22,7 +22,7 @@ from ..registry import register_tool
 logger = logging.getLogger("mcp_tools.compact_conversation")
 
 # Compaction subagent system prompt
-COMPACTION_SYSTEM_PROMPT = """You are a conversation compactor. Produce a dense, accurate summary of a conversation between Zeke (user) and Claude (assistant).
+COMPACTION_SYSTEM_PROMPT = """You are a conversation compactor. Produce a dense, accurate summary of a conversation between the user (user) and Claude (assistant).
 
 Preserve:
 1. KEY DECISIONS and their rationale

@@ -9,7 +9,7 @@ interface ChessGameState {
   id: string;
   fen: string;
   claude_color: 'white' | 'black';
-  zeke_color: 'white' | 'black';
+  user_color: 'white' | 'black';
   moves: Array<{
     san: string;
     uci: string;
@@ -104,10 +104,10 @@ export function ChessGame({ game, onClose, onMove, onNewGame }: ChessGameProps) 
     }
   }, [game?.fen, chess]);
 
-  // Determine if it's the user's turn (Zeke)
+  // Determine if it's the user's turn (the user)
   const isUserTurn = game && !game.game_over &&
-    ((game.zeke_color === 'white' && chess.turn() === 'w') ||
-     (game.zeke_color === 'black' && chess.turn() === 'b'));
+    ((game.user_color === 'white' && chess.turn() === 'w') ||
+     (game.user_color === 'black' && chess.turn() === 'b'));
 
   const currentTurn = chess.turn() === 'w' ? 'White' : 'Black';
 
@@ -164,8 +164,8 @@ export function ChessGame({ game, onClose, onMove, onNewGame }: ChessGameProps) 
 
     const piece = chess.get(square);
     const isOwnPiece = piece &&
-      ((game.zeke_color === 'white' && piece.color === 'w') ||
-       (game.zeke_color === 'black' && piece.color === 'b'));
+      ((game.user_color === 'white' && piece.color === 'w') ||
+       (game.user_color === 'black' && piece.color === 'b'));
 
     // If clicking on own piece, select it
     if (isOwnPiece) {
@@ -202,8 +202,8 @@ export function ChessGame({ game, onClose, onMove, onNewGame }: ChessGameProps) 
     if (!piece) return false;
 
     const isOwnPiece =
-      (game.zeke_color === 'white' && piece.color === 'w') ||
-      (game.zeke_color === 'black' && piece.color === 'b');
+      (game.user_color === 'white' && piece.color === 'w') ||
+      (game.user_color === 'black' && piece.color === 'b');
 
     if (!isOwnPiece) return false;
 
@@ -256,7 +256,7 @@ export function ChessGame({ game, onClose, onMove, onNewGame }: ChessGameProps) 
           {game && !game.game_over && (
             <span className={clsx(
               "w-2 h-2 rounded-full",
-              chess.turn() === (game.zeke_color === 'white' ? 'w' : 'b')
+              chess.turn() === (game.user_color === 'white' ? 'w' : 'b')
                 ? "bg-green-500 animate-pulse"
                 : "bg-amber-500"
             )} />
@@ -356,7 +356,7 @@ export function ChessGame({ game, onClose, onMove, onNewGame }: ChessGameProps) 
                   position={position}
                   onSquareClick={handleSquareClick}
                   onPieceDrop={onDrop}
-                  boardOrientation={game.zeke_color}
+                  boardOrientation={game.user_color}
                   customSquareStyles={getSquareStyles()}
                   arePiecesDraggable={!!isUserTurn && !isMoving}
                   customBoardStyle={{
@@ -368,11 +368,11 @@ export function ChessGame({ game, onClose, onMove, onNewGame }: ChessGameProps) 
                 />
               </div>
 
-              {/* Captured pieces - Zeke's captures */}
+              {/* Captured pieces - the user's captures */}
               <div className="flex items-center gap-2 mt-2 text-sm">
                 <span className="text-text-secondary">You captured:</span>
                 <div className="flex gap-0.5">
-                  {renderCaptured(game.captured[game.zeke_color])}
+                  {renderCaptured(game.captured[game.user_color])}
                 </div>
               </div>
 
@@ -395,7 +395,7 @@ export function ChessGame({ game, onClose, onMove, onNewGame }: ChessGameProps) 
 
               {/* Your color indicator */}
               <div className="mt-4 text-center text-sm text-text-secondary">
-                You are playing as <span className="font-medium text-text-primary">{game.zeke_color}</span>
+                You are playing as <span className="font-medium text-text-primary">{game.user_color}</span>
               </div>
             </>
           ) : (

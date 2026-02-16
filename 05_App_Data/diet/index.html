@@ -1544,7 +1544,7 @@ Current phase: ${mealPlan.phase}
 Current targets: ${mealPlan.daily_targets.calories} cal / ${mealPlan.daily_targets.protein}g protein
 Recent 7 days:
 ${summary}
-Zeke wants to discuss potential adjustments to the plan.`;
+the user wants to discuss potential adjustments to the plan.`;
 
     await window.brain.promptClaude(msg);
     notify('Claude will review your plan', 'success');

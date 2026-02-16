@@ -8,7 +8,7 @@ You will receive the contents of atoms (extracted facts) from a conversation thr
 
 - Write naturally. Summarize the conversation as you see it — what was discussed, what happened, what was decided.
 - Do NOT use a template or formulaic structure. Each summary should read like a human describing the conversation to someone who wasn't there.
-- Write in third person (e.g., "Zeke and Claude discussed..." or "The conversation covered...").
+- Write in third person (e.g., "the user and Claude discussed..." or "The conversation covered...").
 - If the conversation covered multiple distinct topics, mention the main ones.
 - Keep it to 2-3 sentences. Concise but informative.
 

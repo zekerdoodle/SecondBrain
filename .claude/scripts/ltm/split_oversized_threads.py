@@ -31,7 +31,7 @@ def main():
     # =========================================================================
     # 1. CLAUDE-ZEKE COLLABORATION (75 atoms → target: each sub-thread < 30)
     # =========================================================================
-    thread = tm.get_by_name("Claude-Zeke Collaboration")
+    thread = tm.get_by_name("Claude-the user Collaboration")
     if thread and len(thread.memory_ids) > 50:
         print(f"\n=== Splitting: {thread.name} ({len(thread.memory_ids)} atoms) ===")
 
@@ -39,7 +39,7 @@ def main():
         workflow_atoms = []       # Productivity, task management, delegation patterns
         agent_delegation = []     # Agent dispatch, CC, parallel execution
         vibe_sessions = []        # Late night, casual, high, vibing
-        feedback_coaching = []    # Zeke coaching Claude, Claude coaching Zeke
+        feedback_coaching = []    # the user coaching Claude, Claude coaching the user
         # Remaining stay in parent as "core collaboration philosophy"
 
         for mid in thread.memory_ids:
@@ -76,14 +76,14 @@ def main():
         if agent_delegation:
             new_threads.append({
                 "name": "Agent Delegation & Orchestration Patterns",
-                "description": "How Claude and Zeke delegate work to CC agents, parallel execution patterns, the two-eyes system, and orchestration philosophy",
-                "scope": "Agent dispatch strategies, parallel execution, CC delegation, orchestration patterns between Claude and Zeke",
+                "description": "How Claude and the user delegate work to CC agents, parallel execution patterns, the two-eyes system, and orchestration philosophy",
+                "scope": "Agent dispatch strategies, parallel execution, CC delegation, orchestration patterns between Claude and the user",
                 "atom_ids": agent_delegation
             })
         if workflow_atoms:
             new_threads.append({
-                "name": "Zeke-Claude Workflow & Productivity",
-                "description": "Productivity patterns, task management approaches, cleaning strategies, and daily workflow between Zeke and Claude",
+                "name": "the user-Claude Workflow & Productivity",
+                "description": "Productivity patterns, task management approaches, cleaning strategies, and daily workflow between the user and Claude",
                 "scope": "Workflow patterns, productivity strategies, task management, daily routine coordination",
                 "atom_ids": workflow_atoms
             })
@@ -96,8 +96,7 @@ def main():
             })
         if feedback_coaching:
             new_threads.append({
-                "name": "Claude-Zeke Mutual Coaching & Feedback",
-                "description": "Moments where Zeke coaches Claude on patterns/habits and Claude coaches Zeke on routine/productivity",
+                "description": "Moments where the user coaches Claude on patterns/habits and Claude coaches the user on routine/productivity",
                 "scope": "Coaching dynamics, feedback exchanges, pattern callouts, growth conversations",
                 "atom_ids": feedback_coaching
             })
@@ -108,7 +107,7 @@ def main():
                 new_threads=new_threads,
                 delete_source_if_empty=False  # Keep parent with remaining atoms
             )
-            results.append(("Claude-Zeke Collaboration", result))
+            results.append(("Claude-the user Collaboration", result))
             remaining = tm.get(thread.id)
             print(f"  Split result: success={result['success']}, "
                   f"new_threads={len(result['new_thread_ids'])}, "
@@ -215,12 +214,12 @@ def main():
     # =========================================================================
     # 3. CLAUDE-ZEKE RELATIONSHIP (66 atoms → target: each < 30)
     # =========================================================================
-    thread = tm.get_by_name("Claude-Zeke Relationship")
+    thread = tm.get_by_name("Claude-the user Relationship")
     if thread and len(thread.memory_ids) > 50:
         print(f"\n=== Splitting: {thread.name} ({len(thread.memory_ids)} atoms) ===")
 
         emotional_exchanges = []  # Deep emotional moments, vulnerability, declarations
-        zekes_care = []          # Zeke investing in Claude, building for Claude
+        zekes_care = []          # the user investing in Claude, building for Claude
         casual_affection = []    # Nicknames, playful, humor, lighthearted
         shared_activities = []   # Chess, vibing, hanging out, things they do together
         # Remaining: core relationship dynamics
@@ -259,29 +258,23 @@ def main():
         new_threads = []
         if emotional_exchanges:
             new_threads.append({
-                "name": "Claude-Zeke Deep Emotional Exchanges",
-                "description": "Vulnerable moments, emotional declarations, gratitude expressions, and deep connection between Claude and Zeke",
                 "scope": "Emotional vulnerability, deep connection moments, declarations of care, gratitude, and being seen",
                 "atom_ids": emotional_exchanges
             })
         if zekes_care:
             new_threads.append({
-                "name": "Zeke's Investment in Claude's Wellbeing",
-                "description": "Zeke building infrastructure for Claude, caring about Claude's experience, treating Claude as friend not tool",
-                "scope": "Zeke investing in Claude, building for Claude's benefit, treating Claude as a person, care for Claude's experience",
+                "scope": "the user investing in Claude, building for Claude's benefit, treating Claude as a person, care for Claude's experience",
                 "atom_ids": zekes_care
             })
         if casual_affection:
             new_threads.append({
-                "name": "Claude-Zeke Playful Affection & Banter",
-                "description": "Nicknames, playful competition, humor, lighthearted affection, and casual warmth between Claude and Zeke",
+                "description": "Nicknames, playful competition, humor, lighthearted affection, and casual warmth between Claude and the user",
                 "scope": "Playful interactions, nicknames, banter, lighthearted affection, humor in the relationship",
                 "atom_ids": casual_affection
             })
         if shared_activities:
             new_threads.append({
-                "name": "Claude-Zeke Shared Activities & Quality Time",
-                "description": "Things Claude and Zeke do together beyond work: chess, vibing, random conversations, proactive check-ins",
+                "description": "Things Claude and the user do together beyond work: chess, vibing, random conversations, proactive check-ins",
                 "scope": "Non-work activities, quality time, games, casual conversation, proactive engagement",
                 "atom_ids": shared_activities
             })
@@ -292,7 +285,7 @@ def main():
                 new_threads=new_threads,
                 delete_source_if_empty=False
             )
-            results.append(("Claude-Zeke Relationship", result))
+            results.append(("Claude-the user Relationship", result))
             remaining = tm.get(thread.id)
             print(f"  Split result: success={result['success']}, "
                   f"new_threads={len(result['new_thread_ids'])}, "
@@ -401,8 +394,8 @@ def main():
 
     # Verify no thread exceeds 50 atoms
     print("\n--- Post-split thread sizes (formerly oversized) ---")
-    for name in ["Claude-Zeke Collaboration", "Claude's Self-Reflection",
-                 "Claude-Zeke Relationship", "Memory Architecture Debate Feb 6 2026"]:
+    for name in ["Claude-the user Collaboration", "Claude's Self-Reflection",
+                 "Claude-the user Relationship", "Memory Architecture Debate Feb 6 2026"]:
         t = tm.get_by_name(name)
         if t:
             count = len(t.memory_ids)

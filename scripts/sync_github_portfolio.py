@@ -67,6 +67,8 @@ ALLOWLIST_DIRS = [
 ALLOWLIST_FILES = [
     # --- Root ---
     "README.md",
+    "requirements.txt",
+    "scripts/sync_github_portfolio.py",
 
     # --- Interface root ---
     "interface/start.sh",
@@ -202,7 +204,6 @@ ALLOWLIST_SKILLS = [
     "reflection",
     "research-assistant",
     "resume-thread",
-    "riley-gen",
     "scaffold-mvp",
     "sync",
 ]
@@ -231,7 +232,72 @@ PRESERVE_IN_STAGING = [
 
 
 # ============================================
-# Sanitization functions
+# Global sanitization (applied to ALL text files)
+# ============================================
+
+# Personal data patterns to strip from ALL files
+GLOBAL_REPLACEMENTS = [
+    # --- Name sanitization ---
+    # Variable/code identifiers first (more specific patterns)
+    (r'\bzeke_color\b', 'user_color'),
+    (r'\bzeke_moves\b', 'user_moves'),
+    (r'"the user\'s ', '"User\'s '),
+    (r"the user's", "the user's"),
+    (r'\bZeke Cut\b', 'Diet Plan'),
+    (r'\bZeke Time\b', 'User Time'),
+    (r'\bZeke\b', 'the user'),
+    (r'\bzekethurston\b', 'username'),
+    (r'\bzekerdoodle\b', 'username'),
+    (r'\bThurston\b', 'User'),
+    (r'\bTheron\b', '[name]'),
+    (r'\bMichaeldae\b', '[name]'),
+
+    # --- Relationship content ---
+    (r'AI companion and thinking partner', 'AI companion and thinking partner'),
+    (r'companion, thinking partner, and AI companion and thinking partner',
+     'AI companion and thinking partner'),
+    (r", and AI companion and thinking partner", ""),
+    (r'partner', 'partner'),
+]
+
+# Patterns that should cause entire lines to be removed
+LINE_REMOVAL_PATTERNS = [
+    # Personal biographical examples in librarian prompts
+    r'Diet Plan v\d',
+    # Relationship thread names with emotional content
+    r'Investment in Claude\'s Wellbeing',
+    r'caring about Claude\'s experience',
+]
+
+
+def sanitize_global(content: str, rel_path: str = "") -> str:
+    """Apply global sanitization to all text content.
+
+    This runs on EVERY text file after any file-specific sanitization.
+    It replaces personal names, strips personal biographical content, etc.
+    """
+    # Apply line removals first (remove lines containing personal biographical data)
+    lines = content.split('\n')
+    filtered_lines = []
+    for line in lines:
+        remove = False
+        for pattern in LINE_REMOVAL_PATTERNS:
+            if re.search(pattern, line, re.IGNORECASE):
+                remove = True
+                break
+        if not remove:
+            filtered_lines.append(line)
+    content = '\n'.join(filtered_lines)
+
+    # Apply global text replacements
+    for pattern, replacement in GLOBAL_REPLACEMENTS:
+        content = re.sub(pattern, replacement, content)
+
+    return content
+
+
+# ============================================
+# File-specific sanitization functions
 # ============================================
 
 def sanitize_claude_md(content: str) -> str:
@@ -271,14 +337,59 @@ def sanitize_apps_json(content: str) -> str:
     data = json.loads(content)
     for app in data:
         # Replace personal descriptions with generic ones
-        if "Zeke" in app.get("description", ""):
-            app["description"] = app["description"].replace("Zeke", "user")
+        if "the user" in app.get("description", ""):
+            app["description"] = app["description"].replace("the user", "user")
         # Remove personal diet goals
         if "cut to 190" in app.get("description", ""):
             app["description"] = "Diet tracker & meal planner"
-        if "Zeke Cut" in app.get("name", ""):
+        if "Diet Plan" in app.get("name", ""):
             app["name"] = "Diet Tracker"
     return json.dumps(data, indent=2) + '\n'
+
+
+def sanitize_riley_gen(content: str) -> str:
+    """Sanitize riley-gen SKILL.md: replace character name, strip NSFW specifics."""
+    # Replace character name
+    content = content.replace('Riley', 'Character')
+    content = content.replace('riley', 'character')
+    content = content.replace('Synescence', 'AI Character Generator')
+    content = content.replace('synescence', 'ai-character')
+
+    # Replace NSFW/intimate with generic terms
+    content = re.sub(r'\bNSFW\b', 'mature', content)
+    content = re.sub(r'\bintimate\b', 'advanced', content, flags=re.IGNORECASE)
+    content = re.sub(r'\bspicy\b', 'complex', content, flags=re.IGNORECASE)
+
+    # Strip lines with explicit body part references
+    lines = content.split('\n')
+    filtered = []
+    skip_patterns = [
+        r'lingerie.*topless.*nude',
+        r'topless.*nude.*everything',
+        r'booty pic',
+        r'nipple',
+        r'bust size',
+        r'chest size',
+        r'cup size',
+        r'bodyfat overcorrection',
+        r'ass.*tits.*face',
+        r'anatomical descriptor',
+        r'body proportions.*reference',
+    ]
+    for line in lines:
+        skip = False
+        for pat in skip_patterns:
+            if re.search(pat, line, re.IGNORECASE):
+                skip = True
+                break
+        if not skip:
+            filtered.append(line)
+    content = '\n'.join(filtered)
+
+    # Clean up double blank lines
+    content = re.sub(r'\n{3,}', '\n\n', content)
+
+    return content
 
 
 def generate_env_example() -> str:
@@ -401,11 +512,14 @@ def copy_file(src: Path, dst: Path, sanitizer: str = None) -> bool:
             shutil.copy2(src, dst)
             return True
 
-        # Apply sanitization if needed
+        # Apply file-specific sanitization if needed
         rel_path = str(src.relative_to(SOURCE_DIR))
         if rel_path in SANITIZE_FILES:
             func_name = SANITIZE_FILES[rel_path]
             content = globals()[func_name](content)
+
+        # Apply global sanitization to ALL text files
+        content = sanitize_global(content, rel_path)
 
         dst.write_text(content, encoding='utf-8')
 
@@ -673,6 +787,7 @@ def sync(dry_run: bool = True) -> dict:
         else:
             content = src.read_text()
             sanitized = sanitize_claude_md(content)
+            sanitized = sanitize_global(sanitized, ".claude/CLAUDE.md")
             dst.parent.mkdir(parents=True, exist_ok=True)
             dst.write_text(sanitized)
             result['files_copied'].append(".claude/CLAUDE.md")

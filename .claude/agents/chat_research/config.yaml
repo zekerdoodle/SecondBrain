@@ -1,7 +1,7 @@
 name: chat_research
 description: "Interactive deep research agent for direct conversation. Clarifies ambiguous\
   \ questions via forms before researching. Same critic-enhanced pipeline as deep_research,\
-  \ but interactive. For Zeke's direct use only."
+  \ but interactive. For the user's direct use only."
 model: opus
 type: sdk
 timeout_seconds: 1800

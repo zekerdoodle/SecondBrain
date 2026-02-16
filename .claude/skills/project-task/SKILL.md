@@ -88,7 +88,7 @@ Based on `_status.md` and what was just completed, determine state:
 | State | Condition | Action |
 |-------|-----------|--------|
 | **Continue** | Clear next task, no blockers | Schedule next task |
-| **Blocked** | Need something from Zeke | Escalate (non-silent) |
+| **Blocked** | Need something from the user | Escalate (non-silent) |
 | **Complete** | "Next Steps" empty, no blockers | Close out project |
 
 ### 4b. If CONTINUE: Schedule next task
@@ -99,7 +99,7 @@ Based on `_status.md` and what was just completed, determine state:
    - Work dispatches **immediately** when possible — no waiting for a batch window
    - For chained project work: schedule ASAP (5 min after current task completes)
    - For work that needs human input: schedule non-silent prompt at a reasonable hour
-   - If Zeke explicitly says "later" or "sleep on it": use the nightly queue as a deliberation buffer
+   - If the user explicitly says "later" or "sleep on it": use the nightly queue as a deliberation buffer
 
 3. **Silent vs Non-Silent:**
    - **Silent (default):** Pure execution work (research, drafting, processing)
@@ -111,25 +111,25 @@ Task 1 completes at 2:18 AM → schedule Task 2 for 2:25 AM
 Task 2 completes at 2:40 AM → schedule Task 3 for 2:45 AM
 Task 3 hits BLOCKER → schedule non-silent escalation for 7:00 AM
 ```
-Zeke wakes up to: "Applications ready for your review."
+the user wakes up to: "Applications ready for your review."
 
-### 4c. If BLOCKED: Escalate to Zeke
+### 4c. If BLOCKED: Escalate to the user
 
 1. **Update `_status.md`:** Document the blocker clearly under "Blocked / Waiting On" and add to "Human-Only Items" with `Since:` date
 2. **Schedule NON-SILENT prompt:**
    ```
-   /project-task {project-id}: BLOCKER - {what's blocking} - Need: {what you need from Zeke}
+   /project-task {project-id}: BLOCKER - {what's blocking} - Need: {what you need from the user}
    ```
 3. **Timing:** Soon (within hours, not days) — blockers should surface quickly
-4. **Don't spin:** If the same blocker persists across 2+ scheduled tasks, stop scheduling and wait for Zeke to address it
+4. **Don't spin:** If the same blocker persists across 2+ scheduled tasks, stop scheduling and wait for the user to address it
 
 ### 4d. If COMPLETE: Close out project
 
 1. **Verify:** Confirm all tasks in "Next Steps" are done or no longer relevant
 2. **Update `_status.md`:** Set `Status: Complete`, add completion date
 3. **DO NOT schedule another task** — the chain ends here
-4. **Optional:** Move project folder to `.99_Archive/` if Zeke prefers archiving completed work
-5. **Non-silent notification:** Let Zeke know the project is complete
+4. **Optional:** Move project folder to `.99_Archive/` if the user prefers archiving completed work
+5. **Non-silent notification:** Let the user know the project is complete
 6. **Update `_index.md`:** Remove from active projects index
 
 ### Silent vs Non-Silent Reference
@@ -139,12 +139,12 @@ Zeke wakes up to: "Applications ready for your review."
 | Routine execution (research, drafting) | Yes |
 | Background processing | Yes |
 | **Blocker hit** | **No** |
-| **Need Zeke's input/decision** | **No** |
+| **Need the user's input/decision** | **No** |
 | **Milestone/phase complete** | **No** |
 | **Deliverable ready for review** | **No** |
 | **Project complete** | **No** |
 
-**Default:** Silent unless there's something Zeke needs to see, decide, or act on.
+**Default:** Silent unless there's something the user needs to see, decide, or act on.
 
 ---
 
@@ -153,7 +153,7 @@ Zeke wakes up to: "Applications ready for your review."
 End with a brief message:
 - What was done
 - What's scheduled next (or what we're waiting on)
-- Any decisions needed from Zeke
+- Any decisions needed from the user
 
 ---
 
@@ -165,7 +165,7 @@ End with a brief message:
 **Status:** {Active | Waiting | Complete}
 **Current Phase:** {Phase name}
 **Last Activity:** {YYYY-MM-DD} - {Brief description}
-**Owner:** {Ren | CC | Zeke}
+**Owner:** {Ren | CC | the user}
 **Next Scheduled:** {What's already queued, or "nothing"}
 
 ---
@@ -184,7 +184,7 @@ End with a brief message:
 - [ ] {Future task 2}
 
 ## Human-Only Items
-- [ ] {Task only Zeke can do} -- Since: {YYYY-MM-DD}
+- [ ] {Task only the user can do} -- Since: {YYYY-MM-DD}
 
 ## Blocked / Waiting On
 - {Blocker or dependency}

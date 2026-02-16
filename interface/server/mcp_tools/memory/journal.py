@@ -53,10 +53,10 @@ Each agent has its own isolated memory — you only see yours.
 
 SAVE things like:
 - Lessons learned ("Running build before lint catches more issues")
-- User preferences you've discovered ("Zeke prefers forms over chat Q&A")
+- User preferences you've discovered ("the user prefers forms over chat Q&A")
 - Codebase conventions ("This project uses snake_case for Python, camelCase for TS")
 - Working theories and opinions ("I think the flaky test is a race condition in...")
-- Patterns you've noticed ("When Zeke says 'clean it up' he means extract helpers")
+- Patterns you've noticed ("When the user says 'clean it up' he means extract helpers")
 - Anything you'd want to remember across sessions
 
 DON'T SAVE:

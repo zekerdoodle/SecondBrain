@@ -726,11 +726,11 @@ Complete inventory of all tools and skills available in the Second Brain system.
 4. **Document:** Update `_status.md` with completion, create artifacts, write brief summary
 5. **Schedule Next:**
    - **Continue:** Schedule next task (Claude Time 1-7 AM for silent work)
-   - **Blocked:** Escalate non-silent to Zeke
-   - **Complete:** Close out project, notify Zeke
+   - **Blocked:** Escalate non-silent to the user
+   - **Complete:** Close out project, notify the user
 6. **Report:** Brief summary of what was done and what's next
 
-**Timing:** Claude Time (1-7 AM) for burst execution, Zeke Time (7 AM-1 AM) for escalations.
+**Timing:** Claude Time (1-7 AM) for burst execution, User Time (7 AM-1 AM) for escalations.
 
 ---
 

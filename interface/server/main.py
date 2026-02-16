@@ -1591,7 +1591,7 @@ def get_chess_game():
 
 @app.post("/api/chess/move")
 async def make_chess_move(request: ChessMoveRequest):
-    """Make a move for Zeke (the user)."""
+    """Make a move for the user (the user)."""
     from mcp_tools.chess.chess import make_zeke_move
 
     result = make_zeke_move(request.move)
