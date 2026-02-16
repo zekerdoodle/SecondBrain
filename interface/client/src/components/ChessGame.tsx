@@ -13,7 +13,7 @@ interface ChessGameState {
   moves: Array<{
     san: string;
     uci: string;
-    player: 'claude' | 'zeke';
+    player: 'claude' | 'user';
     timestamp: string;
   }>;
   game_over: boolean;

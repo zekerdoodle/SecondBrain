@@ -376,7 +376,7 @@ async def handle_cancel(args: Dict[str, Any]) -> Dict[str, Any]:
 
 # --- Helper for the user's moves (called by WebSocket handler) ---
 
-def make_zeke_move(move_san: str) -> Dict[str, Any]:
+def make_user_move(move_san: str) -> Dict[str, Any]:
     """
     Make a move for the user (the user).
     Called from WebSocket handler when user makes a move on the board.
@@ -421,7 +421,7 @@ def make_zeke_move(move_san: str) -> Dict[str, Any]:
     game_state["moves"].append({
         "san": san,
         "uci": move.uci(),
-        "player": "zeke",
+        "player": "user",
         "timestamp": datetime.now().isoformat()
     })
     game_state["captured"] = get_captured_pieces(board)

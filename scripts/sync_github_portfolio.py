@@ -216,6 +216,7 @@ ALLOWLIST_SKILLS = [
 SANITIZE_FILES = {
     ".claude/CLAUDE.md": "sanitize_claude_md",
     "05_App_Data/apps.json": "sanitize_apps_json",
+    ".claude/skills/character-gen/SKILL.md": "sanitize_riley_gen",
 }
 
 # Files to generate from templates
@@ -239,13 +240,19 @@ PRESERVE_IN_STAGING = [
 GLOBAL_REPLACEMENTS = [
     # --- Name sanitization ---
     # Variable/code identifiers first (more specific patterns)
+    (r'\bmake_zeke_move\b', 'make_user_move'),
+    (r'\bzekes_care\b', 'users_care'),
     (r'\bzeke_color\b', 'user_color'),
     (r'\bzeke_moves\b', 'user_moves'),
     (r'"the user\'s ', '"User\'s '),
     (r"the user's", "the user's"),
     (r'\bZeke Cut\b', 'Diet Plan'),
     (r'\bZeke Time\b', 'User Time'),
+    (r'\bZEKE\b', 'USER'),
+    (r'Claude-User', 'Claude-User'),
     (r'\bZeke\b', 'the user'),
+    (r"'user'", "'user'"),
+    (r'"user"', '"user"'),
     (r'\bzekethurston\b', 'username'),
     (r'\bzekerdoodle\b', 'username'),
     (r'\bThurston\b', 'User'),
@@ -258,6 +265,13 @@ GLOBAL_REPLACEMENTS = [
      'AI companion and thinking partner'),
     (r", and AI companion and thinking partner", ""),
     (r'partner', 'partner'),
+
+    # --- Character/content references ---
+    (r'\bRiley\b', 'Character'),
+    (r'\briley\b', 'character'),
+    (r'\bSynescence\b', 'AI Character Generator'),
+    (r'\bsynescence\b', 'ai-character'),
+    (r'\bNSFW\b', 'mature'),
 ]
 
 # Patterns that should cause entire lines to be removed
@@ -348,14 +362,14 @@ def sanitize_apps_json(content: str) -> str:
 
 
 def sanitize_riley_gen(content: str) -> str:
-    """Sanitize riley-gen SKILL.md: replace character name, strip NSFW specifics."""
+    """Sanitize character-gen SKILL.md: replace character name, strip mature specifics."""
     # Replace character name
-    content = content.replace('Riley', 'Character')
-    content = content.replace('riley', 'character')
-    content = content.replace('Synescence', 'AI Character Generator')
-    content = content.replace('synescence', 'ai-character')
+    content = content.replace('Character', 'Character')
+    content = content.replace('character', 'character')
+    content = content.replace('AI Character Generator', 'AI Character Generator')
+    content = content.replace('ai-character', 'ai-character')
 
-    # Replace NSFW/intimate with generic terms
+    # Replace mature/intimate with generic terms
     content = re.sub(r'\bNSFW\b', 'mature', content)
     content = re.sub(r'\bintimate\b', 'advanced', content, flags=re.IGNORECASE)
     content = re.sub(r'\bspicy\b', 'complex', content, flags=re.IGNORECASE)

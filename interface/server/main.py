@@ -1592,9 +1592,9 @@ def get_chess_game():
 @app.post("/api/chess/move")
 async def make_chess_move(request: ChessMoveRequest):
     """Make a move for the user (the user)."""
-    from mcp_tools.chess.chess import make_zeke_move
+    from mcp_tools.chess.chess import make_user_move
 
-    result = make_zeke_move(request.move)
+    result = make_user_move(request.move)
 
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])

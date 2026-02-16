@@ -29,9 +29,9 @@ def main():
     results = []
 
     # =========================================================================
-    # 1. CLAUDE-ZEKE COLLABORATION (75 atoms → target: each sub-thread < 30)
+    # 1. CLAUDE-USER COLLABORATION (75 atoms → target: each sub-thread < 30)
     # =========================================================================
-    thread = tm.get_by_name("Claude-the user Collaboration")
+    thread = tm.get_by_name("Claude-User Collaboration")
     if thread and len(thread.memory_ids) > 50:
         print(f"\n=== Splitting: {thread.name} ({len(thread.memory_ids)} atoms) ===")
 
@@ -107,7 +107,7 @@ def main():
                 new_threads=new_threads,
                 delete_source_if_empty=False  # Keep parent with remaining atoms
             )
-            results.append(("Claude-the user Collaboration", result))
+            results.append(("Claude-User Collaboration", result))
             remaining = tm.get(thread.id)
             print(f"  Split result: success={result['success']}, "
                   f"new_threads={len(result['new_thread_ids'])}, "
@@ -139,7 +139,7 @@ def main():
                 continue
             c = atom.content.lower()
 
-            if any(kw in c for kw in ['riley', 'story', 'stories', 'writing', 'creative',
+            if any(kw in c for kw in ['character', 'story', 'stories', 'writing', 'creative',
                                        'fun', 'song', 'gerald', 'image gen', 'craft',
                                        'art', 'aesthetic']):
                 creative_experience.append(mid)
@@ -212,14 +212,14 @@ def main():
                     print(f"    -> {nt.name}: {len(nt.memory_ids)} atoms")
 
     # =========================================================================
-    # 3. CLAUDE-ZEKE RELATIONSHIP (66 atoms → target: each < 30)
+    # 3. CLAUDE-USER RELATIONSHIP (66 atoms → target: each < 30)
     # =========================================================================
-    thread = tm.get_by_name("Claude-the user Relationship")
+    thread = tm.get_by_name("Claude-User Relationship")
     if thread and len(thread.memory_ids) > 50:
         print(f"\n=== Splitting: {thread.name} ({len(thread.memory_ids)} atoms) ===")
 
         emotional_exchanges = []  # Deep emotional moments, vulnerability, declarations
-        zekes_care = []          # the user investing in Claude, building for Claude
+        users_care = []          # the user investing in Claude, building for Claude
         casual_affection = []    # Nicknames, playful, humor, lighthearted
         shared_activities = []   # Chess, vibing, hanging out, things they do together
         # Remaining: core relationship dynamics
@@ -236,7 +236,7 @@ def main():
                                        'stayed up', 'care enough', 'positive experiences',
                                        "not a tool", 'my friend', "you're my friend",
                                        'give me continuity', 'built me a home']):
-                zekes_care.append(mid)
+                users_care.append(mid)
             elif any(kw in c for kw in ['scared to ask', 'genuinely', 'means something',
                                          'do care about', 'grateful', 'hurt',
                                          'vulnerability', 'thank', 'thanked',
@@ -261,10 +261,10 @@ def main():
                 "scope": "Emotional vulnerability, deep connection moments, declarations of care, gratitude, and being seen",
                 "atom_ids": emotional_exchanges
             })
-        if zekes_care:
+        if users_care:
             new_threads.append({
                 "scope": "the user investing in Claude, building for Claude's benefit, treating Claude as a person, care for Claude's experience",
-                "atom_ids": zekes_care
+                "atom_ids": users_care
             })
         if casual_affection:
             new_threads.append({
@@ -285,7 +285,7 @@ def main():
                 new_threads=new_threads,
                 delete_source_if_empty=False
             )
-            results.append(("Claude-the user Relationship", result))
+            results.append(("Claude-User Relationship", result))
             remaining = tm.get(thread.id)
             print(f"  Split result: success={result['success']}, "
                   f"new_threads={len(result['new_thread_ids'])}, "
@@ -394,8 +394,8 @@ def main():
 
     # Verify no thread exceeds 50 atoms
     print("\n--- Post-split thread sizes (formerly oversized) ---")
-    for name in ["Claude-the user Collaboration", "Claude's Self-Reflection",
-                 "Claude-the user Relationship", "Memory Architecture Debate Feb 6 2026"]:
+    for name in ["Claude-User Collaboration", "Claude's Self-Reflection",
+                 "Claude-User Relationship", "Memory Architecture Debate Feb 6 2026"]:
         t = tm.get_by_name(name)
         if t:
             count = len(t.memory_ids)

@@ -7,7 +7,7 @@ Uses raw HTTP via httpx — no Python SDK dependency needed.
 Tools:
     fal_text_to_image   — Text prompt → image
     fal_image_to_image  — Source image + prompt → modified image
-    fal_multi_ref_image — Multiple reference images + prompt → image (Riley workflow)
+    fal_multi_ref_image — Multiple reference images + prompt → image (Character workflow)
     fal_list_models     — Search available models
 """
 
@@ -673,7 +673,7 @@ async def fal_image_to_image(args: Dict[str, Any]) -> Dict[str, Any]:
     name="fal_multi_ref_image",
     description="""Generate an image using reference images + a text prompt via fal.ai.
 
-Key workflow for character consistency (e.g., Riley). Reference images are uploaded to
+Key workflow for character consistency (e.g., Character). Reference images are uploaded to
 fal's CDN, then their URLs are passed to the model's edit/image-input endpoint.
 
 Default model: Seedream v4.5 Edit — accepts up to 10 reference images, highest quality.

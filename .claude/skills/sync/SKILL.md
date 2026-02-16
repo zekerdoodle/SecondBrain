@@ -39,7 +39,7 @@ updated: 2026-02-08
 2. **Stale detection**:
    - &gt;7 days since Last Activity = **STALE**
    - &gt;14 days = **CRITICAL**
-   - Human-Only Items &gt;3 days old = **ZEKE-BLOCKED**
+   - Human-Only Items &gt;3 days old = **USER-BLOCKED**
 3. **Agent output routing**:
    a. For each file in `00_Inbox/agent_outputs/`:
       - Parse YAML frontmatter for `{agent, project, date, task_id}`
@@ -53,7 +53,7 @@ updated: 2026-02-08
    ```
    | Project | Phase | Status | Last Activity | Staleness | Next Action |
    ```
-5. **Set working memory flags**: For STALE and ZEKE-BLOCKED projects, so Ren can surface them conversationally
+5. **Set working memory flags**: For STALE and USER-BLOCKED projects, so Ren can surface them conversationally
 
 ## Step 3: Velocity Defense (The Scheduler)
 1.  **Scan Projects:** Read `10_Active_Projects/` to identify the single highest-priority "Next Step."
