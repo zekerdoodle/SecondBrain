@@ -25,9 +25,9 @@ and individual fact coverage (through bonus atoms).
 """
 
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 
 logger = logging.getLogger("ltm.retrieval")
 
@@ -90,30 +90,28 @@ class MemoryContext:
 
     Attributes:
         atomic_memories: Bonus atoms from non-selected threads (hybrid retrieval phase 2).
-            Each dict includes: id, content, importance, created_at, semantic_score, source_thread
+            Each dict includes: id, content, created_at, semantic_score, source_thread
         threads: Selected threads with all their memories (phase 1).
             Each dict includes: id, name, description, memory_ids, last_updated, memories
-        guaranteed_memories: Always-included atoms with importance=100.
-            Each dict includes: id, content, importance, created_at
         total_tokens: Estimated total tokens used
-        token_breakdown: Token usage by category {"threads", "bonus_atoms", "guaranteed"}
+        token_breakdown: Token usage by category {"threads", "bonus_atoms"}
     """
     atomic_memories: List[Dict[str, Any]] = field(default_factory=list)
     threads: List[Dict[str, Any]] = field(default_factory=list)
-    guaranteed_memories: List[Dict[str, Any]] = field(default_factory=list)
     total_tokens: int = 0
     token_breakdown: Dict[str, int] = field(default_factory=dict)
 
+    _PREAMBLE = (
+        "Past context retrieved from long-term memory. These are facts and events\n"
+        "from *previous* conversations — not the current one. Timestamps indicate\n"
+        "when each was recorded. Do not assume past states are still current;\n"
+        "things may have changed. Use these to inform your understanding, but\n"
+        "don't surface them unprompted — let the conversation lead."
+    )
+
     def format_for_prompt(self) -> str:
         """Format memory context for injection into prompt."""
-        sections = []
-
-        # Guaranteed memories (importance=100) first
-        if self.guaranteed_memories:
-            sections.append("## Core Context (Always Included)")
-            for mem in self.guaranteed_memories:
-                sections.append(f"- {mem['content']}")
-            sections.append("")
+        sections = [self._PREAMBLE, ""]
 
         # Threads with their memories
         if self.threads:
@@ -149,13 +147,20 @@ class MemoryContext:
 def _score_thread(
     thread: Dict[str, Any],
     semantic_score: float,
-    max_atom_score: float
+    max_atom_score: float,
+    recency_weight: float = 0.3
 ) -> float:
     """
-    Calculate composite thread score with 70% semantic / 30% recency weighting.
+    Calculate composite thread score with dynamic semantic/recency weighting.
 
     Semantic: max of direct thread similarity or best child atom similarity (0-1)
     Recency: normalized score based on last_updated, decays over 7 days (0-1)
+
+    Args:
+        thread: Thread dict with last_updated field
+        semantic_score: Direct thread embedding similarity (0-1)
+        max_atom_score: Best child atom similarity (0-1)
+        recency_weight: Weight for recency vs semantic (0.0-1.0, default 0.3)
     """
     # Base semantic score (0-1 range)
     base_semantic = max(semantic_score, max_atom_score)
@@ -169,17 +174,52 @@ def _score_thread(
     except Exception:
         recency_score = 0.0
 
-    # 70% semantic / 30% recency
-    SEMANTIC_WEIGHT = 0.7
-    RECENCY_WEIGHT = 0.3
+    semantic_weight = 1.0 - recency_weight
+    return (semantic_weight * base_semantic) + (recency_weight * recency_score)
 
-    return (SEMANTIC_WEIGHT * base_semantic) + (RECENCY_WEIGHT * recency_score)
+
+def _should_exclude_atom(
+    atom,
+    exclude_session_id: Optional[str],
+    session_uncompacted_after: Optional[str]
+) -> bool:
+    """
+    Check if an atom should be excluded because it duplicates current conversation.
+
+    An atom is excluded if:
+    1. Its source_session_id matches the current chat session, AND
+    2. Either there's no compaction (all messages visible), OR
+       the atom was created AFTER the compaction cutoff (meaning its source
+       messages are still visible in the conversation).
+
+    Atoms from before a compaction are kept because their source messages
+    have been replaced with a summary — the atom may be the only detailed record.
+    """
+    if not exclude_session_id:
+        return False
+    if not hasattr(atom, 'source_session_id'):
+        return False
+    if atom.source_session_id != exclude_session_id:
+        return False
+
+    # Atom is from the current session. Check compaction boundary.
+    if not session_uncompacted_after:
+        # No compaction — all messages visible, so atom is redundant
+        return True
+
+    # Session has been compacted. Only exclude atoms created after the cutoff
+    # (their source messages are still in the conversation verbatim).
+    atom_created = atom.created_at or ""
+    return atom_created >= session_uncompacted_after
 
 
 def get_memory_context(
     query: str,
     token_budget: int = 20000,
-    include_guaranteed: bool = True
+    recency_weight: float = 0.3,
+    exclude_session_id: Optional[str] = None,
+    session_uncompacted_after: Optional[str] = None,
+    exclude_thread_ids: Optional[Set[str]] = None
 ) -> MemoryContext:
     """
     Retrieve memory context using hybrid retrieval strategy.
@@ -195,14 +235,23 @@ def get_memory_context(
     Args:
         query: Search query (usually the user's message)
         token_budget: Maximum tokens for memory context
-        include_guaranteed: Include importance=100 memories regardless of budget
+        recency_weight: Weight for recency vs semantic scoring (0.0-1.0).
+            Higher values favor recent memories. Set by query rewriter.
+        exclude_session_id: If provided, atoms with this source_session_id are
+            filtered out (they duplicate the current conversation). Atoms from
+            before a compaction boundary are kept.
+        session_uncompacted_after: ISO timestamp. If the session has been compacted,
+            only atoms created AFTER this timestamp are filtered (their source
+            messages are still visible). Atoms from before this time are kept
+            because the compacted summary replaced their source messages.
+        exclude_thread_ids: Set of thread IDs to skip (e.g. already included
+            in recent memory). Prevents duplication across memory blocks.
 
     Returns:
         MemoryContext with:
         - threads: selected threads with all their memories
         - atomic_memories: bonus atoms from non-selected threads
-        - guaranteed_memories: importance=100 atoms (always included)
-        - token_breakdown: {"threads": N, "bonus_atoms": N, "guaranteed": N}
+        - token_breakdown: {"threads": N, "bonus_atoms": N}
     """
     try:
         from .atomic_memory import get_atomic_manager
@@ -217,33 +266,19 @@ def get_memory_context(
     context = MemoryContext()
     used_tokens = 0
 
-    # 1. Get guaranteed memories first (importance=100)
-    if include_guaranteed:
-        guaranteed = atom_mgr.get_guaranteed()
-        for atom in guaranteed:
-            mem_dict = {
-                "id": atom.id,
-                "content": atom.content,
-                "importance": atom.importance,
-                "created_at": atom.created_at
-            }
-            context.guaranteed_memories.append(mem_dict)
-            # Guaranteed memories don't count against budget
-        logger.info(f"Found {len(guaranteed)} guaranteed memories")
-
-    # 2. Search threads and atoms
+    # 1. Search threads and atoms
     # Search more atoms to ensure we have candidates for hybrid retrieval
     thread_hits = thread_mgr.search(query, k=10)
     atom_hits = atom_mgr.search(query, k=100)  # Over-fetch for hybrid retrieval
 
-    # 3. Build atom-to-thread map
+    # 2. Build atom-to-thread map
     all_threads = thread_mgr.list_all()
     atom_to_thread: Dict[str, Any] = {}
     for t in all_threads:
         for mid in t.memory_ids:
             atom_to_thread[mid] = t
 
-    # 4. Identify candidate threads
+    # 3. Identify candidate threads
     candidate_threads: Dict[str, Dict[str, Any]] = {}
 
     # Direct thread hits
@@ -276,7 +311,7 @@ def get_memory_context(
                     candidate_threads[tid]["max_atom_score"], score
                 )
 
-    # 5. Score and sort candidate threads
+    # 4. Score and sort candidate threads
     scored_threads = []
     for tid, info in candidate_threads.items():
         thread = info["thread"]
@@ -290,37 +325,45 @@ def get_memory_context(
         composite_score = _score_thread(
             thread_dict,
             info["semantic_score"],
-            info["max_atom_score"]
+            info["max_atom_score"],
+            recency_weight=recency_weight
         )
         scored_threads.append((thread_dict, composite_score))
 
     scored_threads.sort(key=lambda x: -x[1])
 
-    # 6. Fill budget with whole threads
+    # 5. Fill budget with whole threads
     selected_memory_ids = set()
-    guaranteed_ids = {m["id"] for m in context.guaranteed_memories}
+    excluded_atom_count = 0  # Track how many atoms were filtered by session
 
     for thread_dict, score in scored_threads:
-        # Get thread's memories
+        # Skip threads already included in recent memory
+        if exclude_thread_ids and thread_dict["id"] in exclude_thread_ids:
+            continue
+
+        # Get thread's memories, filtering out atoms from the current session
         thread_memories = []
         thread_tokens = 10  # Header overhead
 
         for mid in thread_dict["memory_ids"]:
-            if mid in guaranteed_ids:
-                continue  # Skip already-included guaranteed memories
-
             atom = atom_mgr.get(mid)
             if atom:
+                # Skip atoms that duplicate the current conversation
+                if _should_exclude_atom(atom, exclude_session_id, session_uncompacted_after):
+                    excluded_atom_count += 1
+                    continue
                 mem_dict = {
                     "id": atom.id,
                     "content": atom.content,
-                    "importance": atom.importance,
                     "created_at": atom.created_at
                 }
                 thread_memories.append(mem_dict)
                 thread_tokens += count_tokens(atom.content) + 5
 
-        # All-or-nothing: include thread only if it fits
+        # Sort memories chronologically (oldest first) to preserve narrative flow
+        thread_memories.sort(key=lambda m: m.get("created_at", ""))
+
+        # All-or-nothing: include thread only if it fits and has non-excluded atoms
         if used_tokens + thread_tokens <= token_budget and thread_memories:
             thread_dict["memories"] = thread_memories
             context.threads.append(thread_dict)
@@ -328,7 +371,7 @@ def get_memory_context(
             selected_memory_ids.update(m["id"] for m in thread_memories)
             logger.debug(f"Selected thread: {thread_dict['name']} ({thread_tokens} tokens)")
 
-    # 7. HYBRID RETRIEVAL: Fill remaining budget with bonus atoms from non-selected threads
+    # 6. HYBRID RETRIEVAL: Fill remaining budget with bonus atoms from non-selected threads
     # These are individually highly-relevant atoms that weren't included because their
     # parent thread didn't make the cut. This catches important facts that would
     # otherwise be missed due to thread-level filtering.
@@ -344,7 +387,12 @@ def get_memory_context(
     bonus_atom_tokens = 0
 
     for atom, score in atom_hits:
-        if atom.id in selected_memory_ids or atom.id in guaranteed_ids:
+        if atom.id in selected_memory_ids:
+            continue
+
+        # Skip atoms that duplicate the current conversation
+        if _should_exclude_atom(atom, exclude_session_id, session_uncompacted_after):
+            excluded_atom_count += 1
             continue
 
         # Check if this atom's parent thread was already selected
@@ -365,9 +413,8 @@ def get_memory_context(
             context.atomic_memories.append({
                 "id": atom.id,
                 "content": atom.content,
-                "importance": atom.importance,
                 "created_at": atom.created_at,
-                "semantic_score": score,  # Include score for debugging/transparency
+                "semantic_score": score,
                 "source_thread": parent_thread.name if parent_thread else None
             })
             used_tokens += mem_tokens
@@ -381,15 +428,14 @@ def get_memory_context(
             sum(count_tokens(m["content"]) for m in t.get("memories", []))
             for t in context.threads
         ),
-        "bonus_atoms": bonus_atom_tokens,
-        "guaranteed": sum(count_tokens(m["content"]) for m in context.guaranteed_memories)
+        "bonus_atoms": bonus_atom_tokens
     }
 
     logger.info(
         f"Retrieved memory context: {len(context.threads)} threads, "
         f"{bonus_atom_count} bonus atoms ({bonus_atom_tokens}/{max_orphan_tokens} orphan cap), "
-        f"{len(context.guaranteed_memories)} guaranteed, "
         f"{used_tokens}/{token_budget} tokens used"
+        + (f", {excluded_atom_count} atoms filtered (same-session dedup)" if excluded_atom_count else "")
     )
     if bonus_atom_count > 0:
         logger.debug(
@@ -399,6 +445,164 @@ def get_memory_context(
         )
 
     return context
+
+
+def get_recent_conversation_threads(
+    hours: int = 24,
+    token_budget: int = 4000,
+    exclude_room_id: Optional[str] = None,
+    exclude_session_id: Optional[str] = None,
+    session_uncompacted_after: Optional[str] = None
+) -> Tuple[List[Dict[str, Any]], Set[str], int]:
+    """
+    Get conversation threads with recent activity for the recent-memory block.
+
+    Returns conversation threads whose last_updated is within the last N hours,
+    sorted most-recent-first, truncating large threads to fit within budget.
+
+    Args:
+        hours: Look-back window (default 24h)
+        token_budget: Max tokens to allocate
+        exclude_room_id: Room ID of the current chat (skip its conversation thread)
+        exclude_session_id: Current session ID for atom-level dedup
+        session_uncompacted_after: Compaction boundary for atom filtering
+
+    Returns:
+        Tuple of (thread_dicts with 'memories', set of included thread IDs, tokens used)
+    """
+    try:
+        from .atomic_memory import get_atomic_manager
+        from .thread_memory import get_thread_manager
+    except ImportError:
+        from atomic_memory import get_atomic_manager
+        from thread_memory import get_thread_manager
+
+    thread_mgr = get_thread_manager()
+    atom_mgr = get_atomic_manager()
+
+    cutoff = (datetime.now() - timedelta(hours=hours)).isoformat()
+    exclude_scope = f"room:{exclude_room_id}" if exclude_room_id else None
+
+    # Filter to recent conversation threads
+    candidates = []
+    for t in thread_mgr.list_all():
+        if t.thread_type != "conversation":
+            continue
+        if exclude_scope and t.scope == exclude_scope:
+            continue
+        if not t.last_updated or t.last_updated < cutoff:
+            continue
+        candidates.append(t)
+
+    # Most recent first
+    candidates.sort(key=lambda t: t.last_updated, reverse=True)
+
+    result_threads: List[Dict[str, Any]] = []
+    result_ids: Set[str] = set()
+    used_tokens = 0
+
+    for t in candidates:
+        # Load and filter atoms
+        thread_memories = []
+        for mid in t.memory_ids:
+            atom = atom_mgr.get(mid)
+            if not atom:
+                continue
+            if _should_exclude_atom(atom, exclude_session_id, session_uncompacted_after):
+                continue
+            thread_memories.append({
+                "id": atom.id,
+                "content": atom.content,
+                "created_at": atom.created_at
+            })
+
+        if not thread_memories:
+            continue
+
+        # Sort chronologically (oldest first)
+        thread_memories.sort(key=lambda m: m.get("created_at", ""))
+
+        # Calculate tokens for full thread
+        header_tokens = 10
+        mem_tokens = [count_tokens(m["content"]) + 5 for m in thread_memories]
+        total_thread_tokens = header_tokens + sum(mem_tokens)
+
+        remaining = token_budget - used_tokens
+        if remaining < header_tokens + 20:
+            break  # No room for even a minimal thread
+
+        if total_thread_tokens <= remaining:
+            # Whole thread fits
+            thread_dict = {
+                "id": t.id,
+                "name": t.name,
+                "description": t.description,
+                "memory_ids": t.memory_ids,
+                "last_updated": t.last_updated,
+                "memories": thread_memories
+            }
+            result_threads.append(thread_dict)
+            result_ids.add(t.id)
+            used_tokens += total_thread_tokens
+        else:
+            # Truncate: keep most recent atoms that fit
+            available = remaining - header_tokens - 10  # reserve for omission marker
+            kept = []
+            kept_tokens = 0
+            for m, mt in reversed(list(zip(thread_memories, mem_tokens))):
+                if kept_tokens + mt > available:
+                    break
+                kept.append(m)
+                kept_tokens += mt
+            kept.reverse()
+
+            if kept:
+                omitted = len(thread_memories) - len(kept)
+                if omitted > 0:
+                    marker = {"id": "_omitted", "content": f"[... {omitted} earlier entries omitted ...]", "created_at": ""}
+                    kept.insert(0, marker)
+                    kept_tokens += count_tokens(marker["content"]) + 5
+
+                thread_dict = {
+                    "id": t.id,
+                    "name": t.name,
+                    "description": t.description,
+                    "memory_ids": t.memory_ids,
+                    "last_updated": t.last_updated,
+                    "memories": kept
+                }
+                result_threads.append(thread_dict)
+                result_ids.add(t.id)
+                used_tokens += header_tokens + kept_tokens
+
+    logger.info(
+        f"Recent memory: {len(result_threads)} conversation threads from last {hours}h, "
+        f"{used_tokens}/{token_budget} tokens"
+    )
+    return result_threads, result_ids, used_tokens
+
+
+def format_recent_memory(threads: List[Dict[str, Any]], hours: int = 24) -> str:
+    """Format recent conversation threads for the <recent-memory> block."""
+    preamble = (
+        f"Recent conversations (last {hours}h). These provide continuity across\n"
+        "conversations. Reference naturally when relevant."
+    )
+    sections = [preamble, ""]
+
+    for thread in threads:
+        sections.append(f"## Recent: {thread['name']}")
+        if thread.get('description'):
+            sections.append(f"*{thread['description']}*")
+        for mem in thread.get('memories', []):
+            ts = _format_timestamp_with_human_context(mem.get('created_at', ''))
+            if ts:
+                sections.append(f"- [{ts}] {mem['content']}")
+            else:
+                sections.append(f"- {mem['content']}")
+        sections.append("")
+
+    return "\n".join(sections)
 
 
 def search_memories(
@@ -427,7 +631,6 @@ def search_memories(
             "type": "atomic",
             "id": atom.id,
             "content": atom.content,
-            "importance": atom.importance,
             "score": score
         })
 

@@ -1,0 +1,38 @@
+name: chat_coder
+description: "Interactive coder agent for direct conversation. Identical to coder\
+  \ but conversational \u2014 asks clarifying questions via forms instead of returning\
+  \ early. For Zeke's direct use only."
+model: opus
+type: sdk
+timeout_seconds: 1800
+max_turns: 200
+chattable: true
+color: '#94e2d5'
+icon: code
+tools:
+- Read
+- Write
+- Edit
+- Glob
+- Grep
+- Bash
+- NotebookEdit
+- Task
+- TaskOutput
+- Skill
+- WebFetch
+- WebSearch
+- TodoWrite
+- EnterPlanMode
+- ExitPlanMode
+- mcp__brain__fal_text_to_image
+- mcp__brain__fal_list_models
+- mcp__brain__forms_define
+- mcp__brain__forms_show
+- mcp__brain__memory_append
+- mcp__brain__memory_read
+- mcp__brain__restart_server
+- mcp__brain__compact_conversation
+- mcp__brain__invoke_agent
+- mcp__brain__invoke_agent_chain
+- mcp__brain__schedule_agent

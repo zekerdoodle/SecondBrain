@@ -1,14 +1,15 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
-import type { ChatMessage, MessageStatus } from './types';
+import type { ChatMessage, ChatImageRef, MessageStatus } from './types';
+import type { ToolCallData } from './components/ToolCallChips';
 import { WS_URL, API_URL } from './config';
 import { useVisibility, type VisibilityState } from './hooks/useVisibility';
+import { extractToolSummary } from './utils/toolDisplay';
 
 const SESSION_KEY = 'second_brain_session_id';
 const PENDING_MSG_KEY = 'second_brain_pending_message';
 const LAST_SYNC_KEY = 'second_brain_last_sync';
 
 // Default base overhead (fetched dynamically on load)
-const DEFAULT_BASE_OVERHEAD = 11000;
 
 // Message queue entry for reliability
 interface QueuedMessage {
@@ -21,20 +22,36 @@ interface QueuedMessage {
   serverTimestamp?: number;
 }
 
+// User message being injected mid-stream (while Claude is responding)
+export interface UserQueuedMessage {
+  id: string;
+  content: string;
+  timestamp: number;
+  failed?: boolean;  // True if injection failed
+}
+
 export type ConnectionStatus = 'connected' | 'connecting' | 'disconnected';
 export type ChatStatus = 'idle' | 'thinking' | 'tool_use' | 'processing';
 
-export interface TokenUsage {
-  input: number;
-  output: number;
-  total: number;
-  contextPercent?: number;  // Percentage toward auto-compaction (0-100+)
-  actualContext?: number;   // Actual context tokens (input + cache_read)
+export interface ActiveTool {
+  id: string;
+  name: string;
+  args?: string;
+  summary?: string;
+  startedAt: number;
+}
+
+// extractToolSummary is now imported from ./utils/toolDisplay
+
+export interface TodoItem {
+  content: string;
+  status: 'pending' | 'in_progress' | 'completed';
+  activeForm?: string;
 }
 
 export interface ClaudeHook {
   messages: ChatMessage[];
-  sendMessage: (text: string) => boolean;
+  sendMessage: (text: string, images?: ChatImageRef[]) => boolean;
   editMessage: (messageId: string, newContent: string) => boolean;
   updateFormMessage: (formId: string, submittedValues: Record<string, any>) => void;
   regenerateMessage: (messageId: string) => boolean;
@@ -43,11 +60,21 @@ export interface ClaudeHook {
   status: ChatStatus;
   statusText: string;
   toolName: string | null;
+  activeTools: Map<string, ActiveTool>;
   startNewChat: () => void;
-  loadChat: (id: string) => Promise<void>;
+  loadChat: (id: string, agentHint?: string | null) => Promise<void>;
   sessionId: string;
   connectionStatus: ConnectionStatus;
-  tokenUsage: TokenUsage | null;
+  // Message queue for sending while Claude is responding
+  queuedMessages: UserQueuedMessage[];
+  clearQueuedMessages: () => void;
+  // Multi-agent support
+  currentAgent: string | null;
+  sendMessageWithAgent: (text: string, agent?: string, images?: ChatImageRef[]) => boolean;
+  // Tool calls completed during streaming, keyed by the preceding message ID for correct ordering
+  streamingToolMap: Map<string, ToolCallData[]>;
+  // Todo list from agents using TodoWrite
+  todos: TodoItem[];
 }
 
 export interface NotificationData {
@@ -74,77 +101,143 @@ export interface FormRequestData {
   version?: number;
 }
 
+export interface ChessGameState {
+  id: string;
+  fen: string;
+  claude_color: 'white' | 'black';
+  zeke_color: 'white' | 'black';
+  moves: Array<{
+    san: string;
+    uci: string;
+    player: 'claude' | 'zeke';
+    timestamp: string;
+  }>;
+  game_over: boolean;
+  result: string | null;
+  captured: {
+    white: string[];
+    black: string[];
+  };
+}
+
+export interface ChatCreatedData {
+  chat: { id: string; title: string; updated: number; is_system: boolean; scheduled: boolean; agent?: string };
+}
+
 export interface ClaudeOptions {
   onScheduledTaskComplete?: (data: { session_id: string; title: string }) => void;
   onChatTitleUpdate?: (data: { session_id: string; title: string; confidence: number }) => void;
+  onChatCreated?: (data: ChatCreatedData) => void;
   onNewMessageNotification?: (data: NotificationData) => void;
   onFormRequest?: (data: FormRequestData) => void;
+  onChessUpdate?: (game: ChessGameState) => void;
+  // Multi-instance support (split view)
+  instanceId?: string;           // Namespaces localStorage keys. Default: 'primary'
+  enabled?: boolean;             // Controls WebSocket connection. Default: true
+  suppressGlobalEvents?: boolean; // Skips global event callbacks (notifications, chat_created, etc). Default: false
 }
 
 export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
+  const { instanceId = 'primary', enabled = true, suppressGlobalEvents = false } = options;
+
+  // Namespace localStorage/sessionStorage keys for multi-instance support
+  const keySuffix = instanceId === 'primary' ? '' : `_${instanceId}`;
+  const sessionKey = SESSION_KEY + keySuffix;
+  const pendingMsgKey = PENDING_MSG_KEY + keySuffix;
+  const lastSyncKey = LAST_SYNC_KEY + keySuffix;
+
   // Messages come from server only - no localStorage
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [sessionId, setSessionId] = useState<string>(() => {
-    return localStorage.getItem(SESSION_KEY) || 'new';
+    return localStorage.getItem(sessionKey) || 'new';
   });
 
   const [status, setStatus] = useState<ChatStatus>('idle');
   const [statusText, setStatusText] = useState<string>('');
-  const [toolName, setToolName] = useState<string | null>(null);
+  const [activeTools, setActiveTools] = useState<Map<string, ActiveTool>>(new Map());
+  // Streaming segments: ordered list of tool-call batches keyed to the message ID they follow.
+  // This keeps tool chips interleaved correctly between text segments during streaming.
+  const [streamingToolMap, setStreamingToolMap] = useState<Map<string, ToolCallData[]>>(new Map());
+  // Stash tool args from tool_start so they're available at tool_end for chip rendering
+  const pendingToolArgs = useRef<Map<string, { name: string; args?: string }>>(new Map());
+  // Track the ID of the most recently finalized streaming message (set on tool_start)
+  const lastFinalizedStreamingMsgId = useRef<string | null>(null);
+  const [currentAgent, setCurrentAgent] = useState<string | null>(null);
+  const [todos, setTodos] = useState<TodoItem[]>([]);
+  // Derived: first active tool name for backward compat
+  const toolName = activeTools.size > 0 ? Array.from(activeTools.values())[0].name : null;
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('connecting');
-  const [tokenUsage, setTokenUsage] = useState<TokenUsage | null>(null);
-
-  // Base overhead for context window (system prompt, tools, memory)
-  const baseOverhead = useRef<number>(DEFAULT_BASE_OVERHEAD);
 
   const ws = useRef<WebSocket | null>(null);
   const reconnectAttempts = useRef(0);
 
+  // Refs for multi-instance support (needed in stale closures)
+  const enabledRef = useRef(enabled);
+  useEffect(() => { enabledRef.current = enabled; }, [enabled]);
+  const suppressGlobalEventsRef = useRef(suppressGlobalEvents);
+  useEffect(() => { suppressGlobalEventsRef.current = suppressGlobalEvents; }, [suppressGlobalEvents]);
+
   // Visibility tracking for notifications
   const visibilityHeartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Ref for sessionId - needed for stale-closure-safe filtering in onmessage handler
+  const sessionIdRef = useRef(sessionId);
+  useEffect(() => { sessionIdRef.current = sessionId; }, [sessionId]);
 
   // Track streaming content separately from final messages
   const streamingContent = useRef<string>('');
   // Track when the last event was a tool_end - next content starts a new message
   const lastEventWasToolEnd = useRef(false);
 
+  // RAF batching for streaming updates - prevents re-rendering on every delta
+  const rafId = useRef<number | null>(null);
+  const pendingStreamUpdate = useRef(false);
+
+  // Guard flag: when true, streaming events are ignored until the 'state' response arrives.
+  // This prevents the race condition where stale/early events corrupt state during chat switching.
+  const awaitingStateResponse = useRef(false);
+
+  const flushStreamingUpdate = useCallback(() => {
+    rafId.current = null;
+    pendingStreamUpdate.current = false;
+    const content = streamingContent.current;
+    setMessages(prev => {
+      const last = prev[prev.length - 1];
+      if (last && last.role === 'assistant' && last.isStreaming) {
+        return [...prev.slice(0, -1), { ...last, content }];
+      } else {
+        return [...prev, {
+          id: 'streaming-' + Date.now(),
+          role: 'assistant' as const,
+          content,
+          isStreaming: true
+        }];
+      }
+    });
+  }, []);
+
+  const scheduleStreamingUpdate = useCallback(() => {
+    if (!pendingStreamUpdate.current) {
+      pendingStreamUpdate.current = true;
+      rafId.current = requestAnimationFrame(flushStreamingUpdate);
+    }
+  }, [flushStreamingUpdate]);
+
   // Message queue for reliability - track pending messages awaiting ACK
   const pendingMessages = useRef<Map<string, QueuedMessage>>(new Map());
   const ackTimeoutMs = 5000; // 5 seconds to receive ACK before showing warning
 
+  // User message queue - messages sent while Claude is responding
+  // These will be sent automatically when the current turn completes
+  const [queuedMessages, setQueuedMessages] = useState<UserQueuedMessage[]>([]);
+  // Flag to trigger queue processing after turn completion
+  const shouldProcessQueue = useRef(false);
+
   // Only persist sessionId
   useEffect(() => {
-    localStorage.setItem(SESSION_KEY, sessionId);
-  }, [sessionId]);
+    localStorage.setItem(sessionKey, sessionId);
+  }, [sessionId, sessionKey]);
 
-  // Fetch base overhead on mount (system prompt, tools, memory budget)
-  useEffect(() => {
-    fetch(`${API_URL}/context-overhead`)
-      .then(res => res.json())
-      .then(data => {
-        if (data.total_tokens) {
-          baseOverhead.current = data.total_tokens;
-          console.log(`Base context overhead: ${data.total_tokens} tokens (${data.percentage_of_200k}%)`);
-
-          // Initialize token usage for new chats with base overhead
-          if (sessionId === 'new' && !tokenUsage) {
-            // Calculate context percentage (compaction at 95% of 200k = 190k)
-            const COMPACTION_THRESHOLD = 190000;
-            const contextPercent = (data.total_tokens / COMPACTION_THRESHOLD) * 100;
-            setTokenUsage({
-              input: data.total_tokens,
-              output: 0,
-              total: data.total_tokens,
-              contextPercent: contextPercent,
-              actualContext: data.total_tokens
-            });
-          }
-        }
-      })
-      .catch(err => {
-        console.warn('Could not fetch context overhead:', err);
-      });
-  }, []); // Only on mount
 
   // Recover pending message on mount (if component unmounted during send)
   // This is a BACKUP mechanism - the primary sync happens in WebSocket onopen
@@ -152,7 +245,7 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
   useEffect(() => {
     const recoverPendingMessage = async () => {
       try {
-        const pendingStr = sessionStorage.getItem(PENDING_MSG_KEY);
+        const pendingStr = sessionStorage.getItem(pendingMsgKey);
         if (!pendingStr) return;
 
         const pending = JSON.parse(pendingStr);
@@ -162,7 +255,7 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
 
         if (!isRecent || !isSameSession) {
           console.log('Pending message too old or wrong session, clearing');
-          sessionStorage.removeItem(PENDING_MSG_KEY);
+          sessionStorage.removeItem(pendingMsgKey);
           return;
         }
 
@@ -181,7 +274,7 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
               if (chatData.messages?.some((m: ChatMessage) => m.id === pending.id)) {
                 // Message was already saved - WebSocket onopen will load it
                 console.log('Pending message already saved on server, clearing sessionStorage');
-                sessionStorage.removeItem(PENDING_MSG_KEY);
+                sessionStorage.removeItem(pendingMsgKey);
                 return;
               }
             }
@@ -207,10 +300,10 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
         // This means the send likely failed - we should NOT auto-add it
         // because WebSocket onopen will handle the proper state
         console.log('Pending message not found on server, clearing (likely failed send)');
-        sessionStorage.removeItem(PENDING_MSG_KEY);
+        sessionStorage.removeItem(pendingMsgKey);
       } catch (e) {
         console.warn('Error recovering pending message:', e);
-        sessionStorage.removeItem(PENDING_MSG_KEY);
+        sessionStorage.removeItem(pendingMsgKey);
       }
     };
 
@@ -223,62 +316,49 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
   const isUserInitiatedLoad = useRef(false);
 
   // Load chat from server when sessionId changes
-  // NOTE: Messages are loaded by the WebSocket onopen handler to ensure single source of truth.
-  // This effect only handles user-initiated chat switches (loadChat, startNewChat) where
-  // we need to clear/update state before WebSocket sync happens.
+  // NOTE: The WebSocket subscribe handler is the PRIMARY source of truth for chat state.
+  // It returns full state (including in-memory streaming messages) via the 'state' response.
+  // This effect is a FALLBACK for when WebSocket is not available (e.g., during initial connect).
+  // BUG FIX: Previously, this REST fetch would race with the WebSocket 'state' response and
+  // overwrite in-memory streaming messages with stale on-disk data, causing content to disappear
+  // when switching back to an actively-streaming chat.
   useEffect(() => {
     if (sessionId && sessionId !== 'new') {
-      // For user-initiated loads (clicking a chat in history), load messages immediately
-      // This provides faster feedback than waiting for WebSocket sync
       if (isUserInitiatedLoad.current) {
-        fetch(`${API_URL}/chat/history/${sessionId}`)
-          .then(res => {
-            if (res.ok) return res.json();
-            throw new Error("Chat not found");
-          })
-          .then(data => {
-            if (data.messages && Array.isArray(data.messages)) {
-              setMessages(data.messages);
-            }
-            // Load cumulative token usage from saved chat data
-            const COMPACTION_THRESHOLD = 190000;
-            if (data.cumulative_usage) {
-              const inputTokens = data.cumulative_usage.input_tokens || 0;
-              const actualContext = data.cumulative_usage.actual_context || inputTokens;
-              const contextPercent = data.cumulative_usage.context_percent ||
-                (actualContext / COMPACTION_THRESHOLD) * 100;
-
-              setTokenUsage({
-                input: inputTokens,
-                output: data.cumulative_usage.output_tokens || 0,
-                total: data.cumulative_usage.total_tokens || 0,
-                contextPercent: contextPercent,
-                actualContext: actualContext
-              });
-            } else if (data.messages && data.messages.length > 0) {
-              const totalChars = data.messages.reduce((acc: number, msg: { content?: string }) =>
-                acc + (msg.content?.length || 0), 0);
-              const messageTokens = Math.round(totalChars / 4);
-              const estimatedTotal = messageTokens + baseOverhead.current;
-              const contextPercent = (estimatedTotal / COMPACTION_THRESHOLD) * 100;
-              setTokenUsage({
-                input: Math.round(estimatedTotal * 0.6),
-                output: Math.round(messageTokens * 0.4),
-                total: estimatedTotal,
-                contextPercent: contextPercent,
-                actualContext: estimatedTotal
-              });
-            }
+        // The WebSocket subscribe (sent in loadChat) will handle state loading.
+        // Only fetch via REST as a fallback if WebSocket didn't respond in time.
+        const fallbackTimeoutId = setTimeout(() => {
+          // If the state response already arrived, skip the REST fetch
+          if (!awaitingStateResponse.current) {
             isUserInitiatedLoad.current = false;
-          })
-          .catch(err => {
-            console.warn("Could not load chat:", err);
-            setMessages([]);
-            isUserInitiatedLoad.current = false;
-          });
+            return;
+          }
+          // WebSocket state hasn't arrived — fallback to REST
+          console.log('[FALLBACK] WS state not received in time, fetching via REST');
+          fetch(`${API_URL}/chat/history/${sessionId}`)
+            .then(res => {
+              if (res.ok) return res.json();
+              throw new Error("Chat not found");
+            })
+            .then(data => {
+              // Only apply if we're STILL waiting (state could have arrived in the meantime)
+              if (awaitingStateResponse.current && data.messages && Array.isArray(data.messages)) {
+                awaitingStateResponse.current = false;
+                setMessages(data.messages);
+              }
+              isUserInitiatedLoad.current = false;
+            })
+            .catch(err => {
+              console.warn("Could not load chat:", err);
+              if (awaitingStateResponse.current) {
+                awaitingStateResponse.current = false;
+                setMessages([]);
+              }
+              isUserInitiatedLoad.current = false;
+            });
+        }, 2000); // 2 second timeout before falling back to REST
+        return () => clearTimeout(fallbackTimeoutId);
       }
-      // For automatic loads (page refresh), WebSocket onopen will handle loading
-      // This prevents duplicate fetches and ensures consistent state
     } else if (isUserInitiatedLoad.current) {
       // Only clear messages if user explicitly started a new chat
       setMessages([]);
@@ -299,6 +379,8 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
   }, [sessionId]);
 
   const connect = useCallback(() => {
+    // Skip connection when instance is disabled (e.g., split view not yet open)
+    if (!enabledRef.current) return;
     if (ws.current?.readyState === WebSocket.OPEN) return;
 
     // CRITICAL FIX: Close the old socket and remove its handlers before creating a new one
@@ -324,7 +406,7 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
       // SIMPLE ARCHITECTURE: Just subscribe and let server send us the state.
       // No complex sync logic, no race conditions, no multiple sources of truth.
       // Server is the ONLY source of truth.
-      const currentSessionId = localStorage.getItem(SESSION_KEY) || sessionId;
+      const currentSessionId = localStorage.getItem(sessionKey) || sessionId;
 
       // Send subscribe - server will respond with full state
       socket.send(JSON.stringify({
@@ -349,19 +431,46 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
         return;
       }
 
+      // Multi-chat concurrent streaming: filter out events for other sessions.
+      // Server accumulates state per-session; we'll get it via subscribe when switching back.
+      const streamingEventTypes = new Set([
+        'content_delta', 'content', 'tool_start', 'tool_end',
+        'status', 'thinking_delta', 'done', 'todo_update'
+      ]);
+      if (streamingEventTypes.has(data.type) && data.sessionId &&
+          sessionIdRef.current !== 'new' && data.sessionId !== sessionIdRef.current) {
+        return;
+      }
+
+      // Guard: after a chat switch, ignore ALL streaming events until the 'state' response
+      // arrives with the full snapshot. Without this, stale/early events can corrupt state.
+      // The 'state' event itself is allowed through (it clears the flag).
+      if (awaitingStateResponse.current && data.type !== 'state') {
+        // Silently drop streaming events while awaiting state snapshot
+        return;
+      }
+
       switch (data.type) {
         case 'state':
           // SERVER IS THE SOURCE OF TRUTH - just render what it sends
           // This handles reconnect, refresh, everything - no sync logic needed
+          // Clear the guard flag — state has arrived, streaming events can now be processed
+          // Guard cleared — state snapshot received
+          awaitingStateResponse.current = false;
           try {
             // CRITICAL: Update session ID to match server
             // Server may redirect us to the active streaming session
             if (data.sessionId && data.sessionId !== 'new') {
               setSessionId(data.sessionId);
             }
+            // Capture agent from server state
+            if (data.agent !== undefined) {
+              setCurrentAgent(data.agent || null);
+            }
 
             // Set messages (server's authoritative copy)
             if (data.messages) {
+              // Apply server's authoritative messages
               // If server is processing and has streaming content, append it as streaming message
               if (data.isProcessing && data.streamingContent) {
                 const lastMessage = data.messages[data.messages.length - 1];
@@ -401,6 +510,7 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
                 }
                 streamingContent.current = data.streamingContent;
               } else {
+                // No active streaming — set messages as-is
                 setMessages(data.messages);
                 streamingContent.current = '';
               }
@@ -410,28 +520,31 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
             if (data.isProcessing) {
               setStatus(data.status === 'tool_use' ? 'tool_use' : 'thinking');
               setStatusText(data.statusText || 'Processing...');
-              setToolName(data.toolName || null);
+              // Restore active tools from server state
+              if (data.activeTools && Object.keys(data.activeTools).length > 0) {
+                const restored = new Map<string, ActiveTool>();
+                for (const [tid, info] of Object.entries(data.activeTools)) {
+                  const toolInfo = info as { name: string; args?: string };
+                  restored.set(tid, {
+                    id: tid,
+                    name: toolInfo.name,
+                    args: toolInfo.args,
+                    summary: toolInfo.args ? extractToolSummary(toolInfo.name, toolInfo.args) : undefined,
+                    startedAt: Date.now()
+                  });
+                }
+                setActiveTools(restored);
+              }
+              // Restore todo list from server state (always set, even to empty,
+              // so stale todos from a previous chat don't bleed through)
+              setTodos(Array.isArray(data.todos) ? data.todos : []);
             } else {
               setStatus('idle');
               setStatusText('');
-              setToolName(null);
+              setActiveTools(new Map());
+              setTodos([]);
             }
 
-            // Update token usage if provided
-            if (data.cumulative_usage) {
-              const COMPACTION_THRESHOLD = 190000;
-              const inputTokens = data.cumulative_usage.input_tokens || 0;
-              const actualContext = data.cumulative_usage.actual_context || inputTokens;
-              const contextPercent = data.cumulative_usage.context_percent ||
-                (actualContext / COMPACTION_THRESHOLD) * 100;
-              setTokenUsage({
-                input: inputTokens,
-                output: data.cumulative_usage.output_tokens || 0,
-                total: data.cumulative_usage.total_tokens || 0,
-                contextPercent: contextPercent,
-                actualContext: actualContext
-              });
-            }
           } catch (err) {
             console.error('[STATE] Error processing state:', err);
           }
@@ -493,10 +606,15 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
             setSessionId(data.id);
             // Note: setSessionId triggers useEffect that saves to localStorage
           }
+          // Capture agent from session_init
+          if (data.agent !== undefined) {
+            setCurrentAgent(data.agent);
+          }
           break;
 
         case 'content_delta':
           // Real-time streaming delta - append to current message
+          // Uses requestAnimationFrame batching to avoid re-rendering on every delta
           {
             const text = data.text || '';
             if (text) {
@@ -504,6 +622,9 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
               if (lastEventWasToolEnd.current) {
                 lastEventWasToolEnd.current = false;
                 streamingContent.current = text;
+                // First delta after tool_end needs immediate render to finalize previous messages
+                if (rafId.current) cancelAnimationFrame(rafId.current);
+                pendingStreamUpdate.current = false;
                 setMessages(prev => {
                   const finalized = prev.map(m =>
                     m.isStreaming ? { ...m, isStreaming: false } : m
@@ -517,19 +638,8 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
                 });
               } else {
                 streamingContent.current += text;
-                setMessages(prev => {
-                  const last = prev[prev.length - 1];
-                  if (last && last.role === 'assistant' && last.isStreaming) {
-                    return [...prev.slice(0, -1), { ...last, content: streamingContent.current }];
-                  } else {
-                    return [...prev, {
-                      id: 'streaming-' + Date.now(),
-                      role: 'assistant',
-                      content: streamingContent.current,
-                      isStreaming: true
-                    }];
-                  }
-                });
+                // Batch updates - only render once per animation frame
+                scheduleStreamingUpdate();
               }
               setStatus('thinking');
               setStatusText('');
@@ -583,29 +693,107 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
           }
           break;
 
-        case 'tool_start':
+        case 'tool_start': {
+          // Flush any pending streaming update before tool starts
+          if (rafId.current) {
+            cancelAnimationFrame(rafId.current);
+            rafId.current = null;
+          }
+          if (pendingStreamUpdate.current) {
+            pendingStreamUpdate.current = false;
+            flushStreamingUpdate();
+          }
           // Finalize any current streaming content before tool starts
-          setMessages(prev => prev.map(m =>
-            m.isStreaming ? { ...m, isStreaming: false } : m
-          ));
+          // Capture the ID of the message being finalized so tool chips attach to it
+          setMessages(prev => {
+            for (const m of prev) {
+              if (m.isStreaming) {
+                lastFinalizedStreamingMsgId.current = m.id;
+                break;
+              }
+            }
+            return prev.map(m =>
+              m.isStreaming ? { ...m, isStreaming: false } : m
+            );
+          });
           // IMPORTANT: Reset streaming content so post-tool content starts fresh
           streamingContent.current = '';
           setStatus('tool_use');
-          setToolName(data.name === 'system_log' ? 'System' : data.name);
+          // Add/merge this tool into active tools map
+          const startToolId = data.id || `tool-${Date.now()}`;
+          const startToolName = data.name === 'system_log' ? 'System' : data.name;
+          const startToolArgs = data.args;
+          // Stash args for chip rendering when tool_end fires
+          pendingToolArgs.current.set(startToolId, { name: startToolName, args: startToolArgs });
+          setActiveTools(prev => {
+            const next = new Map(prev);
+            const existing = next.get(startToolId);
+            next.set(startToolId, {
+              id: startToolId,
+              name: startToolName,
+              args: startToolArgs || existing?.args,
+              summary: startToolArgs ? extractToolSummary(startToolName, startToolArgs) : existing?.summary,
+              startedAt: existing?.startedAt || Date.now()
+            });
+            return next;
+          });
           // Don't set statusText here - let Chat.tsx use getToolDisplayName() for friendly names
           setStatusText('');
           break;
+        }
 
-        case 'tool_end':
+        case 'tool_end': {
           // Mark that the next content event should be a NEW message
           lastEventWasToolEnd.current = true;
-          setStatus('processing');
-          setToolName(null);
-          setStatusText('Processing...');
+          // Build a completed tool chip from stashed args + tool_end data
+          const endToolId = data.id;
+          const stashed = endToolId ? pendingToolArgs.current.get(endToolId) : undefined;
+          if (stashed && endToolId) {
+            let parsedArgs: Record<string, any> = {};
+            if (stashed.args) {
+              try { parsedArgs = JSON.parse(stashed.args); } catch { /* leave empty */ }
+            }
+            const toolData: ToolCallData = {
+              id: `streaming-tc-${endToolId}`,
+              tool_name: stashed.name,
+              tool_id: endToolId,
+              args: parsedArgs,
+              output_summary: data.output ? String(data.output).slice(0, 200) : undefined,
+              is_error: data.is_error,
+            };
+            // Attach to the message that was finalized when tool_start fired
+            const anchorId = lastFinalizedStreamingMsgId.current || '__pre__';
+            setStreamingToolMap(prev => {
+              const next = new Map(prev);
+              const existing = next.get(anchorId) || [];
+              next.set(anchorId, [...existing, toolData]);
+              return next;
+            });
+            pendingToolArgs.current.delete(endToolId);
+          }
+          // Remove this specific tool from active tools
+          setActiveTools(prev => {
+            const next = new Map(prev);
+            if (endToolId) {
+              next.delete(endToolId);
+            }
+            if (next.size === 0) {
+              // No more tools running - transition to processing
+              setStatus('processing');
+              setStatusText('Processing...');
+            }
+            return next;
+          });
           break;
+        }
 
         case 'status':
           setStatusText(data.text || '');
+          // Heartbeats may send identical text; React skips re-render for
+          // same-value setState, so the useEffect tracking lastActivityTime
+          // never fires. Update the ref directly to prevent the 5-min timeout
+          // from resetting state during long-running tools.
+          lastActivityTime.current = Date.now();
           break;
 
         case 'truncate':
@@ -623,10 +811,23 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
           break;
 
         case 'done':
+          // Flush any pending streaming update before finalizing
+          if (rafId.current) {
+            cancelAnimationFrame(rafId.current);
+            rafId.current = null;
+          }
+          if (pendingStreamUpdate.current) {
+            pendingStreamUpdate.current = false;
+            flushStreamingUpdate();
+          }
+
           // Finalize the conversation turn
           setStatus('idle');
           setStatusText('');
-          setToolName(null);
+          setActiveTools(new Map());
+          setStreamingToolMap(new Map()); lastFinalizedStreamingMsgId.current = null;
+          pendingToolArgs.current.clear();
+          setTodos([]);
 
           // Finalize any streaming messages and mark all messages as complete
           setMessages(prev => prev.map(m => {
@@ -642,12 +843,15 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
           // Clear pending messages queue - conversation turn complete
           pendingMessages.current.clear();
 
+          // Signal that we should process any queued user messages
+          shouldProcessQueue.current = true;
+
           // Clear pending message - it's now saved on server
           try {
-            sessionStorage.removeItem(PENDING_MSG_KEY);
+            sessionStorage.removeItem(pendingMsgKey);
             // Save last sync point for recovery
             if (data.sessionId) {
-              sessionStorage.setItem(LAST_SYNC_KEY, JSON.stringify({
+              sessionStorage.setItem(lastSyncKey, JSON.stringify({
                 sessionId: data.sessionId,
                 timestamp: Date.now()
               }));
@@ -660,8 +864,62 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
             setSessionId(data.sessionId);
           }
 
-          // Don't reload from server - keep the nicely segmented client view
-          // Server has the authoritative copy saved, client has the display copy
+          // Sync with server's authoritative messages to recover any segments
+          // that may have been lost during streaming (e.g., pre-tool text segments).
+          // The server saves each text segment as a separate assistant message,
+          // so if streaming dropped a segment, we restore it here.
+          // We merge to preserve client-only state (status indicators, formData).
+          {
+            const syncId = data.sessionId || sessionId;
+            if (syncId && syncId !== 'new') {
+              fetch(`${API_URL}/chat/history/${syncId}`)
+                .then(res => res.ok ? res.json() : null)
+                .then(chatData => {
+                  if (chatData?.messages) {
+                    setMessages(prev => {
+                      // Build lookup of client messages by ID for merging
+                      const clientById = new Map(prev.map(m => [m.id, m]));
+                      // Also index client form messages by formId for cross-ID matching
+                      const clientFormByFormId = new Map<string, ChatMessage>();
+                      for (const m of prev) {
+                        if (m.formData?.formId) {
+                          clientFormByFormId.set(m.formData.formId, m);
+                        }
+                      }
+                      // Use server messages as base, merging in client-only fields
+                      return chatData.messages.map((serverMsg: ChatMessage) => {
+                        const clientMsg = clientById.get(serverMsg.id);
+                        if (clientMsg) {
+                          // Merge: server content is authoritative, keep client UI state
+                          return {
+                            ...serverMsg,
+                            status: clientMsg.status || serverMsg.status,
+                            formData: clientMsg.formData || serverMsg.formData
+                          };
+                        }
+                        // For form messages: match by formId even if IDs differ
+                        if (serverMsg.formData?.formId) {
+                          const clientForm = clientFormByFormId.get(serverMsg.formData.formId);
+                          if (clientForm?.formData) {
+                            // Preserve client-side submission status
+                            return {
+                              ...serverMsg,
+                              formData: clientForm.formData.status === 'submitted'
+                                ? clientForm.formData
+                                : serverMsg.formData
+                            };
+                          }
+                        }
+                        return serverMsg;
+                      });
+                    });
+                  }
+                })
+                .catch(() => {
+                  // Ignore - client state is the fallback
+                });
+            }
+          }
           break;
 
         case 'error':
@@ -674,28 +932,23 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
           }]);
           setStatus('idle');
           setStatusText('');
+          setStreamingToolMap(new Map()); lastFinalizedStreamingMsgId.current = null;
+          pendingToolArgs.current.clear();
           streamingContent.current = '';
           break;
 
         case 'result_meta':
-          // Update token usage from the completed turn
-          if (data.usage) {
-            setTokenUsage({
-              input: data.usage.input_tokens || 0,
-              output: data.usage.output_tokens || 0,
-              total: data.usage.total_tokens || 0,
-              contextPercent: data.context?.percent_until_compaction,
-              actualContext: data.context?.actual_tokens
-            });
-          }
+          // Usage data received but not displayed (SDK reports cumulative, not per-turn)
           break;
 
         case 'scheduled_task_complete':
+          if (suppressGlobalEventsRef.current) break;
           console.log(`Scheduled task complete: ${data.title} (session: ${data.session_id})`);
           options.onScheduledTaskComplete?.({ session_id: data.session_id, title: data.title });
           break;
 
         case 'new_message_notification':
+          if (suppressGlobalEventsRef.current) break;
           console.log(`New message notification: ${data.preview?.slice(0, 50)} (chat: ${data.chatId})`);
           options.onNewMessageNotification?.({
             chatId: data.chatId,
@@ -706,8 +959,15 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
           break;
 
         case 'chat_title_update':
+          if (suppressGlobalEventsRef.current) break;
           console.log(`Chat title updated: "${data.title}" (session: ${data.session_id}, confidence: ${data.confidence})`);
           options.onChatTitleUpdate?.({ session_id: data.session_id, title: data.title, confidence: data.confidence });
+          break;
+
+        case 'chat_created':
+          if (suppressGlobalEventsRef.current) break;
+          console.log(`New chat created: ${data.chat?.id} - "${data.chat?.title}"`);
+          options.onChatCreated?.(data);
           break;
 
         case 'form_request':
@@ -746,7 +1006,22 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
           });
           break;
 
+        case 'chess_update':
+          // Chess game state update
+          console.log('Chess game update received:', data.game?.id);
+          options.onChessUpdate?.(data.game);
+          break;
+
+        case 'todo_update':
+          // TodoWrite tool fired - update todo list display
+          if (data.todos && Array.isArray(data.todos)) {
+            setTodos(data.todos);
+          }
+          break;
+
         case 'server_restarted':
+          // Only primary instance handles reload — secondary instances will be cleaned up by the reload
+          if (suppressGlobalEventsRef.current) break;
           // Server was restarted - this is a clean slate
           console.log('Server was restarted:', data.message);
           console.log('Previous active sessions:', data.active_sessions);
@@ -756,7 +1031,10 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
           // cleared stale WAL entries, so we must reset client state to match.
           setStatus('idle');
           setStatusText('');
-          setToolName(null);
+          setActiveTools(new Map());
+          setStreamingToolMap(new Map()); lastFinalizedStreamingMsgId.current = null;
+          pendingToolArgs.current.clear();
+          setTodos([]);
           streamingContent.current = '';
           lastEventWasToolEnd.current = false;
           pendingMessages.current.clear();
@@ -764,36 +1042,33 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
           // Clear any pending message in sessionStorage too
           // It's stale after server restart
           try {
-            sessionStorage.removeItem(PENDING_MSG_KEY);
+            sessionStorage.removeItem(pendingMsgKey);
           } catch (e) {
             // Ignore
           }
 
-          // Reload our session from server to get authoritative state
-          if (sessionId && sessionId !== 'new') {
-            console.log(`Reloading session ${sessionId} after server restart`);
-            fetch(`${API_URL}/chat/history/${sessionId}`)
-              .then(res => res.ok ? res.json() : null)
-              .then(chatData => {
-                if (chatData?.messages) {
-                  // FIX BUG 2: Replace messages entirely to prevent duplicates
-                  // Server state is authoritative after restart
-                  setMessages(chatData.messages);
-                  console.log(`Restored ${chatData.messages.length} messages from server`);
-                }
-                // Ensure we stay in idle state - don't let any stale state slip through
-                setStatus('idle');
-                setStatusText('');
-              })
-              .catch(err => console.warn('Could not reload session after restart:', err));
+          // Clear PWA caches and reload to pick up any frontend changes
+          // This ensures rebuilt assets are always served fresh after restart
+          const doReload = () => window.location.reload();
+          if (typeof caches !== 'undefined') {
+            caches.keys().then(names => {
+              Promise.all(names.map(name => caches.delete(name))).then(() => {
+                console.log('[SW] All caches cleared after server restart, reloading...');
+                doReload();
+              });
+            }).catch(doReload);
+          } else {
+            doReload();
           }
           break;
 
         case 'restart_continuation':
-          // Claude-initiated restart is continuing the conversation
-          // This is DIFFERENT from server_restarted - here Claude is actively resuming work
-          console.log('Restart continuation:', data.message);
-          console.log('Continuing session:', data.session_id);
+          // Server restart is continuing conversations — may arrive multiple times
+          // (once per session that was active when restart was triggered).
+          // data.source = who triggered the restart (e.g. "ren", "chat_coder", "settings_ui")
+          // data.role = "trigger" (initiated the restart) or "bystander" (was just working)
+          // data.agent = the agent for this specific session
+          console.log(`Restart continuation: session=${data.session_id}, agent=${data.agent}, role=${data.role}, source=${data.source}, reason=${data.reason}`);
 
           // Reset any stale state first
           streamingContent.current = '';
@@ -817,7 +1092,8 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
             // Show that we're processing the continuation
             // This is legitimate because Claude IS actively working
             setStatus('thinking');
-            setStatusText('Continuing after restart...');
+            const sourceLabel = data.source === 'settings_ui' ? 'Settings UI' : data.source;
+            setStatusText(`Resuming after restart (by ${sourceLabel})...`);
           }
           break;
 
@@ -826,13 +1102,53 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
           console.log('Generation interrupted:', data.success ? 'successfully' : 'failed');
           setStatus('idle');
           setStatusText('');
-          setToolName(null);
+          setActiveTools(new Map());
+          setStreamingToolMap(new Map()); lastFinalizedStreamingMsgId.current = null;
+          pendingToolArgs.current.clear();
+          setTodos([]);
           // Finalize any streaming messages
           setMessages(prev => prev.map(m =>
             m.isStreaming ? { ...m, isStreaming: false } : m
           ));
           streamingContent.current = '';
           lastEventWasToolEnd.current = false;
+          // Clear queued/injected messages on interrupt
+          setQueuedMessages([]);
+          break;
+
+        case 'message_injected':
+          // Server confirmed message was injected mid-stream
+          // Add it to the message list (server already saved it)
+          console.log(`Message injected: ${data.message?.content?.slice(0, 50)}`);
+          if (data.message) {
+            setMessages(prev => {
+              // Check if already exists
+              if (prev.some(m => m.id === data.message.id)) {
+                return prev;
+              }
+              return [...prev, {
+                ...data.message,
+                status: 'injected' as MessageStatus
+              }];
+            });
+            // Remove from queued messages (UI display)
+            setQueuedMessages(prev => prev.filter(m => m.id !== data.message.id));
+          }
+          break;
+
+        case 'inject_success':
+          // Our injection was successful - remove from queue display
+          console.log(`Injection confirmed: ${data.msgId}`);
+          setQueuedMessages(prev => prev.filter(m => m.id !== data.msgId));
+          break;
+
+        case 'inject_failed':
+          // Injection failed - show error and keep in queue for retry or manual action
+          console.error(`Injection failed: ${data.error}`);
+          // Mark the queued message as failed
+          setQueuedMessages(prev => prev.map(m =>
+            m.id === data.msgId ? { ...m, failed: true } : m
+          ));
           break;
 
         case 'agent_notification':
@@ -852,6 +1168,7 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
               .catch(err => console.warn('Could not reload chat after agent notification:', err));
           }
           break;
+
       }
     };
 
@@ -871,16 +1188,32 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
   }, []);
 
   useEffect(() => {
+    if (!enabled) {
+      setConnectionStatus('disconnected');
+      return;
+    }
+
     connect();
 
     // Handle visibility changes (tab switching, window dragging between monitors)
     // Don't close WebSocket on visibility change - just let it reconnect if needed
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
-        // When becoming visible again, check if we need to reconnect
         if (ws.current?.readyState !== WebSocket.OPEN) {
+          // WebSocket dropped while tab was hidden — full reconnect
           console.log('Tab visible again, reconnecting WebSocket...');
           connect();
+        } else {
+          // WebSocket still open — re-subscribe to get latest state
+          // (tool calls, text segments, etc. may have completed while tab was hidden)
+          const currentId = sessionIdRef.current;
+          if (currentId && currentId !== 'new') {
+            console.log('Tab visible again, re-subscribing to', currentId);
+            ws.current.send(JSON.stringify({
+              action: 'subscribe',
+              sessionId: currentId
+            }));
+          }
         }
       }
       // Don't do anything when hidden - let the connection stay open
@@ -890,15 +1223,21 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
 
     return () => {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
+      // Cancel any pending streaming RAF
+      if (rafId.current) {
+        cancelAnimationFrame(rafId.current);
+        rafId.current = null;
+      }
       // Clear handlers before closing to prevent any stray events
       if (ws.current) {
         ws.current.onmessage = null;
         ws.current.onclose = null;
         ws.current.onerror = null;
         ws.current.close();
+        ws.current = null;
       }
     };
-  }, [connect]);
+  }, [connect, enabled]);
 
   // Handle visibility changes for notification suppression
   const handleVisibilityStateChange = useCallback((state: VisibilityState) => {
@@ -973,7 +1312,7 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
       console.log(`Processing state timeout after ${timeoutMs/1000}s - resetting to idle (likely stale state). Status was: ${status}`);
       setStatus('idle');
       setStatusText('');
-      setToolName(null);
+      setActiveTools(new Map());
       // Finalize any streaming messages
       setMessages(prev => prev.map(m =>
         m.isStreaming ? { ...m, isStreaming: false } : m
@@ -989,7 +1328,8 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
     };
   }, [status]); // Re-run when status changes - timeout resets on each status change
 
-  const sendMessage = useCallback((text: string): boolean => {
+  // Internal function to actually send a message (bypasses queue check)
+  const sendMessageInternal = useCallback((text: string, images?: ChatImageRef[], agent?: string): boolean => {
     if (!ws.current || ws.current.readyState !== WebSocket.OPEN) {
       console.error("Cannot send message: WebSocket not open");
       return false;
@@ -1011,7 +1351,7 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
     // Save pending message in case of unmount during processing
     // This is critical for recovery after page refresh/app close
     try {
-      sessionStorage.setItem(PENDING_MSG_KEY, JSON.stringify({
+      sessionStorage.setItem(pendingMsgKey, JSON.stringify({
         id: msgId,
         content: text,
         sessionId,
@@ -1028,14 +1368,15 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
       role: 'user',
       content: text,
       status: 'pending',
-      timestamp: Date.now()
+      timestamp: Date.now(),
+      images: images,
     }]);
     setStatus('thinking');
     setStatusText('Sending...');
     streamingContent.current = '';
     lastEventWasToolEnd.current = false;
 
-    ws.current.send(JSON.stringify({
+    const wsPayload: Record<string, any> = {
       action: 'message',
       sessionId,
       message: text,
@@ -1043,7 +1384,15 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
       // CRITICAL: Include preserveChatId to prevent server from creating duplicate files
       // If we have a valid session, tell the server to keep using that chat file
       preserveChatId: sessionId !== 'new' ? sessionId : undefined
-    }));
+    };
+    if (images && images.length > 0) {
+      wsPayload.images = images;
+    }
+    // Include agent for new chats only (existing chats use stored agent)
+    if (agent && sessionId === 'new') {
+      wsPayload.agent = agent;
+    }
+    ws.current.send(JSON.stringify(wsPayload));
 
     // Set up ACK timeout - warn if no acknowledgment received
     setTimeout(() => {
@@ -1063,6 +1412,60 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
 
     return true;
   }, [sessionId]);
+
+  // Inject a message mid-stream (while Claude is working)
+  const injectMessage = useCallback((text: string): boolean => {
+    if (!ws.current || ws.current.readyState !== WebSocket.OPEN) {
+      console.error("Cannot inject message: WebSocket not open");
+      return false;
+    }
+
+    const msgId = `inject-${Date.now()}`;
+
+    // Add to queued messages for UI display
+    const queuedMsg: UserQueuedMessage = {
+      id: msgId,
+      content: text,
+      timestamp: Date.now()
+    };
+    setQueuedMessages(prev => [...prev, queuedMsg]);
+
+    // Send injection request to server
+    ws.current.send(JSON.stringify({
+      action: 'inject',
+      sessionId,
+      message: text,
+      msgId
+    }));
+
+    console.log(`Injecting message mid-stream: "${text.slice(0, 50)}..."`);
+    return true;
+  }, [sessionId]);
+
+  // Send with explicit agent selection (for new chats with non-default agent)
+  const sendMessageWithAgent = useCallback((text: string, agent?: string, images?: ChatImageRef[]): boolean => {
+    if (status !== 'idle') {
+      return injectMessage(text);
+    }
+    return sendMessageInternal(text, images, agent);
+  }, [status, sendMessageInternal, injectMessage]);
+
+  // Public send function - injects messages if Claude is busy, sends normally if idle
+  const sendMessage = useCallback((text: string, images?: ChatImageRef[]): boolean => {
+    // If Claude is currently responding, inject the message into the stream
+    // This allows mid-stream corrections/additions that Claude sees immediately
+    // Note: images are not supported for injection (mid-stream)
+    if (status !== 'idle') {
+      return injectMessage(text);
+    }
+
+    // Otherwise, send as a new conversation turn
+    return sendMessageInternal(text, images);
+  }, [status, sendMessageInternal, injectMessage]);
+
+  // NOTE: We no longer queue messages for post-completion processing.
+  // Messages sent while Claude is busy are now INJECTED immediately into
+  // the active stream. The queued messages state is used for UI display only.
 
   // Sync with server to recover from connection issues
   const syncWithServer = useCallback(async (syncSessionId: string, lastMsgId?: string) => {
@@ -1178,74 +1581,85 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
     setSessionId('new');
     setStatus('idle');
     setStatusText('');
-    setToolName(null);
-    // Initialize with base overhead instead of null
-    const COMPACTION_THRESHOLD = 190000;
-    const contextPercent = (baseOverhead.current / COMPACTION_THRESHOLD) * 100;
-    setTokenUsage({
-      input: baseOverhead.current,
-      output: 0,
-      total: baseOverhead.current,
-      contextPercent: contextPercent,
-      actualContext: baseOverhead.current
-    });
+    setActiveTools(new Map());
+    setStreamingToolMap(new Map()); lastFinalizedStreamingMsgId.current = null;
+    pendingToolArgs.current.clear();
+    setTodos([]);
+    setCurrentAgent(null);
     streamingContent.current = '';
     lastEventWasToolEnd.current = false;
-    localStorage.removeItem(SESSION_KEY);
+    // Clear any queued messages when starting a new chat
+    setQueuedMessages([]);
+    localStorage.removeItem(sessionKey);
+    // Notify server: unregister from old session, don't redirect to active streams
+    if (ws.current && ws.current.readyState === WebSocket.OPEN) {
+      ws.current.send(JSON.stringify({
+        action: 'subscribe',
+        sessionId: 'new',
+        intent: 'new_chat'
+      }));
+    }
   }, []);
 
-  const loadChat = useCallback(async (id: string) => {
+  const loadChat = useCallback(async (id: string, agentHint?: string | null) => {
     try {
       isUserInitiatedLoad.current = true;
-      const res = await fetch(`${API_URL}/chat/history/${id}`);
-      if (!res.ok) throw new Error("Failed to load");
-      const data = await res.json();
-      setMessages(data.messages || []);
-      setSessionId(data.sessionId || id);
-      // Load cumulative token usage from saved chat data
-      const COMPACTION_THRESHOLD = 190000;
-      if (data.cumulative_usage) {
-        const inputTokens = data.cumulative_usage.input_tokens || 0;
-        const actualContext = data.cumulative_usage.actual_context || inputTokens;
-        const contextPercent = data.cumulative_usage.context_percent ||
-          (actualContext / COMPACTION_THRESHOLD) * 100;
+      setSessionId(id);
+      // Sync ref immediately so streaming event filter uses the new ID right away
+      // (useEffect runs after render, leaving a gap where stale events could leak through)
+      sessionIdRef.current = id;
 
-        setTokenUsage({
-          input: inputTokens,
-          output: data.cumulative_usage.output_tokens || 0,
-          total: data.cumulative_usage.total_tokens || 0,
-          contextPercent: contextPercent,
-          actualContext: actualContext
-        });
-      } else if (data.messages && data.messages.length > 0) {
-        // Estimate tokens for old chats that don't have cumulative_usage
-        // Rough estimate: ~4 chars per token (conservative), plus base overhead
-        const totalChars = data.messages.reduce((acc: number, msg: { content?: string }) =>
-          acc + (msg.content?.length || 0), 0);
-        const messageTokens = Math.round(totalChars / 4);
-        // Add base overhead (system prompt, tools, memory)
-        const estimatedTotal = messageTokens + baseOverhead.current;
-        const contextPercent = (estimatedTotal / COMPACTION_THRESHOLD) * 100;
-        setTokenUsage({
-          input: Math.round(estimatedTotal * 0.6),
-          output: Math.round(messageTokens * 0.4),
-          total: estimatedTotal,
-          contextPercent: contextPercent,
-          actualContext: estimatedTotal
-        });
+      // Bug fix: Cancel any pending RAF from the previous session's streaming
+      // Without this, a scheduled RAF flush could fire after the session switch
+      // and corrupt the new session's messages with stale streaming content
+      if (rafId.current) {
+        cancelAnimationFrame(rafId.current);
+        rafId.current = null;
+      }
+      pendingStreamUpdate.current = false;
+
+      // Reset streaming state before loading
+      setStatus('idle');
+      setStatusText('');
+      setActiveTools(new Map());
+      setStreamingToolMap(new Map()); lastFinalizedStreamingMsgId.current = null;
+      pendingToolArgs.current.clear();
+      setTodos([]);
+      streamingContent.current = '';
+      lastEventWasToolEnd.current = false;
+      // Clear messages immediately to prevent flash of stale content from previous tab
+      setMessages([]);
+
+      // Bug fix: Immediately set agent from caller-provided hint (e.g. from tab data)
+      // This prevents the brief flash of wrong agent name while waiting for the
+      // WebSocket 'state' response. The server will confirm/correct via the state handler.
+      if (agentHint !== undefined) {
+        setCurrentAgent(agentHint);
+      }
+
+      // Subscribe via WebSocket — this registers us for broadcasts AND returns full state
+      // (including active streaming if the chat is still processing)
+      // Set guard flag: ignore streaming events until 'state' response arrives.
+      // This prevents race conditions where stale/early events corrupt state during switch.
+      awaitingStateResponse.current = true;
+      if (ws.current && ws.current.readyState === WebSocket.OPEN) {
+        ws.current.send(JSON.stringify({
+          action: 'subscribe',
+          sessionId: id
+        }));
+        // The 'state' response handler will clear awaitingStateResponse and set messages, status, etc.
       } else {
-        // Empty chat - still show base overhead
-        const contextPercent = (baseOverhead.current / COMPACTION_THRESHOLD) * 100;
-        setTokenUsage({
-          input: baseOverhead.current,
-          output: 0,
-          total: baseOverhead.current,
-          contextPercent: contextPercent,
-          actualContext: baseOverhead.current
-        });
+        // Fallback: fetch via REST if WebSocket not available
+        awaitingStateResponse.current = false; // No WS state response coming, clear guard
+        const res = await fetch(`${API_URL}/chat/history/${id}`);
+        if (!res.ok) throw new Error("Failed to load");
+        const data = await res.json();
+        setMessages(data.messages || []);
+        setCurrentAgent(data.agent || null);
       }
     } catch (e) {
       console.error(e);
+      awaitingStateResponse.current = false; // Clear guard on error
       isUserInitiatedLoad.current = false;
     }
   }, []);
@@ -1268,6 +1682,11 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
     }
   }, [sessionId, startNewChat]);
 
+  // Clear all queued messages (user can cancel them)
+  const clearQueuedMessages = useCallback(() => {
+    setQueuedMessages([]);
+  }, []);
+
   return {
     messages,
     sendMessage,
@@ -1279,10 +1698,16 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
     status,
     statusText,
     toolName,
+    activeTools,
     startNewChat,
     loadChat,
     sessionId,
     connectionStatus,
-    tokenUsage
+    queuedMessages,
+    clearQueuedMessages,
+    currentAgent,
+    sendMessageWithAgent,
+    streamingToolMap,
+    todos,
   };
 };

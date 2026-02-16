@@ -20,6 +20,9 @@ MEMORY_DIR = Path(__file__).parent.parent.parent / "memory"
 ATOMIC_FILE = MEMORY_DIR / "atomic_memories.json"
 LOCK_FILE = MEMORY_DIR / "atomic.lock"
 
+# Fields from old schema that should be silently dropped when loading
+_DEPRECATED_FIELDS = {"importance"}
+
 
 @dataclass
 class AtomicMemory:
@@ -29,17 +32,25 @@ class AtomicMemory:
     created_at: str
     last_modified: str
     source_exchange_id: Optional[str] = None
+    source_session_id: Optional[str] = None  # Chat session that generated this atom
     embedding_id: Optional[str] = None
-    importance: int = 50  # 0-100, 100 = always include
     tags: List[str] = field(default_factory=list)
     history: List[Dict[str, Any]] = field(default_factory=list)
+    # v2 fields: versioning and confidence tracking
+    previous_versions: List[Dict[str, Any]] = field(default_factory=list)
+    assignment_confidence: Dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "AtomicMemory":
-        return cls(**data)
+        # Filter out deprecated fields (e.g. importance from old data)
+        filtered = {k: v for k, v in data.items() if k not in _DEPRECATED_FIELDS}
+        # Only pass fields that the dataclass knows about
+        valid_fields = {f.name for f in cls.__dataclass_fields__.values()}
+        filtered = {k: v for k, v in filtered.items() if k in valid_fields}
+        return cls(**filtered)
 
 
 def _generate_id() -> str:
@@ -53,10 +64,9 @@ class AtomicMemoryManager:
     Manages atomic memories (individual facts).
 
     Features:
-    - CRUD operations with history tracking
+    - CRUD operations with version tracking
     - Integration with embedding manager
     - Thread-safe file operations
-    - Importance-based prioritization
     """
 
     def __init__(self, memory_file: Optional[Path] = None):
@@ -89,7 +99,7 @@ class AtomicMemoryManager:
             with open(self.memory_file, 'w') as f:
                 json.dump({
                     "memories": [m.to_dict() for m in self.memories],
-                    "version": 2,
+                    "version": 3,
                     "last_modified": datetime.now().isoformat()
                 }, f, indent=2)
 
@@ -97,7 +107,7 @@ class AtomicMemoryManager:
         self,
         content: str,
         source_exchange_id: Optional[str] = None,
-        importance: int = 50,
+        source_session_id: Optional[str] = None,
         tags: Optional[List[str]] = None,
         embed: bool = True,
         created_at: Optional[str] = None
@@ -108,7 +118,7 @@ class AtomicMemoryManager:
         Args:
             content: The memory content
             source_exchange_id: ID of the exchange that generated this memory
-            importance: 0-100, higher = more important
+            source_session_id: Chat session ID that generated this memory
             tags: Optional tags for categorization
             embed: Whether to create an embedding
             created_at: Optional ISO timestamp for when the memory was created (defaults to now)
@@ -123,7 +133,7 @@ class AtomicMemoryManager:
             created_at=created_at or now,
             last_modified=now,
             source_exchange_id=source_exchange_id,
-            importance=min(100, max(0, importance)),
+            source_session_id=source_session_id,
             tags=tags or []
         )
 
@@ -140,7 +150,6 @@ class AtomicMemoryManager:
                     metadata={
                         "type": "atomic_memory",
                         "memory_id": atom.id,
-                        "importance": atom.importance,
                         "tags": atom.tags
                     }
                 )
@@ -156,32 +165,42 @@ class AtomicMemoryManager:
         self,
         memory_id: str,
         content: Optional[str] = None,
-        importance: Optional[int] = None,
         tags: Optional[List[str]] = None,
-        source_exchange_id: Optional[str] = None
+        source_exchange_id: Optional[str] = None,
+        superseded_reason: Optional[str] = None
     ) -> Optional[AtomicMemory]:
         """
         Update an existing atomic memory.
 
-        Preserves history of changes.
+        When content changes, the old version is preserved in previous_versions.
+
+        Args:
+            memory_id: ID of the memory to update
+            content: New content (triggers versioning if changed)
+            tags: New tags
+            source_exchange_id: Source exchange for tracking
+            superseded_reason: Why the content was superseded (e.g. "Status changed - got the job")
         """
         atom = self.get(memory_id)
         if not atom:
             return None
 
-        # Save history
+        # If content is changing, version the old content
+        if content is not None and content != atom.content:
+            atom.previous_versions.append({
+                "content": atom.content,
+                "timestamp": atom.last_modified,
+                "superseded_reason": superseded_reason or "Content updated"
+            })
+            atom.content = content
+
+        # Also keep legacy history for backward compat
         atom.history.append({
             "content": atom.content,
-            "importance": atom.importance,
             "replaced_at": datetime.now().isoformat(),
             "source_exchange_id": source_exchange_id
         })
 
-        # Update fields
-        if content is not None:
-            atom.content = content
-        if importance is not None:
-            atom.importance = min(100, max(0, importance))
         if tags is not None:
             atom.tags = tags
 
@@ -206,7 +225,6 @@ class AtomicMemoryManager:
                     metadata={
                         "type": "atomic_memory",
                         "memory_id": atom.id,
-                        "importance": atom.importance,
                         "tags": atom.tags
                     }
                 )
@@ -252,8 +270,7 @@ class AtomicMemoryManager:
     def search(
         self,
         query: str,
-        k: int = 10,
-        min_importance: int = 0
+        k: int = 10
     ) -> List[Tuple[AtomicMemory, float]]:
         """
         Search memories by semantic similarity.
@@ -261,7 +278,6 @@ class AtomicMemoryManager:
         Args:
             query: Search query
             k: Number of results
-            min_importance: Minimum importance threshold
 
         Returns:
             List of (memory, score) tuples
@@ -280,13 +296,13 @@ class AtomicMemoryManager:
                 content_type_filter=ContentType.MEMORY
             )
 
-            # Map back to memories and filter
+            # Map back to memories
             memory_results = []
             for meta, score in results:
                 memory_id = meta.get("memory_id")
                 if memory_id:
                     atom = self.get(memory_id)
-                    if atom and atom.importance >= min_importance:
+                    if atom:
                         memory_results.append((atom, score))
 
                 if len(memory_results) >= k:
@@ -296,14 +312,6 @@ class AtomicMemoryManager:
         except Exception as e:
             logger.error(f"Search failed: {e}")
             return []
-
-    def get_by_importance(self, min_importance: int = 100) -> List[AtomicMemory]:
-        """Get memories at or above importance threshold."""
-        return [m for m in self.memories if m.importance >= min_importance]
-
-    def get_guaranteed(self) -> List[AtomicMemory]:
-        """Get importance=100 memories (always included)."""
-        return self.get_by_importance(100)
 
     def find_similar(
         self,
@@ -341,17 +349,27 @@ class AtomicMemoryManager:
             logger.warning(f"Similarity search failed: {e}")
             return None
 
+    def get_low_confidence_atoms(self) -> List[AtomicMemory]:
+        """Get atoms with any low-confidence thread assignments (triage queue)."""
+        return [
+            m for m in self.memories
+            if any(c == "low" for c in m.assignment_confidence.values())
+        ]
+
     def stats(self) -> Dict[str, Any]:
         """Get memory statistics."""
-        importance_dist = {}
+        confidence_dist = {"high": 0, "medium": 0, "low": 0, "unassigned": 0}
         for m in self.memories:
-            bucket = (m.importance // 10) * 10
-            importance_dist[bucket] = importance_dist.get(bucket, 0) + 1
+            if not m.assignment_confidence:
+                confidence_dist["unassigned"] += 1
+            else:
+                for conf in m.assignment_confidence.values():
+                    confidence_dist[conf] = confidence_dist.get(conf, 0) + 1
 
         return {
             "total_memories": len(self.memories),
-            "guaranteed_count": len(self.get_guaranteed()),
-            "importance_distribution": importance_dist,
+            "with_versions": sum(1 for m in self.memories if m.previous_versions),
+            "confidence_distribution": confidence_dist,
             "tags": list(set(t for m in self.memories for t in m.tags))
         }
 

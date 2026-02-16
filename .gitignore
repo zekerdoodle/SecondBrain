@@ -61,6 +61,9 @@ working_memory.json
 push_subscriptions.json
 executions.json
 scheduled_tasks.json
+active_room.json
+server_state.json
+exchange_buffer.json
 
 # Conversation history
 .claude/chats/
@@ -78,6 +81,12 @@ tmp/
 # Personal vault data
 .claude/vault/
 vault/
+
+# Form submissions (keep registry, exclude data)
+submissions.jsonl
+
+# Agent notifications data
+notifications/pending.json
 
 # Settings with personal data
 settings.local.json
@@ -111,3 +120,8 @@ Thumbs.db
 # ============================================
 token.json
 credentials.json
+
+# ============================================
+# Sync metadata
+# ============================================
+.sync_meta.json

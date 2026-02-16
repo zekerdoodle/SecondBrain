@@ -1,0 +1,1961 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Music Practice Tracker</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: #1e1e2e; color: #cdd6f4;
+  min-height: 100vh; overflow-x: hidden;
+}
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: #1e1e2e; }
+::-webkit-scrollbar-thumb { background: #45475a; border-radius: 3px; }
+
+/* === TAB NAV === */
+.tab-bar {
+  display: flex; background: #181825; border-bottom: 1px solid #313244;
+  position: sticky; top: 0; z-index: 100;
+}
+.tab-btn {
+  flex: 1; padding: 14px 8px; text-align: center; cursor: pointer;
+  color: #6c7086; font-size: 13px; font-weight: 600; letter-spacing: 0.3px;
+  border: none; background: none; border-bottom: 2px solid transparent;
+  transition: color 0.2s, border-color 0.2s;
+}
+.tab-btn:hover { color: #a6adc8; }
+.tab-btn.active { color: #89b4fa; border-bottom-color: #89b4fa; }
+
+/* === MAIN CONTENT === */
+main { padding: 16px; max-width: 900px; margin: 0 auto; }
+.tab-content { display: none; }
+.tab-content.active { display: block; }
+
+/* === CARDS === */
+.card {
+  background: #313244; border-radius: 10px; padding: 16px; margin-bottom: 12px;
+  border: 1px solid #45475a;
+}
+.card-header { font-size: 15px; font-weight: 600; margin-bottom: 8px; color: #cdd6f4; }
+.card-sub { font-size: 12px; color: #6c7086; }
+
+/* === BUTTONS === */
+.btn {
+  border: none; border-radius: 8px; padding: 10px 18px; cursor: pointer;
+  font-weight: 600; font-size: 13px; transition: all 0.15s;
+}
+.btn-primary { background: #89b4fa; color: #1e1e2e; }
+.btn-primary:hover { background: #b4befe; }
+.btn-secondary { background: #45475a; color: #cdd6f4; }
+.btn-secondary:hover { background: #585b70; }
+.btn-success { background: #a6e3a1; color: #1e1e2e; }
+.btn-success:hover { background: #94e2d5; }
+.btn-danger { background: #f38ba8; color: #1e1e2e; }
+.btn-danger:hover { background: #eba0ac; }
+.btn-small { padding: 6px 12px; font-size: 12px; }
+.btn-large { padding: 14px 28px; font-size: 16px; width: 100%; }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* === INPUTS === */
+input, textarea, select {
+  background: #1e1e2e; border: 1px solid #45475a; color: #cdd6f4;
+  padding: 8px 12px; border-radius: 6px; font-size: 13px; width: 100%;
+}
+input:focus, textarea:focus, select:focus { outline: none; border-color: #89b4fa; }
+
+/* === STAT BADGES === */
+.stat-row { display: flex; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+.stat-badge {
+  flex: 1; min-width: 80px; background: #1e1e2e; border-radius: 8px; padding: 12px;
+  text-align: center; border: 1px solid #45475a;
+}
+.stat-value { font-size: 24px; font-weight: 700; color: #89b4fa; }
+.stat-label { font-size: 11px; color: #6c7086; margin-top: 2px; }
+
+/* === HEATMAP === */
+.heatmap { display: flex; gap: 4px; }
+.heatmap-cell {
+  width: 28px; height: 28px; border-radius: 4px; background: #1e1e2e;
+  border: 1px solid #45475a; display: flex; align-items: center; justify-content: center;
+  font-size: 10px; color: #6c7086;
+}
+.heatmap-cell.active { background: #a6e3a1; border-color: #a6e3a1; color: #1e1e2e; }
+
+/* === PR CARD === */
+.pr-item {
+  display: flex; align-items: center; gap: 10px; padding: 8px 0;
+  border-bottom: 1px solid #45475a;
+}
+.pr-item:last-child { border-bottom: none; }
+.pr-dot { width: 8px; height: 8px; border-radius: 50%; background: #a6e3a1; flex-shrink: 0; }
+.pr-text { font-size: 13px; flex: 1; }
+.pr-date { font-size: 11px; color: #6c7086; }
+
+/* === SESSION === */
+.session-timer-bar {
+  background: #181825; border-radius: 8px; padding: 12px 16px; margin-bottom: 16px;
+  display: flex; align-items: center; justify-content: space-between;
+  border: 1px solid #45475a;
+}
+.timer-display { font-size: 28px; font-weight: 700; font-family: 'SF Mono', 'Fira Code', monospace; }
+.timer-display.overtime { color: #f9e2af; }
+.phase-label {
+  font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px;
+  color: #89b4fa;
+}
+
+.exercise-card {
+  background: #313244; border-radius: 10px; padding: 20px; margin-bottom: 12px;
+  border: 1px solid #45475a; transition: border-color 0.2s;
+}
+.exercise-card.current { border-color: #89b4fa; }
+.exercise-name { font-size: 17px; font-weight: 700; margin-bottom: 4px; }
+.exercise-desc { font-size: 12px; color: #a6adc8; margin-bottom: 12px; }
+.bpm-display {
+  font-size: 48px; font-weight: 800; text-align: center; color: #89b4fa;
+  margin: 16px 0; font-family: 'SF Mono', 'Fira Code', monospace;
+}
+.bpm-controls { display: flex; gap: 8px; justify-content: center; margin-bottom: 16px; }
+.exercise-timer {
+  text-align: center; font-size: 20px; color: #a6adc8; margin-bottom: 12px;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+}
+.exercise-timer.done { color: #a6e3a1; }
+.exercise-actions { display: flex; gap: 8px; }
+.exercise-actions .btn { flex: 1; }
+
+.exercise-queue {
+  background: #1e1e2e; border-radius: 8px; padding: 12px; margin-bottom: 12px;
+}
+.queue-item {
+  display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 4px;
+  font-size: 12px; color: #a6adc8;
+}
+.queue-item.done { color: #6c7086; text-decoration: line-through; }
+.queue-item.current { color: #89b4fa; font-weight: 600; }
+.queue-dot { width: 6px; height: 6px; border-radius: 50%; background: #45475a; flex-shrink: 0; }
+.queue-item.done .queue-dot { background: #a6e3a1; }
+.queue-item.current .queue-dot { background: #89b4fa; }
+
+/* === RATING === */
+.rating-row { display: flex; gap: 6px; justify-content: center; margin: 12px 0; }
+.rating-star {
+  width: 36px; height: 36px; border-radius: 50%; background: #1e1e2e; border: 2px solid #45475a;
+  display: flex; align-items: center; justify-content: center; cursor: pointer;
+  font-size: 14px; font-weight: 700; color: #6c7086; transition: all 0.15s;
+}
+.rating-star:hover, .rating-star.selected {
+  background: #89b4fa; border-color: #89b4fa; color: #1e1e2e;
+}
+
+/* === PHASE BANNER === */
+.phase-banner {
+  background: #181825; border: 1px solid #89b4fa; border-radius: 10px;
+  padding: 16px; text-align: center; margin-bottom: 16px;
+}
+.phase-banner h3 { color: #89b4fa; margin-bottom: 8px; }
+.phase-banner-actions { display: flex; gap: 8px; justify-content: center; margin-top: 12px; }
+
+/* === LIBRARY === */
+.filter-bar {
+  display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap;
+}
+.filter-chip {
+  padding: 6px 14px; border-radius: 20px; font-size: 12px; font-weight: 600;
+  cursor: pointer; border: 1px solid #45475a; background: #1e1e2e; color: #a6adc8;
+  transition: all 0.15s;
+}
+.filter-chip.active { background: #89b4fa; color: #1e1e2e; border-color: #89b4fa; }
+.search-bar { margin-bottom: 12px; }
+
+.lib-card {
+  background: #313244; border-radius: 8px; padding: 12px; margin-bottom: 8px;
+  cursor: pointer; border: 1px solid #45475a; transition: border-color 0.15s;
+}
+.lib-card:hover { border-color: #89b4fa; }
+.lib-card-header { display: flex; justify-content: space-between; align-items: center; }
+.lib-card-title { font-size: 14px; font-weight: 600; }
+.lib-card-tags { display: flex; gap: 4px; }
+.lib-tag {
+  font-size: 10px; padding: 2px 8px; border-radius: 10px;
+  background: #1e1e2e; color: #6c7086;
+}
+.lib-card-stats {
+  display: flex; gap: 12px; font-size: 11px; color: #6c7086; margin-top: 6px;
+}
+.lib-card-expanded {
+  display: none; margin-top: 12px; padding-top: 12px; border-top: 1px solid #45475a;
+}
+.lib-card.expanded .lib-card-expanded { display: block; }
+.lib-instructions { font-size: 12px; color: #a6adc8; line-height: 1.5; margin-bottom: 10px; }
+.mini-chart { height: 80px; width: 100%; margin-top: 8px; }
+
+/* === PROGRESS === */
+.chart-container { background: #313244; border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+.chart-title { font-size: 14px; font-weight: 600; margin-bottom: 8px; }
+canvas { width: 100%; border-radius: 6px; }
+.velocity-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.velocity-table th {
+  text-align: left; padding: 8px; color: #6c7086; font-weight: 600;
+  border-bottom: 1px solid #45475a;
+}
+.velocity-table td { padding: 8px; border-bottom: 1px solid #313244; }
+.trend-up { color: #a6e3a1; }
+.trend-down { color: #f38ba8; }
+.trend-flat { color: #f9e2af; }
+
+/* === THEORY === */
+.module-tree { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; }
+.module-node {
+  padding: 10px 14px; border-radius: 8px; cursor: pointer;
+  display: flex; align-items: center; gap: 10px; border: 1px solid #45475a;
+  transition: all 0.15s;
+}
+.module-node:hover { border-color: #89b4fa; }
+.module-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+.module-dot.completed { background: #a6e3a1; }
+.module-dot.current { background: #89b4fa; }
+.module-dot.locked { background: #45475a; }
+.module-name { font-size: 13px; font-weight: 600; flex: 1; }
+.module-score { font-size: 11px; color: #6c7086; }
+
+.quiz-card {
+  background: #313244; border-radius: 10px; padding: 20px; margin-bottom: 16px;
+}
+.quiz-question { font-size: 15px; font-weight: 600; margin-bottom: 16px; line-height: 1.4; }
+.quiz-options { display: flex; flex-direction: column; gap: 8px; }
+.quiz-option {
+  padding: 12px 16px; border-radius: 8px; cursor: pointer;
+  background: #1e1e2e; border: 1px solid #45475a; font-size: 13px;
+  transition: all 0.15s;
+}
+.quiz-option:hover { border-color: #89b4fa; }
+.quiz-option.selected { border-color: #89b4fa; background: rgba(137,180,250,0.1); }
+.quiz-option.correct { border-color: #a6e3a1; background: rgba(166,227,161,0.15); }
+.quiz-option.incorrect { border-color: #f38ba8; background: rgba(243,139,168,0.15); }
+.quiz-input { margin-top: 8px; }
+.quiz-result { text-align: center; padding: 20px; }
+.quiz-score { font-size: 36px; font-weight: 800; color: #89b4fa; }
+
+/* === SESSION CONFIG === */
+.session-config { text-align: center; }
+.length-buttons { display: flex; gap: 8px; justify-content: center; margin: 12px 0; }
+.length-btn {
+  padding: 10px 20px; border-radius: 8px; cursor: pointer;
+  background: #1e1e2e; border: 2px solid #45475a; color: #a6adc8;
+  font-weight: 600; font-size: 14px; transition: all 0.15s;
+}
+.length-btn:hover { border-color: #89b4fa; }
+.length-btn.active { border-color: #89b4fa; background: rgba(137,180,250,0.1); color: #89b4fa; }
+.mode-buttons { display: flex; gap: 8px; justify-content: center; margin-bottom: 16px; }
+
+/* === COMPLETION === */
+.completion-card {
+  background: #313244; border-radius: 12px; padding: 24px; text-align: center;
+  border: 1px solid #a6e3a1;
+}
+.completion-title { font-size: 20px; font-weight: 700; color: #a6e3a1; margin-bottom: 16px; }
+.completion-stats { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin-bottom: 16px; }
+.pr-callout {
+  background: rgba(166,227,161,0.1); border: 1px solid #a6e3a1;
+  border-radius: 8px; padding: 10px; margin-bottom: 12px;
+  font-size: 13px; color: #a6e3a1; text-align: center;
+}
+
+/* === MISC === */
+.section-title {
+  font-size: 13px; font-weight: 700; color: #6c7086; text-transform: uppercase;
+  letter-spacing: 1px; margin-bottom: 8px; margin-top: 16px;
+}
+.empty-state { text-align: center; padding: 40px 20px; color: #6c7086; }
+.empty-state p { margin-bottom: 12px; }
+.coach-note {
+  background: rgba(137,180,250,0.05); border-left: 3px solid #89b4fa;
+  border-radius: 0 8px 8px 0; padding: 12px; margin-bottom: 12px;
+  font-size: 13px; color: #a6adc8; font-style: italic;
+}
+.time-since { color: #6c7086; font-size: 12px; }
+.hidden { display: none !important; }
+.fade-in { animation: fadeIn 0.2s ease; }
+@keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+.pulse { animation: pulse 0.5s ease; }
+@keyframes pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.05); }
+}
+.modal-overlay {
+  position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.7); z-index: 200; display: flex;
+  align-items: center; justify-content: center; padding: 20px;
+}
+.modal {
+  background: #313244; border-radius: 12px; padding: 24px;
+  max-width: 500px; width: 100%; max-height: 80vh; overflow-y: auto;
+}
+.modal h3 { margin-bottom: 16px; }
+.form-group { margin-bottom: 12px; }
+.form-group label { display: block; font-size: 12px; color: #6c7086; margin-bottom: 4px; }
+</style>
+</head>
+<body>
+
+<div class="tab-bar">
+  <button class="tab-btn active" data-tab="dashboard">Dashboard</button>
+  <button class="tab-btn" data-tab="practice">Practice</button>
+  <button class="tab-btn" data-tab="library">Library</button>
+  <button class="tab-btn" data-tab="progress">Progress</button>
+  <button class="tab-btn" data-tab="theory">Theory</button>
+</div>
+
+<main>
+  <!-- ============ DASHBOARD ============ -->
+  <div id="tab-dashboard" class="tab-content active">
+    <div id="dash-quick-start" class="card" style="text-align:center;">
+      <div class="card-header">Ready to Practice?</div>
+      <div id="dash-time-since" class="time-since" style="margin-bottom:12px;"></div>
+      <button class="btn btn-primary btn-large" onclick="startSessionFlow()">Start Session</button>
+    </div>
+
+    <div class="stat-row" id="dash-stats">
+      <div class="stat-badge"><div class="stat-value" id="dash-streak">0</div><div class="stat-label">Day Streak</div></div>
+      <div class="stat-badge"><div class="stat-value" id="dash-sessions-week">0</div><div class="stat-label">This Week</div></div>
+      <div class="stat-badge"><div class="stat-value" id="dash-minutes-week">0</div><div class="stat-label">Min This Week</div></div>
+    </div>
+
+    <div class="section-title">Recent Personal Records</div>
+    <div class="card" id="dash-prs"><div class="empty-state"><p>No PRs yet. Start practicing!</p></div></div>
+
+    <div class="section-title">This Week</div>
+    <div class="card"><div class="heatmap" id="dash-heatmap"></div></div>
+
+    <div class="section-title">Improvement Velocity</div>
+    <div class="card" id="dash-velocity"><div class="empty-state"><p>Practice a few sessions to see trends.</p></div></div>
+
+    <div id="dash-coach-note" class="hidden">
+      <div class="section-title">Coach's Note</div>
+      <div class="coach-note" id="dash-coach-text"></div>
+    </div>
+  </div>
+
+  <!-- ============ PRACTICE ============ -->
+  <div id="tab-practice" class="tab-content">
+    <!-- Pre-session config -->
+    <div id="practice-config" class="session-config">
+      <div class="card">
+        <div class="card-header">Session Setup</div>
+        <div class="section-title">Duration</div>
+        <div class="length-buttons">
+          <button class="length-btn" data-len="15">15 min</button>
+          <button class="length-btn active" data-len="30">30 min</button>
+          <button class="length-btn" data-len="45">45 min</button>
+        </div>
+        <div class="section-title">Mode</div>
+        <div class="mode-buttons">
+          <button class="filter-chip active" data-mode="full">Full Session</button>
+          <button class="filter-chip" data-mode="technique">Just Technique</button>
+          <button class="filter-chip" data-mode="theory">Just Theory</button>
+        </div>
+        <button class="btn btn-primary btn-large" onclick="startSessionFlow()" style="margin-top:12px;">Start Session</button>
+      </div>
+    </div>
+
+    <!-- Active session -->
+    <div id="practice-active" class="hidden">
+      <div class="session-timer-bar">
+        <div>
+          <div class="phase-label" id="session-phase-label">WARM-UP</div>
+          <div class="timer-display" id="session-timer">30:00</div>
+        </div>
+        <button class="btn btn-danger btn-small" onclick="endSessionEarly()">End</button>
+      </div>
+
+      <div id="phase-banner-area"></div>
+      <div id="exercise-area"></div>
+      <div id="theory-area" class="hidden"></div>
+
+      <div class="section-title">Queue</div>
+      <div class="exercise-queue" id="exercise-queue"></div>
+    </div>
+
+    <!-- Session complete -->
+    <div id="practice-complete" class="hidden"></div>
+  </div>
+
+  <!-- ============ LIBRARY ============ -->
+  <div id="tab-library" class="tab-content">
+    <div class="search-bar">
+      <input type="text" id="lib-search" placeholder="Search exercises..." oninput="renderLibrary()">
+    </div>
+    <div class="filter-bar" id="lib-filters"></div>
+    <div class="filter-bar" id="lib-sub-filters"></div>
+    <div id="lib-list"></div>
+    <button class="btn btn-secondary" onclick="showAddExerciseModal()" style="width:100%;margin-top:8px;">+ Add Custom Exercise</button>
+  </div>
+
+  <!-- ============ PROGRESS ============ -->
+  <div id="tab-progress" class="tab-content">
+    <div class="stat-row" id="progress-overview"></div>
+
+    <div class="chart-container">
+      <div class="chart-title">BPM Over Time</div>
+      <div style="margin-bottom:8px;">
+        <select id="progress-exercise-select" onchange="renderProgressChart()">
+          <option value="">Select an exercise...</option>
+        </select>
+      </div>
+      <canvas id="progress-chart" height="200"></canvas>
+    </div>
+
+    <div class="chart-container">
+      <div class="chart-title">Weekly Activity</div>
+      <canvas id="weekly-chart" height="120"></canvas>
+    </div>
+
+    <div class="section-title">Improvement Velocity</div>
+    <div class="card">
+      <table class="velocity-table" id="velocity-table">
+        <thead><tr><th>Exercise</th><th>BPM</th><th>Velocity</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ============ THEORY ============ -->
+  <div id="tab-theory" class="tab-content">
+    <div class="section-title">Module Progression</div>
+    <div class="module-tree" id="theory-tree"></div>
+    <div id="theory-module-detail" class="hidden"></div>
+    <div id="theory-quiz-area" class="hidden"></div>
+  </div>
+</main>
+
+<!-- Modal container -->
+<div id="modal-container"></div>
+
+<script>
+// ============================================================
+// STATE & DATA MANAGEMENT
+// ============================================================
+const DATA_PATH = 'practice-tracker/';
+const state = {
+  exercises: null, sessions: null, progress: null, theory: null, settings: null,
+  activeTab: 'dashboard',
+  activeSession: null,
+  libFilter: 'all', libSubFilter: 'all', libExpanded: null,
+  theorySelectedModule: null, quizState: null
+};
+
+let timerInterval = null;
+let exerciseTimerInterval = null;
+
+async function readJSON(file) {
+  try {
+    const raw = await window.brain.readFile(DATA_PATH + file);
+    if (!raw || raw.trim() === '') return null;
+    return JSON.parse(raw);
+  } catch(e) { console.error('Read error:', file, e); return null; }
+}
+
+async function writeJSON(file, data) {
+  try {
+    await window.brain.writeFile(DATA_PATH + file, JSON.stringify(data, null, 2));
+  } catch(e) { console.error('Write error:', file, e); }
+}
+
+let saveTimeout = null;
+function debouncedSave(file, data) {
+  clearTimeout(saveTimeout);
+  saveTimeout = setTimeout(() => writeJSON(file, data), 500);
+}
+
+async function loadState() {
+  const [ex, sess, prog, th, sett] = await Promise.all([
+    readJSON('exercises.json'), readJSON('sessions.json'),
+    readJSON('progress.json'), readJSON('theory.json'), readJSON('settings.json')
+  ]);
+  state.exercises = ex || {version:1,exercises:[],customExercises:[]};
+  state.sessions = sess || {version:1,sessions:[]};
+  state.progress = prog || {version:1,exerciseProgress:{},streaks:{current:0,longest:0,lastPracticeDate:null,weeklyHistory:[]},theoryProgress:{modulesCompleted:[],quizScores:{},currentModule:'major-scale-modes-intro'}};
+  state.theory = th || {version:1,modules:[]};
+  state.settings = sett || {version:1,sessionLength:30,focusAreas:['speed','theory'],warmUpDuration:300,restBetweenExercises:15,metronomeStartBehavior:'last-working-bpm',autoAdvanceBpm:true,bpmAutoAdvanceThreshold:3,showTimerAlways:true};
+}
+
+function getAllExercises() {
+  return [...(state.exercises.exercises||[]), ...(state.exercises.customExercises||[])];
+}
+
+function getExercise(id) {
+  return getAllExercises().find(e => e.id === id);
+}
+
+function getExerciseProgress(id) {
+  return state.progress.exerciseProgress[id] || null;
+}
+
+// ============================================================
+// TAB NAVIGATION
+// ============================================================
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    state.activeTab = btn.dataset.tab;
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    document.getElementById('tab-' + state.activeTab).classList.add('active');
+    renderTab(state.activeTab);
+  });
+});
+
+function renderTab(tab) {
+  switch(tab) {
+    case 'dashboard': renderDashboard(); break;
+    case 'practice': renderPractice(); break;
+    case 'library': renderLibrary(); break;
+    case 'progress': renderProgress(); break;
+    case 'theory': renderTheory(); break;
+  }
+}
+
+// ============================================================
+// UTILITY
+// ============================================================
+function formatTime(seconds) {
+  const neg = seconds < 0;
+  const s = Math.abs(Math.floor(seconds));
+  const m = Math.floor(s / 60);
+  const sec = s % 60;
+  return (neg ? '+' : '') + String(m).padStart(2,'0') + ':' + String(sec).padStart(2,'0');
+}
+
+function daysBetween(d1, d2) {
+  const a = new Date(d1); a.setHours(0,0,0,0);
+  const b = new Date(d2); b.setHours(0,0,0,0);
+  return Math.round((b - a) / 86400000);
+}
+
+function todayStr() {
+  return new Date().toISOString().split('T')[0];
+}
+
+function timeSince(dateStr) {
+  if (!dateStr) return 'No sessions yet';
+  const days = daysBetween(dateStr, todayStr());
+  if (days === 0) return 'Last practiced today';
+  if (days === 1) return 'Last practiced yesterday';
+  return `Last practiced ${days} days ago`;
+}
+
+function getWeekStart(dateStr) {
+  const d = new Date(dateStr || Date.now());
+  const day = d.getDay();
+  d.setDate(d.getDate() - day);
+  d.setHours(0,0,0,0);
+  return d.toISOString().split('T')[0];
+}
+
+function getRecentPRs(limit) {
+  const prs = [];
+  const prog = state.progress.exerciseProgress;
+  for (const [id, p] of Object.entries(prog)) {
+    if (p.personalBest) {
+      const ex = getExercise(id);
+      prs.push({ name: ex ? ex.name : id, ...p.personalBest });
+    }
+  }
+  prs.sort((a,b) => new Date(b.date) - new Date(a.date));
+  return prs.slice(0, limit);
+}
+
+function getVelocity(exerciseId) {
+  const p = getExerciseProgress(exerciseId);
+  if (!p || !p.history || p.history.length < 2) return null;
+  const recent = p.history.slice(-4);
+  if (recent.length < 2) return null;
+  const bpmDiff = recent[recent.length-1].bpm - recent[0].bpm;
+  const daysDiff = daysBetween(recent[0].date, recent[recent.length-1].date) || 1;
+  return Math.round((bpmDiff / daysDiff) * 7 * 10) / 10; // BPM per week
+}
+
+// ============================================================
+// DASHBOARD
+// ============================================================
+function renderDashboard() {
+  const streaks = state.progress.streaks;
+  document.getElementById('dash-streak').textContent = streaks.current;
+  document.getElementById('dash-time-since').textContent = timeSince(streaks.lastPracticeDate);
+
+  // Weekly stats
+  const weekStart = getWeekStart();
+  const weekSessions = state.sessions.sessions.filter(s => {
+    const sd = s.date.split('T')[0];
+    return sd >= weekStart;
+  });
+  document.getElementById('dash-sessions-week').textContent = weekSessions.length;
+  document.getElementById('dash-minutes-week').textContent = weekSessions.reduce((sum,s) => sum + (s.durationMinutes||0), 0);
+
+  // Heatmap
+  const heatmap = document.getElementById('dash-heatmap');
+  const days = ['S','M','T','W','T','F','S'];
+  const today = new Date();
+  const startOfWeek = new Date(today);
+  startOfWeek.setDate(today.getDate() - today.getDay());
+  let heatHtml = '';
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(startOfWeek);
+    d.setDate(startOfWeek.getDate() + i);
+    const ds = d.toISOString().split('T')[0];
+    const practiced = state.sessions.sessions.some(s => s.date.split('T')[0] === ds);
+    heatHtml += `<div class="heatmap-cell ${practiced ? 'active' : ''}">${days[i]}</div>`;
+  }
+  heatmap.innerHTML = heatHtml;
+
+  // PRs
+  const prs = getRecentPRs(3);
+  const prEl = document.getElementById('dash-prs');
+  if (prs.length === 0) {
+    prEl.innerHTML = '<div class="empty-state"><p>No PRs yet. Start practicing!</p></div>';
+  } else {
+    prEl.innerHTML = prs.map(pr => `
+      <div class="pr-item">
+        <div class="pr-dot"></div>
+        <div class="pr-text">${pr.name} — ${pr.bpm} BPM</div>
+        <div class="pr-date">${pr.date}</div>
+      </div>`).join('');
+  }
+
+  // Velocity
+  const velEl = document.getElementById('dash-velocity');
+  const allEx = getAllExercises().filter(e => e.goalMetric === 'bpm');
+  const velocities = [];
+  for (const ex of allEx) {
+    const v = getVelocity(ex.id);
+    if (v !== null) velocities.push({ name: ex.name, velocity: v });
+  }
+  velocities.sort((a,b) => Math.abs(b.velocity) - Math.abs(a.velocity));
+  if (velocities.length === 0) {
+    velEl.innerHTML = '<div class="empty-state"><p>Practice a few sessions to see trends.</p></div>';
+  } else {
+    velEl.innerHTML = velocities.slice(0,3).map(v => {
+      const cls = v.velocity > 0.5 ? 'trend-up' : v.velocity < -0.5 ? 'trend-down' : 'trend-flat';
+      const arrow = v.velocity > 0.5 ? '\u2191' : v.velocity < -0.5 ? '\u2193' : '\u2192';
+      const label = v.velocity > 0.5 ? `+${v.velocity} BPM/week` : v.velocity < -0.5 ? `${v.velocity} BPM/week` : 'Plateaued';
+      return `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #45475a;">
+        <span style="font-size:13px;">${v.name}</span>
+        <span class="${cls}" style="font-size:13px;font-weight:600;">${arrow} ${label}</span>
+      </div>`;
+    }).join('');
+  }
+
+  // Coach note
+  loadCoachNote();
+}
+
+async function loadCoachNote() {
+  try {
+    const review = await readJSON('review.json');
+    if (review && review.summary) {
+      document.getElementById('dash-coach-note').classList.remove('hidden');
+      document.getElementById('dash-coach-text').textContent = review.summary;
+    }
+  } catch(e) {}
+}
+
+// ============================================================
+// PRACTICE SESSION
+// ============================================================
+function renderPractice() {
+  if (state.activeSession) {
+    document.getElementById('practice-config').classList.add('hidden');
+    document.getElementById('practice-active').classList.remove('hidden');
+    document.getElementById('practice-complete').classList.add('hidden');
+  }
+}
+
+function startSessionFlow() {
+  // Get selected length and mode
+  const lenBtn = document.querySelector('.length-btn.active');
+  const modeBtn = document.querySelector('.mode-buttons .filter-chip.active');
+  const sessionLength = lenBtn ? parseInt(lenBtn.dataset.len) : state.settings.sessionLength;
+  const mode = modeBtn ? modeBtn.dataset.mode : 'full';
+
+  // Switch to practice tab
+  state.activeTab = 'practice';
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelector('[data-tab="practice"]').classList.add('active');
+  document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+  document.getElementById('tab-practice').classList.add('active');
+
+  // Try Claude, with fallback
+  requestClaudeSession(sessionLength, mode);
+
+  // Start with local fallback immediately, Claude can override
+  const plan = generateLocalSession(sessionLength, mode);
+  startSession(plan);
+}
+
+function generateLocalSession(minutes, mode) {
+  const allEx = getAllExercises();
+  const phases = [];
+
+  // Timing breakdowns per session length (in seconds)
+  // 15 min: 2 warmup, 10 technique, 3 cooldown
+  // 30 min: 5 warmup, 15 technique, 5 theory, 5 cooldown
+  // 45 min: 5 warmup, 20 technique, 10 theory, 5 cooldown, 5 free play
+  const timings = {
+    15: { warmup: 120, technique: 600, theory: 0, cooldown: 180, freeplay: 0 },
+    30: { warmup: 300, technique: 900, theory: 300, cooldown: 300, freeplay: 0 },
+    45: { warmup: 300, technique: 1200, theory: 600, cooldown: 300, freeplay: 300 }
+  };
+  const t = timings[minutes] || timings[30];
+
+  if (mode === 'full' || mode === 'technique') {
+    // === WARM-UP ===
+    const warmupExercises = allEx.filter(e => e.category === 'warmup');
+    const warmupCount = minutes === 15 ? 1 : 2;
+    const selectedWarmups = shuffleArray(warmupExercises).slice(0, warmupCount);
+    if (selectedWarmups.length > 0) {
+      const perWarmup = Math.floor(t.warmup / selectedWarmups.length);
+      phases.push({
+        name: 'warm-up', duration: t.warmup,
+        exercises: selectedWarmups.map(e => ({
+          exerciseId: e.id,
+          targetBpm: e.goalMetric === 'bpm' ? getWorkingBpm(e.id, e.defaultBpm) : 0,
+          duration: perWarmup,
+          note: 'Easy warm-up pace',
+          goalMetric: e.goalMetric
+        }))
+      });
+    }
+
+    // === TECHNIQUE ===
+    // Interleave categories: don't do all speed in a row
+    const techCategories = ['speed', 'fretboard', 'ear-training', 'composition'];
+    const techCount = minutes === 15 ? 2 : minutes === 30 ? 3 : 4;
+
+    // Pick exercises round-robin across categories for variety
+    const byCategory = {};
+    for (const cat of techCategories) {
+      byCategory[cat] = shuffleArray(allEx.filter(e =>
+        e.category === cat && e.category !== 'warmup' && e.category !== 'cooldown'
+      ));
+    }
+    const techExercises = [];
+    let catIdx = 0;
+    const availableCats = techCategories.filter(c => (byCategory[c] || []).length > 0);
+    while (techExercises.length < techCount && availableCats.length > 0) {
+      const cat = availableCats[catIdx % availableCats.length];
+      const pool = byCategory[cat];
+      if (pool.length > 0) {
+        techExercises.push(pool.shift());
+      }
+      catIdx++;
+      // Remove exhausted categories
+      const stillAvailable = availableCats.filter(c => byCategory[c].length > 0);
+      if (stillAvailable.length === 0) break;
+    }
+
+    if (techExercises.length > 0) {
+      const perExTime = Math.floor(t.technique / techExercises.length);
+      phases.push({
+        name: 'technique', duration: t.technique,
+        exercises: techExercises.map(e => ({
+          exerciseId: e.id,
+          targetBpm: e.goalMetric === 'bpm' ? getWorkingBpm(e.id, e.defaultBpm) : 0,
+          duration: perExTime,
+          note: '',
+          goalMetric: e.goalMetric
+        }))
+      });
+    }
+  }
+
+  if ((mode === 'full' && t.theory > 0) || mode === 'theory') {
+    // === THEORY ===
+    const theoryTime = mode === 'theory' ? (minutes * 60 - 300) : t.theory;
+    const currentModule = state.progress.theoryProgress.currentModule || 'major-scale-modes-intro';
+    phases.push({
+      name: 'theory', duration: theoryTime,
+      type: 'quiz', moduleId: currentModule, note: 'Continue current module'
+    });
+  }
+
+  // === COOL-DOWN ===
+  if (mode === 'full' || mode === 'technique') {
+    const cooldownExercises = allEx.filter(e => e.category === 'cooldown');
+    const selectedCooldowns = cooldownExercises.length > 0
+      ? [shuffleArray(cooldownExercises)[0]]
+      : [];
+    if (selectedCooldowns.length > 0) {
+      phases.push({
+        name: 'cool-down', duration: t.cooldown,
+        exercises: selectedCooldowns.map(e => ({
+          exerciseId: e.id,
+          targetBpm: 0,
+          duration: t.cooldown,
+          note: 'Wind down — slow, relaxed playing.',
+          goalMetric: e.goalMetric || 'completion'
+        }))
+      });
+    } else {
+      phases.push({ name: 'cool-down', duration: t.cooldown, note: 'Free play — noodle, experiment, have fun.' });
+    }
+
+    // === FREE PLAY (45 min only) ===
+    if (t.freeplay > 0) {
+      phases.push({ name: 'free-play', duration: t.freeplay, note: 'Jam, improvise, write — whatever inspires you.' });
+    }
+  }
+
+  return {
+    generated: new Date().toISOString(),
+    sessionLength: minutes,
+    phases: phases,
+    coachNote: null
+  };
+}
+
+function getWorkingBpm(exerciseId, fallback) {
+  const p = getExerciseProgress(exerciseId);
+  if (p && p.currentWorkingBpm) return p.currentWorkingBpm;
+  return fallback || 100;
+}
+
+function startSession(plan) {
+  const totalSeconds = plan.sessionLength * 60;
+  const exerciseList = [];
+  let idx = 0;
+  for (const phase of plan.phases) {
+    if (phase.exercises) {
+      for (const ex of phase.exercises) {
+        exerciseList.push({ ...ex, phase: phase.name, index: idx++, completed: false, skipped: false, rating: 0, notes: '', startBpm: ex.targetBpm, endBpm: ex.targetBpm });
+      }
+    } else if (phase.type === 'quiz') {
+      exerciseList.push({ phase: phase.name, type: 'quiz', moduleId: phase.moduleId, index: idx++, completed: false, duration: phase.duration, note: phase.note });
+    } else if (phase.name === 'cool-down') {
+      exerciseList.push({ phase: 'cool-down', type: 'cooldown', index: idx++, completed: false, duration: phase.duration, note: phase.note });
+    } else if (phase.name === 'free-play') {
+      exerciseList.push({ phase: 'free-play', type: 'freeplay', index: idx++, completed: false, duration: phase.duration, note: phase.note });
+    }
+  }
+
+  state.activeSession = {
+    plan: plan,
+    startTime: Date.now(),
+    totalSeconds: totalSeconds,
+    elapsed: 0,
+    exercises: exerciseList,
+    currentIndex: 0,
+    currentPhase: exerciseList[0]?.phase || 'warm-up',
+    phaseTimeRemaining: plan.phases[0]?.duration || 0,
+    prs: [],
+    theoryResults: null,
+    sessionNotes: '',
+    mood: ''
+  };
+
+  document.getElementById('practice-config').classList.add('hidden');
+  document.getElementById('practice-active').classList.remove('hidden');
+  document.getElementById('practice-complete').classList.add('hidden');
+
+  startTimers();
+  renderCurrentExercise();
+  renderExerciseQueue();
+}
+
+function startTimers() {
+  clearInterval(timerInterval);
+  timerInterval = setInterval(() => {
+    if (!state.activeSession) return;
+    state.activeSession.elapsed = (Date.now() - state.activeSession.startTime) / 1000;
+    const remaining = state.activeSession.totalSeconds - state.activeSession.elapsed;
+    const timerEl = document.getElementById('session-timer');
+    timerEl.textContent = formatTime(remaining);
+    if (remaining < 0) timerEl.classList.add('overtime');
+    else timerEl.classList.remove('overtime');
+  }, 200);
+}
+
+function renderCurrentExercise() {
+  const sess = state.activeSession;
+  if (!sess) return;
+  const current = sess.exercises[sess.currentIndex];
+  if (!current) { completeSession(); return; }
+
+  const phaseLabel = document.getElementById('session-phase-label');
+  phaseLabel.textContent = current.phase.toUpperCase().replace('-', ' ');
+
+  const area = document.getElementById('exercise-area');
+  const theoryArea = document.getElementById('theory-area');
+
+  // Check for phase transition
+  if (current.phase !== sess.currentPhase) {
+    sess.currentPhase = current.phase;
+    showPhaseBanner(current.phase);
+  }
+
+  if (current.type === 'quiz') {
+    area.classList.add('hidden');
+    theoryArea.classList.remove('hidden');
+    startTheoryBlock(current.moduleId, current.duration);
+    return;
+  }
+
+  if (current.type === 'cooldown' || current.type === 'freeplay') {
+    area.classList.remove('hidden');
+    theoryArea.classList.add('hidden');
+    const label = current.type === 'freeplay' ? 'Free Play' : 'Cool-Down';
+    area.innerHTML = `
+      <div class="exercise-card current fade-in">
+        <div class="exercise-name">${label}</div>
+        <div class="exercise-desc">${current.note || 'Noodle, experiment, or work on something fun.'}</div>
+        <div class="exercise-timer" id="ex-timer">${formatTime(current.duration)}</div>
+        <div class="exercise-actions">
+          <button class="btn btn-success" onclick="completeCurrentExercise()">Finish</button>
+        </div>
+      </div>`;
+    startExerciseTimer(current.duration);
+    return;
+  }
+
+  area.classList.remove('hidden');
+  theoryArea.classList.add('hidden');
+  const ex = getExercise(current.exerciseId);
+  if (!ex) { advanceExercise(); return; }
+
+  const isBpmExercise = (current.goalMetric || ex.goalMetric) === 'bpm';
+  current.startBpm = current.targetBpm;
+
+  const bpmBlock = isBpmExercise ? `
+      <div class="bpm-display" id="current-bpm">${current.targetBpm}</div>
+      <div class="bpm-controls">
+        <button class="btn btn-secondary btn-small" onclick="adjustBpm(-5)">-5</button>
+        <button class="btn btn-secondary btn-small" onclick="adjustBpm(-1)">-1</button>
+        <span style="padding:6px 12px;font-size:12px;color:#6c7086;">BPM</span>
+        <button class="btn btn-secondary btn-small" onclick="adjustBpm(1)">+1</button>
+        <button class="btn btn-secondary btn-small" onclick="adjustBpm(5)">+5</button>
+      </div>` : '';
+
+  area.innerHTML = `
+    <div class="exercise-card current fade-in">
+      <div class="exercise-name">${ex.name}</div>
+      <div class="exercise-desc">${ex.description}${current.note ? ' — ' + current.note : ''}</div>
+      ${bpmBlock}
+      <div class="exercise-timer" id="ex-timer">${formatTime(current.duration)}</div>
+      <div class="exercise-actions">
+        <button class="btn btn-secondary" onclick="skipExercise()">Skip</button>
+        <button class="btn btn-success" onclick="showRatingPrompt()">Complete</button>
+      </div>
+    </div>`;
+  startExerciseTimer(current.duration);
+}
+
+function adjustBpm(delta) {
+  const sess = state.activeSession;
+  if (!sess) return;
+  const current = sess.exercises[sess.currentIndex];
+  if (!current || current.type) return;
+  const ex = getExercise(current.exerciseId);
+  if (!ex || ex.goalMetric !== 'bpm') return;
+  current.targetBpm = Math.max(ex.bpmFloor, Math.min(ex.bpmCeiling, current.targetBpm + delta));
+  current.endBpm = current.targetBpm;
+  document.getElementById('current-bpm').textContent = current.targetBpm;
+}
+
+function startExerciseTimer(duration) {
+  const startTime = Date.now();
+  clearInterval(exerciseTimerInterval);
+  exerciseTimerInterval = setInterval(() => {
+    const elapsed = (Date.now() - startTime) / 1000;
+    const remaining = duration - elapsed;
+    const el = document.getElementById('ex-timer');
+    if (!el) { clearInterval(exerciseTimerInterval); return; }
+    el.textContent = formatTime(remaining);
+    if (remaining <= 0) {
+      el.classList.add('done');
+      el.textContent = formatTime(remaining);
+    }
+  }, 200);
+}
+
+function showRatingPrompt() {
+  const sess = state.activeSession;
+  const current = sess.exercises[sess.currentIndex];
+  current.endBpm = current.targetBpm;
+
+  const area = document.getElementById('exercise-area');
+  const card = area.querySelector('.exercise-card');
+  if (!card) return;
+
+  const existing = card.querySelector('.rating-section');
+  if (existing) return;
+
+  const div = document.createElement('div');
+  div.className = 'rating-section';
+  div.innerHTML = `
+    <div style="text-align:center;margin-top:12px;font-size:12px;color:#6c7086;">How clean was it?</div>
+    <div class="rating-row">
+      ${[1,2,3,4,5].map(n => `<div class="rating-star" data-r="${n}" onclick="setRating(${n})">${n}</div>`).join('')}
+    </div>
+    <input type="text" id="ex-notes" placeholder="Notes (optional)" style="margin-bottom:8px;">
+    <button class="btn btn-primary" style="width:100%;" onclick="confirmComplete()">Save & Next</button>`;
+  card.appendChild(div);
+}
+
+function setRating(n) {
+  document.querySelectorAll('.rating-star').forEach(s => {
+    s.classList.toggle('selected', parseInt(s.dataset.r) <= n);
+  });
+  state.activeSession.exercises[state.activeSession.currentIndex].rating = n;
+}
+
+function confirmComplete() {
+  const sess = state.activeSession;
+  const current = sess.exercises[sess.currentIndex];
+  current.completed = true;
+  current.notes = document.getElementById('ex-notes')?.value || '';
+  current.endBpm = current.targetBpm;
+
+  // Update progress
+  if (current.exerciseId) {
+    updateExerciseProgress(current);
+  }
+
+  clearInterval(exerciseTimerInterval);
+  advanceExercise();
+}
+
+function skipExercise() {
+  const sess = state.activeSession;
+  sess.exercises[sess.currentIndex].skipped = true;
+  clearInterval(exerciseTimerInterval);
+  advanceExercise();
+}
+
+function advanceExercise() {
+  const sess = state.activeSession;
+  sess.currentIndex++;
+  if (sess.currentIndex >= sess.exercises.length) {
+    completeSession();
+  } else {
+    renderCurrentExercise();
+    renderExerciseQueue();
+  }
+}
+
+function completeCurrentExercise() {
+  const sess = state.activeSession;
+  sess.exercises[sess.currentIndex].completed = true;
+  clearInterval(exerciseTimerInterval);
+  completeSession();
+}
+
+function showPhaseBanner(phase) {
+  const bannerArea = document.getElementById('phase-banner-area');
+  const labels = { 'warm-up': 'Warm-Up', 'technique': 'Technique Block', 'theory': 'Theory Block', 'cool-down': 'Cool-Down', 'free-play': 'Free Play' };
+  bannerArea.innerHTML = `
+    <div class="phase-banner fade-in">
+      <h3>${labels[phase] || phase}</h3>
+      <p style="font-size:12px;color:#a6adc8;">Ready to move on?</p>
+      <div class="phase-banner-actions">
+        <button class="btn btn-primary btn-small" onclick="dismissBanner()">Continue</button>
+      </div>
+    </div>`;
+  setTimeout(dismissBanner, 5000);
+}
+
+function dismissBanner() {
+  document.getElementById('phase-banner-area').innerHTML = '';
+}
+
+function renderExerciseQueue() {
+  const sess = state.activeSession;
+  const q = document.getElementById('exercise-queue');
+  q.innerHTML = sess.exercises.map((ex, i) => {
+    const name = ex.type === 'quiz' ? 'Theory Quiz' : ex.type === 'cooldown' ? 'Cool-Down' : ex.type === 'freeplay' ? 'Free Play' : (getExercise(ex.exerciseId)?.name || ex.exerciseId);
+    const cls = i < sess.currentIndex ? 'done' : i === sess.currentIndex ? 'current' : '';
+    return `<div class="queue-item ${cls}"><div class="queue-dot"></div>${name}</div>`;
+  }).join('');
+}
+
+function updateExerciseProgress(exerciseData) {
+  const id = exerciseData.exerciseId;
+  if (!id) return;
+  const today = todayStr();
+  const bpm = exerciseData.endBpm || exerciseData.targetBpm;
+  const rating = exerciseData.rating || 3;
+
+  if (!state.progress.exerciseProgress[id]) {
+    state.progress.exerciseProgress[id] = {
+      personalBest: null, history: [], currentWorkingBpm: bpm, timesCompleted: 0
+    };
+  }
+  const p = state.progress.exerciseProgress[id];
+  p.timesCompleted++;
+  p.history.push({ date: today, bpm: bpm, rating: rating });
+  if (p.history.length > 100) p.history = p.history.slice(-100);
+
+  // Update working BPM
+  p.currentWorkingBpm = bpm;
+
+  // Check PR (only if rating >= 4 and BPM-based exercise)
+  const ex = getExercise(id);
+  if (ex && ex.goalMetric === 'bpm' && rating >= 4 && (!p.personalBest || bpm > p.personalBest.bpm)) {
+    p.personalBest = { bpm: bpm, date: today, rating: rating };
+    state.activeSession.prs.push({ exerciseId: id, bpm: bpm });
+  }
+}
+
+function endSessionEarly() {
+  if (confirm('End session early? Your progress will still be saved.')) {
+    completeSession();
+  }
+}
+
+function completeSession() {
+  clearInterval(timerInterval);
+  clearInterval(exerciseTimerInterval);
+
+  const sess = state.activeSession;
+  const elapsed = Math.round(sess.elapsed / 60);
+
+  // Update streaks
+  const today = todayStr();
+  const streaks = state.progress.streaks;
+  if (streaks.lastPracticeDate !== today) {
+    const daysSinceLast = streaks.lastPracticeDate ? daysBetween(streaks.lastPracticeDate, today) : 999;
+    if (daysSinceLast === 1) {
+      streaks.current++;
+    } else if (daysSinceLast > 1) {
+      streaks.current = 1;
+    }
+    if (streaks.current > streaks.longest) streaks.longest = streaks.current;
+    streaks.lastPracticeDate = today;
+  }
+
+  // Build session record
+  const sessionRecord = {
+    id: 'sess-' + today + '-' + Date.now().toString(36),
+    date: new Date().toISOString(),
+    durationMinutes: elapsed,
+    plan: sess.plan.phases.map(p => p.name),
+    exercises: sess.exercises.filter(e => e.exerciseId).map(e => ({
+      exerciseId: e.exerciseId,
+      startBpm: e.startBpm,
+      endBpm: e.endBpm || e.targetBpm,
+      targetBpm: e.targetBpm,
+      duration: e.duration,
+      notes: e.notes || '',
+      rating: e.rating || 0,
+      skipped: e.skipped || false
+    })),
+    theoryWork: sess.theoryResults || null,
+    mood: sess.mood || '',
+    sessionNotes: sess.sessionNotes || '',
+    completedFull: sess.currentIndex >= sess.exercises.length
+  };
+
+  state.sessions.sessions.push(sessionRecord);
+
+  // Save everything
+  writeJSON('sessions.json', state.sessions);
+  writeJSON('progress.json', state.progress);
+
+  // Show completion screen
+  showCompletionScreen(sessionRecord, sess.prs);
+
+  // Request Claude review
+  requestClaudeReview(sessionRecord, sess.prs);
+}
+
+function showCompletionScreen(record, prs) {
+  const area = document.getElementById('practice-complete');
+  document.getElementById('practice-active').classList.add('hidden');
+  area.classList.remove('hidden');
+  area.innerHTML = `
+    <div class="completion-card fade-in">
+      <div class="completion-title">Session Complete</div>
+      <div class="completion-stats">
+        <div class="stat-badge"><div class="stat-value">${record.durationMinutes}</div><div class="stat-label">Minutes</div></div>
+        <div class="stat-badge"><div class="stat-value">${record.exercises.filter(e=>!e.skipped).length}</div><div class="stat-label">Exercises</div></div>
+        <div class="stat-badge"><div class="stat-value">${state.progress.streaks.current}</div><div class="stat-label">Day Streak</div></div>
+      </div>
+      ${prs.length > 0 ? prs.map(pr => {
+        const ex = getExercise(pr.exerciseId);
+        return `<div class="pr-callout pulse">New PR: ${ex ? ex.name : pr.exerciseId} — ${pr.bpm} BPM</div>`;
+      }).join('') : ''}
+      <div class="form-group" style="text-align:left;">
+        <label>Session Notes</label>
+        <textarea id="completion-notes" rows="3" placeholder="How did it feel?"></textarea>
+      </div>
+      <button class="btn btn-primary btn-large" onclick="saveSessionNotes()" style="margin-top:12px;">Done</button>
+    </div>`;
+}
+
+function saveSessionNotes() {
+  const notes = document.getElementById('completion-notes')?.value || '';
+  if (state.sessions.sessions.length > 0) {
+    state.sessions.sessions[state.sessions.sessions.length - 1].sessionNotes = notes;
+    writeJSON('sessions.json', state.sessions);
+  }
+  state.activeSession = null;
+  document.getElementById('practice-complete').classList.add('hidden');
+  document.getElementById('practice-config').classList.remove('hidden');
+}
+
+// ============================================================
+// THEORY BLOCK (IN-SESSION)
+// ============================================================
+function startTheoryBlock(moduleId, duration) {
+  const module = state.theory.modules.find(m => m.id === moduleId);
+  if (!module) { advanceExercise(); return; }
+
+  const questions = [...module.quizQuestions].sort(() => Math.random() - 0.5).slice(0, Math.min(8, module.quizQuestions.length));
+  state.quizState = { moduleId, questions, currentQ: 0, score: 0, answers: [], started: Date.now() };
+  renderQuizQuestion();
+  startExerciseTimer(duration);
+}
+
+function renderQuizQuestion() {
+  const qs = state.quizState;
+  if (qs.currentQ >= qs.questions.length) { finishQuiz(); return; }
+
+  const q = qs.questions[qs.currentQ];
+  const area = document.getElementById('theory-area');
+  const allOptions = shuffleArray([q.answer, ...q.distractors]);
+
+  area.innerHTML = `
+    <div class="quiz-card fade-in">
+      <div style="font-size:11px;color:#6c7086;margin-bottom:8px;">Question ${qs.currentQ+1} of ${qs.questions.length}</div>
+      <div class="quiz-question">${q.question}</div>
+      <div class="quiz-options" id="quiz-options">
+        ${allOptions.map((opt,i) => `
+          <div class="quiz-option" data-answer="${escapeHtml(opt)}" onclick="selectQuizAnswer(this, '${escapeHtml(q.answer)}')">${opt}</div>
+        `).join('')}
+      </div>
+    </div>`;
+}
+
+function selectQuizAnswer(el, correct) {
+  const selected = el.dataset.answer;
+  const options = document.querySelectorAll('#quiz-options .quiz-option');
+  options.forEach(o => {
+    o.style.pointerEvents = 'none';
+    if (o.dataset.answer === correct) o.classList.add('correct');
+    else if (o === el && selected !== correct) o.classList.add('incorrect');
+  });
+
+  const isCorrect = selected === correct;
+  if (isCorrect) state.quizState.score++;
+  state.quizState.answers.push({ question: state.quizState.questions[state.quizState.currentQ].question, selected, correct, isCorrect });
+  state.quizState.currentQ++;
+
+  setTimeout(renderQuizQuestion, 1200);
+}
+
+function finishQuiz() {
+  const qs = state.quizState;
+  const pct = Math.round((qs.score / qs.questions.length) * 100);
+  const area = document.getElementById('theory-area');
+
+  // Save score
+  if (!state.progress.theoryProgress.quizScores[qs.moduleId]) {
+    state.progress.theoryProgress.quizScores[qs.moduleId] = [];
+  }
+  state.progress.theoryProgress.quizScores[qs.moduleId].push(pct);
+
+  // Check if module complete (score >= 85% and at least 2 attempts)
+  const scores = state.progress.theoryProgress.quizScores[qs.moduleId];
+  const bestScore = Math.max(...scores);
+  if (bestScore >= 85 && scores.length >= 2 && !state.progress.theoryProgress.modulesCompleted.includes(qs.moduleId)) {
+    state.progress.theoryProgress.modulesCompleted.push(qs.moduleId);
+    // Advance to next module
+    const module = state.theory.modules.find(m => m.id === qs.moduleId);
+    const moduleIdx = state.theory.modules.indexOf(module);
+    if (moduleIdx < state.theory.modules.length - 1) {
+      state.progress.theoryProgress.currentModule = state.theory.modules[moduleIdx + 1].id;
+    }
+  }
+
+  state.activeSession.theoryResults = { topic: qs.moduleId, quizScore: pct, notes: '' };
+
+  area.innerHTML = `
+    <div class="quiz-card fade-in">
+      <div class="quiz-result">
+        <div class="quiz-score">${pct}%</div>
+        <div style="color:#a6adc8;margin-bottom:16px;">${qs.score} of ${qs.questions.length} correct</div>
+        ${pct >= 85 ? '<div style="color:#a6e3a1;font-weight:600;">Excellent!</div>' : pct >= 60 ? '<div style="color:#f9e2af;">Getting there. Keep reviewing.</div>' : '<div style="color:#f38ba8;">Review this module\'s material.</div>'}
+        <button class="btn btn-primary" onclick="advanceFromTheory()" style="margin-top:16px;">Continue</button>
+      </div>
+    </div>`;
+}
+
+function advanceFromTheory() {
+  document.getElementById('theory-area').classList.add('hidden');
+  clearInterval(exerciseTimerInterval);
+  advanceExercise();
+}
+
+function shuffleArray(arr) {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+function escapeHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+// ============================================================
+// LIBRARY
+// ============================================================
+function renderLibrary() {
+  const allEx = getAllExercises();
+  const categories = [...new Set(allEx.map(e => e.category))];
+  const search = (document.getElementById('lib-search')?.value || '').toLowerCase();
+
+  // Category filters
+  const filtersEl = document.getElementById('lib-filters');
+  filtersEl.innerHTML = `<button class="filter-chip ${state.libFilter==='all'?'active':''}" onclick="setLibFilter('all')">All</button>` +
+    categories.map(c => `<button class="filter-chip ${state.libFilter===c?'active':''}" onclick="setLibFilter('${c}')">${c.charAt(0).toUpperCase()+c.slice(1)}</button>`).join('');
+
+  // Subcategory filters
+  const subEl = document.getElementById('lib-sub-filters');
+  if (state.libFilter !== 'all') {
+    const subs = [...new Set(allEx.filter(e => e.category === state.libFilter).map(e => e.subcategory))];
+    subEl.innerHTML = `<button class="filter-chip ${state.libSubFilter==='all'?'active':''}" onclick="setLibSubFilter('all')">All</button>` +
+      subs.map(s => `<button class="filter-chip ${state.libSubFilter===s?'active':''}" onclick="setLibSubFilter('${s}')">${s.replace(/-/g,' ')}</button>`).join('');
+  } else {
+    subEl.innerHTML = '';
+  }
+
+  // Filter exercises
+  let filtered = allEx;
+  if (state.libFilter !== 'all') filtered = filtered.filter(e => e.category === state.libFilter);
+  if (state.libSubFilter !== 'all') filtered = filtered.filter(e => e.subcategory === state.libSubFilter);
+  if (search) filtered = filtered.filter(e => e.name.toLowerCase().includes(search) || e.description.toLowerCase().includes(search) || (e.tags||[]).some(t => t.includes(search)));
+
+  const listEl = document.getElementById('lib-list');
+  listEl.innerHTML = filtered.map(ex => {
+    const prog = getExerciseProgress(ex.id);
+    const expanded = state.libExpanded === ex.id;
+    return `
+      <div class="lib-card ${expanded ? 'expanded' : ''}" onclick="toggleLibCard('${ex.id}')">
+        <div class="lib-card-header">
+          <div class="lib-card-title">${ex.name}</div>
+          <div class="lib-card-tags">
+            <span class="lib-tag">${ex.category}</span>
+            <span class="lib-tag">Diff ${ex.difficulty}</span>
+          </div>
+        </div>
+        <div class="lib-card-stats">
+          ${ex.goalMetric === 'bpm' ? (prog ? `<span>Working: ${prog.currentWorkingBpm} BPM</span>` : `<span>Default: ${ex.defaultBpm} BPM</span>`) : `<span>${(ex.goalMetric || 'completion').charAt(0).toUpperCase() + (ex.goalMetric || 'completion').slice(1)}</span>`}
+          ${prog && prog.personalBest && ex.goalMetric === 'bpm' ? `<span>PR: ${prog.personalBest.bpm} BPM</span>` : ''}
+          ${prog ? `<span>Done ${prog.timesCompleted}x</span>` : '<span>Not yet practiced</span>'}
+        </div>
+        <div class="lib-card-expanded">
+          <div class="lib-instructions">${ex.instructions}</div>
+          ${prog && prog.history.length > 1 ? `<canvas class="mini-chart" id="mini-${ex.id}" width="400" height="80"></canvas>` : ''}
+        </div>
+      </div>`;
+  }).join('');
+
+  // Draw mini charts for expanded cards
+  if (state.libExpanded) {
+    const prog = getExerciseProgress(state.libExpanded);
+    if (prog && prog.history.length > 1) {
+      setTimeout(() => {
+        const canvas = document.getElementById('mini-' + state.libExpanded);
+        if (canvas) drawMiniChart(canvas, prog.history);
+      }, 50);
+    }
+  }
+}
+
+function setLibFilter(f) { state.libFilter = f; state.libSubFilter = 'all'; renderLibrary(); }
+function setLibSubFilter(f) { state.libSubFilter = f; renderLibrary(); }
+function toggleLibCard(id) {
+  state.libExpanded = state.libExpanded === id ? null : id;
+  renderLibrary();
+}
+
+function showAddExerciseModal() {
+  const modal = document.getElementById('modal-container');
+  modal.innerHTML = `
+    <div class="modal-overlay" onclick="if(event.target===this)closeModal()">
+      <div class="modal">
+        <h3>Add Custom Exercise</h3>
+        <div class="form-group"><label>Name</label><input id="ce-name" placeholder="Exercise name"></div>
+        <div class="form-group"><label>Category</label>
+          <select id="ce-category"><option value="speed">Speed</option><option value="fretboard">Fretboard</option><option value="ear-training">Ear Training</option><option value="composition">Composition</option><option value="warmup">Warm-Up</option><option value="cooldown">Cool-Down</option></select>
+        </div>
+        <div class="form-group"><label>Subcategory</label><input id="ce-sub" placeholder="e.g. legato, tapping"></div>
+        <div class="form-group"><label>Description</label><input id="ce-desc" placeholder="Short description"></div>
+        <div class="form-group"><label>Default BPM</label><input id="ce-bpm" type="number" value="100"></div>
+        <div class="form-group"><label>Duration (seconds)</label><input id="ce-dur" type="number" value="240"></div>
+        <div class="form-group"><label>Difficulty (1-5)</label><input id="ce-diff" type="number" value="3" min="1" max="5"></div>
+        <div class="form-group"><label>Instructions</label><textarea id="ce-instr" rows="3" placeholder="How to perform this exercise"></textarea></div>
+        <div style="display:flex;gap:8px;margin-top:16px;">
+          <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+          <button class="btn btn-primary" onclick="saveCustomExercise()" style="flex:1;">Save</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+function saveCustomExercise() {
+  const name = document.getElementById('ce-name').value.trim();
+  if (!name) return;
+  const id = 'custom-' + name.toLowerCase().replace(/[^a-z0-9]/g,'-') + '-' + Date.now().toString(36);
+  const bpm = parseInt(document.getElementById('ce-bpm').value) || 100;
+  const category = document.getElementById('ce-category').value;
+  const isCompletionCategory = ['composition', 'warmup', 'cooldown'].includes(category);
+  const goalMetric = isCompletionCategory ? 'completion' : 'bpm';
+  const exercise = {
+    id, name,
+    category: category,
+    subcategory: document.getElementById('ce-sub').value.trim() || 'custom',
+    description: document.getElementById('ce-desc').value.trim(),
+    defaultBpm: isCompletionCategory ? 0 : bpm,
+    bpmFloor: isCompletionCategory ? 0 : Math.max(20, bpm - 60),
+    bpmCeiling: isCompletionCategory ? 0 : bpm + 120,
+    bpmIncrement: 5,
+    duration: parseInt(document.getElementById('ce-dur').value) || 240,
+    tags: ['custom'], difficulty: parseInt(document.getElementById('ce-diff').value) || 3,
+    instructions: document.getElementById('ce-instr').value.trim(),
+    goalMetric: goalMetric, custom: true
+  };
+  if (!state.exercises.customExercises) state.exercises.customExercises = [];
+  state.exercises.customExercises.push(exercise);
+  writeJSON('exercises.json', state.exercises);
+  closeModal();
+  renderLibrary();
+}
+
+function closeModal() {
+  document.getElementById('modal-container').innerHTML = '';
+}
+
+// ============================================================
+// PROGRESS TAB
+// ============================================================
+function renderProgress() {
+  // Overview
+  const ov = document.getElementById('progress-overview');
+  const totalSessions = state.sessions.sessions.length;
+  const totalMinutes = state.sessions.sessions.reduce((s, sess) => s + (sess.durationMinutes || 0), 0);
+  const totalHours = (totalMinutes / 60).toFixed(1);
+  const exercisesWithProgress = Object.keys(state.progress.exerciseProgress).length;
+  const modulesComplete = state.progress.theoryProgress.modulesCompleted.length;
+
+  ov.innerHTML = `
+    <div class="stat-badge"><div class="stat-value">${totalSessions}</div><div class="stat-label">Sessions</div></div>
+    <div class="stat-badge"><div class="stat-value">${totalHours}</div><div class="stat-label">Hours</div></div>
+    <div class="stat-badge"><div class="stat-value">${exercisesWithProgress}</div><div class="stat-label">Exercises</div></div>
+    <div class="stat-badge"><div class="stat-value">${modulesComplete}</div><div class="stat-label">Modules</div></div>`;
+
+  // Populate exercise select
+  const sel = document.getElementById('progress-exercise-select');
+  const currentVal = sel.value;
+  sel.innerHTML = '<option value="">Select an exercise...</option>';
+  const allEx = getAllExercises().filter(e => e.goalMetric === 'bpm');
+  for (const ex of allEx) {
+    const prog = getExerciseProgress(ex.id);
+    if (prog && prog.history.length > 0) {
+      sel.innerHTML += `<option value="${ex.id}" ${currentVal===ex.id?'selected':''}>${ex.name}</option>`;
+    }
+  }
+  renderProgressChart();
+  renderWeeklyChart();
+
+  // Velocity table
+  const tbody = document.querySelector('#velocity-table tbody');
+  const velocities = [];
+  for (const ex of allEx) {
+    const prog = getExerciseProgress(ex.id);
+    if (prog && prog.history.length >= 2) {
+      const v = getVelocity(ex.id);
+      velocities.push({ name: ex.name, bpm: prog.currentWorkingBpm, velocity: v });
+    }
+  }
+  velocities.sort((a,b) => (b.velocity||0) - (a.velocity||0));
+  tbody.innerHTML = velocities.map(v => {
+    const cls = v.velocity > 0.5 ? 'trend-up' : v.velocity < -0.5 ? 'trend-down' : 'trend-flat';
+    const arrow = v.velocity > 0.5 ? '\u2191' : v.velocity < -0.5 ? '\u2193' : '\u2192';
+    return `<tr><td>${v.name}</td><td>${v.bpm}</td><td>${v.velocity !== null ? (v.velocity > 0 ? '+' : '') + v.velocity + '/wk' : '-'}</td><td class="${cls}">${arrow}</td></tr>`;
+  }).join('') || '<tr><td colspan="4" style="text-align:center;color:#6c7086;">No data yet</td></tr>';
+}
+
+function renderProgressChart() {
+  const canvas = document.getElementById('progress-chart');
+  const ctx = canvas.getContext('2d');
+  const sel = document.getElementById('progress-exercise-select');
+  const exId = sel.value;
+  canvas.width = canvas.offsetWidth * 2;
+  canvas.height = 400;
+  ctx.scale(2, 2);
+
+  if (!exId) {
+    ctx.fillStyle = '#6c7086';
+    ctx.font = '13px -apple-system, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('Select an exercise to view progress', canvas.width/4, 100);
+    return;
+  }
+
+  const prog = getExerciseProgress(exId);
+  if (!prog || prog.history.length < 2) {
+    ctx.fillStyle = '#6c7086';
+    ctx.font = '13px -apple-system, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('Need at least 2 data points', canvas.width/4, 100);
+    return;
+  }
+
+  drawLineChart(ctx, canvas.width/2, 200, [{ data: prog.history.map(h => h.bpm), color: '#89b4fa', label: 'BPM' }], prog.history.map(h => h.date), prog.personalBest?.bpm);
+}
+
+function renderWeeklyChart() {
+  const canvas = document.getElementById('weekly-chart');
+  const ctx = canvas.getContext('2d');
+  canvas.width = canvas.offsetWidth * 2;
+  canvas.height = 240;
+  ctx.scale(2, 2);
+
+  // Get last 8 weeks of data
+  const weeks = [];
+  for (let i = 7; i >= 0; i--) {
+    const d = new Date();
+    d.setDate(d.getDate() - d.getDay() - (i * 7));
+    const weekStart = d.toISOString().split('T')[0];
+    const weekEnd = new Date(d);
+    weekEnd.setDate(d.getDate() + 7);
+    const weekEndStr = weekEnd.toISOString().split('T')[0];
+    const weekSessions = state.sessions.sessions.filter(s => {
+      const sd = s.date.split('T')[0];
+      return sd >= weekStart && sd < weekEndStr;
+    });
+    const mins = weekSessions.reduce((sum,s) => sum + (s.durationMinutes||0), 0);
+    weeks.push({ label: weekStart.slice(5), minutes: mins });
+  }
+
+  if (weeks.every(w => w.minutes === 0)) {
+    ctx.fillStyle = '#6c7086';
+    ctx.font = '13px -apple-system, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('No session data yet', canvas.width/4, 60);
+    return;
+  }
+
+  drawBarChart(ctx, canvas.width/2, 120, weeks);
+}
+
+// ============================================================
+// CANVAS CHART FUNCTIONS
+// ============================================================
+function drawLineChart(ctx, w, h, datasets, labels, prValue) {
+  const pad = { top: 20, right: 20, bottom: 30, left: 45 };
+  const cw = w - pad.left - pad.right;
+  const ch = h - pad.top - pad.bottom;
+
+  // Find min/max
+  let allVals = datasets.flatMap(d => d.data);
+  let minV = Math.min(...allVals) - 5;
+  let maxV = Math.max(...allVals) + 5;
+  if (maxV - minV < 10) { minV -= 5; maxV += 5; }
+  const n = datasets[0].data.length;
+
+  ctx.clearRect(0, 0, w, h);
+
+  // Grid
+  ctx.strokeStyle = '#45475a';
+  ctx.lineWidth = 0.5;
+  const gridLines = 5;
+  for (let i = 0; i <= gridLines; i++) {
+    const y = pad.top + (ch / gridLines) * i;
+    ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(w - pad.right, y); ctx.stroke();
+    const val = Math.round(maxV - (maxV - minV) * (i / gridLines));
+    ctx.fillStyle = '#6c7086'; ctx.font = '10px sans-serif'; ctx.textAlign = 'right';
+    ctx.fillText(val, pad.left - 5, y + 3);
+  }
+
+  // X labels
+  const step = Math.max(1, Math.floor(n / 6));
+  ctx.textAlign = 'center';
+  for (let i = 0; i < n; i += step) {
+    const x = pad.left + (cw / Math.max(n-1, 1)) * i;
+    ctx.fillStyle = '#6c7086'; ctx.font = '9px sans-serif';
+    ctx.fillText(labels[i] || '', x, h - 5);
+  }
+
+  // Lines
+  for (const ds of datasets) {
+    ctx.strokeStyle = ds.color;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    for (let i = 0; i < ds.data.length; i++) {
+      const x = pad.left + (cw / Math.max(n-1, 1)) * i;
+      const y = pad.top + ch - ((ds.data[i] - minV) / (maxV - minV)) * ch;
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+
+    // Points
+    for (let i = 0; i < ds.data.length; i++) {
+      const x = pad.left + (cw / Math.max(n-1, 1)) * i;
+      const y = pad.top + ch - ((ds.data[i] - minV) / (maxV - minV)) * ch;
+      ctx.fillStyle = ds.data[i] === prValue ? '#a6e3a1' : ds.color;
+      ctx.beginPath(); ctx.arc(x, y, ds.data[i] === prValue ? 5 : 3, 0, Math.PI*2); ctx.fill();
+    }
+  }
+
+  // PR line
+  if (prValue && prValue >= minV && prValue <= maxV) {
+    const prY = pad.top + ch - ((prValue - minV) / (maxV - minV)) * ch;
+    ctx.setLineDash([4, 4]);
+    ctx.strokeStyle = '#a6e3a1';
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(pad.left, prY); ctx.lineTo(w - pad.right, prY); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#a6e3a1'; ctx.font = '10px sans-serif'; ctx.textAlign = 'right';
+    ctx.fillText('PR: ' + prValue, w - pad.right, prY - 5);
+  }
+}
+
+function drawBarChart(ctx, w, h, data) {
+  const pad = { top: 10, right: 10, bottom: 25, left: 35 };
+  const cw = w - pad.left - pad.right;
+  const ch = h - pad.top - pad.bottom;
+  const maxV = Math.max(...data.map(d => d.minutes), 30);
+  const barW = (cw / data.length) * 0.7;
+  const gap = (cw / data.length) * 0.3;
+
+  ctx.clearRect(0, 0, w, h);
+
+  // Grid
+  ctx.strokeStyle = '#45475a'; ctx.lineWidth = 0.5;
+  for (let i = 0; i <= 3; i++) {
+    const y = pad.top + (ch / 3) * i;
+    ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(w - pad.right, y); ctx.stroke();
+    const val = Math.round(maxV - (maxV * (i / 3)));
+    ctx.fillStyle = '#6c7086'; ctx.font = '9px sans-serif'; ctx.textAlign = 'right';
+    ctx.fillText(val + 'm', pad.left - 5, y + 3);
+  }
+
+  // Bars
+  for (let i = 0; i < data.length; i++) {
+    const x = pad.left + (cw / data.length) * i + gap/2;
+    const barH = (data[i].minutes / maxV) * ch;
+    const y = pad.top + ch - barH;
+    ctx.fillStyle = data[i].minutes > 0 ? '#89b4fa' : '#45475a';
+    ctx.beginPath();
+    roundRect(ctx, x, y, barW, barH, 3);
+    ctx.fill();
+
+    // Label
+    ctx.fillStyle = '#6c7086'; ctx.font = '9px sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText(data[i].label, x + barW/2, h - 5);
+  }
+}
+
+function drawMiniChart(canvas, history) {
+  canvas.width = canvas.offsetWidth * 2;
+  canvas.height = 160;
+  const ctx = canvas.getContext('2d');
+  ctx.scale(2, 2);
+  const w = canvas.width/2, h = 80;
+  const data = history.map(h => h.bpm);
+  const minV = Math.min(...data) - 5;
+  const maxV = Math.max(...data) + 5;
+  const n = data.length;
+  const pad = { top: 5, right: 5, bottom: 5, left: 5 };
+  const cw = w - pad.left - pad.right;
+  const ch = h - pad.top - pad.bottom;
+
+  ctx.strokeStyle = '#89b4fa'; ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  for (let i = 0; i < n; i++) {
+    const x = pad.left + (cw / Math.max(n-1,1)) * i;
+    const y = pad.top + ch - ((data[i] - minV) / (maxV - minV)) * ch;
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+}
+
+function roundRect(ctx, x, y, w, h, r) {
+  if (h < r * 2) r = h / 2;
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h);
+  ctx.lineTo(x, y + h);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+}
+
+// ============================================================
+// THEORY TAB
+// ============================================================
+function renderTheory() {
+  renderModuleTree();
+  if (state.theorySelectedModule) {
+    renderModuleDetail(state.theorySelectedModule);
+  }
+}
+
+function renderModuleTree() {
+  const tree = document.getElementById('theory-tree');
+  const modules = state.theory.modules;
+  const completed = state.progress.theoryProgress.modulesCompleted;
+  const current = state.progress.theoryProgress.currentModule;
+
+  tree.innerHTML = modules.map(m => {
+    const isComplete = completed.includes(m.id);
+    const isCurrent = m.id === current;
+    const isLocked = !isComplete && !isCurrent && m.prerequisites.length > 0 && !m.prerequisites.every(p => completed.includes(p));
+    const dotCls = isComplete ? 'completed' : isCurrent ? 'current' : 'locked';
+    const scores = state.progress.theoryProgress.quizScores[m.id];
+    const bestScore = scores && scores.length > 0 ? Math.max(...scores) : null;
+
+    return `
+      <div class="module-node" onclick="selectModule('${m.id}')" style="${isLocked ? 'opacity:0.5;' : ''}">
+        <div class="module-dot ${dotCls}"></div>
+        <div class="module-name">${m.name}</div>
+        ${bestScore !== null ? `<div class="module-score">${bestScore}%</div>` : ''}
+      </div>`;
+  }).join('');
+}
+
+function selectModule(id) {
+  state.theorySelectedModule = id;
+  document.getElementById('theory-quiz-area').classList.add('hidden');
+  renderModuleDetail(id);
+}
+
+function renderModuleDetail(id) {
+  const module = state.theory.modules.find(m => m.id === id);
+  if (!module) return;
+  const detail = document.getElementById('theory-module-detail');
+  detail.classList.remove('hidden');
+
+  const completed = state.progress.theoryProgress.modulesCompleted;
+  const isLocked = module.prerequisites.length > 0 && !module.prerequisites.every(p => completed.includes(p));
+  const scores = state.progress.theoryProgress.quizScores[id] || [];
+
+  detail.innerHTML = `
+    <div class="card fade-in">
+      <div class="card-header">${module.name}</div>
+      <div class="card-sub">${module.category} ${module.prerequisites.length > 0 ? '| Requires: ' + module.prerequisites.join(', ') : ''}</div>
+      <div style="margin-top:12px;">
+        ${module.content.formula ? `<div style="font-size:12px;color:#6c7086;margin-bottom:4px;">Formula</div><div style="font-size:15px;font-weight:600;font-family:monospace;color:#89b4fa;margin-bottom:8px;">${module.content.formula}</div>` : ''}
+        ${module.content.keyCharacteristic ? `<div style="font-size:13px;color:#a6adc8;margin-bottom:8px;">${module.content.keyCharacteristic}</div>` : ''}
+        ${module.content.chordFit && module.content.chordFit.length > 0 ? `<div style="font-size:12px;color:#6c7086;margin-bottom:2px;">Chord Fit</div><div style="font-size:13px;margin-bottom:8px;">${module.content.chordFit.join(', ')}</div>` : ''}
+        ${module.content.genres ? `<div style="font-size:12px;color:#6c7086;margin-bottom:2px;">Used In</div><div style="font-size:13px;margin-bottom:8px;">${module.content.genres}</div>` : ''}
+        ${module.content.notes ? `<div style="font-size:12px;color:#6c7086;margin-bottom:2px;">Key Insight</div><div style="font-size:13px;color:#a6adc8;margin-bottom:8px;">${module.content.notes}</div>` : ''}
+      </div>
+      ${scores.length > 0 ? `<div style="font-size:12px;color:#6c7086;margin-top:8px;">Quiz attempts: ${scores.map(s => s + '%').join(', ')}</div>` : ''}
+      <button class="btn btn-primary" style="width:100%;margin-top:12px;" onclick="startStandaloneQuiz('${id}')" ${isLocked ? 'disabled' : ''}>
+        ${isLocked ? 'Locked' : 'Take Quiz'}
+      </button>
+    </div>`;
+}
+
+function startStandaloneQuiz(moduleId) {
+  const module = state.theory.modules.find(m => m.id === moduleId);
+  if (!module) return;
+
+  const questions = [...module.quizQuestions].sort(() => Math.random() - 0.5);
+  state.quizState = { moduleId, questions, currentQ: 0, score: 0, answers: [], started: Date.now() };
+
+  document.getElementById('theory-module-detail').classList.add('hidden');
+  document.getElementById('theory-quiz-area').classList.remove('hidden');
+  renderStandaloneQuiz();
+}
+
+function renderStandaloneQuiz() {
+  const qs = state.quizState;
+  if (!qs) return;
+  const area = document.getElementById('theory-quiz-area');
+
+  if (qs.currentQ >= qs.questions.length) {
+    // Results
+    const pct = Math.round((qs.score / qs.questions.length) * 100);
+    if (!state.progress.theoryProgress.quizScores[qs.moduleId]) {
+      state.progress.theoryProgress.quizScores[qs.moduleId] = [];
+    }
+    state.progress.theoryProgress.quizScores[qs.moduleId].push(pct);
+
+    // Check module completion
+    const scores = state.progress.theoryProgress.quizScores[qs.moduleId];
+    const bestScore = Math.max(...scores);
+    if (bestScore >= 85 && scores.length >= 2 && !state.progress.theoryProgress.modulesCompleted.includes(qs.moduleId)) {
+      state.progress.theoryProgress.modulesCompleted.push(qs.moduleId);
+      const module = state.theory.modules.find(m => m.id === qs.moduleId);
+      const moduleIdx = state.theory.modules.indexOf(module);
+      if (moduleIdx < state.theory.modules.length - 1) {
+        state.progress.theoryProgress.currentModule = state.theory.modules[moduleIdx + 1].id;
+      }
+    }
+
+    writeJSON('progress.json', state.progress);
+
+    area.innerHTML = `
+      <div class="quiz-card fade-in">
+        <div class="quiz-result">
+          <div class="quiz-score">${pct}%</div>
+          <div style="color:#a6adc8;margin-bottom:12px;">${qs.score} of ${qs.questions.length} correct</div>
+          ${pct >= 85 ? '<div style="color:#a6e3a1;font-weight:600;margin-bottom:4px;">Excellent!</div>' : pct >= 60 ? '<div style="color:#f9e2af;margin-bottom:4px;">Getting there. Review and try again.</div>' : '<div style="color:#f38ba8;margin-bottom:4px;">Study the material and retry.</div>'}
+          ${bestScore >= 85 && scores.length >= 2 && state.progress.theoryProgress.modulesCompleted.includes(qs.moduleId) ? '<div style="color:#a6e3a1;font-size:13px;">Module completed!</div>' : ''}
+          <button class="btn btn-primary" onclick="backToTheory()" style="margin-top:16px;">Back to Modules</button>
+        </div>
+      </div>`;
+    return;
+  }
+
+  const q = qs.questions[qs.currentQ];
+  const allOptions = shuffleArray([q.answer, ...q.distractors]);
+
+  area.innerHTML = `
+    <div class="quiz-card fade-in">
+      <div style="font-size:11px;color:#6c7086;margin-bottom:8px;">Question ${qs.currentQ+1} of ${qs.questions.length}</div>
+      <div class="quiz-question">${q.question}</div>
+      <div class="quiz-options" id="sa-quiz-options">
+        ${allOptions.map(opt => `
+          <div class="quiz-option" data-answer="${escapeHtml(opt)}" onclick="saQuizAnswer(this, '${escapeHtml(q.answer)}')">${opt}</div>
+        `).join('')}
+      </div>
+    </div>`;
+}
+
+function saQuizAnswer(el, correct) {
+  const selected = el.dataset.answer;
+  const options = document.querySelectorAll('#sa-quiz-options .quiz-option');
+  options.forEach(o => {
+    o.style.pointerEvents = 'none';
+    if (o.dataset.answer === correct) o.classList.add('correct');
+    else if (o === el && selected !== correct) o.classList.add('incorrect');
+  });
+
+  if (selected === correct) state.quizState.score++;
+  state.quizState.currentQ++;
+
+  setTimeout(renderStandaloneQuiz, 1200);
+}
+
+function backToTheory() {
+  state.quizState = null;
+  document.getElementById('theory-quiz-area').classList.add('hidden');
+  document.getElementById('theory-module-detail').classList.remove('hidden');
+  renderTheory();
+}
+
+// ============================================================
+// CLAUDE INTEGRATION
+// ============================================================
+async function requestClaudeSession(minutes, mode) {
+  if (!window.brain || !window.brain.promptClaude) return;
+  try {
+    // Clear old plan
+    await writeJSON('next-session.json', '');
+
+    const recentSessions = state.sessions.sessions.slice(-3).map(s => ({
+      date: s.date, durationMinutes: s.durationMinutes, exercises: s.exercises.map(e => ({ id: e.exerciseId, bpm: e.endBpm, rating: e.rating, skipped: e.skipped }))
+    }));
+
+    const topProgress = {};
+    const allEx = getAllExercises();
+    for (const ex of allEx) {
+      const p = getExerciseProgress(ex.id);
+      if (p) topProgress[ex.id] = { currentWorkingBpm: p.currentWorkingBpm, personalBest: p.personalBest?.bpm, timesCompleted: p.timesCompleted };
+    }
+
+    const context = JSON.stringify({
+      focusAreas: state.settings.focusAreas,
+      sessionLength: minutes,
+      mode: mode,
+      recentSessions: recentSessions,
+      exerciseProgress: topProgress,
+      streaks: state.progress.streaks,
+      theoryProgress: state.progress.theoryProgress
+    });
+
+    await window.brain.promptClaude('/practice-plan ' + context);
+
+    // Poll for response
+    let attempts = 0;
+    const pollInterval = setInterval(async () => {
+      attempts++;
+      if (attempts > 7) { clearInterval(pollInterval); return; } // 14 second timeout
+      try {
+        const plan = await readJSON('next-session.json');
+        if (plan && plan.phases && plan.generated) {
+          const genTime = new Date(plan.generated).getTime();
+          if (Date.now() - genTime < 60000) {
+            clearInterval(pollInterval);
+            // Replace current session with Claude's plan
+            if (state.activeSession) {
+              startSession(plan);
+            }
+          }
+        }
+      } catch(e) {}
+    }, 2000);
+  } catch(e) { console.error('Claude session request failed:', e); }
+}
+
+async function requestClaudeReview(sessionRecord, prs) {
+  if (!window.brain || !window.brain.promptClaude) return;
+  try {
+    await writeJSON('last-session-results.json', sessionRecord);
+
+    const velocities = {};
+    const allEx = getAllExercises().filter(e => e.goalMetric === 'bpm');
+    for (const ex of allEx) {
+      const v = getVelocity(ex.id);
+      if (v !== null) velocities[ex.id] = v;
+    }
+
+    const context = JSON.stringify({
+      sessionData: sessionRecord,
+      personalBests: prs,
+      improvementVelocity: velocities,
+      streakStatus: state.progress.streaks
+    });
+
+    await window.brain.promptClaude('/practice-review ' + context);
+  } catch(e) { console.error('Claude review request failed:', e); }
+}
+
+// ============================================================
+// SESSION CONFIG UI HANDLERS
+// ============================================================
+document.querySelectorAll('.length-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.length-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+  });
+});
+
+document.querySelectorAll('.mode-buttons .filter-chip').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.mode-buttons .filter-chip').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+  });
+});
+
+// ============================================================
+// INIT
+// ============================================================
+async function init() {
+  await loadState();
+  renderDashboard();
+}
+
+init();
+</script>
+</body>
+</html>

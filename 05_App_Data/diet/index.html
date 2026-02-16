@@ -1,0 +1,1576 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Diet Tracker</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: #1e1e2e; color: #cdd6f4;
+  min-height: 100vh; overflow-x: hidden;
+  padding-bottom: 70px;
+}
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: #1e1e2e; }
+::-webkit-scrollbar-thumb { background: #45475a; border-radius: 3px; }
+
+/* === TAB NAV (bottom) === */
+.tab-bar {
+  display: flex; background: #181825; border-top: 1px solid #313244;
+  position: fixed; bottom: 0; left: 0; right: 0; z-index: 100;
+}
+.tab-btn {
+  flex: 1; padding: 10px 4px 8px; text-align: center; cursor: pointer;
+  color: #6c7086; font-size: 10px; font-weight: 600; letter-spacing: 0.3px;
+  border: none; background: none; border-top: 2px solid transparent;
+  transition: color 0.2s, border-color 0.2s;
+  display: flex; flex-direction: column; align-items: center; gap: 3px;
+}
+.tab-btn:hover { color: #a6adc8; }
+.tab-btn.active { color: #89b4fa; border-top-color: #89b4fa; }
+.tab-icon { font-size: 18px; }
+
+/* === MAIN CONTENT === */
+main { padding: 16px; max-width: 600px; margin: 0 auto; }
+.tab-content { display: none; }
+.tab-content.active { display: block; }
+
+/* === CARDS === */
+.card {
+  background: #313244; border-radius: 12px; padding: 16px; margin-bottom: 12px;
+  border: 1px solid #45475a;
+}
+.card-header { font-size: 15px; font-weight: 600; margin-bottom: 8px; color: #cdd6f4; }
+.card-sub { font-size: 12px; color: #6c7086; }
+
+/* === BUTTONS === */
+.btn {
+  border: none; border-radius: 10px; padding: 12px 20px; cursor: pointer;
+  font-weight: 600; font-size: 14px; transition: all 0.15s;
+  -webkit-tap-highlight-color: transparent;
+}
+.btn-primary { background: #89b4fa; color: #1e1e2e; }
+.btn-primary:hover { background: #b4befe; }
+.btn-secondary { background: #45475a; color: #cdd6f4; }
+.btn-secondary:hover { background: #585b70; }
+.btn-success { background: #a6e3a1; color: #1e1e2e; }
+.btn-success:hover { background: #94e2d5; }
+.btn-large { padding: 16px 28px; font-size: 16px; width: 100%; }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn-ghost { background: none; color: #6c7086; padding: 8px 12px; font-size: 12px; }
+.btn-ghost:hover { color: #cdd6f4; }
+
+/* === INPUTS === */
+input, textarea, select {
+  background: #1e1e2e; border: 1px solid #45475a; color: #cdd6f4;
+  padding: 12px 16px; border-radius: 10px; font-size: 15px; width: 100%;
+  -webkit-appearance: none;
+}
+input:focus, textarea:focus, select:focus { outline: none; border-color: #89b4fa; }
+input[type="number"] { font-size: 28px; font-weight: 700; text-align: center; padding: 16px; }
+textarea { resize: vertical; min-height: 60px; font-family: inherit; }
+
+/* === STAT BADGES === */
+.stat-row { display: flex; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+.stat-badge {
+  flex: 1; min-width: 80px; background: #1e1e2e; border-radius: 10px; padding: 12px;
+  text-align: center; border: 1px solid #45475a;
+}
+.stat-value { font-size: 22px; font-weight: 700; color: #89b4fa; }
+.stat-label { font-size: 11px; color: #6c7086; margin-top: 2px; }
+
+/* === MACRO BAR === */
+.macro-bar {
+  display: flex; gap: 16px; padding: 12px 16px; background: #181825;
+  border-radius: 10px; margin-bottom: 16px; align-items: center;
+}
+.macro-item { text-align: center; flex: 1; }
+.macro-current { font-size: 18px; font-weight: 700; }
+.macro-target { font-size: 11px; color: #6c7086; }
+.macro-label { font-size: 10px; color: #585b70; margin-top: 2px; }
+.macro-progress {
+  height: 3px; background: #45475a; border-radius: 2px; margin-top: 4px; overflow: hidden;
+}
+.macro-progress-fill { height: 100%; border-radius: 2px; transition: width 0.3s; }
+
+/* === MEAL CARDS === */
+.meal-section { margin-bottom: 16px; }
+.meal-section-header {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 8px; padding: 0 4px;
+}
+.meal-section-title { font-size: 14px; font-weight: 600; color: #cdd6f4; }
+.meal-section-time { font-size: 12px; color: #6c7086; }
+.meal-section-target { font-size: 11px; color: #585b70; }
+
+.meal-card {
+  background: #313244; border-radius: 12px; padding: 14px 16px; margin-bottom: 8px;
+  border: 2px solid #45475a; cursor: pointer; transition: all 0.15s;
+  -webkit-tap-highlight-color: transparent;
+}
+.meal-card:hover { border-color: #585b70; }
+.meal-card:active { transform: scale(0.98); }
+.meal-card.selected {
+  border-color: #a6e3a1; background: #2a3040;
+}
+.meal-card.selected::after { content: none; }
+.meal-card-label { font-size: 14px; font-weight: 600; margin-bottom: 4px; }
+.meal-card-macros { font-size: 12px; color: #a6adc8; }
+.meal-card-items {
+  margin-top: 8px; padding-top: 8px; border-top: 1px solid #45475a;
+  display: none; font-size: 12px; color: #6c7086;
+}
+.meal-card-items.expanded { display: block; }
+.meal-card-item { padding: 3px 0; display: flex; justify-content: space-between; }
+.meal-card-item-name { flex: 1; }
+.meal-card-item-amount { color: #585b70; margin-left: 8px; white-space: nowrap; }
+.meal-card-check { color: #a6e3a1; font-weight: 700; margin-right: 8px; }
+
+.meal-custom-card {
+  background: #1e1e2e; border: 2px dashed #45475a; border-radius: 12px;
+  padding: 14px 16px; margin-bottom: 8px; cursor: pointer; text-align: center;
+  color: #6c7086; font-size: 13px; transition: all 0.15s;
+}
+.meal-custom-card:hover { border-color: #89b4fa; color: #89b4fa; }
+
+.meal-done {
+  background: #282838; border-radius: 10px; padding: 10px 14px; margin-bottom: 6px;
+  display: flex; align-items: center; gap: 8px; font-size: 13px; color: #6c7086;
+}
+.meal-done-check { color: #a6e3a1; }
+.meal-done-label { flex: 1; }
+.meal-done-macros { font-size: 11px; color: #585b70; }
+
+.meal-future {
+  background: #252535; border-radius: 10px; padding: 10px 14px; margin-bottom: 6px;
+  opacity: 0.5; font-size: 13px; color: #585b70;
+  display: flex; justify-content: space-between;
+}
+
+/* === FEEL BUTTONS === */
+.feel-row { display: flex; gap: 8px; margin: 12px 0; }
+.feel-btn {
+  flex: 1; padding: 14px 4px; border-radius: 10px; border: 2px solid #45475a;
+  background: #313244; color: #cdd6f4; cursor: pointer; text-align: center;
+  font-size: 12px; font-weight: 600; transition: all 0.15s;
+  -webkit-tap-highlight-color: transparent;
+}
+.feel-btn:hover { border-color: #585b70; }
+.feel-btn.active { border-color: #89b4fa; background: #2a3040; }
+.feel-num { font-size: 20px; display: block; margin-bottom: 2px; }
+
+/* === SUMMARY CARD === */
+.summary-card { text-align: center; padding: 24px 16px; }
+.summary-title { font-size: 18px; font-weight: 700; margin-bottom: 16px; }
+.summary-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 16px; }
+.summary-item { background: #1e1e2e; border-radius: 10px; padding: 12px; }
+.summary-value { font-size: 20px; font-weight: 700; color: #89b4fa; }
+.summary-label { font-size: 11px; color: #6c7086; margin-top: 2px; }
+
+/* === CHART === */
+.chart-container { position: relative; width: 100%; margin-bottom: 16px; }
+.chart-container canvas { width: 100% !important; }
+
+/* === ACCORDION === */
+.accordion { margin-bottom: 8px; }
+.accordion-header {
+  background: #313244; border-radius: 10px; padding: 12px 16px; cursor: pointer;
+  display: flex; justify-content: space-between; align-items: center;
+  border: 1px solid #45475a; font-size: 13px; font-weight: 600;
+  transition: all 0.15s;
+}
+.accordion-header:hover { background: #3a3a4e; }
+.accordion-body {
+  display: none; padding: 12px 16px; background: #282838;
+  border-radius: 0 0 10px 10px; border: 1px solid #45475a; border-top: none;
+  font-size: 13px;
+}
+.accordion-body.open { display: block; }
+.accordion-header.open { border-radius: 10px 10px 0 0; }
+
+/* === HISTORY LIST === */
+.history-day {
+  background: #313244; border-radius: 10px; padding: 14px 16px; margin-bottom: 8px;
+  border: 1px solid #45475a; cursor: pointer; transition: all 0.15s;
+}
+.history-day:hover { background: #3a3a4e; }
+.history-day-header { display: flex; justify-content: space-between; align-items: center; }
+.history-day-date { font-size: 14px; font-weight: 600; }
+.history-day-weight { font-size: 13px; color: #89b4fa; }
+.history-day-macros { font-size: 12px; color: #6c7086; margin-top: 4px; }
+.history-day-detail {
+  display: none; margin-top: 10px; padding-top: 10px;
+  border-top: 1px solid #45475a; font-size: 12px; color: #a6adc8;
+}
+.history-day-detail.open { display: block; }
+.history-meal-line { padding: 3px 0; display: flex; justify-content: space-between; }
+.history-feel { margin-top: 6px; color: #6c7086; }
+.history-notes { margin-top: 4px; font-style: italic; color: #585b70; }
+
+/* === MEALS BROWSE === */
+.browse-slot { margin-bottom: 16px; }
+.browse-slot-header {
+  font-size: 15px; font-weight: 700; margin-bottom: 4px; color: #cdd6f4;
+}
+.browse-slot-sub { font-size: 12px; color: #6c7086; margin-bottom: 10px; }
+.browse-option {
+  background: #313244; border-radius: 10px; padding: 12px 16px; margin-bottom: 6px;
+  border: 1px solid #45475a; cursor: pointer; transition: all 0.15s;
+}
+.browse-option:hover { background: #3a3a4e; }
+.browse-option-header { display: flex; justify-content: space-between; align-items: center; }
+.browse-option-label { font-size: 13px; font-weight: 600; }
+.browse-option-macros { font-size: 12px; color: #a6adc8; }
+.browse-option-badge {
+  font-size: 10px; background: #45475a; color: #a6adc8; border-radius: 6px;
+  padding: 2px 6px; margin-left: 8px;
+}
+.browse-option-items {
+  display: none; margin-top: 8px; padding-top: 8px; border-top: 1px solid #45475a;
+  font-size: 12px; color: #6c7086;
+}
+.browse-option-items.open { display: block; }
+
+/* === SETTINGS === */
+.settings-section { margin-bottom: 20px; }
+.settings-label { font-size: 12px; color: #6c7086; margin-bottom: 6px; font-weight: 600; }
+.settings-value { font-size: 15px; margin-bottom: 12px; }
+
+/* === GREETING === */
+.greeting { font-size: 24px; font-weight: 700; margin-bottom: 4px; }
+.greeting-sub { font-size: 14px; color: #6c7086; margin-bottom: 24px; }
+
+/* === WEIGHT INPUT === */
+.weight-input-wrap { margin-bottom: 16px; text-align: center; }
+.weight-input-wrap label {
+  font-size: 13px; color: #6c7086; display: block; margin-bottom: 8px;
+}
+.yesterday-ref { font-size: 12px; color: #585b70; margin-top: 8px; }
+
+/* === CUSTOM MEAL MODAL === */
+.modal-overlay {
+  display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.7); z-index: 200; align-items: center; justify-content: center;
+  padding: 16px;
+}
+.modal-overlay.open { display: flex; }
+.modal {
+  background: #313244; border-radius: 14px; padding: 20px; width: 100%;
+  max-width: 400px; border: 1px solid #45475a;
+}
+.modal-title { font-size: 16px; font-weight: 700; margin-bottom: 12px; }
+.modal-actions { display: flex; gap: 8px; margin-top: 12px; }
+.modal-actions .btn { flex: 1; }
+
+/* === NOTIFICATION === */
+.notification {
+  position: fixed; top: 16px; left: 50%; transform: translateX(-50%);
+  background: #313244; border: 1px solid #45475a; border-radius: 10px;
+  padding: 10px 20px; font-size: 13px; z-index: 300;
+  opacity: 0; transition: opacity 0.3s; pointer-events: none;
+}
+.notification.show { opacity: 1; }
+.notification.success { border-color: #a6e3a1; }
+
+/* === ESCALATION INDICATOR === */
+.escalation-note {
+  background: #2a3040; border-radius: 8px; padding: 10px 14px; margin-top: 12px;
+  font-size: 12px; color: #89b4fa; border-left: 3px solid #89b4fa;
+}
+
+/* === UNDO BUTTON === */
+.undo-btn {
+  background: none; border: none; color: #585b70; font-size: 11px; cursor: pointer;
+  padding: 4px 8px; margin-left: 4px;
+}
+.undo-btn:hover { color: #f38ba8; }
+
+/* === RESET BUTTON (top-right corner) === */
+.today-header { display: flex; justify-content: flex-end; margin-bottom: 4px; }
+.reset-btn {
+  background: none; border: none; color: #45475a; font-size: 11px; cursor: pointer;
+  padding: 4px 8px; transition: color 0.15s;
+}
+.reset-btn:hover { color: #f38ba8; }
+
+/* === CONFIRM MODAL === */
+.confirm-overlay {
+  display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.7); z-index: 250; align-items: center; justify-content: center;
+  padding: 16px;
+}
+.confirm-overlay.open { display: flex; }
+
+/* === ANIMATIONS === */
+@keyframes slideIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+.animate-in { animation: slideIn 0.2s ease-out; }
+
+/* === CUSTOM MEAL POLLING STATE === */
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+.meal-polling {
+  background: #2a3040; border-radius: 10px; padding: 12px 14px; margin-bottom: 6px;
+  display: flex; align-items: center; gap: 10px; font-size: 13px; color: #89b4fa;
+  animation: pulse 1.5s ease-in-out infinite;
+  border: 1px solid #89b4fa33;
+}
+.meal-polling-dot {
+  width: 8px; height: 8px; border-radius: 50%; background: #89b4fa;
+  animation: pulse 1s ease-in-out infinite;
+}
+</style>
+</head>
+<body>
+
+<main>
+  <!-- TAB: TODAY -->
+  <div id="tab-today" class="tab-content active">
+    <div id="today-content"></div>
+  </div>
+
+  <!-- TAB: PROGRESS -->
+  <div id="tab-progress" class="tab-content">
+    <div id="progress-content"></div>
+  </div>
+
+  <!-- TAB: MEALS -->
+  <div id="tab-meals" class="tab-content">
+    <div id="meals-content"></div>
+  </div>
+
+  <!-- TAB: HISTORY -->
+  <div id="tab-history" class="tab-content">
+    <div id="history-content"></div>
+  </div>
+
+  <!-- TAB: SETTINGS -->
+  <div id="tab-settings" class="tab-content">
+    <div id="settings-content"></div>
+  </div>
+</main>
+
+<!-- Bottom Nav -->
+<nav class="tab-bar">
+  <button class="tab-btn active" data-tab="today"><span class="tab-icon">&#9737;</span>Today</button>
+  <button class="tab-btn" data-tab="progress"><span class="tab-icon">&#9650;</span>Progress</button>
+  <button class="tab-btn" data-tab="meals"><span class="tab-icon">&#9783;</span>Meals</button>
+  <button class="tab-btn" data-tab="history"><span class="tab-icon">&#128197;</span>History</button>
+  <button class="tab-btn" data-tab="settings"><span class="tab-icon">&#9881;</span>Settings</button>
+</nav>
+
+<!-- Custom Meal Modal -->
+<div id="custom-modal" class="modal-overlay">
+  <div class="modal">
+    <div class="modal-title">Custom Meal</div>
+    <p style="font-size:12px;color:#6c7086;margin-bottom:12px;">Describe what you ate. Claude will estimate the macros.</p>
+    <textarea id="custom-meal-text" placeholder="e.g., Two scrambled eggs with toast and butter"></textarea>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeCustomModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="submitCustomMeal()">Send</button>
+    </div>
+  </div>
+</div>
+
+<!-- Confirm Modal -->
+<div id="confirm-modal" class="confirm-overlay">
+  <div class="modal">
+    <div class="modal-title">Reset Today</div>
+    <p style="font-size:13px;color:#a6adc8;margin-bottom:16px;">Reset today's data? This can't be undone.</p>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeConfirmModal()">Cancel</button>
+      <button class="btn btn-secondary" style="background:#f38ba8;color:#1e1e2e;" onclick="confirmResetToday()">Reset</button>
+    </div>
+  </div>
+</div>
+
+<!-- Notification -->
+<div id="notification" class="notification"></div>
+
+<script>
+// ============================================================
+// STATE
+// ============================================================
+let mealPlan = null;
+let dailyLog = {};
+let todayKey = '';
+let weightChart = null;
+let currentCustomSlot = 0;
+let customMealPolling = null; // { slot, intervalId, startTime }
+
+// ============================================================
+// HELPERS
+// ============================================================
+function getToday() {
+  const d = new Date();
+  return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+}
+
+function formatDate(dateStr) {
+  const d = new Date(dateStr + 'T12:00:00');
+  return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+}
+
+function getGreeting() {
+  const h = new Date().getHours();
+  if (h < 12) return 'Good morning';
+  if (h < 17) return 'Good afternoon';
+  return 'Good evening';
+}
+
+function notify(msg, type = '') {
+  const el = document.getElementById('notification');
+  el.textContent = msg;
+  el.className = 'notification show' + (type ? ' ' + type : '');
+  setTimeout(() => el.className = 'notification', 2000);
+}
+
+function getOptionById(id) {
+  if (!mealPlan) return null;
+  for (const meal of mealPlan.meals) {
+    for (const opt of meal.options) {
+      if (opt.id === id) return opt;
+    }
+  }
+  return null;
+}
+
+function getMealBySlot(slot) {
+  if (!mealPlan) return null;
+  return mealPlan.meals.find(m => m.slot === slot) || null;
+}
+
+function getTodayData() {
+  return dailyLog[todayKey] || null;
+}
+
+function getTodayTotals() {
+  const today = getTodayData();
+  if (!today) return { cal: 0, protein: 0 };
+  let cal = 0, protein = 0;
+  if (today.meals) {
+    for (const m of today.meals) {
+      const opt = getOptionById(m.option_id);
+      if (opt) { cal += opt.total_cal; protein += opt.total_protein; }
+    }
+  }
+  if (today.custom_meals) {
+    for (const cm of today.custom_meals) {
+      const macros = getCustomMealMacros(cm);
+      cal += macros.cal;
+      protein += macros.protein;
+    }
+  }
+  return { cal, protein };
+}
+
+function getLoggedSlots() {
+  const today = getTodayData();
+  if (!today) return new Set();
+  const slots = new Set();
+  if (today.meals) today.meals.forEach(m => slots.add(m.slot));
+  if (today.custom_meals) today.custom_meals.forEach(m => slots.add(m.slot));
+  return slots;
+}
+
+function getNextSlot() {
+  const logged = getLoggedSlots();
+  for (let i = 1; i <= 5; i++) {
+    if (!logged.has(i)) return i;
+  }
+  return -1;
+}
+
+function getDayTotals(dayData) {
+  let cal = 0, protein = 0;
+  if (dayData.meals) {
+    for (const m of dayData.meals) {
+      const opt = getOptionById(m.option_id);
+      if (opt) { cal += opt.total_cal; protein += opt.total_protein; }
+    }
+  }
+  if (dayData.custom_meals) {
+    for (const cm of dayData.custom_meals) {
+      const macros = getCustomMealMacros(cm);
+      cal += macros.cal;
+      protein += macros.protein;
+    }
+  }
+  return { cal, protein };
+}
+
+function getCustomMealMacros(cm) {
+  return {
+    cal: cm.estimated_cal || cm.cal || 0,
+    protein: cm.estimated_protein || cm.protein || 0
+  };
+}
+
+function getCustomMealItemsLabel(cm) {
+  if (cm.items && cm.items.length) return cm.items.join(', ');
+  return cm.description || 'Custom';
+}
+
+function getOptionFrequency() {
+  const freq = {};
+  for (const day of Object.values(dailyLog)) {
+    if (day.meals) {
+      for (const m of day.meals) {
+        freq[m.option_id] = (freq[m.option_id] || 0) + 1;
+      }
+    }
+  }
+  return freq;
+}
+
+function getSortedDates() {
+  return Object.keys(dailyLog).sort().reverse();
+}
+
+function getYesterdayWeight() {
+  const dates = Object.keys(dailyLog).sort().reverse();
+  for (const d of dates) {
+    if (d < todayKey && dailyLog[d].weight) return dailyLog[d].weight;
+  }
+  return null;
+}
+
+// ============================================================
+// PERSISTENCE
+// ============================================================
+async function loadData() {
+  try {
+    const mp = await window.brain.readFile('diet/meal_plan.json');
+    mealPlan = JSON.parse(mp);
+  } catch (e) {
+    console.error('Failed to load meal plan:', e);
+    mealPlan = null;
+  }
+  try {
+    const dl = await window.brain.readFile('diet/daily_log.json');
+    dailyLog = JSON.parse(dl);
+  } catch (e) {
+    dailyLog = {};
+  }
+}
+
+async function saveLog() {
+  try {
+    await window.brain.writeFile('diet/daily_log.json', JSON.stringify(dailyLog, null, 2));
+  } catch (e) {
+    console.error('Failed to save log:', e);
+    notify('Failed to save', 'error');
+  }
+}
+
+// ============================================================
+// TAB NAVIGATION
+// ============================================================
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+    renderTab(btn.dataset.tab);
+  });
+});
+
+function checkDateChange() {
+  const now = getToday();
+  if (now !== todayKey) {
+    todayKey = now;
+    return true;
+  }
+  return false;
+}
+
+function renderTab(tab) {
+  checkDateChange();
+  switch(tab) {
+    case 'today': renderToday(); break;
+    case 'progress': renderProgress(); break;
+    case 'meals': renderMeals(); break;
+    case 'history': renderHistory(); break;
+    case 'settings': renderSettings(); break;
+  }
+}
+
+// ============================================================
+// TAB: TODAY
+// ============================================================
+function renderToday() {
+  const container = document.getElementById('today-content');
+  const today = getTodayData();
+
+  // Reset button header (only show when today has data)
+  const headerHtml = today ? '<div class="today-header"><button class="reset-btn" onclick="openResetConfirm()">Reset Day</button></div>' : '';
+
+  // State: Day complete
+  if (today && today.end_of_day && today.end_of_day.feel) {
+    renderDaySummary(container, today, headerHtml);
+    return;
+  }
+
+  // State: No weight logged
+  if (!today || !today.weight) {
+    renderWeightInput(container);
+    return;
+  }
+
+  // State: Meals in progress
+  renderMealProgress(container, today, headerHtml);
+}
+
+function renderWeightInput(container) {
+  const yesterday = getYesterdayWeight();
+  container.innerHTML = `
+    <div class="animate-in" style="padding-top:40px;text-align:center;">
+      <div class="greeting">${getGreeting()}</div>
+      <div class="greeting-sub">Let's start with your weight</div>
+      <div class="weight-input-wrap" style="margin-top:32px;">
+        <label>Weight (lbs)</label>
+        <input type="number" id="weight-input" step="0.1" min="100" max="400"
+               placeholder="225.0" style="max-width:200px;margin:0 auto;"
+               inputmode="decimal">
+        ${yesterday ? `<div class="yesterday-ref">Yesterday: ${yesterday} lbs</div>` : ''}
+      </div>
+      <button class="btn btn-primary btn-large" style="max-width:200px;margin:16px auto 0;"
+              onclick="logWeight()">Log Weight</button>
+    </div>
+  `;
+  setTimeout(() => document.getElementById('weight-input')?.focus(), 100);
+}
+
+function logWeight() {
+  const input = document.getElementById('weight-input');
+  const val = parseFloat(input.value);
+  if (!val || val < 100 || val > 400) {
+    notify('Enter a valid weight');
+    return;
+  }
+  if (!dailyLog[todayKey]) {
+    dailyLog[todayKey] = { weight: 0, weight_time: '', meals: [], custom_meals: [] };
+  }
+  dailyLog[todayKey].weight = val;
+  const now = new Date();
+  dailyLog[todayKey].weight_time = String(now.getHours()).padStart(2,'0') + ':' + String(now.getMinutes()).padStart(2,'0');
+  saveLog();
+  notify('Weight logged', 'success');
+  renderToday();
+}
+
+function renderMealProgress(container, today, headerHtml) {
+  const totals = getTodayTotals();
+  const targets = mealPlan.daily_targets;
+  const loggedSlots = getLoggedSlots();
+  const nextSlot = getNextSlot();
+
+  // All meals logged — show end-of-day form
+  if (nextSlot === -1) {
+    renderEndOfDay(container, today, totals);
+    return;
+  }
+
+  let html = headerHtml || '';
+
+  // Macro bar
+  const calPct = Math.min(100, (totals.cal / targets.calories) * 100);
+  const proPct = Math.min(100, (totals.protein / targets.protein) * 100);
+  html += `
+    <div class="macro-bar">
+      <div class="macro-item">
+        <div class="macro-current">${totals.cal}</div>
+        <div class="macro-target">/ ${targets.calories}</div>
+        <div class="macro-label">calories</div>
+        <div class="macro-progress"><div class="macro-progress-fill" style="width:${calPct}%;background:#89b4fa;"></div></div>
+      </div>
+      <div class="macro-item">
+        <div class="macro-current">${totals.protein}g</div>
+        <div class="macro-target">/ ${targets.protein}g</div>
+        <div class="macro-label">protein</div>
+        <div class="macro-progress"><div class="macro-progress-fill" style="width:${proPct}%;background:#a6e3a1;"></div></div>
+      </div>
+    </div>
+  `;
+
+  // Logged meals (compact)
+  for (let s = 1; s <= 5; s++) {
+    if (!loggedSlots.has(s) || s >= nextSlot) continue;
+    const meal = getMealBySlot(s);
+    const logged = today.meals.find(m => m.slot === s);
+    const opt = logged ? getOptionById(logged.option_id) : null;
+    // Check custom
+    const customLogged = today.custom_meals ? today.custom_meals.find(m => m.slot === s) : null;
+
+    if (opt) {
+      html += `
+        <div class="meal-done animate-in">
+          <span class="meal-done-check">&#10003;</span>
+          <span class="meal-done-label">${meal ? meal.name : 'Meal ' + s}: ${opt.label}</span>
+          <span class="meal-done-macros">${opt.total_cal} cal / ${opt.total_protein}g</span>
+          <button class="undo-btn" onclick="undoMeal(${s})" title="Undo">&#8630;</button>
+        </div>
+      `;
+    } else if (customLogged) {
+      const cmMacros = getCustomMealMacros(customLogged);
+      html += `
+        <div class="meal-done animate-in">
+          <span class="meal-done-check">&#10003;</span>
+          <span class="meal-done-label">${meal ? meal.name : 'Meal ' + s}: ${getCustomMealItemsLabel(customLogged)}</span>
+          <span class="meal-done-macros">${cmMacros.cal || '?'} cal / ${cmMacros.protein || '?'}g</span>
+          <button class="undo-btn" onclick="undoMeal(${s})" title="Undo">&#8630;</button>
+        </div>
+      `;
+    }
+  }
+
+  // Current slot — check if polling for custom meal
+  const isPolling = customMealPolling && customMealPolling.slot === nextSlot;
+  const currentMeal = getMealBySlot(nextSlot);
+
+  if (isPolling && currentMeal) {
+    html += `
+      <div class="meal-section animate-in">
+        <div class="meal-section-header">
+          <div>
+            <div class="meal-section-title">${currentMeal.name}</div>
+            <div class="meal-section-target">${currentMeal.target_cal} cal / ${currentMeal.target_protein}g protein</div>
+          </div>
+          <div class="meal-section-time">${currentMeal.time_window}</div>
+        </div>
+        <div class="meal-polling">
+          <span class="meal-polling-dot"></span>
+          <span>Claude is logging...</span>
+        </div>
+      </div>
+    `;
+  } else if (currentMeal) {
+    html += `
+      <div class="meal-section animate-in">
+        <div class="meal-section-header">
+          <div>
+            <div class="meal-section-title">${currentMeal.name}</div>
+            <div class="meal-section-target">${currentMeal.target_cal} cal / ${currentMeal.target_protein}g protein</div>
+          </div>
+          <div class="meal-section-time">${currentMeal.time_window}</div>
+        </div>
+        ${currentMeal.note ? `<div style="font-size:11px;color:#585b70;margin-bottom:8px;padding:0 4px;">${currentMeal.note}</div>` : ''}
+    `;
+
+    for (const opt of currentMeal.options) {
+      html += `
+        <div class="meal-card" id="card-${opt.id}" onclick="toggleMealDetails('${opt.id}')">
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <div class="meal-card-label">${opt.label}</div>
+          </div>
+          <div class="meal-card-macros">${opt.total_cal} cal &middot; ${opt.total_protein}g protein</div>
+          <div class="meal-card-items" id="items-${opt.id}">
+            ${opt.items.map(it => `
+              <div class="meal-card-item">
+                <span class="meal-card-item-name">${it.name}</span>
+                <span class="meal-card-item-amount">${it.amount} &middot; ${it.cal} cal</span>
+              </div>
+            `).join('')}
+            <button class="btn btn-success" style="margin-top:10px;width:100%;"
+                    onclick="event.stopPropagation();selectMeal(${nextSlot},'${opt.id}')">
+              Select This
+            </button>
+          </div>
+        </div>
+      `;
+    }
+
+    html += `
+        <div class="meal-custom-card" onclick="openCustomModal(${nextSlot})">+ Custom Meal</div>
+      </div>
+    `;
+  }
+
+  // Future meals (dimmed)
+  for (let s = nextSlot + 1; s <= 5; s++) {
+    if (loggedSlots.has(s)) continue;
+    const meal = getMealBySlot(s);
+    if (meal) {
+      html += `
+        <div class="meal-future">
+          <span>${meal.name}</span>
+          <span>${meal.time_window}</span>
+        </div>
+      `;
+    }
+  }
+
+  container.innerHTML = html;
+}
+
+function toggleMealDetails(optId) {
+  const items = document.getElementById('items-' + optId);
+  if (items) items.classList.toggle('expanded');
+}
+
+async function selectMeal(slot, optionId) {
+  const today = getTodayData();
+  if (!today) return;
+  const now = new Date();
+  const time = String(now.getHours()).padStart(2,'0') + ':' + String(now.getMinutes()).padStart(2,'0');
+  today.meals.push({ slot, option_id: optionId, time });
+  await saveLog();
+  notify('Meal logged', 'success');
+  renderToday();
+}
+
+async function undoMeal(slot) {
+  const today = getTodayData();
+  if (!today) return;
+  today.meals = today.meals.filter(m => m.slot !== slot);
+  if (today.custom_meals) {
+    today.custom_meals = today.custom_meals.filter(m => m.slot !== slot);
+  }
+  await saveLog();
+  renderToday();
+}
+
+function renderEndOfDay(container, today, totals) {
+  const targets = mealPlan.daily_targets;
+  container.innerHTML = `
+    <div class="animate-in">
+      <div class="greeting">End of Day</div>
+      <div class="greeting-sub">All meals logged. How'd it go?</div>
+
+      <div class="macro-bar" style="margin-top:16px;">
+        <div class="macro-item">
+          <div class="macro-current">${totals.cal}</div>
+          <div class="macro-target">/ ${targets.calories} cal</div>
+        </div>
+        <div class="macro-item">
+          <div class="macro-current">${totals.protein}g</div>
+          <div class="macro-target">/ ${targets.protein}g pro</div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:16px;">
+        <div class="card-header">How did you feel today?</div>
+        <div class="feel-row">
+          <div class="feel-btn" onclick="setFeel(1)"><span class="feel-num">1</span>Rough</div>
+          <div class="feel-btn" onclick="setFeel(2)"><span class="feel-num">2</span>Meh</div>
+          <div class="feel-btn" onclick="setFeel(3)"><span class="feel-num">3</span>Okay</div>
+          <div class="feel-btn" onclick="setFeel(4)"><span class="feel-num">4</span>Good</div>
+          <div class="feel-btn" onclick="setFeel(5)"><span class="feel-num">5</span>Great</div>
+        </div>
+
+        <div style="margin-top:12px;">
+          <label style="font-size:12px;color:#6c7086;display:block;margin-bottom:6px;">Steps</label>
+          <input type="number" id="eod-steps" placeholder="8000" inputmode="numeric">
+        </div>
+
+        <div style="margin-top:12px;">
+          <label style="font-size:12px;color:#6c7086;display:block;margin-bottom:6px;">Anything to note?</label>
+          <textarea id="eod-notes" placeholder="Optional..."></textarea>
+        </div>
+
+        <div style="margin-top:12px;display:flex;align-items:center;gap:10px;">
+          <label style="font-size:13px;cursor:pointer;display:flex;align-items:center;gap:8px;">
+            <input type="checkbox" id="eod-tweak" style="width:auto;accent-color:#89b4fa;">
+            Request diet adjustment?
+          </label>
+        </div>
+
+        <button class="btn btn-primary btn-large" style="margin-top:16px;" id="eod-submit" disabled
+                onclick="submitEndOfDay()">Submit</button>
+      </div>
+    </div>
+  `;
+}
+
+let selectedFeel = 0;
+function setFeel(n) {
+  selectedFeel = n;
+  document.querySelectorAll('.feel-btn').forEach((btn, i) => {
+    btn.classList.toggle('active', i + 1 === n);
+  });
+  const submit = document.getElementById('eod-submit');
+  if (submit) submit.disabled = false;
+}
+
+async function submitEndOfDay() {
+  if (!selectedFeel) return;
+  const today = getTodayData();
+  if (!today) return;
+
+  const steps = parseInt(document.getElementById('eod-steps')?.value) || 0;
+  const notes = document.getElementById('eod-notes')?.value || '';
+  const tweak = document.getElementById('eod-tweak')?.checked || false;
+
+  today.end_of_day = {
+    feel: selectedFeel,
+    steps,
+    notes,
+    tweak_requested: tweak,
+    escalated_to_claude: false
+  };
+
+  // Escalation logic
+  if (selectedFeel <= 2 || tweak) {
+    today.end_of_day.escalated_to_claude = true;
+    try {
+      const totals = getTodayTotals();
+      const targets = mealPlan.daily_targets;
+      const mealLabels = today.meals.map(m => {
+        const opt = getOptionById(m.option_id);
+        const meal = getMealBySlot(m.slot);
+        return `${meal?.name || 'Slot ' + m.slot}: ${opt?.label || m.option_id}`;
+      }).join(', ');
+
+      const message = `diet-tracker: End-of-day check-in.
+Date: ${todayKey}
+Weight: ${today.weight} lbs
+Feel: ${selectedFeel}/5
+Steps: ${steps}
+Notes: ${notes || 'none'}
+Tweak requested: ${tweak ? 'yes' : 'no'}
+Meals: ${mealLabels}
+Totals: ${totals.cal} cal / ${totals.protein}g protein (target: ${targets.calories} / ${targets.protein}g)
+${selectedFeel <= 2 ? 'CONCERN: Low feel rating — please review and suggest adjustments.' : ''}
+${tweak ? 'CONCERN: Diet adjustment requested — please review the plan.' : ''}`;
+
+      await window.brain.promptClaude(message);
+    } catch (e) {
+      console.error('Escalation failed:', e);
+    }
+  }
+
+  await saveLog();
+  selectedFeel = 0;
+  notify('Day logged', 'success');
+  renderToday();
+}
+
+function renderDaySummary(container, today, headerHtml) {
+  const totals = getTodayTotals();
+  const targets = mealPlan.daily_targets;
+  const adherence = Math.abs(totals.cal - targets.calories) <= targets.variance ? 'On target' : (totals.cal > targets.calories + targets.variance ? 'Over target' : 'Under target');
+  const feelLabels = ['', 'Rough', 'Meh', 'Okay', 'Good', 'Great'];
+
+  let mealsHtml = '';
+  if (today.meals) {
+    for (const m of today.meals) {
+      const opt = getOptionById(m.option_id);
+      const meal = getMealBySlot(m.slot);
+      mealsHtml += `<div style="padding:3px 0;font-size:12px;color:#a6adc8;">${meal?.name || 'Slot ' + m.slot}: ${opt?.label || m.option_id}</div>`;
+    }
+  }
+  if (today.custom_meals) {
+    for (const cm of today.custom_meals) {
+      const meal = getMealBySlot(cm.slot);
+      const cmMacros = getCustomMealMacros(cm);
+      mealsHtml += `<div style="padding:3px 0;font-size:12px;color:#a6adc8;">${meal?.name || 'Slot ' + cm.slot}: ${getCustomMealItemsLabel(cm)} (~${cmMacros.cal} cal)</div>`;
+    }
+  }
+
+  container.innerHTML = (headerHtml || '') + `
+    <div class="animate-in summary-card">
+      <div class="summary-title">Day Complete</div>
+      <div class="summary-grid">
+        <div class="summary-item">
+          <div class="summary-value">${today.weight}</div>
+          <div class="summary-label">Weight (lbs)</div>
+        </div>
+        <div class="summary-item">
+          <div class="summary-value">${feelLabels[today.end_of_day.feel] || '?'}</div>
+          <div class="summary-label">Feeling</div>
+        </div>
+        <div class="summary-item">
+          <div class="summary-value">${totals.cal}</div>
+          <div class="summary-label">Calories</div>
+        </div>
+        <div class="summary-item">
+          <div class="summary-value">${totals.protein}g</div>
+          <div class="summary-label">Protein</div>
+        </div>
+      </div>
+      <div style="font-size:13px;color:#6c7086;margin-bottom:8px;">${adherence}</div>
+      ${today.end_of_day.steps ? `<div style="font-size:12px;color:#585b70;">Steps: ${today.end_of_day.steps.toLocaleString()}</div>` : ''}
+      ${today.end_of_day.notes ? `<div style="font-size:12px;color:#585b70;font-style:italic;margin-top:4px;">"${today.end_of_day.notes}"</div>` : ''}
+      <div style="margin-top:12px;text-align:left;">
+        ${mealsHtml}
+      </div>
+      ${today.end_of_day.escalated_to_claude ? '<div class="escalation-note">Claude has been notified and will review</div>' : ''}
+    </div>
+  `;
+}
+
+// ============================================================
+// RESET TODAY
+// ============================================================
+function openResetConfirm() {
+  document.getElementById('confirm-modal').classList.add('open');
+}
+
+function closeConfirmModal() {
+  document.getElementById('confirm-modal').classList.remove('open');
+}
+
+async function confirmResetToday() {
+  closeConfirmModal();
+  delete dailyLog[todayKey];
+  await saveLog();
+  notify('Today reset', 'success');
+  renderToday();
+}
+
+// ============================================================
+// CUSTOM MEAL MODAL
+// ============================================================
+function openCustomModal(slot) {
+  currentCustomSlot = slot;
+  document.getElementById('custom-modal').classList.add('open');
+  document.getElementById('custom-meal-text').value = '';
+  setTimeout(() => document.getElementById('custom-meal-text')?.focus(), 100);
+}
+
+function closeCustomModal() {
+  document.getElementById('custom-modal').classList.remove('open');
+}
+
+async function submitCustomMeal() {
+  const text = document.getElementById('custom-meal-text').value.trim();
+  if (!text) return;
+
+  const slot = currentCustomSlot;
+  const meal = getMealBySlot(slot);
+  closeCustomModal();
+
+  // Show polling state immediately
+  startCustomMealPolling(slot);
+  renderToday();
+
+  // Fire promptClaude — Claude will write directly to daily_log.json
+  try {
+    const msg = `diet-tracker: Custom meal for slot ${slot} (${meal?.name || 'Meal ' + slot}).
+The user ate: "${text}"
+Today's date: ${todayKey}
+
+Instructions: Estimate the calories and protein for this meal. Then write the entry directly to the daily log file at 05_App_Data/diet/daily_log.json.
+
+Use this exact JSON structure for the custom_meals array entry:
+{
+  "slot": ${slot},
+  "description": "${text.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}",
+  "items": ["item 1 (portion)", "item 2 (portion)"],
+  "estimated_cal": number,
+  "estimated_protein": number,
+  "time": "HH:MM"
+}
+
+Add it to today's date entry (${todayKey}) in the daily log. If today's entry doesn't exist yet, create it. If custom_meals array doesn't exist, create it. Preserve all existing data in the file.
+
+After writing, just respond "Logged" to confirm.`;
+
+    window.brain.promptClaude(msg).catch(e => console.error('Custom meal prompt failed:', e));
+  } catch (e) {
+    console.error('Custom meal prompt failed:', e);
+  }
+}
+
+function startCustomMealPolling(slot) {
+  // Clear any existing poll
+  if (customMealPolling) {
+    clearInterval(customMealPolling.intervalId);
+  }
+
+  const startTime = Date.now();
+  const intervalId = setInterval(() => pollForCustomMeal(slot), 1500);
+  customMealPolling = { slot, intervalId, startTime };
+}
+
+async function pollForCustomMeal(slot) {
+  // Timeout after 30 seconds
+  if (Date.now() - customMealPolling.startTime > 30000) {
+    clearInterval(customMealPolling.intervalId);
+    customMealPolling = null;
+    notify("Claude didn't respond — try again?");
+    renderToday();
+    return;
+  }
+
+  try {
+    const raw = await window.brain.readFile('diet/daily_log.json');
+    const log = JSON.parse(raw);
+    const todayEntry = log[todayKey];
+    if (!todayEntry || !todayEntry.custom_meals) return;
+
+    const entry = todayEntry.custom_meals.find(cm => cm.slot === slot);
+    if (!entry) return;
+
+    // Found it — stop polling, update local state, show confirmation
+    clearInterval(customMealPolling.intervalId);
+    customMealPolling = null;
+
+    // Sync the full daily log from disk (Claude may have changed it)
+    dailyLog = log;
+
+    const macros = getCustomMealMacros(entry);
+    const label = getCustomMealItemsLabel(entry);
+    notify(`Logged: ~${macros.cal} cal, ${macros.protein}g protein — ${label}`, 'success');
+    renderToday();
+  } catch (e) {
+    // File read failed, just wait for next poll
+    console.error('Poll read failed:', e);
+  }
+}
+
+// ============================================================
+// TAB: PROGRESS
+// ============================================================
+function renderProgress() {
+  const container = document.getElementById('progress-content');
+  const dates = Object.keys(dailyLog).sort();
+  const weights = dates.filter(d => dailyLog[d].weight).map(d => ({ date: d, weight: dailyLog[d].weight }));
+
+  if (weights.length === 0) {
+    container.innerHTML = '<div style="text-align:center;padding:40px;color:#6c7086;">No data yet. Log your first weight on the Today tab.</div>';
+    return;
+  }
+
+  // EWMA calculation
+  const alpha = 2 / (7 + 1);
+  let ewma = [weights[0].weight];
+  for (let i = 1; i < weights.length; i++) {
+    ewma.push(alpha * weights[i].weight + (1 - alpha) * ewma[i - 1]);
+  }
+
+  // Stats
+  const currentWeight = weights[weights.length - 1].weight;
+  const startWeight = weights[0].weight;
+  const totalLost = (startWeight - currentWeight).toFixed(1);
+  const daysTracked = weights.length;
+  const startDate = mealPlan?.start_date || dates[0];
+  const daysSinceStart = Math.max(1, Math.ceil((new Date() - new Date(startDate)) / 86400000));
+
+  // Weekly average cal/protein
+  const last7 = dates.slice(-7);
+  let weekCal = 0, weekPro = 0, weekDays = 0;
+  for (const d of last7) {
+    const t = getDayTotals(dailyLog[d]);
+    if (t.cal > 0) { weekCal += t.cal; weekPro += t.protein; weekDays++; }
+  }
+  const avgCal = weekDays ? Math.round(weekCal / weekDays) : 0;
+  const avgPro = weekDays ? Math.round(weekPro / weekDays) : 0;
+
+  // TDEE estimate (needs 3+ weeks)
+  let tdeeHtml = '';
+  if (daysTracked >= 21 && weekDays > 0) {
+    const weightChange = startWeight - currentWeight;
+    const tdee = Math.round(avgCal + (weightChange * 3500 / daysTracked));
+    tdeeHtml = `
+      <div class="stat-badge">
+        <div class="stat-value">${tdee}</div>
+        <div class="stat-label">Est. TDEE</div>
+      </div>
+    `;
+  }
+
+  let html = `
+    <div style="margin-bottom:16px;">
+      <div style="font-size:18px;font-weight:700;margin-bottom:4px;">Progress</div>
+      <div style="font-size:12px;color:#6c7086;">Weight trend over time</div>
+    </div>
+
+    <div class="chart-container">
+      <canvas id="weight-chart" height="220"></canvas>
+    </div>
+
+    <div class="stat-row">
+      <div class="stat-badge">
+        <div class="stat-value">${currentWeight}</div>
+        <div class="stat-label">Current (lbs)</div>
+      </div>
+      <div class="stat-badge">
+        <div class="stat-value">${startWeight}</div>
+        <div class="stat-label">Start (lbs)</div>
+      </div>
+      <div class="stat-badge">
+        <div class="stat-value">${totalLost}</div>
+        <div class="stat-label">Lost (lbs)</div>
+      </div>
+    </div>
+
+    <div class="stat-row">
+      <div class="stat-badge">
+        <div class="stat-value">${avgCal}</div>
+        <div class="stat-label">Avg Cal (7d)</div>
+      </div>
+      <div class="stat-badge">
+        <div class="stat-value">${avgPro}g</div>
+        <div class="stat-label">Avg Protein (7d)</div>
+      </div>
+      <div class="stat-badge">
+        <div class="stat-value">${daysTracked}</div>
+        <div class="stat-label">Days Tracked</div>
+      </div>
+      ${tdeeHtml}
+    </div>
+
+    <div style="margin-top:20px;">
+      <div style="font-size:15px;font-weight:700;margin-bottom:10px;">Weekly Breakdown</div>
+      <div id="weekly-breakdown"></div>
+    </div>
+  `;
+
+  container.innerHTML = html;
+
+  // Render chart
+  renderWeightChart(weights, ewma);
+
+  // Render weekly breakdown
+  renderWeeklyBreakdown(dates);
+}
+
+function renderWeightChart(weights, ewma) {
+  const ctx = document.getElementById('weight-chart');
+  if (!ctx) return;
+
+  if (weightChart) {
+    weightChart.destroy();
+    weightChart = null;
+  }
+
+  const labels = weights.map(w => {
+    const d = new Date(w.date + 'T12:00:00');
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  });
+
+  weightChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: 'Weight',
+          data: weights.map(w => w.weight),
+          borderColor: '#6c7086',
+          backgroundColor: 'rgba(108,112,134,0.1)',
+          borderWidth: 1.5,
+          pointRadius: 4,
+          pointBackgroundColor: '#89b4fa',
+          pointBorderColor: '#89b4fa',
+          tension: 0,
+          fill: false
+        },
+        {
+          label: 'Trend (7d EWMA)',
+          data: ewma,
+          borderColor: '#89b4fa',
+          borderWidth: 3,
+          pointRadius: 0,
+          tension: 0.3,
+          fill: false,
+          borderDash: []
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: {
+          display: true,
+          labels: { color: '#6c7086', font: { size: 11 }, boxWidth: 12, padding: 12 }
+        },
+        tooltip: {
+          backgroundColor: '#313244',
+          titleColor: '#cdd6f4',
+          bodyColor: '#a6adc8',
+          borderColor: '#45475a',
+          borderWidth: 1,
+          cornerRadius: 8,
+          padding: 10
+        }
+      },
+      scales: {
+        x: {
+          ticks: { color: '#585b70', font: { size: 10 } },
+          grid: { color: 'rgba(69,71,90,0.3)' }
+        },
+        y: {
+          ticks: { color: '#585b70', font: { size: 10 } },
+          grid: { color: 'rgba(69,71,90,0.3)' },
+          suggestedMin: Math.min(...weights.map(w => w.weight)) - 2,
+          suggestedMax: Math.max(...weights.map(w => w.weight)) + 2
+        }
+      }
+    }
+  });
+}
+
+function renderWeeklyBreakdown(dates) {
+  const el = document.getElementById('weekly-breakdown');
+  if (!el) return;
+
+  // Group by week (Mon-Sun)
+  const weeks = {};
+  for (const d of dates) {
+    const date = new Date(d + 'T12:00:00');
+    const day = date.getDay();
+    const monday = new Date(date);
+    monday.setDate(date.getDate() - ((day + 6) % 7));
+    const weekKey = monday.toISOString().split('T')[0];
+    if (!weeks[weekKey]) weeks[weekKey] = [];
+    weeks[weekKey].push(d);
+  }
+
+  const weekKeys = Object.keys(weeks).sort().reverse();
+  let html = '';
+  for (const wk of weekKeys) {
+    const days = weeks[wk];
+    const weekWeights = days.filter(d => dailyLog[d].weight).map(d => dailyLog[d].weight);
+    const avgWeight = weekWeights.length ? (weekWeights.reduce((a,b)=>a+b,0) / weekWeights.length).toFixed(1) : '—';
+    let totalCal = 0, totalPro = 0, mealDays = 0;
+    for (const d of days) {
+      const t = getDayTotals(dailyLog[d]);
+      if (t.cal > 0) { totalCal += t.cal; totalPro += t.protein; mealDays++; }
+    }
+    const avgCal = mealDays ? Math.round(totalCal / mealDays) : 0;
+    const avgPro = mealDays ? Math.round(totalPro / mealDays) : 0;
+
+    const weekLabel = formatDate(wk);
+
+    html += `
+      <div class="accordion">
+        <div class="accordion-header" onclick="this.classList.toggle('open');this.nextElementSibling.classList.toggle('open');">
+          <span>Week of ${weekLabel}</span>
+          <span style="font-size:12px;color:#6c7086;">Avg: ${avgWeight} lbs &middot; ${avgCal} cal</span>
+        </div>
+        <div class="accordion-body">
+    `;
+    for (const d of days.sort()) {
+      const day = dailyLog[d];
+      const t = getDayTotals(day);
+      const feelLabels = ['', 'Rough', 'Meh', 'Okay', 'Good', 'Great'];
+      const feel = day.end_of_day?.feel ? feelLabels[day.end_of_day.feel] : '—';
+      html += `
+        <div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #3a3a4e;">
+          <span>${formatDate(d)}</span>
+          <span style="color:#6c7086;">${day.weight || '—'} lbs &middot; ${t.cal} cal &middot; ${t.protein}g &middot; ${feel}</span>
+        </div>
+      `;
+    }
+    html += '</div></div>';
+  }
+
+  el.innerHTML = html || '<div style="color:#585b70;font-size:13px;">No weeks to show yet.</div>';
+}
+
+// ============================================================
+// TAB: MEALS
+// ============================================================
+function renderMeals() {
+  const container = document.getElementById('meals-content');
+  if (!mealPlan) {
+    container.innerHTML = '<div style="text-align:center;padding:40px;color:#6c7086;">No meal plan loaded.</div>';
+    return;
+  }
+
+  const freq = getOptionFrequency();
+  let html = '<div style="font-size:18px;font-weight:700;margin-bottom:16px;">Meal Plan</div>';
+
+  for (const meal of mealPlan.meals) {
+    html += `
+      <div class="browse-slot">
+        <div class="browse-slot-header">${meal.name}</div>
+        <div class="browse-slot-sub">${meal.time_window} &middot; ${meal.target_cal} cal / ${meal.target_protein}g protein${meal.note ? ' &middot; ' + meal.note : ''}</div>
+    `;
+
+    for (const opt of meal.options) {
+      const count = freq[opt.id] || 0;
+      html += `
+        <div class="browse-option" onclick="this.querySelector('.browse-option-items').classList.toggle('open')">
+          <div class="browse-option-header">
+            <span>
+              <span class="browse-option-label">${opt.label}</span>
+              ${count > 0 ? `<span class="browse-option-badge">${count}x</span>` : ''}
+            </span>
+            <span class="browse-option-macros">${opt.total_cal} cal / ${opt.total_protein}g</span>
+          </div>
+          <div class="browse-option-items">
+            ${opt.items.map(it => `
+              <div style="display:flex;justify-content:space-between;padding:3px 0;">
+                <span>${it.name}</span>
+                <span style="color:#585b70;">${it.amount} &middot; ${it.cal} cal &middot; ${it.protein}g</span>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      `;
+    }
+
+    html += '</div>';
+  }
+
+  container.innerHTML = html;
+}
+
+// ============================================================
+// TAB: HISTORY
+// ============================================================
+function renderHistory() {
+  const container = document.getElementById('history-content');
+  const dates = getSortedDates();
+
+  if (dates.length === 0) {
+    container.innerHTML = '<div style="text-align:center;padding:40px;color:#6c7086;">No history yet.</div>';
+    return;
+  }
+
+  let html = '<div style="font-size:18px;font-weight:700;margin-bottom:16px;">History</div>';
+
+  for (const d of dates) {
+    const day = dailyLog[d];
+    const totals = getDayTotals(day);
+    const feelLabels = ['', 'Rough', 'Meh', 'Okay', 'Good', 'Great'];
+    const feel = day.end_of_day?.feel || 0;
+
+    // Subtle background shade based on feel (neutral tones)
+    const bgShade = feel >= 4 ? '#2a3040' : feel <= 2 && feel > 0 ? '#302a2a' : '#313244';
+
+    html += `
+      <div class="history-day" style="background:${bgShade};" onclick="this.querySelector('.history-day-detail').classList.toggle('open')">
+        <div class="history-day-header">
+          <span class="history-day-date">${formatDate(d)}</span>
+          <span class="history-day-weight">${day.weight ? day.weight + ' lbs' : '—'}</span>
+        </div>
+        <div class="history-day-macros">${totals.cal} cal &middot; ${totals.protein}g protein${feel ? ' &middot; ' + feelLabels[feel] : ''}</div>
+        <div class="history-day-detail">
+    `;
+
+    if (day.meals) {
+      for (const m of day.meals) {
+        const opt = getOptionById(m.option_id);
+        const meal = getMealBySlot(m.slot);
+        html += `
+          <div class="history-meal-line">
+            <span>${meal?.name || 'Slot ' + m.slot}</span>
+            <span style="color:#6c7086;">${opt?.label || m.option_id} (${opt?.total_cal || '?'} cal)</span>
+          </div>
+        `;
+      }
+    }
+    if (day.custom_meals) {
+      for (const cm of day.custom_meals) {
+        const meal = getMealBySlot(cm.slot);
+        const cmMacros = getCustomMealMacros(cm);
+        html += `
+          <div class="history-meal-line">
+            <span>${meal?.name || 'Slot ' + cm.slot}</span>
+            <span style="color:#6c7086;">${getCustomMealItemsLabel(cm)} (~${cmMacros.cal || '?'} cal)</span>
+          </div>
+        `;
+      }
+    }
+
+    if (day.end_of_day) {
+      if (day.end_of_day.steps) html += `<div class="history-feel">Steps: ${day.end_of_day.steps.toLocaleString()}</div>`;
+      if (day.end_of_day.notes) html += `<div class="history-notes">"${day.end_of_day.notes}"</div>`;
+    }
+
+    html += '</div></div>';
+  }
+
+  container.innerHTML = html;
+}
+
+// ============================================================
+// TAB: SETTINGS
+// ============================================================
+function renderSettings() {
+  const container = document.getElementById('settings-content');
+  if (!mealPlan) {
+    container.innerHTML = '<div style="text-align:center;padding:40px;color:#6c7086;">No meal plan loaded.</div>';
+    return;
+  }
+
+  const startDate = mealPlan.start_date ? formatDate(mealPlan.start_date) : '—';
+  const phase = mealPlan.phase ? mealPlan.phase.charAt(0).toUpperCase() + mealPlan.phase.slice(1) : '—';
+
+  container.innerHTML = `
+    <div style="font-size:18px;font-weight:700;margin-bottom:16px;">Settings</div>
+
+    <div class="settings-section">
+      <div class="settings-label">Current Phase</div>
+      <div class="settings-value">${phase} — started ${startDate}</div>
+    </div>
+
+    <div class="settings-section">
+      <div class="settings-label">Daily Targets</div>
+      <div class="settings-value">${mealPlan.daily_targets.calories} cal / ${mealPlan.daily_targets.protein}g protein</div>
+    </div>
+
+    <div class="settings-section">
+      <div class="settings-label">Variance Allowance</div>
+      <div class="settings-value">&plusmn; ${mealPlan.daily_targets.variance} cal</div>
+    </div>
+
+    <div class="settings-section">
+      <div class="settings-label">Meal Slots</div>
+      <div class="settings-value">${mealPlan.meals.length} meals/day</div>
+    </div>
+
+    <button class="btn btn-primary btn-large" style="margin-top:16px;" onclick="requestPlanUpdate()">
+      Request Plan Update
+    </button>
+
+    <div style="margin-top:24px;font-size:11px;color:#585b70;text-align:center;">
+      Diet Tracker &middot; Second Brain App
+    </div>
+  `;
+}
+
+async function requestPlanUpdate() {
+  try {
+    const dates = Object.keys(dailyLog).sort();
+    const recentDates = dates.slice(-7);
+    let summary = '';
+    for (const d of recentDates) {
+      const t = getDayTotals(dailyLog[d]);
+      const w = dailyLog[d].weight || '?';
+      const f = dailyLog[d].end_of_day?.feel || '?';
+      summary += `${d}: ${w}lbs, ${t.cal}cal, ${t.protein}g pro, feel ${f}/5\n`;
+    }
+
+    const msg = `diet-tracker: Plan update requested.
+Current phase: ${mealPlan.phase}
+Current targets: ${mealPlan.daily_targets.calories} cal / ${mealPlan.daily_targets.protein}g protein
+Recent 7 days:
+${summary}
+Zeke wants to discuss potential adjustments to the plan.`;
+
+    await window.brain.promptClaude(msg);
+    notify('Claude will review your plan', 'success');
+  } catch (e) {
+    console.error('Plan update request failed:', e);
+    notify('Failed to send request');
+  }
+}
+
+// ============================================================
+// INIT
+// ============================================================
+async function init() {
+  todayKey = getToday();
+  await loadData();
+  renderToday();
+
+  // Check for date change every 60s (handles overnight open)
+  setInterval(() => {
+    if (checkDateChange()) {
+      renderToday();
+    }
+  }, 60000);
+}
+
+init();
+</script>
+</body>
+</html>

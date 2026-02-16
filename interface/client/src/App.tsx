@@ -2,11 +2,15 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import { FileTree } from './FileTree';
 import { Chat } from './Chat';
-import { EditorView } from './Editor';
+import { EditorView, HtmlIframe } from './Editor';
+import { AppDrawer } from './components/AppDrawer';
 import { InputModal } from './components/InputModal';
 import { ConfirmModal } from './components/ConfirmModal';
 import { SettingsModal, useThemeInit } from './components/SettingsModal';
-import { Menu, FileText, MessageSquare, Sidebar, PanelRight, Settings, Layout } from 'lucide-react';
+import { FileSearchModal } from './components/FileSearchModal';
+import { useClaude } from './useClaude';
+import { useToast } from './Toast';
+import { Menu, FileText, MessageSquare, Sidebar, PanelRight, Settings, Layout, Columns, ArrowLeft } from 'lucide-react';
 import { clsx } from 'clsx';
 import { API_URL } from './config';
 
@@ -58,10 +62,14 @@ function App() {
   const [markdown, setMarkdown] = useState<string>('# Welcome\nSelect a file to start.');
   // Cache for unsaved changes per file
   const [draftContent, setDraftContent] = useState<Record<string, string>>({});
+  // Open editor tabs - ordered list of file paths
+  const [openTabs, setOpenTabs] = useState<string[]>([]);
   // Track the "clean" content (last saved/loaded) to detect changes
   const [savedContent, setSavedContent] = useState<string>('');
   // Theme customizer modal
   const [showThemeCustomizer, setShowThemeCustomizer] = useState(false);
+  // File search modal
+  const [showFileSearch, setShowFileSearch] = useState(false);
 
   // Visibility Toggles
   const [showLeftPanel, setShowLeftPanel] = useState(true);
@@ -71,7 +79,28 @@ function App() {
   // Editor Mode: 'view' (formatted) or 'edit' (raw text)
   const [viewMode, setViewMode] = useState<'view' | 'edit'>('view');
 
+  // Split editor state (desktop only)
+  const [isSplitMode, setIsSplitMode] = useState(false);
+  const [activePaneId, setActivePaneId] = useState<'primary' | 'secondary'>('primary');
+  // Secondary pane state
+  const [secondaryFile, setSecondaryFile] = useState<string | undefined>();
+  const [secondaryMarkdown, setSecondaryMarkdown] = useState<string>('');
+  const [secondarySavedContent, setSecondarySavedContent] = useState<string>('');
+  const [secondaryOpenTabs, setSecondaryOpenTabs] = useState<string[]>([]);
+  const [secondaryViewMode, setSecondaryViewMode] = useState<'view' | 'edit'>('view');
+
   const [activeTab, setActiveTab] = useState<'files' | 'editor' | 'chat'>('files');
+
+  // Split chat state (desktop only)
+  const [isChatSplit, setIsChatSplit] = useState(false);
+  const [activeChatPanel, setActiveChatPanel] = useState<'primary' | 'secondary'>('primary');
+
+  // Full-screen app mode
+  const [fullscreenApp, setFullscreenApp] = useState<{
+    path: string;
+    name: string;
+    html: string;
+  } | null>(null);
 
   // Chat panel width (percentage of viewport)
   const [chatWidth, setChatWidth] = useState(30);
@@ -99,6 +128,66 @@ function App() {
   const closeInputModal = () => setInputModal(prev => ({ ...prev, isOpen: false }));
   const closeConfirmModal = () => setConfirmModal(prev => ({ ...prev, isOpen: false }));
 
+  // Toast hook for split view warnings
+  const { showToast } = useToast();
+
+  // Secondary chat hook for split view (always called — React requires unconditional hooks)
+  const secondaryClaude = useClaude({
+    instanceId: 'secondary',
+    enabled: isChatSplit,
+    suppressGlobalEvents: true,
+  });
+
+  // Handler: open a chat session in the split view secondary panel
+  const handleSplitChat = useCallback((sessionId: string) => {
+    if (isMobile) return; // No split on mobile
+    if (!sessionId || sessionId === 'new') {
+      showToast({ type: 'info', title: 'Cannot split', message: 'Save a chat first before opening in split view', duration: 3000 });
+      return;
+    }
+    setIsChatSplit(true);
+    // Small delay to let WebSocket connect, then load the session
+    setTimeout(() => {
+      secondaryClaude.loadChat(sessionId);
+    }, 150);
+  }, [isMobile, secondaryClaude, showToast]);
+
+  // Handler: open a chat session in a pop-out window
+  const handlePopoutChat = useCallback((sessionId: string) => {
+    if (!sessionId || sessionId === 'new') {
+      showToast({ type: 'info', title: 'Cannot pop out', message: 'Save a chat first before opening in a new window', duration: 3000 });
+      return;
+    }
+    const width = 480;
+    const height = 720;
+    const left = window.screenX + window.outerWidth - width - 40;
+    const top = window.screenY + 60;
+    window.open(
+      `/chat/${sessionId}`,
+      `chat-popout-${sessionId}`,
+      `width=${width},height=${height},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no`
+    );
+  }, [showToast]);
+
+  // Listen for pop-out window events via BroadcastChannel
+  useEffect(() => {
+    const channel = new BroadcastChannel('second-brain-popout');
+    channel.onmessage = (event) => {
+      if (event.data.type === 'popout-closed') {
+        // Pop-out was closed — could refresh state if needed
+        console.log(`Pop-out closed for session: ${event.data.sessionId}`);
+      }
+    };
+    return () => channel.close();
+  }, []);
+
+  // Close split and force-disable on mobile
+  useEffect(() => {
+    if (isMobile && isChatSplit) {
+      setIsChatSplit(false);
+    }
+  }, [isMobile, isChatSplit]);
+
   // Compute which files have unsaved changes
   const unsavedPaths = useMemo(() => {
     const paths = new Set(Object.keys(draftContent));
@@ -106,8 +195,12 @@ function App() {
     if (selectedFile && markdown !== savedContent) {
       paths.add(selectedFile);
     }
+    // Include secondary pane file if it has unsaved changes
+    if (isSplitMode && secondaryFile && secondaryMarkdown !== secondarySavedContent) {
+      paths.add(secondaryFile);
+    }
     return paths;
-  }, [draftContent, selectedFile, markdown, savedContent]);
+  }, [draftContent, selectedFile, markdown, savedContent, isSplitMode, secondaryFile, secondaryMarkdown, secondarySavedContent]);
 
   // Custom resize handler for Chat panel
   const startChatResize = useCallback((e: React.MouseEvent) => {
@@ -163,6 +256,7 @@ function App() {
               setSelectedFile(config.default_editor_file);
               setMarkdown(content);
               setSavedContent(content);
+              setOpenTabs([config.default_editor_file]);
             }
           }
         }
@@ -174,6 +268,67 @@ function App() {
     loadInitialFile();
   }, []);
 
+  // Auto-refresh file list every 10 seconds
+  useEffect(() => {
+    const interval = setInterval(refreshFiles, 10_000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // App registry for fullscreen mode
+  const [appRegistry, setAppRegistry] = useState<{ name: string; icon: string; entry: string; description: string }[]>([]);
+  useEffect(() => {
+    fetch(`${API_URL}/apps`).then(r => r.json()).then(data => {
+      if (Array.isArray(data)) setAppRegistry(data);
+    }).catch(() => {});
+  }, []);
+
+  // Open an app in fullscreen mode
+  const openAppFullscreen = useCallback(async (filePath: string) => {
+    try {
+      const res = await fetch(`${API_URL}/file/${filePath}`);
+      const data = await res.json();
+      const html = data.content || '';
+      const entryPath = filePath.replace('05_App_Data/', '');
+      const app = appRegistry.find(a => a.entry === entryPath);
+      setFullscreenApp({
+        path: filePath,
+        name: app?.name || filePath.split('/').slice(-2, -1)[0] || 'App',
+        html,
+      });
+    } catch (err) {
+      console.error('Failed to open app fullscreen:', err);
+    }
+  }, [appRegistry]);
+
+  // Escape key exits fullscreen app mode
+  useEffect(() => {
+    if (!fullscreenApp) return;
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setFullscreenApp(null);
+      }
+    };
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
+  }, [fullscreenApp]);
+
+  // Keyboard shortcut: Ctrl+\ to toggle chat split view
+  useEffect(() => {
+    const handleSplitShortcut = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === '\\') {
+        e.preventDefault();
+        if (!isMobile) {
+          setIsChatSplit(prev => !prev);
+        }
+      }
+    };
+    window.addEventListener('keydown', handleSplitShortcut);
+    return () => window.removeEventListener('keydown', handleSplitShortcut);
+  }, [isMobile]);
+
+  // Ref to allow handleCloseTab to call handleFileSelect without circular dependency
+  const handleFileSelectRef = useRef<(path: string) => void>(() => {});
+
   const handleFileSelect = async (path: string) => {
     // Save current file's draft if it has unsaved changes
     if (selectedFile && markdown !== savedContent) {
@@ -181,6 +336,9 @@ function App() {
     }
 
     setSelectedFile(path);
+
+    // Add to open tabs if not already present
+    setOpenTabs(prev => prev.includes(path) ? prev : [...prev, path]);
 
     // Check if there's a draft for the new file
     if (draftContent[path] !== undefined) {
@@ -208,6 +366,34 @@ function App() {
 
     if (isMobile) setActiveTab('editor');
   };
+
+  // Keep ref in sync so handleCloseTab can call it
+  handleFileSelectRef.current = handleFileSelect;
+
+  const handleCloseTab = useCallback((path: string) => {
+    setOpenTabs(prev => {
+      const idx = prev.indexOf(path);
+      const next = prev.filter(p => p !== path);
+
+      // If we're closing the active tab, switch to an adjacent one
+      if (path === selectedFile) {
+        if (next.length === 0) {
+          // No tabs left
+          setSelectedFile(undefined);
+          setMarkdown('');
+          setSavedContent('');
+        } else {
+          // Pick the tab to the left, or the first one if we closed the leftmost
+          const newIdx = Math.min(idx, next.length - 1);
+          const newPath = next[Math.max(0, newIdx)];
+          // Use microtask to avoid state conflicts within setOpenTabs
+          queueMicrotask(() => handleFileSelectRef.current(newPath));
+        }
+      }
+
+      return next;
+    });
+  }, [selectedFile]);
 
   const handleSave = async (): Promise<boolean> => {
     if (!selectedFile) return false;
@@ -242,6 +428,114 @@ function App() {
     });
   };
 
+  // --- Secondary Pane File Operations ---
+  const handleSecondaryFileSelect = async (path: string) => {
+    // Save current secondary file's draft if it has unsaved changes
+    if (secondaryFile && secondaryMarkdown !== secondarySavedContent) {
+      setDraftContent(prev => ({ ...prev, [secondaryFile]: secondaryMarkdown }));
+    }
+
+    setSecondaryFile(path);
+    setSecondaryOpenTabs(prev => prev.includes(path) ? prev : [...prev, path]);
+
+    if (draftContent[path] !== undefined) {
+      setSecondaryMarkdown(draftContent[path]);
+      try {
+        const res = await fetch(`${API_URL}/file/${path}`);
+        const data = await res.json();
+        setSecondarySavedContent(data.content || '');
+      } catch (e) {
+        console.error(e);
+      }
+    } else {
+      try {
+        const res = await fetch(`${API_URL}/file/${path}`);
+        const data = await res.json();
+        const content = data.content || '';
+        setSecondaryMarkdown(content);
+        setSecondarySavedContent(content);
+      } catch (e) {
+        console.error(e);
+      }
+    }
+  };
+
+  const handleSecondaryCloseTab = useCallback((path: string) => {
+    setSecondaryOpenTabs(prev => {
+      const idx = prev.indexOf(path);
+      const next = prev.filter(p => p !== path);
+
+      if (path === secondaryFile) {
+        if (next.length === 0) {
+          setSecondaryFile(undefined);
+          setSecondaryMarkdown('');
+          setSecondarySavedContent('');
+        } else {
+          const newIdx = Math.min(idx, next.length - 1);
+          const newPath = next[Math.max(0, newIdx)];
+          queueMicrotask(() => handleSecondaryFileSelect(newPath));
+        }
+      }
+      return next;
+    });
+  }, [secondaryFile, draftContent]);
+
+  const handleSecondarySave = async (): Promise<boolean> => {
+    if (!secondaryFile) return false;
+    try {
+      await fetch(`${API_URL}/file/${secondaryFile}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: secondaryFile, content: secondaryMarkdown })
+      });
+      setSecondarySavedContent(secondaryMarkdown);
+      setDraftContent(prev => {
+        const next = { ...prev };
+        delete next[secondaryFile];
+        return next;
+      });
+      return true;
+    } catch (e) {
+      console.error(e);
+      return false;
+    }
+  };
+
+  const handleSecondaryRevert = () => {
+    if (!secondaryFile) return;
+    setSecondaryMarkdown(secondarySavedContent);
+    setDraftContent(prev => {
+      const next = { ...prev };
+      delete next[secondaryFile];
+      return next;
+    });
+  };
+
+  // Route file selection to the active pane when in split mode
+  const handleFileSelectRouted = async (path: string) => {
+    if (isSplitMode && activePaneId === 'secondary') {
+      await handleSecondaryFileSelect(path);
+    } else {
+      await handleFileSelect(path);
+    }
+    if (isMobile) setActiveTab('editor');
+  };
+
+  // Toggle split mode
+  const toggleSplitMode = useCallback(() => {
+    setIsSplitMode(prev => {
+      if (prev) {
+        // Closing split mode - save secondary draft if needed
+        if (secondaryFile && secondaryMarkdown !== secondarySavedContent) {
+          setDraftContent(d => ({ ...d, [secondaryFile]: secondaryMarkdown }));
+        }
+        setActivePaneId('primary');
+        return false;
+      }
+      return true;
+    });
+  }, [secondaryFile, secondaryMarkdown, secondarySavedContent]);
+
   // --- File Operations ---
 
   const handleCreateFile = (parentPath?: string) => {
@@ -265,6 +559,7 @@ function App() {
           setDraftContent(prev => ({ ...prev, [selectedFile]: markdown }));
         }
         setSelectedFile(name);
+        setOpenTabs(prev => prev.includes(name) ? prev : [...prev, name]);
         setMarkdown('');
         setSavedContent('');
         if (isMobile) setActiveTab('editor');
@@ -326,12 +621,13 @@ function App() {
         closeConfirmModal();
         await fetch(`${API_URL}/file/${path}`, { method: 'DELETE' });
         refreshFiles();
-        // Clean up draft for deleted file
+        // Clean up draft and tab for deleted file
         setDraftContent(prev => {
           const next = { ...prev };
           delete next[path];
           return next;
         });
+        setOpenTabs(prev => prev.filter(p => p !== path));
         if (selectedFile === path) {
           setSelectedFile(undefined);
           setMarkdown('');
@@ -343,6 +639,92 @@ function App() {
 
   const handleCopyPath = (path: string) => {
     navigator.clipboard.writeText(path);
+  };
+
+  const handleMoveFile = async (sourcePath: string, destinationFolder: string): Promise<boolean> => {
+    try {
+      const res = await fetch(`${API_URL}/move`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source: sourcePath, destination: destinationFolder })
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        console.error('Move failed:', data.detail);
+        return false;
+      }
+      const data = await res.json();
+      const newPath = data.new_path;
+
+      // Update open tabs and selected file to point to the new path
+      if (selectedFile === sourcePath || selectedFile?.startsWith(sourcePath + '/')) {
+        const updatedPath = selectedFile === sourcePath
+          ? newPath
+          : newPath + selectedFile.slice(sourcePath.length);
+        setSelectedFile(updatedPath);
+      }
+
+      setOpenTabs(prev => prev.map(tab => {
+        if (tab === sourcePath) return newPath;
+        if (tab.startsWith(sourcePath + '/')) return newPath + tab.slice(sourcePath.length);
+        return tab;
+      }));
+
+      // Update draft content keys
+      setDraftContent(prev => {
+        const updated: Record<string, string> = {};
+        for (const [key, val] of Object.entries(prev)) {
+          if (key === sourcePath) {
+            updated[newPath] = val;
+          } else if (key.startsWith(sourcePath + '/')) {
+            updated[newPath + key.slice(sourcePath.length)] = val;
+          } else {
+            updated[key] = val;
+          }
+        }
+        return updated;
+      });
+
+      refreshFiles();
+      return true;
+    } catch (e) {
+      console.error('Move failed:', e);
+      return false;
+    }
+  };
+
+  // --- File Upload ---
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const uploadTargetDir = useRef<string>('');
+
+  const uploadFiles = async (targetDir: string, fileList: FileList | File[]) => {
+    const formData = new FormData();
+    for (const file of fileList) {
+      formData.append('files', file);
+    }
+    await fetch(`${API_URL}/upload/${targetDir}`, {
+      method: 'POST',
+      body: formData,
+    });
+    refreshFiles();
+  };
+
+  const handleUploadFiles = (parentPath?: string, files?: FileList | File[]) => {
+    if (files && files.length > 0) {
+      uploadFiles(parentPath || '', files);
+    } else {
+      uploadTargetDir.current = parentPath || '';
+      fileInputRef.current?.click();
+    }
+  };
+
+  const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (files && files.length > 0) {
+      uploadFiles(uploadTargetDir.current, files);
+    }
+    // Reset so the same file can be re-uploaded
+    e.target.value = '';
   };
 
   // --- Views ---
@@ -370,6 +752,16 @@ function App() {
             title="Toggle Editor"
           >
             <Layout size={16} />
+          </button>
+          <button
+            onClick={toggleSplitMode}
+            className={clsx(
+              "p-1.5 rounded-md hover:bg-[var(--bg-secondary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors",
+              isSplitMode && "bg-[var(--accent-light)] text-[var(--accent-primary)]"
+            )}
+            title={isSplitMode ? "Close split editor" : "Split editor"}
+          >
+            <Columns size={16} />
           </button>
           <div className="w-[1px] bg-[var(--border-color)] mx-0.5 my-1" />
           <button
@@ -408,19 +800,29 @@ function App() {
         {/* Mobile: Absolute positioned tabs for Files and Editor */}
         {isMobile && (
           <>
-            <div className={clsx("absolute inset-0 transition-opacity duration-200 z-10", activeTab === 'files' ? "opacity-100" : "opacity-0 pointer-events-none")}>
-              <FileTree
-                files={files}
-                onSelect={handleFileSelect}
-                selectedPath={selectedFile}
-                onCreateFile={handleCreateFile}
-                onCreateFolder={handleCreateFolder}
-                onDelete={handleDelete}
-                onRename={handleRename}
-                onCopyPath={handleCopyPath}
-                onRefresh={refreshFiles}
-                unsavedPaths={unsavedPaths}
-              />
+            <div className={clsx("absolute inset-0 transition-opacity duration-200 z-10 flex flex-col", activeTab === 'files' ? "opacity-100" : "opacity-0 pointer-events-none")}>
+              <div className="flex-1 overflow-auto min-h-0">
+                <FileTree
+                  files={files}
+                  onSelect={handleFileSelect}
+                  selectedPath={selectedFile}
+                  onCreateFile={handleCreateFile}
+                  onCreateFolder={handleCreateFolder}
+                  onDelete={handleDelete}
+                  onRename={handleRename}
+                  onCopyPath={handleCopyPath}
+                  onRefresh={refreshFiles}
+                  onSearch={() => setShowFileSearch(true)}
+                  unsavedPaths={unsavedPaths}
+                  onUploadFiles={handleUploadFiles}
+                  onMoveFile={handleMoveFile}
+                />
+              </div>
+              <AppDrawer onSelectApp={(entryPath) => {
+                const fullPath = `05_App_Data/${entryPath}`;
+                handleFileSelect(fullPath);
+                openAppFullscreen(fullPath);
+              }} />
             </div>
             <div className={clsx("absolute inset-0 transition-opacity duration-200 z-10", activeTab === 'editor' ? "opacity-100" : "opacity-0 pointer-events-none")}>
               <EditorView
@@ -434,6 +836,10 @@ function App() {
                 hasUnsavedChanges={selectedFile ? unsavedPaths.has(selectedFile) : false}
                 onNavigateToFile={handleFileSelect}
                 files={files}
+                openTabs={openTabs}
+                onTabSelect={handleFileSelect}
+                onTabClose={handleCloseTab}
+                unsavedPaths={unsavedPaths}
               />
             </div>
           </>
@@ -445,18 +851,30 @@ function App() {
             {showLeftPanel && (
               <>
                 <Panel defaultSize={25} minSize={15} maxSize={40} className="bg-[var(--bg-primary)]">
-                  <FileTree
-                    files={files}
-                    onSelect={handleFileSelect}
-                    selectedPath={selectedFile}
-                    onCreateFile={handleCreateFile}
-                    onCreateFolder={handleCreateFolder}
-                    onDelete={handleDelete}
-                    onRename={handleRename}
-                    onCopyPath={handleCopyPath}
-                    onRefresh={refreshFiles}
-                    unsavedPaths={unsavedPaths}
-                  />
+                  <div className="flex flex-col h-full">
+                    <div className="flex-1 overflow-auto min-h-0">
+                      <FileTree
+                        files={files}
+                        onSelect={handleFileSelectRouted}
+                        selectedPath={activePaneId === 'secondary' && isSplitMode ? secondaryFile : selectedFile}
+                        onCreateFile={handleCreateFile}
+                        onCreateFolder={handleCreateFolder}
+                        onDelete={handleDelete}
+                        onRename={handleRename}
+                        onCopyPath={handleCopyPath}
+                        onRefresh={refreshFiles}
+                        onSearch={() => setShowFileSearch(true)}
+                        unsavedPaths={unsavedPaths}
+                        onUploadFiles={handleUploadFiles}
+                        onMoveFile={handleMoveFile}
+                      />
+                    </div>
+                    <AppDrawer onSelectApp={(entryPath) => {
+                      const fullPath = `05_App_Data/${entryPath}`;
+                      handleFileSelectRouted(fullPath);
+                      openAppFullscreen(fullPath);
+                    }} />
+                  </div>
                 </Panel>
                 <PanelResizeHandle className="w-2 bg-[var(--border-color)] hover:bg-[var(--accent-primary)] active:bg-[var(--accent-primary)] transition-colors cursor-col-resize flex items-center justify-center group">
                     <div className="w-1 h-8 rounded-full bg-[var(--text-muted)] group-hover:bg-white transition-colors" />
@@ -465,18 +883,74 @@ function App() {
             )}
             {showCenterPanel && (
               <Panel defaultSize={75} minSize={30} className="bg-[var(--bg-secondary)]">
-                <EditorView
-                  selectedFile={selectedFile}
-                  viewMode={viewMode}
-                  setViewMode={setViewMode}
-                  markdown={markdown}
-                  setMarkdown={setMarkdown}
-                  handleSave={handleSave}
-                  handleRevert={handleRevert}
-                  hasUnsavedChanges={selectedFile ? unsavedPaths.has(selectedFile) : false}
-                  onNavigateToFile={handleFileSelect}
-                  files={files}
-                />
+                {isSplitMode ? (
+                  <PanelGroup direction="horizontal">
+                    {/* Primary pane */}
+                    <Panel defaultSize={50} minSize={25}>
+                      <EditorView
+                        selectedFile={selectedFile}
+                        viewMode={viewMode}
+                        setViewMode={setViewMode}
+                        markdown={markdown}
+                        setMarkdown={setMarkdown}
+                        handleSave={handleSave}
+                        handleRevert={handleRevert}
+                        hasUnsavedChanges={selectedFile ? unsavedPaths.has(selectedFile) : false}
+                        onNavigateToFile={(path) => { setActivePaneId('primary'); handleFileSelect(path); }}
+                        files={files}
+                        openTabs={openTabs}
+                        onTabSelect={(path) => { setActivePaneId('primary'); handleFileSelect(path); }}
+                        onTabClose={handleCloseTab}
+                        unsavedPaths={unsavedPaths}
+                        isActive={activePaneId === 'primary'}
+                        onPaneFocus={() => setActivePaneId('primary')}
+                        onCloseSplit={toggleSplitMode}
+                      />
+                    </Panel>
+                    <PanelResizeHandle className="w-1.5 bg-[var(--border-color)] hover:bg-[var(--accent-primary)] active:bg-[var(--accent-primary)] transition-colors cursor-col-resize flex items-center justify-center group">
+                      <div className="w-0.5 h-6 rounded-full bg-[var(--text-muted)] group-hover:bg-white transition-colors" />
+                    </PanelResizeHandle>
+                    {/* Secondary pane */}
+                    <Panel defaultSize={50} minSize={25}>
+                      <EditorView
+                        selectedFile={secondaryFile}
+                        viewMode={secondaryViewMode}
+                        setViewMode={setSecondaryViewMode}
+                        markdown={secondaryMarkdown}
+                        setMarkdown={setSecondaryMarkdown}
+                        handleSave={handleSecondarySave}
+                        handleRevert={handleSecondaryRevert}
+                        hasUnsavedChanges={secondaryFile ? unsavedPaths.has(secondaryFile) : false}
+                        onNavigateToFile={(path) => { setActivePaneId('secondary'); handleSecondaryFileSelect(path); }}
+                        files={files}
+                        openTabs={secondaryOpenTabs}
+                        onTabSelect={(path) => { setActivePaneId('secondary'); handleSecondaryFileSelect(path); }}
+                        onTabClose={handleSecondaryCloseTab}
+                        unsavedPaths={unsavedPaths}
+                        isActive={activePaneId === 'secondary'}
+                        onPaneFocus={() => setActivePaneId('secondary')}
+                        onCloseSplit={toggleSplitMode}
+                      />
+                    </Panel>
+                  </PanelGroup>
+                ) : (
+                  <EditorView
+                    selectedFile={selectedFile}
+                    viewMode={viewMode}
+                    setViewMode={setViewMode}
+                    markdown={markdown}
+                    setMarkdown={setMarkdown}
+                    handleSave={handleSave}
+                    handleRevert={handleRevert}
+                    hasUnsavedChanges={selectedFile ? unsavedPaths.has(selectedFile) : false}
+                    onNavigateToFile={handleFileSelect}
+                    files={files}
+                    openTabs={openTabs}
+                    onTabSelect={handleFileSelect}
+                    onTabClose={handleCloseTab}
+                    unsavedPaths={unsavedPaths}
+                  />
+                )}
               </Panel>
             )}
           </PanelGroup>
@@ -508,7 +982,53 @@ function App() {
           : undefined
         }
         >
-          <Chat isMobile={isMobile} />
+          {/* Split chat: two panels side by side */}
+          {isChatSplit && !isMobile ? (
+            <PanelGroup direction="horizontal" id="chat-split" className="h-full">
+              <Panel defaultSize={50} minSize={30}>
+                <div
+                  className="h-full"
+                  style={{ borderTop: activeChatPanel === 'primary' ? '2px solid var(--accent-primary)' : '2px solid transparent' }}
+                  onMouseDown={() => setActiveChatPanel('primary')}
+                >
+                  <Chat
+                    isMobile={isMobile}
+                    onOpenFile={handleFileSelectRouted}
+                    panelId="primary"
+                    onSplitChat={handleSplitChat}
+                    onPopoutChat={handlePopoutChat}
+                  />
+                </div>
+              </Panel>
+              <PanelResizeHandle className="w-1.5 bg-[var(--border-color)] hover:bg-[var(--accent-primary)] transition-colors cursor-col-resize" />
+              <Panel defaultSize={50} minSize={30}>
+                <div
+                  className="h-full"
+                  style={{ borderTop: activeChatPanel === 'secondary' ? '2px solid var(--accent-primary)' : '2px solid transparent' }}
+                  onMouseDown={() => setActiveChatPanel('secondary')}
+                >
+                  <Chat
+                    isMobile={isMobile}
+                    onOpenFile={handleFileSelectRouted}
+                    claudeHook={secondaryClaude}
+                    panelId="secondary"
+                    isSecondary
+                    onCloseSplit={() => setIsChatSplit(false)}
+                    onSplitChat={handleSplitChat}
+                    onPopoutChat={handlePopoutChat}
+                  />
+                </div>
+              </Panel>
+            </PanelGroup>
+          ) : (
+            <Chat
+              isMobile={isMobile}
+              onOpenFile={handleFileSelectRouted}
+              panelId="primary"
+              onSplitChat={handleSplitChat}
+              onPopoutChat={handlePopoutChat}
+            />
+          )}
         </div>
       </div>
 
@@ -525,7 +1045,7 @@ function App() {
           </button>
           <button onClick={() => setActiveTab('chat')} className="flex-1 p-2 flex flex-col items-center justify-center transition-colors" style={{ color: activeTab === 'chat' ? 'var(--accent-primary)' : 'var(--text-muted)' }}>
             <MessageSquare size={20} strokeWidth={activeTab === 'chat' ? 2.5 : 2} />
-            <span className="text-[10px] mt-1 font-medium">Claude</span>
+            <span className="text-[10px] mt-1 font-medium">Chat</span>
           </button>
           <button onClick={() => setShowThemeCustomizer(true)} className="flex-1 p-2 flex flex-col items-center justify-center transition-colors" style={{ color: showThemeCustomizer ? 'var(--accent-primary)' : 'var(--text-muted)' }}>
             <Settings size={20} strokeWidth={showThemeCustomizer ? 2.5 : 2} />
@@ -533,6 +1053,15 @@ function App() {
           </button>
         </div>
       </div>
+
+      {/* Hidden file input for uploads */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        className="hidden"
+        onChange={handleFileInputChange}
+      />
 
       {/* Modals */}
       <InputModal
@@ -553,6 +1082,15 @@ function App() {
         onConfirm={confirmModal.onConfirm}
         onCancel={closeConfirmModal}
       />
+      <FileSearchModal
+        isOpen={showFileSearch}
+        files={files}
+        onSelect={(path) => {
+          setShowFileSearch(false);
+          handleFileSelectRouted(path);
+        }}
+        onClose={() => setShowFileSearch(false)}
+      />
       <SettingsModal
         isOpen={showThemeCustomizer}
         onClose={() => setShowThemeCustomizer(false)}
@@ -564,6 +1102,39 @@ function App() {
         }}
         files={files}
       />
+
+      {/* Full-screen App Mode */}
+      {fullscreenApp && (
+        <div className="fixed inset-0 z-50 flex flex-col bg-[var(--bg-primary)]">
+          {/* App Header Bar */}
+          <div className="h-10 px-3 border-b border-[var(--border-color)] flex items-center justify-between bg-[var(--bg-secondary)] shrink-0">
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setFullscreenApp(null)}
+                className="p-1.5 rounded-lg hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
+                title="Back to Second Brain (Esc)"
+              >
+                <ArrowLeft size={18} />
+              </button>
+              <span className="text-sm font-semibold text-[var(--text-primary)] select-none">{fullscreenApp.name}</span>
+            </div>
+            <button
+              onClick={() => {
+                setFullscreenApp(null);
+                setShowRightPanel(true);
+              }}
+              className="p-1.5 rounded-lg hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
+              title="Chat with Claude"
+            >
+              <MessageSquare size={18} />
+            </button>
+          </div>
+          {/* App Content */}
+          <div className="flex-1 overflow-hidden">
+            <HtmlIframe html={fullscreenApp.html} />
+          </div>
+        </div>
+      )}
     </div>
   );
 }

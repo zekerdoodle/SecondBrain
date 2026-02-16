@@ -1,0 +1,624 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent Builder</title>
+<link rel="stylesheet" href="/file/05_App_Data/_shared/theme.css">
+<style>
+/* === Agent Builder — app-specific styles only === */
+/* Base styles, cards, buttons, inputs, toggles, alerts come from theme.css */
+
+.container { max-width: 640px; margin: 0 auto; padding: var(--sp-lg); padding-bottom: 80px; }
+h1 { font-size: var(--font-size-2xl); font-weight: 700; margin-bottom: var(--sp-lg); }
+
+/* Mode Toggle (segmented control — not in shared kit) */
+.mode-toggle {
+  display: flex; margin-bottom: 20px; border-radius: var(--radius-lg); overflow: hidden;
+  border: 1px solid var(--border);
+}
+.mode-btn {
+  flex: 1; padding: 10px; text-align: center; cursor: pointer;
+  background: var(--bg-surface); color: var(--text-muted); font-size: var(--font-size-base); font-weight: 600;
+  border: none; font-family: inherit; transition: all var(--ease-normal);
+}
+.mode-btn.active { background: var(--accent); color: var(--bg); }
+.mode-btn:hover:not(.active) { background: var(--ctp-surface1); color: var(--text-secondary); }
+
+/* Card spacing */
+.card { margin-bottom: var(--sp-md); }
+
+/* Textarea override for code */
+.field textarea {
+  min-height: 160px; font-family: var(--font-mono); font-size: var(--font-size-sm); line-height: 1.5;
+}
+
+/* Toggle row */
+.toggle-row { display: flex; align-items: center; justify-content: space-between; padding: var(--sp-xs) 0; }
+.toggle-label { font-size: var(--font-size-base); font-weight: 500; }
+.toggle-sub { font-size: var(--font-size-xs); color: var(--text-muted); }
+
+/* Tool chips */
+.tool-cat { margin-bottom: var(--sp-md); }
+.tool-cat-name {
+  font-size: var(--font-size-sm); font-weight: 700; color: var(--accent); text-transform: uppercase;
+  letter-spacing: 0.5px; margin-bottom: 6px; cursor: pointer;
+}
+.tool-cat-name:hover { color: var(--accent-hover); }
+.tool-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.tool-chip {
+  padding: 4px 10px; border-radius: 6px; font-size: var(--font-size-xs); cursor: pointer;
+  border: 1px solid var(--border); background: var(--bg); color: var(--text-muted);
+  transition: all var(--ease-fast); user-select: none;
+}
+.tool-chip.selected { border-color: var(--accent); background: rgba(137,180,250,0.15); color: var(--accent); }
+.tool-chip:hover { border-color: var(--accent); }
+
+/* Icon picker */
+.icon-grid { display: flex; flex-wrap: wrap; gap: var(--sp-sm); }
+.icon-opt {
+  width: 40px; height: 40px; border-radius: var(--radius-lg); display: flex; align-items: center;
+  justify-content: center; cursor: pointer; border: 2px solid transparent;
+  background: var(--bg); transition: all var(--ease-fast); font-size: 18px;
+}
+.icon-opt:hover { border-color: var(--border); }
+.icon-opt.selected { border-color: var(--accent); background: rgba(137,180,250,0.15); }
+
+/* Color picker */
+.color-row { display: flex; align-items: center; gap: var(--sp-md); }
+.color-input {
+  width: 44px; height: 36px; border: none; border-radius: var(--radius-md); cursor: pointer;
+  background: none; padding: 0;
+}
+.color-input::-webkit-color-swatch { border: 1px solid var(--border); border-radius: 6px; }
+.color-input::-webkit-color-swatch-wrapper { padding: 0; }
+.color-preview {
+  width: 36px; height: 36px; border-radius: var(--radius-lg); display: flex; align-items: center;
+  justify-content: center; font-size: 18px;
+}
+
+/* Banner (uses alert pattern from theme.css with rename) */
+.banner { padding: 10px 14px; border-radius: var(--radius-lg); margin-bottom: 14px; font-size: var(--font-size-sm); line-height: 1.5; }
+.banner-warn { background: rgba(249,226,175,0.1); border: 1px solid var(--ctp-yellow); color: var(--ctp-yellow); }
+.banner-info { background: rgba(137,180,250,0.1); border: 1px solid var(--accent); color: var(--accent); }
+.banner-ok { background: rgba(166,227,161,0.1); border: 1px solid var(--success); color: var(--success); }
+
+/* Agent selector */
+.agent-select { width: 100%; }
+
+/* Btn row */
+.btn-row { display: flex; gap: 10px; margin-top: var(--sp-lg); }
+
+/* Status (kept for inline form status separate from toast) */
+.status-msg { padding: var(--sp-md); text-align: center; font-size: var(--font-size-base); color: var(--text-secondary); }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>Agent Builder</h1>
+
+  <!-- Mode Toggle -->
+  <div class="mode-toggle">
+    <button class="mode-btn active" onclick="setMode('create')" id="mode-create">Create New</button>
+    <button class="mode-btn" onclick="setMode('edit')" id="mode-edit">Edit Existing</button>
+  </div>
+
+  <!-- Edit: Agent Selector -->
+  <div id="edit-selector" style="display:none" class="card">
+    <div class="field">
+      <label>Select Agent</label>
+      <select id="agent-dropdown" class="agent-select" onchange="loadAgentForEdit()">
+        <option value="">Choose an agent...</option>
+      </select>
+    </div>
+  </div>
+
+  <!-- Form -->
+  <div id="agent-form">
+    <!-- Warnings -->
+    <div id="warn-claudey" class="banner banner-warn" style="display:none">
+      Editing Claudey's config directly is risky. Claudey has a special memory pipeline (CLAUDE.md + LTM) that depends on specific config settings. Proceed with caution.
+    </div>
+
+    <!-- Basic Info -->
+    <div class="card">
+      <div class="card-header">Basic Info</div>
+      <div class="field">
+        <label>Name (lowercase, underscores)</label>
+        <input type="text" id="f-name" placeholder="my_agent" pattern="[a-z_]+" />
+        <div class="hint">Used as folder name. Cannot be changed after creation.</div>
+      </div>
+      <div class="field">
+        <label>Description</label>
+        <input type="text" id="f-desc" placeholder="One-line description of what this agent does" />
+      </div>
+      <div class="field">
+        <label>Model</label>
+        <select id="f-model">
+          <option value="haiku">Haiku (fastest, cheapest)</option>
+          <option value="sonnet" selected>Sonnet (balanced)</option>
+          <option value="opus">Opus (most capable)</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Timeout (seconds)</label>
+        <input type="number" id="f-timeout" value="300" min="30" max="3600" />
+      </div>
+      <div class="field">
+        <label>Max Turns</label>
+        <input type="number" id="f-max-turns" value="200" min="1" max="500" />
+        <div class="hint">Max agentic turns (API round-trips). Use 2 for structured-output-only agents.</div>
+      </div>
+    </div>
+
+    <!-- Appearance -->
+    <div class="card">
+      <div class="card-header">Appearance</div>
+      <div class="field">
+        <label>Icon</label>
+        <div class="icon-grid" id="icon-grid"></div>
+      </div>
+      <div class="field">
+        <label>Color</label>
+        <div class="color-row">
+          <input type="color" id="f-color" value="#89b4fa" class="color-input" oninput="updateColorPreview()" />
+          <div class="color-preview" id="color-preview" style="background:#89b4fa">
+            <span id="color-icon-preview"></span>
+          </div>
+          <span style="font-size:var(--font-size-sm);color:var(--text-muted)" id="color-hex">#89b4fa</span>
+        </div>
+      </div>
+      <div class="toggle-row">
+        <div>
+          <div class="toggle-label">Chattable</div>
+          <div class="toggle-sub">Show in chat dropdown for direct conversation</div>
+        </div>
+        <button class="toggle on" id="f-chattable" onclick="toggleChattable()"></button>
+      </div>
+    </div>
+
+    <!-- System Prompt -->
+    <div class="card">
+      <div class="card-header">System Prompt</div>
+      <div class="field">
+        <textarea id="f-prompt" placeholder="You are a helpful assistant...&#10;&#10;Write your agent's personality, instructions, and capabilities here."></textarea>
+        <div class="hint">Markdown supported. This becomes the agent's prompt.md file.</div>
+      </div>
+    </div>
+
+    <!-- Tools -->
+    <div class="card">
+      <div class="card-header">Tools</div>
+      <div class="field">
+        <label>Native Tools</label>
+        <div class="tool-list" id="native-tools"></div>
+      </div>
+      <div class="field" style="margin-top:12px">
+        <label>MCP Tools (by category)</label>
+        <div id="mcp-categories"></div>
+      </div>
+    </div>
+
+    <!-- Actions -->
+    <div class="btn-row">
+      <button class="btn btn-primary" id="save-btn" onclick="saveAgent()">Create Agent</button>
+    </div>
+    <div id="save-status" class="status-msg" style="display:none"></div>
+  </div>
+</div>
+
+<script src="/file/05_App_Data/_shared/brain-kit.js"></script>
+<script>
+// Derive API base: we're in a srcdoc iframe with a <base> tag injected by the editor.
+// The <base> href points to the parent origin (e.g., https://brain.example.com/).
+// The API is served from the same origin (no port override — Cloudflare Tunnel handles routing).
+function getApiBase() {
+  // 1. Try <base> tag (injected by Brain App Bridge)
+  const base = document.querySelector('base');
+  if (base && base.href && base.href !== 'about:srcdoc') {
+    try {
+      const u = new URL(base.href);
+      return `${u.origin}/api`;
+    } catch {}
+  }
+  // 2. Try parent window (same-origin srcdoc iframe can access parent)
+  try {
+    return `${window.parent.location.origin}/api`;
+  } catch {}
+  // 3. Fallback (local dev)
+  return 'http://localhost:8000/api';
+}
+const API = getApiBase();
+
+let mode = 'create';
+let allAgents = [];
+let toolCategories = [];
+let selectedIcon = 'sparkles';
+let selectedNativeTools = new Set(['Bash']);
+let selectedMcpTools = new Set();
+let isChattable = true;
+let editOriginalType = null;  // Preserve original type when editing
+
+const ICONS = [
+  { name: 'heart', emoji: '\u2764\ufe0f' },
+  { name: 'zap', emoji: '\u26a1' },
+  { name: 'brain', emoji: '\ud83e\udde0' },
+  { name: 'search', emoji: '\ud83d\udd0d' },
+  { name: 'globe', emoji: '\ud83c\udf10' },
+  { name: 'code', emoji: '\ud83d\udcbb' },
+  { name: 'layers', emoji: '\ud83d\uddc2\ufe0f' },
+  { name: 'sparkles', emoji: '\u2728' },
+  { name: 'bot', emoji: '\ud83e\udd16' },
+];
+
+const NATIVE_TOOLS = [
+  'Read', 'Write', 'Edit', 'Glob', 'Grep', 'NotebookEdit',
+  'Bash', 'Task', 'TaskOutput', 'KillShell',
+  'WebFetch', 'WebSearch',
+  'AskUserQuestion', 'Skill', 'TodoWrite',
+  'EnterPlanMode', 'ExitPlanMode',
+];
+
+const RESERVED_NAMES = ['claudey', 'background', '_template', 'notifications', '__pycache__'];
+const MCP_PREFIX = 'mcp__brain__';
+
+// Default MCP categories for new chattable agents
+const DEFAULT_CATEGORIES = ['agents', 'scheduler', 'bash'];
+
+// =============================================================================
+// Init
+// =============================================================================
+async function init() {
+  renderIconGrid();
+  renderNativeTools();
+  await Promise.all([fetchAgents(), fetchToolCategories()]);
+  renderMcpCategories();
+  updateColorPreview();
+}
+
+async function fetchAgents() {
+  try {
+    const res = await fetch(`${API}/agents?all=true`);
+    const data = await res.json();
+    allAgents = data.agents || [];
+    renderAgentDropdown();
+  } catch (e) {
+    console.error('Failed to fetch agents:', e);
+  }
+}
+
+async function fetchToolCategories() {
+  try {
+    const res = await fetch(`${API}/tools/categories`);
+    const data = await res.json();
+    toolCategories = data.categories || [];
+  } catch (e) {
+    console.error('Failed to fetch tool categories:', e);
+  }
+}
+
+// =============================================================================
+// Mode
+// =============================================================================
+function setMode(m) {
+  mode = m;
+  document.getElementById('mode-create').classList.toggle('active', m === 'create');
+  document.getElementById('mode-edit').classList.toggle('active', m === 'edit');
+  document.getElementById('edit-selector').style.display = m === 'edit' ? 'block' : 'none';
+  document.getElementById('save-btn').textContent = m === 'create' ? 'Create Agent' : 'Save Changes';
+
+  const nameInput = document.getElementById('f-name');
+  nameInput.disabled = m === 'edit';
+
+  if (m === 'create') {
+    editOriginalType = null;
+    resetForm();
+  }
+}
+
+function resetForm() {
+  document.getElementById('f-name').value = '';
+  document.getElementById('f-desc').value = '';
+  document.getElementById('f-model').value = 'sonnet';
+  document.getElementById('f-timeout').value = '300';
+  document.getElementById('f-max-turns').value = '200';
+  document.getElementById('f-prompt').value = '';
+  document.getElementById('f-color').value = '#89b4fa';
+  isChattable = true;
+  selectedIcon = 'sparkles';
+  selectedNativeTools = new Set(['Bash']);
+  selectedMcpTools = new Set();
+  // Pre-select default MCP categories for new agents
+  for (const cat of DEFAULT_CATEGORIES) {
+    const catData = toolCategories.find(c => c.name === cat);
+    if (catData) {
+      catData.tools.forEach(t => selectedMcpTools.add(MCP_PREFIX + t));
+    }
+  }
+  renderIconGrid();
+  renderNativeTools();
+  renderMcpCategories();
+  updateChattableUI();
+  updateColorPreview();
+  document.getElementById('warn-claudey').style.display = 'none';
+  document.getElementById('save-status').style.display = 'none';
+}
+
+// =============================================================================
+// Agent dropdown (edit mode)
+// =============================================================================
+function renderAgentDropdown() {
+  const dd = document.getElementById('agent-dropdown');
+  dd.innerHTML = '<option value="">Choose an agent...</option>';
+  allAgents.forEach(a => {
+    const opt = document.createElement('option');
+    opt.value = a.name;
+    opt.textContent = a.display_name || a.name;
+    dd.appendChild(opt);
+  });
+}
+
+async function loadAgentForEdit() {
+  const name = document.getElementById('agent-dropdown').value;
+  if (!name) return;
+
+  try {
+    const res = await fetch(`${API}/agents/${name}`);
+    if (!res.ok) throw new Error('Agent not found');
+    const data = await res.json();
+    const config = data.config || {};
+    editOriginalType = config.type || 'sdk';
+
+    document.getElementById('f-name').value = name;
+    document.getElementById('f-desc').value = config.description || '';
+    document.getElementById('f-model').value = config.model || 'sonnet';
+    document.getElementById('f-timeout').value = config.timeout_seconds || config.timeout || 300;
+    document.getElementById('f-max-turns').value = config.max_turns || 200;
+    document.getElementById('f-prompt').value = data.prompt || '';
+    document.getElementById('f-color').value = config.color || '#89b4fa';
+
+    isChattable = config.chattable === true;
+    selectedIcon = config.icon || 'sparkles';
+
+    // Parse tools — support both flat 'tools' list and separate 'native_tools'/'mcp_tools' lists
+    if (config.native_tools || config.mcp_tools) {
+      selectedNativeTools = new Set(config.native_tools || []);
+      const mcpList = Array.isArray(config.mcp_tools) ? config.mcp_tools : [];
+      selectedMcpTools = new Set(mcpList);
+    } else {
+      const tools = config.tools || [];
+      selectedNativeTools = new Set(tools.filter(t => !t.startsWith(MCP_PREFIX)));
+      selectedMcpTools = new Set(tools.filter(t => t.startsWith(MCP_PREFIX)));
+    }
+
+    renderIconGrid();
+    renderNativeTools();
+    renderMcpCategories();
+    updateChattableUI();
+    updateColorPreview();
+
+    document.getElementById('warn-claudey').style.display = name === 'claudey' ? 'block' : 'none';
+    document.getElementById('save-status').style.display = 'none';
+  } catch (e) {
+    showStatus('Failed to load agent: ' + e.message, 'error');
+  }
+}
+
+// =============================================================================
+// Render helpers
+// =============================================================================
+function renderIconGrid() {
+  const grid = document.getElementById('icon-grid');
+  grid.innerHTML = '';
+  ICONS.forEach(icon => {
+    const div = document.createElement('div');
+    div.className = 'icon-opt' + (icon.name === selectedIcon ? ' selected' : '');
+    div.textContent = icon.emoji;
+    div.title = icon.name;
+    div.onclick = () => {
+      selectedIcon = icon.name;
+      renderIconGrid();
+      updateColorPreview();
+    };
+    grid.appendChild(div);
+  });
+}
+
+function renderNativeTools() {
+  const container = document.getElementById('native-tools');
+  container.innerHTML = '';
+  NATIVE_TOOLS.forEach(tool => {
+    const chip = document.createElement('div');
+    chip.className = 'tool-chip' + (selectedNativeTools.has(tool) ? ' selected' : '');
+    chip.textContent = tool;
+    chip.onclick = () => {
+      if (selectedNativeTools.has(tool)) {
+        selectedNativeTools.delete(tool);
+      } else {
+        selectedNativeTools.add(tool);
+      }
+      renderNativeTools();
+    };
+    container.appendChild(chip);
+  });
+}
+
+function renderMcpCategories() {
+  const container = document.getElementById('mcp-categories');
+  container.innerHTML = '';
+  toolCategories.forEach(cat => {
+    const div = document.createElement('div');
+    div.className = 'tool-cat';
+
+    const mcpTools = cat.tools.map(t => MCP_PREFIX + t);
+    const allSelected = mcpTools.every(t => selectedMcpTools.has(t));
+
+    const header = document.createElement('div');
+    header.className = 'tool-cat-name';
+    header.textContent = (allSelected ? '\u2713 ' : '') + cat.name;
+    header.onclick = () => {
+      if (allSelected) {
+        mcpTools.forEach(t => selectedMcpTools.delete(t));
+      } else {
+        mcpTools.forEach(t => selectedMcpTools.add(t));
+      }
+      renderMcpCategories();
+    };
+    div.appendChild(header);
+
+    const list = document.createElement('div');
+    list.className = 'tool-list';
+    cat.tools.forEach(tool => {
+      const mcpName = MCP_PREFIX + tool;
+      const chip = document.createElement('div');
+      chip.className = 'tool-chip' + (selectedMcpTools.has(mcpName) ? ' selected' : '');
+      chip.textContent = tool;
+      chip.onclick = () => {
+        if (selectedMcpTools.has(mcpName)) {
+          selectedMcpTools.delete(mcpName);
+        } else {
+          selectedMcpTools.add(mcpName);
+        }
+        renderMcpCategories();
+      };
+      list.appendChild(chip);
+    });
+    div.appendChild(list);
+    container.appendChild(div);
+  });
+}
+
+function updateColorPreview() {
+  const color = document.getElementById('f-color').value;
+  const preview = document.getElementById('color-preview');
+  const iconPreview = document.getElementById('color-icon-preview');
+  const hex = document.getElementById('color-hex');
+  preview.style.background = color;
+  hex.textContent = color;
+  const iconData = ICONS.find(i => i.name === selectedIcon);
+  iconPreview.textContent = iconData ? iconData.emoji : '\u2728';
+}
+
+function toggleChattable() {
+  isChattable = !isChattable;
+  updateChattableUI();
+}
+
+function updateChattableUI() {
+  const btn = document.getElementById('f-chattable');
+  btn.classList.toggle('on', isChattable);
+}
+
+// =============================================================================
+// Save
+// =============================================================================
+async function saveAgent() {
+  const name = document.getElementById('f-name').value.trim();
+  const desc = document.getElementById('f-desc').value.trim();
+  const model = document.getElementById('f-model').value;
+  const timeout = parseInt(document.getElementById('f-timeout').value) || 300;
+  const maxTurns = parseInt(document.getElementById('f-max-turns').value) || 200;
+  const prompt = document.getElementById('f-prompt').value;
+  const color = document.getElementById('f-color').value;
+
+  // Validate name
+  if (!name) {
+    showStatus('Name is required', 'error');
+    return;
+  }
+  if (!/^[a-z][a-z0-9_]*$/.test(name)) {
+    showStatus('Name must be lowercase letters, numbers, and underscores (start with letter)', 'error');
+    return;
+  }
+  if (mode === 'create' && RESERVED_NAMES.includes(name)) {
+    showStatus('That name is reserved', 'error');
+    return;
+  }
+
+  // Build tools — use separate native_tools/mcp_tools for primary agents (Claudey),
+  // flat 'tools' list for all other agents
+  const nativeToolsList = [...selectedNativeTools];
+  const mcpToolsList = [...selectedMcpTools];
+  const isPrimary = mode === 'edit' && editOriginalType === 'primary';
+
+  // Build config
+  const config = {
+    name,
+    description: desc,
+    model,
+    type: mode === 'edit' && editOriginalType ? editOriginalType : 'sdk',
+    timeout_seconds: timeout,
+    max_turns: maxTurns,
+    chattable: isChattable,
+    color,
+    icon: selectedIcon,
+  };
+
+  if (isPrimary) {
+    // Primary agents (Claudey) use separate native_tools/mcp_tools keys
+    // so claude_wrapper.py can compute disallowed native tools correctly
+    config.native_tools = nativeToolsList;
+    config.mcp_tools = mcpToolsList;
+  } else {
+    // Regular agents use a flat tools list (native + MCP combined)
+    config.tools = [...nativeToolsList, ...mcpToolsList];
+  }
+
+  const body = { name, config, prompt };
+
+  try {
+    document.getElementById('save-btn').disabled = true;
+    showStatus('Saving...', 'info');
+
+    const url = mode === 'create' ? `${API}/agents` : `${API}/agents/${name}`;
+    const method = mode === 'create' ? 'POST' : 'PUT';
+
+    const res = await fetch(url, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || 'Save failed');
+    }
+
+    const result = await res.json();
+    showStatus(
+      mode === 'create'
+        ? 'Agent created! Restart the server for it to appear in chat.'
+        : 'Agent updated! Restart the server for changes to take effect.',
+      'success'
+    );
+
+    // Refresh agent list
+    await fetchAgents();
+
+    // If create mode, switch to edit mode with the new agent selected
+    if (mode === 'create') {
+      setMode('edit');
+      document.getElementById('agent-dropdown').value = name;
+      document.getElementById('f-name').disabled = true;
+    }
+  } catch (e) {
+    showStatus('Error: ' + e.message, 'error');
+  } finally {
+    document.getElementById('save-btn').disabled = false;
+  }
+}
+
+function showStatus(msg, type) {
+  const el = document.getElementById('save-status');
+  el.style.display = 'block';
+  el.textContent = msg;
+  el.style.color = type === 'error' ? 'var(--danger)'
+    : type === 'success' ? 'var(--success)'
+    : 'var(--accent)';
+}
+
+// Init on load
+init();
+</script>
+</body>
+</html>

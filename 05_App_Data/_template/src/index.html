@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hello Brain</title>
+<link rel="stylesheet" href="/file/05_App_Data/_shared/theme.css">
+<style>
+  .container { max-width: 640px; margin: 0 auto; padding: var(--sp-lg); }
+  h1 { font-size: var(--font-size-2xl); font-weight: 700; margin-bottom: var(--sp-lg); }
+  .counter { font-size: var(--font-size-xl); font-weight: 700; color: var(--accent); }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>Hello Brain</h1>
+
+  <div class="card mb-lg">
+    <div class="card-header">Persistent Counter</div>
+    <p class="mb-md text-secondary">This counter is saved to your Second Brain and persists across sessions.</p>
+    <div class="flex items-center gap-lg">
+      <button class="btn btn-secondary" id="decrement">-</button>
+      <span class="counter" id="count">0</span>
+      <button class="btn btn-secondary" id="increment">+</button>
+      <button class="btn btn-ghost btn-sm" id="reset">Reset</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">Quick Note</div>
+    <div class="field">
+      <label>Write something</label>
+      <input type="text" id="note-input" placeholder="Type a note..." />
+    </div>
+    <button class="btn btn-primary" id="save-note">Save Note</button>
+  </div>
+</div>
+
+<script src="/file/05_App_Data/_shared/brain-kit.js"></script>
+<script type="module" src="./main.js"></script>
+</body>
+</html>

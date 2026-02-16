@@ -21,6 +21,7 @@ from librarian_runner import (
     run_librarian,
     run_librarian_cycle,
     apply_librarian_results,
+    create_conversation_threads,
     run_librarian_sync,
     LIBRARIAN_OUTPUT_SCHEMA,
 )
@@ -28,7 +29,7 @@ from librarian_runner import (
 # For backward compatibility, also expose the system prompt
 def _get_system_prompt():
     """Load the librarian system prompt from the new location."""
-    prompt_path = _new_location / "librarian.md"
+    prompt_path = _new_location / "prompt.md"
     if prompt_path.exists():
         return prompt_path.read_text()
     return ""
@@ -39,6 +40,7 @@ __all__ = [
     "run_librarian",
     "run_librarian_cycle",
     "apply_librarian_results",
+    "create_conversation_threads",
     "run_librarian_sync",
     "LIBRARIAN_SYSTEM_PROMPT",
     "LIBRARIAN_OUTPUT_SCHEMA",

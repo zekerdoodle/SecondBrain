@@ -8,7 +8,12 @@ import re
 
 from .models import WorkingMemoryItem
 
-_HEADER = "### Working Memory (ephemeral notes - auto-expire unless pinned)"
+_HEADER = (
+    "Your active scratchpad. These are notes you have set for yourself during\n"
+    "recent conversations. They auto-expire after a set number of exchanges\n"
+    "unless pinned. Use them to track tasks, reminders, and context you need\n"
+    "to carry across turns. Review and prune regularly."
+)
 _MAX_PREVIEW_CHARS = 160
 
 

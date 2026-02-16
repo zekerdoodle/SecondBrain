@@ -1,0 +1,21 @@
+[
+  {
+    "id": "example-morning-sync",
+    "prompt": "/sync",
+    "schedule": "daily at 08:00",
+    "type": "prompt",
+    "silent": true,
+    "active": true,
+    "description": "Morning inbox processing and task routing"
+  },
+  {
+    "id": "example-daily-news",
+    "prompt": "Check AI news and summarize key developments",
+    "schedule": "daily at 09:00",
+    "type": "agent",
+    "agent": "information_gatherer",
+    "silent": true,
+    "active": false,
+    "description": "Daily AI news scan"
+  }
+]

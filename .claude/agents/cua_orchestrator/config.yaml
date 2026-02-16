@@ -1,0 +1,15 @@
+name: cua_orchestrator
+type: sdk
+model: sonnet
+description: "Computer Use Agent orchestrator. Takes instructions from Primary Claude, manages multi-step computer tasks via Gemini Flash CUA, logs receipts, reports back."
+chattable: true
+color: "#F39C12"
+icon: layers
+tools:
+  - Skill
+  - Bash  # For executing the CUA orchestrator Python script
+  - Read  # For reading receipts and logs
+  - Write # For saving outputs
+  - mcp__brain__memory_append
+  - mcp__brain__memory_read
+timeout_seconds: 1800

@@ -157,7 +157,7 @@ async def run_backfill():
         thread_mgr = get_thread_manager()
 
         existing_memories = [
-            {"content": m.content, "id": m.id, "importance": m.importance}
+            {"content": m.content, "id": m.id}
             for m in atom_mgr.list_all()[-100:]
         ]
         existing_threads = [

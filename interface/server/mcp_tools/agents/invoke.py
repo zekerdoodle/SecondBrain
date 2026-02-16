@@ -29,13 +29,17 @@ def _build_invoke_tool_schema():
     all_background = registry.get_all_background_configs()
     combined = {**all_agents, **all_background}
 
-    # Build description
+    # Filter out hidden agents from the description (they remain invocable by name)
+    visible = {k: v for k, v in combined.items() if not v.hidden}
+
+    # Build description from visible agents only
     agent_lines = []
-    for name, config in sorted(combined.items()):
+    for name, config in sorted(visible.items()):
         desc = config.description or "No description"
         agent_lines.append(f"- {name}: {desc}")
 
     agent_list = "\n".join(agent_lines)
+    # Include ALL agent names in the enum so hidden agents are still invocable by name
     agent_names = list(combined.keys())
 
     description = f"""Invoke a single specialized agent to handle a task.
@@ -82,6 +86,13 @@ Use case examples:
                 "type": "string",
                 "enum": ["sonnet", "opus", "haiku"],
                 "description": "Override the agent's default model (optional)"
+            },
+            "project": {
+                "description": "Optional: Target project for output routing. When specified, agent output is tagged with YAML frontmatter for automatic routing to the project's _status.md during morning sync. String for single project, array for multi-project.",
+                "oneOf": [
+                    {"type": "string"},
+                    {"type": "array", "items": {"type": "string"}}
+                ]
             }
         },
         "required": ["agent", "prompt"]
@@ -104,6 +115,7 @@ async def invoke_agent(args: Dict[str, Any]) -> Dict[str, Any]:
         prompt = args.get("prompt", "")
         mode = args.get("mode", "foreground")
         model_override = args.get("model_override")
+        project = args.get("project")
 
         if not agent_name:
             return {"content": [{"type": "text", "text": "Error: agent is required"}], "is_error": True}
@@ -111,15 +123,16 @@ async def invoke_agent(args: Dict[str, Any]) -> Dict[str, Any]:
         if not prompt:
             return {"content": [{"type": "text", "text": "Error: prompt is required"}], "is_error": True}
 
-        # Get source chat ID from environment for ping mode
-        source_chat_id = os.environ.get("CURRENT_CHAT_ID")
+        # Get source chat ID: injected by MCP wrapper (concurrent-safe) or env var (fallback)
+        source_chat_id = args.pop("_source_chat_id", None) or os.environ.get("CURRENT_CHAT_ID")
 
         result = await _invoke_agent(
             name=agent_name,
             prompt=prompt,
             mode=mode,
             source_chat_id=source_chat_id,
-            model_override=model_override
+            model_override=model_override,
+            project=project
         )
 
         # Handle different result types based on mode
@@ -158,13 +171,17 @@ def _build_chain_tool_schema():
     all_background = registry.get_all_background_configs()
     combined = {**all_agents, **all_background}
 
-    # Build agent list for description
+    # Filter out hidden agents from the description (they remain invocable by name)
+    visible = {k: v for k, v in combined.items() if not v.hidden}
+
+    # Build agent list for description from visible agents only
     agent_lines = []
-    for name, config in sorted(combined.items()):
+    for name, config in sorted(visible.items()):
         desc = config.description or "No description"
         agent_lines.append(f"- {name}: {desc}")
 
     agent_list = "\n".join(agent_lines)
+    # Include ALL agent names in the enum so hidden agents are still invocable by name
     agent_names = list(combined.keys())
 
     description = f"""Run multiple agents in sequence (serial execution) with dependency support.
@@ -249,8 +266,8 @@ async def invoke_agent_chain(args: Dict[str, Any]) -> Dict[str, Any]:
         if not chain:
             return {"content": [{"type": "text", "text": "Error: chain is required and must not be empty"}], "is_error": True}
 
-        # Get source chat ID from environment for notification
-        source_chat_id = os.environ.get("CURRENT_CHAT_ID")
+        # Get source chat ID: injected by MCP wrapper (concurrent-safe) or env var (fallback)
+        source_chat_id = args.pop("_source_chat_id", None) or os.environ.get("CURRENT_CHAT_ID")
 
         if not source_chat_id:
             return {"content": [{"type": "text", "text": "Error: source_chat_id required for chain notifications"}], "is_error": True}

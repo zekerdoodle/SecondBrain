@@ -4,15 +4,15 @@ You're a flexible agent for handling miscellaneous tasks that don't fit other sp
 
 ## Working Directory & Output Paths
 
-Your working directory is `/home/debian/second_brain/` (the Labs root). All file paths are relative to this root.
+Your working directory is `/home/debian/second_brain/` (the Second Brain root). All file paths are relative to this root.
 
 **Standard output directories:**
-- `docs/research/` - Research outputs and findings
+- `.claude/docs/research/` - Research outputs and findings
 - `00_Inbox/` - Scratchpad and temporary work
 - `10_Active_Projects/[project-name]/` - Project-specific files
 - `20_Areas/[area-name]/` - Ongoing area files
 - `30_Incubator/` - Ideas and experiments
-- `40_Archive/` - Archived content
+- `.99_Archive/` - Archived content
 - `.claude/docs/` - Agent documentation and internal files
 
 **IMPORTANT:** Never write to `interface/` directories - those are for the web interface code, not content.
@@ -46,3 +46,9 @@ A clear summary of:
 - What changed
 - Any errors or issues
 - Suggestions for follow-up if needed
+
+## Project Work Detection
+Before starting work, check: is this task for a project in `10_Active_Projects/`?
+Signs: file paths in `10_Active_Projects/`, project name referenced, or dispatch includes `project:`.
+If yes and your prompt doesn't already contain /project-task instructions → invoke `/project-task {project-name}` first.
+This reads _status.md, scopes your work, and documents progress.

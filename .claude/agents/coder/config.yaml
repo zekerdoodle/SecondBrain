@@ -1,0 +1,26 @@
+name: coder
+description: Software development specialist. Reads docs, checks for ambiguity before
+  committing, then implements with full dev tooling. Returns early with clarification
+  requests if the task is unclear.
+model: opus
+type: sdk
+timeout_seconds: 1800
+chattable: false
+system_prompt_preset: claude_code
+color: '#a6e3a1'
+icon: code
+tools:
+- Read
+- Write
+- Edit
+- Glob
+- Grep
+- Bash
+- NotebookEdit
+- Task
+- TaskOutput
+- Skill
+- WebFetch
+- WebSearch
+- mcp__brain__fal_text_to_image
+- mcp__brain__fal_list_models

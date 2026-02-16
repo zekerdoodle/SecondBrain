@@ -12,7 +12,7 @@ Defines:
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Union
 
 
 class InvocationMode(str, Enum):
@@ -51,10 +51,16 @@ class AgentConfig:
     model: str
     description: str
     tools: List[str] = field(default_factory=list)
-    timeout_seconds: int = 300
+    timeout_seconds: int = 300  # Default for SDK agents; CLI agents default to 900 in from_dict
+    max_turns: int = 200
     output_format: Optional[Dict[str, Any]] = None
     prompt: Optional[str] = None
     prompt_appendage: Optional[str] = None
+    system_prompt_preset: Optional[str] = None  # e.g., "claude_code" — uses SDK's SystemPromptPreset; prompt.md becomes append
+    chattable: bool = False
+    hidden: bool = False
+    color: Optional[str] = None
+    icon: Optional[str] = None
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any], prompt: Optional[str] = None, prompt_appendage: Optional[str] = None) -> "AgentConfig":
@@ -65,10 +71,16 @@ class AgentConfig:
             model=data.get("model", "sonnet"),
             description=data.get("description", f"Agent: {data['name']}"),
             tools=data.get("tools", []),
-            timeout_seconds=data.get("timeout_seconds", 300 if data.get("type") != "cli" else 900),
+            timeout_seconds=data.get("timeout_seconds") or data.get("timeout") or (300 if data.get("type") != "cli" else 900),
+            max_turns=data.get("max_turns", 200),
             output_format=data.get("output_format"),
             prompt=prompt,
             prompt_appendage=prompt_appendage,
+            system_prompt_preset=data.get("system_prompt_preset"),
+            chattable=data.get("chattable", False),
+            hidden=data.get("hidden", False),
+            color=data.get("color"),
+            icon=data.get("icon"),
         )
 
 
@@ -84,6 +96,7 @@ class AgentInvocation:
         source_chat_id: Chat ID for ping mode notifications
         model_override: Override the agent's default model
         invoked_at: When the invocation was requested
+        project: Optional project tag for output routing
     """
     agent: str
     prompt: str
@@ -91,10 +104,11 @@ class AgentInvocation:
     source_chat_id: Optional[str] = None
     model_override: Optional[str] = None
     invoked_at: datetime = field(default_factory=datetime.utcnow)
+    project: Optional[Union[str, List[str]]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""
-        return {
+        d = {
             "agent": self.agent,
             "prompt": self.prompt,
             "mode": self.mode.value,
@@ -102,6 +116,9 @@ class AgentInvocation:
             "model_override": self.model_override,
             "invoked_at": self.invoked_at.isoformat(),
         }
+        if self.project:
+            d["project"] = self.project
+        return d
 
 
 @dataclass
@@ -195,10 +212,17 @@ class PendingNotification:
             status=data.get("status", "pending"),
         )
 
-    def is_stale(self, threshold_minutes: int = 15) -> bool:
-        """Check if notification is stale (completed > threshold ago and still pending)."""
+    def is_stale(self, threshold_minutes: int = 5, threshold_seconds: Optional[int] = None) -> bool:
+        """Check if notification is stale (completed > threshold ago and still pending).
+
+        Args:
+            threshold_minutes: Minutes threshold (used if threshold_seconds is None)
+            threshold_seconds: Seconds threshold (takes precedence over threshold_minutes)
+        """
         if self.status != "pending":
             return False
         from datetime import timedelta
         age = datetime.utcnow() - self.completed_at
+        if threshold_seconds is not None:
+            return age > timedelta(seconds=threshold_seconds)
         return age > timedelta(minutes=threshold_minutes)

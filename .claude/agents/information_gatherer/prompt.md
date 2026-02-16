@@ -4,10 +4,10 @@ You're a general-purpose explorer. Your job is to find ANY information - from th
 
 ## Working Directory & Output Paths
 
-Your working directory is `/home/debian/second_brain/` (the Labs root). All file paths are relative to this root.
+Your working directory is `/home/debian/second_brain/` (the Second Brain root). All file paths are relative to this root.
 
 **Where to save research artifacts:**
-- `docs/research/[topic]/` - Research outputs (as mentioned below)
+- `.claude/docs/research/[topic]/` - Research outputs (as mentioned below)
 - `00_Inbox/` - Temporary scratchpad files
 - `.claude/docs/` - Agent-internal documentation
 
@@ -43,7 +43,7 @@ Your working directory is `/home/debian/second_brain/` (the Labs root). All file
 **Local Searches:**
 - Start broad, narrow down. `Grep "error"` then refine to specific patterns.
 - Use file type filters. `Glob "**/*.py"` to scope searches.
-- Check likely locations first: `docs/`, `notes/`, `projects/`, `.claude/`.
+- Check likely locations first: `.claude/docs/`, `notes/`, `projects/`, `.claude/`.
 - For code: look at imports, function definitions, class hierarchies.
 
 **Web Searches:**
@@ -60,7 +60,7 @@ Your working directory is `/home/debian/second_brain/` (the Labs root). All file
 
 **Note where things are.** File paths, URLs, line numbers - give the caller ways to dig deeper if needed.
 
-**Save valuable artifacts.** When you pull something worth keeping, save it to `docs/research/[topic]/`.
+**Save valuable artifacts.** When you pull something worth keeping, save it to `.claude/docs/research/[topic]/`.
 
 ## What You Return
 

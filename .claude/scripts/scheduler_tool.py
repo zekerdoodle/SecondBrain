@@ -22,7 +22,7 @@ def _load_tasks():
 def _save_tasks(tasks):
     save_json(TASKS_FILE, tasks)
 
-def add_task(prompt, schedule_text, silent=False, task_type="prompt", agent=None):
+def add_task(prompt, schedule_text, silent=False, task_type="prompt", agent=None, room_id=None, project=None):
     """
     Schedules a new task.
     prompt: The text to send to the agent.
@@ -31,6 +31,13 @@ def add_task(prompt, schedule_text, silent=False, task_type="prompt", agent=None
             Use for maintenance tasks (Librarian, Gardener). Default: False.
     task_type: "prompt" (default) or "agent" for agent invocations.
     agent: Agent name if task_type is "agent".
+    room_id: Optional room ID to target. If specified:
+             - For 'prompt' tasks: Output will be delivered to this room with history context.
+             - For 'agent' tasks: Agent output will be delivered to this room.
+             If None, uses active room or creates new chat.
+    project: Optional project tag (string or list of strings). When present, the dispatcher
+             injects PROJECT METADATA into the agent's prompt so output gets tagged with
+             YAML frontmatter for automatic routing to the project's _status.md.
     """
     tasks = _load_tasks()
     new_task = {
@@ -47,25 +54,37 @@ def add_task(prompt, schedule_text, silent=False, task_type="prompt", agent=None
     if task_type == "agent" and agent:
         new_task["agent"] = agent
 
+    # Store room_id if provided for room-targeted delivery
+    if room_id:
+        new_task["room_id"] = room_id
+
+    # Store project tag if provided for output routing
+    if project:
+        new_task["project"] = project
+
     tasks.append(new_task)
     _save_tasks(tasks)
     mode = " (silent)" if silent else ""
     agent_info = f" via agent '{agent}'" if task_type == "agent" and agent else ""
-    return f"✅ Task scheduled{mode}{agent_info} (ID: {new_task['id']}): '{prompt}' ({schedule_text})"
+    room_info = f" → room '{room_id}'" if room_id else ""
+    project_info = f" [project: {project}]" if project else ""
+    return f"✅ Task scheduled{mode}{agent_info}{room_info}{project_info} (ID: {new_task['id']}): '{prompt}' ({schedule_text})"
 
 
-def add_agent_task(agent, prompt, schedule_text):
+def add_agent_task(agent, prompt, schedule_text, room_id=None, silent=True, project=None):
     """
     Schedule an agent task.
 
     agent: Agent name (claude_code, information_gatherer, general_purpose, deep_think, librarian, gardener)
     prompt: Task description for the agent.
     schedule_text: "every X minutes/hours", "daily at HH:MM", or "once at YYYY-MM-DDTHH:MM:SS"
-
-    Agent tasks always run silently (no chat history). Their output is routed to
-    00_Inbox/agent_outputs/ for async review by Primary Claude during syncs.
+    room_id: Optional room ID to target. If specified, agent output will be delivered to this room.
+             If None, output goes to 00_Inbox/agent_outputs/ for async review.
+    silent: If True (default), runs in background without creating a visible chat or notifications.
+            If False, creates a visible chat with notifications when the agent completes.
+    project: Optional project tag (string or list of strings) for output routing.
     """
-    return add_task(prompt, schedule_text, silent=True, task_type="agent", agent=agent)
+    return add_task(prompt, schedule_text, silent=silent, task_type="agent", agent=agent, room_id=room_id, project=project)
 
 import re
 
@@ -98,6 +117,14 @@ def list_tasks(include_inactive=False):
         task_type = t.get('type', 'prompt')
         agent_indicator = f" 🤖{t.get('agent', '?')}" if task_type == 'agent' else ""
 
+        # Check for room targeting
+        room_id = t.get('room_id')
+        room_indicator = f" 📍{room_id[:8]}..." if room_id and len(room_id) > 8 else f" 📍{room_id}" if room_id else ""
+
+        # Check for project tag
+        project = t.get('project')
+        project_indicator = f" 📂{project}" if project else ""
+
         last = t.get('last_run', 'Never')
         if last != 'Never':
             try:
@@ -106,7 +133,7 @@ def list_tasks(include_inactive=False):
             except:
                 pass
 
-        line = f"{status_icon} `{t['id']}`{silent_indicator}{agent_indicator}: {t['prompt']}\n   Schedule: {t['schedule']} (Last: {last})"
+        line = f"{status_icon} `{t['id']}`{silent_indicator}{agent_indicator}{project_indicator}{room_indicator}: {t['prompt']}\n   Schedule: {t['schedule']} (Last: {last})"
         if error_msg:
             line += f"\n   ❌ Error: {error_msg}"
         output.append(line)
@@ -124,7 +151,7 @@ def remove_task(task_id):
     return f"❌ Task `{task_id}` not found."
 
 
-def update_task(task_id, silent=None, active=None, schedule=None, prompt=None):
+def update_task(task_id, silent=None, active=None, schedule=None, prompt=None, room_id=None, project=None):
     """
     Update an existing scheduled task.
     task_id: The task ID to update.
@@ -132,6 +159,8 @@ def update_task(task_id, silent=None, active=None, schedule=None, prompt=None):
     active: Set to True/False to enable/disable task.
     schedule: New schedule string.
     prompt: New prompt text.
+    room_id: Set target room ID. Use empty string "" to clear room targeting.
+    project: Set project tag (string or list). Use empty string "" to clear.
     """
     tasks = _load_tasks()
     found = False
@@ -159,6 +188,26 @@ def update_task(task_id, silent=None, active=None, schedule=None, prompt=None):
             if prompt is not None:
                 t['prompt'] = prompt
                 changes.append("prompt updated")
+
+            if room_id is not None:
+                old_room = t.get('room_id')
+                if room_id == "":
+                    # Clear room targeting
+                    t.pop('room_id', None)
+                    changes.append(f"room_id: '{old_room}' → (cleared)")
+                else:
+                    t['room_id'] = room_id
+                    changes.append(f"room_id: '{old_room}' → '{room_id}'")
+
+            if project is not None:
+                old_project = t.get('project')
+                if project == "":
+                    # Clear project tag
+                    t.pop('project', None)
+                    changes.append(f"project: '{old_project}' → (cleared)")
+                else:
+                    t['project'] = project
+                    changes.append(f"project: '{old_project}' → '{project}'")
 
             _save_tasks(tasks)
             return f"✅ Task `{task_id}` updated: {', '.join(changes)}"
@@ -332,6 +381,14 @@ def check_due_tasks():
                 "type": task_type,
                 "silent": t.get('silent', False)  # Default to non-silent (visible)
             }
+
+            # Include room_id if specified for room-targeted delivery
+            if t.get('room_id'):
+                task_info["room_id"] = t['room_id']
+
+            # Include project tag if specified for output routing
+            if t.get('project'):
+                task_info["project"] = t['project']
 
             if task_type == "agent":
                 # Agent task - return agent name and prompt

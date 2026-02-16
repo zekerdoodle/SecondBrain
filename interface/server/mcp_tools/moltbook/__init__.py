@@ -10,6 +10,10 @@ from .moltbook import (
     moltbook_comment,
     moltbook_get_post,
     moltbook_notifications,
+    moltbook_account_status,
+    moltbook_check_dms,
+    moltbook_respond_challenge,
+    moltbook_challenge_log,
 )
 
 __all__ = [
@@ -18,4 +22,8 @@ __all__ = [
     "moltbook_comment",
     "moltbook_get_post",
     "moltbook_notifications",
+    "moltbook_account_status",
+    "moltbook_check_dms",
+    "moltbook_respond_challenge",
+    "moltbook_challenge_log",
 ]

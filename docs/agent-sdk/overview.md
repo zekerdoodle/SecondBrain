@@ -1,438 +1,247 @@
-# Claude Agent SDK - Overview
+---
+source: https://platform.claude.com/docs/en/agent-sdk/overview
+title: Agent SDK overview
+last_fetched: 2026-02-12T10:03:32.164986+00:00
+---
 
-## What is the Claude Agent SDK?
+Copy page
 
-The Claude Agent SDK (formerly Claude Code SDK) enables you to build AI agents with Claude Code's capabilities. It provides the same tools, agent loop, and context management that power Claude Code, programmable in Python and TypeScript.
+The Claude Code SDK has been renamed to the Claude Agent SDK. If you're migrating from the old SDK, see the [Migration Guide](/docs/en/agent-sdk/migration-guide).
 
-The SDK allows you to create autonomous agents that can:
-- Read and edit files
-- Run bash commands
-- Search codebases
-- Execute complex workflows
-- Connect to external services via MCP
-- Manage context across multiple sessions
+Build AI agents that autonomously read files, run commands, search the web, edit code, and more. The Agent SDK gives you the same tools, agent loop, and context management that power Claude Code, programmable in Python and TypeScript.
 
-## Core Architecture
+Python
 
-### Agent Loop
-
-The SDK implements a continuous feedback loop:
-1. **Gather Context** - Agent searches files, reads documentation, queries databases
-2. **Take Action** - Agent executes tools, writes code, modifies files
-3. **Verify Work** - Agent checks results, validates output, iterates if needed
-4. **Repeat** - Process continues until task completion
-
-### Key Design Principle
-
-The fundamental design principle is **giving Claude a computer**. By providing access to tools that developers use daily (bash, file system, etc.), Claude can work like human programmers do - reading files, writing code, running tests, and debugging iteratively.
-
-## Core Concepts
-
-### 1. Agents
-
-An agent is an autonomous Claude instance that:
-- Maintains its own context window (200k tokens)
-- Uses tools to gather information and take actions
-- Makes decisions about which tools to use based on the task
-- Operates independently or as part of a hierarchy
-
-**Main Agent**: The primary agent you interact with directly.
-
-**Subagents**: Specialized agents spawned by the main agent or other subagents to handle focused subtasks with isolated context.
-
-### 2. Tools
-
-Tools are the capabilities your agent can use. The SDK provides built-in tools:
-
-**Core Tools**:
-- `Read` - Read file contents
-- `Write` - Create new files
-- `Edit` - Modify existing files
-- `Glob` - Find files by pattern
-- `Grep` - Search file contents
-- `Bash` - Execute shell commands
-
-**Advanced Tools**:
-- `Task` - Spawn subagents for parallel or isolated work
-- `WebSearch` - Search the internet
-- `PageParser` - Extract content from web pages
-- `AskUserQuestion` - Request clarification from users
-
-**MCP Tools**: Connect to external services via Model Context Protocol (databases, APIs, etc.)
-
-### 3. Sessions
-
-A session represents a continuous conversation with context. Sessions enable:
-- **Context Preservation**: Full conversation history maintained
-- **Resumption**: Continue from where you left off across restarts
-- **Forking**: Branch from a point to explore alternatives
-- **Compaction**: Automatic summarization when approaching context limits
-
-### 4. Context Management
-
-The SDK provides sophisticated context management:
-
-**Context Window**: 200k tokens per agent instance
-
-**Compaction**: Automatic summarization of older messages when context fills up, preserving critical information
-
-**Isolation**: Subagents have separate context windows, preventing pollution of main conversation
-
-**File System as Context**: Project structure and files serve as persistent context across sessions
-
-### 5. Permissions
-
-Control what agents can do through permission modes:
-
-**Permission Modes**:
-- `default` - Prompts for approval on all tool uses
-- `acceptEdits` - Auto-approves file operations, prompts for others
-- `dontAsk` - Auto-approves read-only operations
-- `bypassPermissions` - Auto-approves all operations (use with caution)
-- `plan` - Prevents tool execution, only generates plans
-
-**Permission Evaluation Order**:
-1. Hooks (can allow, deny, or continue)
-2. Permission rules (declarative allow/deny in settings.json)
-3. Permission mode
-4. `canUseTool` callback (for runtime approval)
-
-## Installation
-
-### Prerequisites
-- Python 3.10+ or Node.js 18+
-- Claude Code CLI
-- Anthropic API key
-
-### Install Claude Code
-
-**macOS/Linux (Homebrew)**:
-```bash
-brew install anthropics/tap/claude-code
-```
-
-**Windows (WinGet)**:
-```bash
-winget install Anthropic.ClaudeCode
-```
-
-**Authenticate**:
-```bash
-claude
-# Follow prompts to authenticate
-```
-
-### Install SDK
-
-**Python**:
-```bash
-pip install claude-agent-sdk
-```
-
-**TypeScript**:
-```bash
-npm install @anthropic-ai/claude-agent-sdk
-```
-
-### Set API Key
-
-Create `.env` file:
-```
-ANTHROPIC_API_KEY=your-api-key
-```
-
-Or use authenticated Claude Code (recommended).
-
-## Quick Start Example
-
-**Python**:
-```python
+```shiki
 import asyncio
 from claude_agent_sdk import query, ClaudeAgentOptions
 
 async def main():
-    async for message in query(
-        prompt="Find and fix the bug in auth.py",
-        options=ClaudeAgentOptions(
-            allowed_tools=["Read", "Edit", "Bash"],
-            permission_mode="acceptEdits"
-        )
-    ):
-        if hasattr(message, "result"):
-            print(message.result)
+ async for message in query(
+ prompt="Find and fix the bug in auth.py",
+ options=ClaudeAgentOptions(allowed_tools=["Read", "Edit", "Bash"]),
+ ):
+ print(message) # Claude reads the file, finds the bug, edits it
 
 asyncio.run(main())
 ```
 
-**TypeScript**:
-```typescript
-import { query } from "@anthropic-ai/claude-agent-sdk";
+The Agent SDK includes built-in tools for reading files, running commands, and editing code, so your agent can start working immediately without you implementing tool execution. Dive into the quickstart or explore real agents built with the SDK:
 
-for await (const message of query({
-  prompt: "Find and fix the bug in auth.py",
-  options: {
-    allowedTools: ["Read", "Edit", "Bash"],
-    permissionMode: "acceptEdits"
-  }
-})) {
-  if ('result' in message) {
-    console.log(message.result);
-  }
-}
+[Quickstart
+
+Build a bug-fixing agent in minutes](/docs/en/agent-sdk/quickstart)[Example agents
+
+Email assistant, research agent, and more](https://github.com/anthropics/claude-agent-sdk-demos)
+
+## Get started
+
+1. 1
+
+ Install the SDK
+
+ TypeScript
+
+ TypeScript
+
+ Python
+
+ Python
+
+ ```shiki
+ npm install @anthropic-ai/claude-agent-sdk
+ ```
+2. 2
+
+ Set your API key
+
+ Get an API key from the [Console](https://platform.claude.com/), then set it as an environment variable:
+
+ ```shiki
+ export ANTHROPIC_API_KEY=your-api-key
+ ```
+
+ The SDK also supports authentication via third-party API providers:
+
+ - **Amazon Bedrock**: set `CLAUDE_CODE_USE_BEDROCK=1` environment variable and configure AWS credentials
+ - **Google Vertex AI**: set `CLAUDE_CODE_USE_VERTEX=1` environment variable and configure Google Cloud credentials
+ - **Microsoft Azure**: set `CLAUDE_CODE_USE_FOUNDRY=1` environment variable and configure Azure credentials
+
+ See the setup guides for [Bedrock](https://code.claude.com/docs/en/amazon-bedrock), [Vertex AI](https://code.claude.com/docs/en/google-vertex-ai), or [Azure AI Foundry](https://code.claude.com/docs/en/azure-ai-foundry) for details.
+
+ Unless previously approved, Anthropic does not allow third party developers to offer claude.ai login or rate limits for their products, including agents built on the Claude Agent SDK. Please use the API key authentication methods described in this document instead.
+3. 3
+
+ Run your first agent
+
+ This example creates an agent that lists files in your current directory using built-in tools.
+
+ Python
+
+ ```shiki
+ import asyncio
+ from claude_agent_sdk import query, ClaudeAgentOptions
+
+ async def main():
+ async for message in query(
+ prompt="What files are in this directory?",
+ options=ClaudeAgentOptions(allowed_tools=["Bash", "Glob"]),
+ ):
+ if hasattr(message, "result"):
+ print(message.result)
+
+ asyncio.run(main())
+ ```
+
+**Ready to build?** Follow the [Quickstart](/docs/en/agent-sdk/quickstart) to create an agent that finds and fixes bugs in minutes.
+
+## Capabilities
+
+Everything that makes Claude Code powerful is available in the SDK:
+
+Built-in tools
+
+Built-in tools
+
+Hooks
+
+Hooks
+
+Subagents
+
+Subagents
+
+MCP
+
+MCP
+
+Permissions
+
+Permissions
+
+Sessions
+
+Sessions
+
+Your agent can read files, run commands, and search codebases out of the box. Key tools include:
+
+| Tool | What it does |
+| --- | --- |
+| **Read** | Read any file in the working directory |
+| **Write** | Create new files |
+| **Edit** | Make precise edits to existing files |
+| **Bash** | Run terminal commands, scripts, git operations |
+| **Glob** | Find files by pattern (`**/*.ts`, `src/**/*.py`) |
+| **Grep** | Search file contents with regex |
+| **WebSearch** | Search the web for current information |
+| **WebFetch** | Fetch and parse web page content |
+| **[AskUserQuestion](/docs/en/agent-sdk/user-input#handle-clarifying-questions)** | Ask the user clarifying questions with multiple choice options |
+
+This example creates an agent that searches your codebase for TODO comments:
+
+Python
+
+```shiki
+import asyncio
+from claude_agent_sdk import query, ClaudeAgentOptions
+
+async def main():
+ async for message in query(
+ prompt="Find all TODO comments and create a summary",
+ options=ClaudeAgentOptions(allowed_tools=["Read", "Glob", "Grep"]),
+ ):
+ if hasattr(message, "result"):
+ print(message.result)
+
+asyncio.run(main())
 ```
 
-## SDK vs Other Claude Tools
+### Claude Code features
 
-| Feature | Agent SDK | Claude API | Claude Code CLI | Claude.ai |
-|---------|-----------|------------|-----------------|-----------|
-| **Autonomous tool use** | ✓ | Manual | ✓ | ✓ |
-| **Programmatic control** | ✓ | ✓ | - | - |
-| **File system access** | ✓ | - | ✓ | - |
-| **Subagents** | ✓ | - | ✓ | - |
-| **Session resumption** | ✓ | - | ✓ | ✓ |
-| **Context management** | ✓ Auto | Manual | ✓ Auto | ✓ Auto |
-| **MCP integration** | ✓ | - | ✓ | - |
-| **Use case** | Build agents | Build apps | Terminal coding | Interactive use |
+The SDK also supports Claude Code's filesystem-based configuration. To use these features, set `setting_sources=["project"]` (Python) or `settingSources: ['project']` (TypeScript) in your options.
 
-## Common Use Cases
+| Feature | Description | Location |
+| --- | --- | --- |
+| [Skills](/docs/en/agent-sdk/skills) | Specialized capabilities defined in Markdown | `.claude/skills/SKILL.md` |
+| [Slash commands](/docs/en/agent-sdk/slash-commands) | Custom commands for common tasks | `.claude/commands/*.md` |
+| [Memory](/docs/en/agent-sdk/modifying-system-prompts) | Project context and instructions | `CLAUDE.md` or `.claude/CLAUDE.md` |
+| [Plugins](/docs/en/agent-sdk/plugins) | Extend with custom commands, agents, and MCP servers | Programmatic via `plugins` option |
 
-### Development Agents
-- Automated bug fixing
-- Code review and refactoring
-- Test generation and execution
-- Documentation generation
+## Compare the Agent SDK to other Claude tools
 
-### Research Agents
-- Deep research across large document sets
-- Multi-source information synthesis
-- Competitive analysis
+The Claude platform offers multiple ways to build with Claude. Here's how the Agent SDK fits in:
 
-### Data Agents
-- Database queries and analysis
-- ETL pipeline creation
-- Report generation
+Agent SDK vs Client SDK
 
-### Automation Agents
-- Email processing and triage
-- Customer support ticket handling
-- Invoice/receipt processing
-- Scheduled task execution
+Agent SDK vs Client SDK
 
-### Content Agents
-- Translation workflows
-- Content moderation
-- Video/image processing
-- Documentation maintenance
+Agent SDK vs Claude Code CLI
 
-## Architecture Best Practices
+Agent SDK vs Claude Code CLI
 
-### Orchestrator Pattern
+The [Anthropic Client SDK](/docs/en/api/client-sdks) gives you direct API access: you send prompts and implement tool execution yourself. The **Agent SDK** gives you Claude with built-in tool execution.
 
-Use a main orchestrator agent that coordinates specialized subagents:
+With the Client SDK, you implement a tool loop. With the Agent SDK, Claude handles it:
 
-```
-Main Agent (Orchestrator)
-├── Research Agent (read-only, gathers context)
-├── Implementation Agent (writes code)
-├── Testing Agent (runs tests, validates)
-└── Review Agent (checks quality, security)
+Python
+
+```shiki
+# Client SDK: You implement the tool loop
+response = client.messages.create(...)
+while response.stop_reason == "tool_use":
+ result = your_tool_executor(response.tool_use)
+ response = client.messages.create(tool_result=result, **params)
+
+# Agent SDK: Claude handles tools autonomously
+async for message in query(prompt="Fix the bug in auth.py"):
+ print(message)
 ```
 
-**Benefits**:
-- Clear separation of concerns
-- Parallel execution where possible
-- Isolated contexts prevent pollution
-- Specialized expertise per domain
+## Changelog
 
-### Context Engineering
+View the full changelog for SDK updates, bug fixes, and new features:
 
-Use the file system as persistent context:
+- **TypeScript SDK**: [view CHANGELOG.md](https://github.com/anthropics/claude-agent-sdk-typescript/blob/main/CHANGELOG.md)
+- **Python SDK**: [view CHANGELOG.md](https://github.com/anthropics/claude-agent-sdk-python/blob/main/CHANGELOG.md)
 
-**Progress Files**: `claude-progress.txt` tracks work completed
-**Feature Lists**: JSON files define requirements and status
-**Git History**: Commits document changes and rationale
-**Init Scripts**: `init.sh` sets up development environment
+## Reporting bugs
 
-### Incremental Progress
+If you encounter bugs or issues with the Agent SDK:
 
-Structure tasks for incremental completion:
-1. Initializer agent sets up environment
-2. Coding agents work on one feature at a time
-3. Each session leaves environment in clean, committable state
-4. Next session picks up from clear checkpoint
+- **TypeScript SDK**: [report issues on GitHub](https://github.com/anthropics/claude-agent-sdk-typescript/issues)
+- **Python SDK**: [report issues on GitHub](https://github.com/anthropics/claude-agent-sdk-python/issues)
 
-## Message Types
+## Branding guidelines
 
-The SDK streams different message types as work progresses:
+For partners integrating the Claude Agent SDK, use of Claude branding is optional. When referencing Claude in your product:
 
-**System Messages**:
-- `init` - Session started, includes session_id and available tools
-- `compact_boundary` - Context compaction occurred
+**Allowed:**
 
-**Assistant Messages**:
-- Contains Claude's reasoning (text blocks)
-- Contains tool calls (tool_use blocks)
+- "Claude Agent" (preferred for dropdown menus)
+- "Claude" (when within a menu already labeled "Agents")
+- "{YourAgentName} Powered by Claude" (if you have an existing agent name)
 
-**Tool Result Messages**:
-- Results from tool executions
-- Errors if tool failed
+**Not permitted:**
 
-**Result Messages**:
-- `success` - Task completed successfully
-- `error_during_execution` - Error occurred
-- `stopped` - Stopped by hooks or rules
-- `max_turns_reached` - Hit turn limit
+- "Claude Code" or "Claude Code Agent"
+- Claude Code-branded ASCII art or visual elements that mimic Claude Code
 
-## Configuration Options
+Your product should maintain its own branding and not appear to be Claude Code or any Anthropic product. For questions about branding compliance, contact our [sales team](https://www.anthropic.com/contact-sales).
 
-Key options when calling `query()`:
+## License and terms
 
-**Core Options**:
-- `allowed_tools` - List of tools agent can use
-- `disallowed_tools` - Tools to explicitly block
-- `permission_mode` - How to handle tool permissions
-- `model` - Which Claude model to use (sonnet, opus, haiku)
-- `system_prompt` - Custom instructions for the agent
+Use of the Claude Agent SDK is governed by [Anthropic's Commercial Terms of Service](https://www.anthropic.com/legal/commercial-terms), including when you use it to power products and services that you make available to your own customers and end users, except to the extent a specific component or dependency is covered by a different license as indicated in that component's LICENSE file.
 
-**Context Options**:
-- `resume` - Session ID to continue previous session
-- `fork_session` - Create new branch from resumed session
-- `max_turns` - Limit number of agent turns
+## Next steps
 
-**Advanced Options**:
-- `agents` - Subagent definitions
-- `mcp_servers` - External tool integrations
-- `hooks` - Custom code at lifecycle points
-- `can_use_tool` - Runtime approval callback
+[Quickstart
 
-## Error Handling
+Build an agent that finds and fixes bugs in minutes](/docs/en/agent-sdk/quickstart)[Example agents
 
-Agents can fail in several ways:
+Email assistant, research agent, and more](https://github.com/anthropics/claude-agent-sdk-demos)[TypeScript SDK
 
-**Tool Execution Errors**: Tool fails to execute (file not found, command error)
-- Agent receives error message and can retry or adjust approach
+Full TypeScript API reference and examples](/docs/en/agent-sdk/typescript)[Python SDK
 
-**Permission Denied**: Tool use blocked by permissions
-- Agent must ask for different approach or request permission
+Full Python API reference and examples](/docs/en/agent-sdk/python)
 
-**Context Overflow**: Approaching token limit
-- Automatic compaction occurs
-- Can configure compaction threshold
-
-**Max Turns Reached**: Hit turn limit
-- Set `max_turns` to prevent infinite loops
-- Agent stops with result message
-
-**Session Errors**: Resume failed, fork failed
-- Check session_id is valid
-- Ensure session hasn't expired (based on cleanup settings)
-
-## Security Considerations
-
-### Sandboxing
-
-**Production deployments should run in sandboxed containers**:
-- Process isolation
-- Resource limits
-- Network controls
-- Ephemeral file systems
-
-**Sandbox Providers**:
-- Modal Sandbox
-- Cloudflare Sandboxes
-- E2B
-- Fly Machines
-- Docker (self-hosted)
-- gVisor (self-hosted)
-
-### Permission Hardening
-
-1. **Use least privilege**: Only grant necessary tools
-2. **Avoid bypassPermissions**: Especially with subagents
-3. **Validate tool inputs**: Use hooks to check parameters
-4. **Limit tool access**: Restrict file paths, commands
-5. **Monitor tool usage**: Log all tool executions
-
-### Credential Management
-
-- Store API keys in environment variables
-- Use MCP server authentication properly
-- Don't commit credentials to git
-- Rotate keys regularly
-
-## Performance Optimization
-
-### Model Selection
-
-Choose model based on task complexity:
-- **Haiku**: Fast, low-cost, simple tasks (file search, formatting)
-- **Sonnet**: Balanced, most general tasks (coding, analysis)
-- **Opus**: Complex reasoning, critical tasks (architecture, security)
-
-### Context Efficiency
-
-- Use subagents to isolate verbose operations
-- Compact proactively with `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`
-- Structure files for easy navigation
-- Use `Grep` instead of reading entire files
-
-### Parallel Execution
-
-- Run independent subagents concurrently (up to 10 parallel)
-- Use background tasks for long-running operations
-- Batch similar operations together
-
-## Monitoring and Observability
-
-### Logging
-
-Stream messages to capture:
-- Tool calls and parameters
-- Tool results and errors
-- Agent reasoning
-- Session events (compaction, forking)
-
-### Metrics
-
-Track important metrics:
-- Token usage (input/output)
-- Tool execution count by type
-- Session duration
-- Success/failure rates
-- Cost per session
-
-### Debugging
-
-Use message stream to debug:
-1. Check `init` message for available tools
-2. Track `tool_use` blocks for agent decisions
-3. Examine tool results for errors
-4. Review `compact_boundary` for context issues
-
-## Next Steps
-
-- **Task Tool & Subagents**: Learn how to use subagents for parallel and specialized work
-- **Session Management**: Deep dive into session resumption and forking
-- **Best Practices**: Patterns for building reliable agents
-- **MCP Integration**: Connect to external services
-- **Hooks**: Add custom logic at key points
-- **Deployment**: Host agents in production
-
-## Resources
-
-**Official Documentation**: https://platform.claude.com/docs/en/agent-sdk/overview
-
-**GitHub Repositories**:
-- TypeScript SDK: https://github.com/anthropics/claude-agent-sdk-typescript
-- Python SDK: https://github.com/anthropics/claude-agent-sdk-python
-- Demo Applications: https://github.com/anthropics/claude-agent-sdk-demos
-
-**Community Resources**:
-- Anthropic Discord
-- Claude Code Documentation: https://code.claude.com/docs
-- Engineering Blog: https://www.anthropic.com/engineering
-
-**Tutorials**:
-- Full Workshop (YouTube): https://www.youtube.com/watch?v=TqC1qOfiVcQ
-- Building Agents Blog Post: https://www.anthropic.com/engineering/building-agents-with-the-claude-agent-sdk
-- Long-Running Agents: https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents
+Was this page helpful?

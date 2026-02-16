@@ -68,6 +68,10 @@ class MessageWAL:
         self.pending_file = self.wal_dir / "pending_messages.json"
         self.streaming_file = self.wal_dir / "streaming_responses.json"
 
+        # NOTE: This uses threading.Lock rather than asyncio.Lock intentionally.
+        # All operations inside critical sections are synchronous (dict ops + file I/O).
+        # If async operations are ever added inside lock scopes, this MUST be
+        # converted to asyncio.Lock and all callers updated to use `async with`.
         self._lock = Lock()
 
         # In-memory state (synced to disk)

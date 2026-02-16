@@ -2,6 +2,15 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Hide scrollbar but allow scrolling */
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+
 :root,
 [data-theme="light"] {
   /* Claude-inspired warm palette - Light Mode */
@@ -104,6 +113,25 @@
   color-scheme: dark;
 }
 
+/* Text selection - ensure highlighted text is always visible */
+::selection {
+  background-color: rgba(217, 119, 87, 0.3);
+  color: var(--text-primary);
+}
+::-moz-selection {
+  background-color: rgba(217, 119, 87, 0.3);
+  color: var(--text-primary);
+}
+
+[data-theme="dark"] ::selection {
+  background-color: rgba(217, 119, 87, 0.4);
+  color: #f5f5f5;
+}
+[data-theme="dark"] ::-moz-selection {
+  background-color: rgba(217, 119, 87, 0.4);
+  color: #f5f5f5;
+}
+
 html, body, #root {
   height: 100%;
   margin: 0;
@@ -161,6 +189,20 @@ html, body, #root {
   line-height: 1.7;
   font-family: var(--font-editor);
 }
+
+/* Chat-specific prose - use chat font, not editor font */
+.chat-markdown.prose {
+  font-family: var(--font-chat);
+  font-size: var(--font-size-base);
+}
+.chat-markdown.prose p,
+.chat-markdown.prose li,
+.chat-markdown.prose blockquote {
+  font-size: var(--font-size-base);
+}
+.chat-markdown.prose h1 { font-size: calc(var(--font-size-base) * 1.5); }
+.chat-markdown.prose h2 { font-size: calc(var(--font-size-base) * 1.25); }
+.chat-markdown.prose h3 { font-size: calc(var(--font-size-base) * 1.1); }
 .prose h1, .prose h2, .prose h3 {
   color: var(--text-primary);
   font-weight: 600;
@@ -405,6 +447,53 @@ html, body, #root {
   color: var(--pre-text) !important;
 }
 
+/* Code block wrap toggle button */
+.wmde-markdown pre .code-wrap-toggle,
+.prose pre .code-wrap-toggle {
+  visibility: hidden;
+  display: flex;
+  position: absolute;
+  cursor: pointer;
+  color: var(--pre-text);
+  top: 6px;
+  right: 34px;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.1);
+  padding: 6px;
+  font-size: 12px;
+  transition: all 0.3s;
+  z-index: 1;
+  opacity: 0.7;
+}
+.wmde-markdown pre:hover .code-wrap-toggle,
+.prose pre:hover .code-wrap-toggle {
+  visibility: visible;
+}
+.wmde-markdown pre:hover .code-wrap-toggle:hover,
+.prose pre:hover .code-wrap-toggle:hover {
+  background: var(--accent-primary);
+  color: white;
+  opacity: 1;
+}
+.wmde-markdown pre .code-wrap-toggle.active,
+.prose pre .code-wrap-toggle.active {
+  background: var(--accent-primary);
+  color: white;
+  opacity: 1;
+}
+
+/* Wrapped code block state */
+.wmde-markdown pre.wrap-lines code,
+.prose pre.wrap-lines code {
+  white-space: pre-wrap !important;
+  word-wrap: break-word !important;
+  overflow-wrap: break-word !important;
+}
+.wmde-markdown pre.wrap-lines,
+.prose pre.wrap-lines {
+  overflow-x: hidden !important;
+}
+
 /* Link styling for wmde-markdown */
 .wmde-markdown a {
   color: var(--accent-primary) !important;
@@ -618,6 +707,22 @@ html, body, #root {
   background-color: var(--bg-tertiary) !important;
 }
 
+/* Clickable file path links in chat messages */
+.file-path-link {
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 2px;
+  text-decoration-color: var(--accent-primary);
+  transition: all 0.15s ease;
+}
+.file-path-link:hover {
+  background-color: var(--accent-light, rgba(var(--accent-primary-rgb, 99, 102, 241), 0.1));
+  text-decoration-style: solid;
+  color: var(--accent-primary);
+  border-radius: 2px;
+}
+
 /* Modal animations */
 @keyframes modal-backdrop-in {
   from { opacity: 0; }
@@ -691,3 +796,4 @@ html, body, #root {
 .command-palette-in {
   animation: command-palette-in 0.15s ease-out forwards;
 }
+

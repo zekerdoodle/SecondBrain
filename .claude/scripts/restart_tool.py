@@ -69,24 +69,89 @@ def find_port_pid(port):
         return None
 
 
-def save_continuation_state(session_id: str, reason: str = None, messages: list = None):
-    """Save continuation marker for post-restart resumption."""
+def save_continuation_state(
+    session_id: str,
+    reason: str = None,
+    source: str = None,
+    messages: list = None,
+    all_active_sessions: dict = None
+):
+    """Save continuation marker for post-restart resumption.
 
-    # Load existing chat if we don't have messages
-    if messages is None:
+    Supports multi-session continuation: if other sessions were actively processing
+    when the restart was triggered, they'll also be woken up after restart.
+
+    Args:
+        session_id: The session that triggered the restart.
+        reason: Why the restart was triggered.
+        source: Who/what triggered it (e.g. 'ren', 'chat_coder', 'settings_ui').
+        messages: Optional messages for the triggering session.
+        all_active_sessions: Optional dict of {session_id: agent_name} for ALL
+            sessions that were actively processing at restart time.
+    """
+    reason = reason or "Server restart requested"
+    source = source or "unknown"
+
+    # Build the sessions list
+    sessions = []
+
+    # Determine the triggering session's agent name
+    # Use all_active_sessions lookup if available, fall back to source
+    trigger_agent = source
+    if all_active_sessions and session_id in all_active_sessions:
+        trigger_agent = all_active_sessions[session_id]
+
+    # For external restarts (Settings UI, shutdown handler), ALL sessions are bystanders
+    # (no specific session triggered the restart)
+    is_external_trigger = source in ("settings_ui", "shutdown_handler")
+
+    # The triggering session is first (unless this is an external trigger like Settings UI)
+    triggering_msg_count = 0
+    if messages is not None:
+        triggering_msg_count = len(messages)
+    else:
         chat_file = CHATS_DIR / f"{session_id}.json"
         if chat_file.exists():
             with open(chat_file) as f:
                 chat_data = json.load(f)
-                messages = chat_data.get("messages", [])
-        else:
-            messages = []
+                triggering_msg_count = len(chat_data.get("messages", []))
+
+    sessions.append({
+        "session_id": session_id,
+        "agent": trigger_agent,
+        "role": "bystander" if is_external_trigger else "trigger",
+        "message_count": triggering_msg_count,
+    })
+
+    # Add remaining sessions (actively processing but didn't trigger the restart)
+    if all_active_sessions:
+        for sid, agent in all_active_sessions.items():
+            if sid == session_id:
+                continue  # Already added above
+            bystander_msg_count = 0
+            chat_file = CHATS_DIR / f"{sid}.json"
+            if chat_file.exists():
+                try:
+                    with open(chat_file) as f:
+                        chat_data = json.load(f)
+                        bystander_msg_count = len(chat_data.get("messages", []))
+                except Exception:
+                    pass
+
+            sessions.append({
+                "session_id": sid,
+                "agent": agent or "ren",
+                "role": "bystander",  # Was actively processing but didn't trigger restart
+                "message_count": bystander_msg_count,
+            })
 
     continuation = {
-        "session_id": session_id,
         "restart_time": datetime.now().isoformat(),
-        "reason": reason or "Server restart requested by Claude",
-        "message_count": len(messages),
+        "reason": reason,
+        "source": source,
+        "sessions": sessions,
+        # Legacy field for backwards compat
+        "session_id": session_id,
         "continuation_prompt": (
             "Restart completed successfully. "
             "Please continue from where you left off. "

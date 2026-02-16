@@ -1,12 +1,18 @@
-name: deep_think
-type: sdk
+description: "Pure logical reasoning engine. No research \u2014 just deep, iterative\
+  \ thinking on well-scoped problems with complete context provided. Use for architecture\
+  \ decisions, strategic analysis, synthesis, and multi-angle investigation."
+max_turns: 200
 model: opus
-description: "Deep reasoning specialist for complex problems. Use for architecture decisions, strategic planning, thorough analysis, and multi-angle investigation."
-tools:
-  - Read
-  - Glob
-  - Grep
-  - Write
-  - mcp__brain__web_search
-  - mcp__brain__page_parser
+name: deep_think
+chattable: true
+color: "#9B59B6"
+icon: brain
 timeout_seconds: 600
+tools:
+- Skill
+- Read
+- Write
+- mcp__brain__consult_llm
+- mcp__brain__memory_append
+- mcp__brain__memory_read
+type: sdk

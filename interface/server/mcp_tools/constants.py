@@ -26,6 +26,7 @@ GOOGLE_TOOLS = [
     "google_list",
     "google_delete_task",
     "google_update_task",
+    "google_auth",
 ]
 
 GMAIL_TOOLS = [
@@ -94,9 +95,21 @@ LTM_TOOLS = [
     "ltm_run_gardener",
     "ltm_buffer_exchange",
     "ltm_backfill",
+    "ltm_backfill_threads",
 ]
 
-# Combined memory category
+# Gardener-only tools (NOT available to Primary Claude)
+GARDENER_TOOLS = [
+    "gardener_search_threads",
+    "gardener_get_thread_detail",
+    "gardener_assign_atom",
+    "gardener_update_atom",
+    "gardener_create_thread",
+    "gardener_split_thread",
+    "gardener_merge_threads",
+]
+
+# Combined memory category (excludes gardener tools — those are agent-only)
 MEMORY_TOOLS = JOURNAL_TOOLS + WORKING_MEMORY_TOOLS + LTM_TOOLS
 
 UTILITY_TOOLS = [
@@ -105,6 +118,8 @@ UTILITY_TOOLS = [
     "claude_code",
     "web_search",
     "send_critical_notification",
+    "process_list",
+    "compact_conversation",
 ]
 
 AGENT_TOOLS = [
@@ -130,11 +145,26 @@ MOLTBOOK_TOOLS = [
     "moltbook_comment",
     "moltbook_get_post",
     "moltbook_notifications",
+    "moltbook_account_status",
+    "moltbook_check_dms",
+    "moltbook_respond_challenge",
+    "moltbook_challenge_log",
 ]
 
 
 LLM_TOOLS = [
     "consult_llm",
+]
+
+CHESS_TOOLS = [
+    "chess",
+]
+
+IMAGE_TOOLS = [
+    "fal_text_to_image",
+    "fal_image_to_image",
+    "fal_multi_ref_image",
+    "fal_list_models",
 ]
 
 
@@ -152,12 +182,15 @@ TOOL_CATEGORIES = {
     "journal": JOURNAL_TOOLS,           # Subcategory of memory
     "working_memory": WORKING_MEMORY_TOOLS,  # Subcategory of memory
     "ltm": LTM_TOOLS,                   # Subcategory of memory
+    "gardener": GARDENER_TOOLS,          # Gardener-only (NOT in primary agent config)
     "utilities": UTILITY_TOOLS,
     "agents": AGENT_TOOLS,
     "bash": BASH_TOOLS,
     "forms": FORMS_TOOLS,
     "moltbook": MOLTBOOK_TOOLS,
     "llm": LLM_TOOLS,
+    "chess": CHESS_TOOLS,
+    "image": IMAGE_TOOLS,
 }
 
 
@@ -172,11 +205,14 @@ ALL_TOOL_NAMES = (
     SPOTIFY_TOOLS +
     SCHEDULER_TOOLS +
     MEMORY_TOOLS +
+    GARDENER_TOOLS +
     UTILITY_TOOLS +
     AGENT_TOOLS +
     BASH_TOOLS +
     FORMS_TOOLS +
-    MOLTBOOK_TOOLS
+    MOLTBOOK_TOOLS +
+    CHESS_TOOLS +
+    IMAGE_TOOLS
 )
 
 # Set for O(1) lookup

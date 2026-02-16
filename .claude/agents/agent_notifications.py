@@ -3,14 +3,17 @@ Notification Queue for Ping Mode.
 
 Manages pending notifications from completed agents that need to be
 injected into the next Claude <3 prompt.
+
+Uses file locking (fcntl.flock) for safe concurrent access.
 """
 
+import fcntl
 import json
 import logging
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 from models import PendingNotification
 
@@ -39,16 +42,17 @@ class NotificationQueue:
         """
         self.storage_dir = Path(storage_dir)
         self.storage_file = self.storage_dir / "pending.json"
+        self.lock_file = self.storage_dir / "pending.lock"
         self._ensure_storage()
 
     def _ensure_storage(self) -> None:
         """Ensure storage directory and file exist."""
         self.storage_dir.mkdir(parents=True, exist_ok=True)
         if not self.storage_file.exists():
-            self._save([])
+            self._save_unlocked([])
 
-    def _load(self) -> List[PendingNotification]:
-        """Load notifications from storage."""
+    def _load_unlocked(self) -> List[PendingNotification]:
+        """Load notifications from storage (caller must hold lock or accept stale reads)."""
         try:
             if not self.storage_file.exists():
                 return []
@@ -59,17 +63,32 @@ class NotificationQueue:
             logger.error(f"Failed to load notifications: {e}")
             return []
 
-    def _save(self, notifications: List[PendingNotification]) -> None:
-        """Save notifications to storage."""
-        try:
-            data = {
-                "notifications": [n.to_dict() for n in notifications],
-                "last_updated": datetime.utcnow().isoformat()
-            }
-            with open(self.storage_file, "w") as f:
-                json.dump(data, f, indent=2)
-        except Exception as e:
-            logger.error(f"Failed to save notifications: {e}")
+    def _save_unlocked(self, notifications: List[PendingNotification]) -> None:
+        """Save notifications to storage. Raises on failure."""
+        data = {
+            "notifications": [n.to_dict() for n in notifications],
+            "last_updated": datetime.utcnow().isoformat()
+        }
+        # Write to temp file then rename for atomicity
+        tmp_file = self.storage_file.with_suffix(".tmp")
+        with open(tmp_file, "w") as f:
+            json.dump(data, f, indent=2)
+        tmp_file.rename(self.storage_file)
+
+    def _locked_update(self, fn: Callable[[List[PendingNotification]], List[PendingNotification]]) -> None:
+        """
+        Execute fn(notifications) -> notifications under an exclusive file lock.
+
+        fn receives current notifications and must return the updated list.
+        """
+        with open(self.lock_file, "w") as lock_fd:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            try:
+                notifications = self._load_unlocked()
+                notifications = fn(notifications)
+                self._save_unlocked(notifications)
+            finally:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
 
     def add(
         self,
@@ -102,10 +121,11 @@ class NotificationQueue:
             status="pending"
         )
 
-        notifications = self._load()
-        notifications.append(notification)
-        self._save(notifications)
+        def _do_add(notifications):
+            notifications.append(notification)
+            return notifications
 
+        self._locked_update(_do_add)
         logger.info(f"Added notification for agent '{agent}' (chat: {source_chat_id})")
         return notification
 
@@ -119,7 +139,7 @@ class NotificationQueue:
         Returns:
             List of pending notifications
         """
-        notifications = self._load()
+        notifications = self._load_unlocked()
         pending = [n for n in notifications if n.status == "pending"]
 
         if chat_id:
@@ -127,18 +147,22 @@ class NotificationQueue:
 
         return pending
 
-    def get_stale(self, threshold_minutes: int = 15) -> List[PendingNotification]:
+    def get_stale(self, threshold_minutes: int = 5, threshold_seconds: Optional[int] = None) -> List[PendingNotification]:
         """
         Get stale notifications (pending and older than threshold).
 
         Args:
-            threshold_minutes: How old before considered stale
+            threshold_minutes: How old before considered stale (used if threshold_seconds is None)
+            threshold_seconds: Seconds threshold (takes precedence over threshold_minutes)
 
         Returns:
             List of stale notifications
         """
-        notifications = self._load()
-        return [n for n in notifications if n.is_stale(threshold_minutes)]
+        notifications = self._load_unlocked()
+        return [n for n in notifications if n.is_stale(
+            threshold_minutes=threshold_minutes,
+            threshold_seconds=threshold_seconds
+        )]
 
     def mark_injected(self, notification_ids: List[str]) -> int:
         """
@@ -153,15 +177,18 @@ class NotificationQueue:
         if not notification_ids:
             return 0
 
-        notifications = self._load()
+        id_set = set(notification_ids)
         marked = 0
 
-        for n in notifications:
-            if n.id in notification_ids and n.status == "pending":
-                n.status = "injected"
-                marked += 1
+        def _do_mark(notifications):
+            nonlocal marked
+            for n in notifications:
+                if n.id in id_set and n.status == "pending":
+                    n.status = "injected"
+                    marked += 1
+            return notifications
 
-        self._save(notifications)
+        self._locked_update(_do_mark)
         logger.info(f"Marked {marked} notifications as injected")
         return marked
 
@@ -178,15 +205,18 @@ class NotificationQueue:
         if not notification_ids:
             return 0
 
-        notifications = self._load()
+        id_set = set(notification_ids)
         marked = 0
 
-        for n in notifications:
-            if n.id in notification_ids and n.status == "pending":
-                n.status = "expired"
-                marked += 1
+        def _do_mark(notifications):
+            nonlocal marked
+            for n in notifications:
+                if n.id in id_set and n.status == "pending":
+                    n.status = "expired"
+                    marked += 1
+            return notifications
 
-        self._save(notifications)
+        self._locked_update(_do_mark)
         logger.info(f"Marked {marked} notifications as expired")
         return marked
 
@@ -200,17 +230,20 @@ class NotificationQueue:
         Returns:
             Number of notifications removed
         """
-        notifications = self._load()
         cutoff = datetime.utcnow() - timedelta(hours=max_age_hours)
+        removed = 0
 
-        original_count = len(notifications)
-        notifications = [
-            n for n in notifications
-            if n.status == "pending" or n.completed_at > cutoff
-        ]
+        def _do_cleanup(notifications):
+            nonlocal removed
+            original_count = len(notifications)
+            kept = [
+                n for n in notifications
+                if n.status == "pending" or n.completed_at > cutoff
+            ]
+            removed = original_count - len(kept)
+            return kept
 
-        self._save(notifications)
-        removed = original_count - len(notifications)
+        self._locked_update(_do_cleanup)
 
         if removed:
             logger.info(f"Cleaned up {removed} old notifications")

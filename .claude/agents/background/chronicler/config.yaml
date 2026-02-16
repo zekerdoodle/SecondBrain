@@ -1,0 +1,13 @@
+name: chronicler
+model: haiku
+description: "Conversation thread summarizer - reviews conversation threads and writes natural-language descriptions for semantic search."
+timeout_seconds: 120
+max_turns: 200
+
+# Background agents don't use tools - they process structured input and return structured output
+tools: []
+
+# Output format for structured responses
+output_format:
+  type: json_schema
+  schema_ref: chronicler_output_schema.json

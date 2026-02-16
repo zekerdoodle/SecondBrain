@@ -1,0 +1,342 @@
+"""
+Working Memory tools.
+
+Ephemeral notes that persist across exchanges but auto-expire based on TTL.
+"""
+
+import os
+import sys
+from typing import Any, Dict
+
+from claude_agent_sdk import tool
+
+from ..registry import register_tool
+
+# Add scripts directory to path
+SCRIPTS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../.claude/scripts"))
+if SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, SCRIPTS_DIR)
+
+
+@register_tool("memory")
+@tool(
+    name="working_memory_add",
+    description="""Add a note to working memory. Working memory items are ephemeral notes that:
+- Persist across exchanges but auto-expire based on TTL (time-to-live)
+- Can be pinned to prevent expiration
+- Support deadlines with countdown display
+- Are injected into every prompt for context
+
+Use this for:
+- Observations you want to track temporarily
+- Reminders about ongoing context
+- Things to check back on later
+
+TTL is measured in "exchanges" (user message + assistant response = 1 exchange).
+Default TTL is 5 exchanges. Max is 10. Pinned items never expire.""",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "content": {"type": "string", "description": "The note content"},
+            "tag": {"type": "string", "description": "Optional category tag (e.g., 'reminder', 'observation', 'todo')"},
+            "ttl": {"type": "integer", "description": "Time-to-live in exchanges (default: 5, max: 10)"},
+            "pinned": {"type": "boolean", "description": "If true, item never auto-expires (max 3 pinned items)"},
+            "deadline": {"type": "string", "description": "Optional deadline as ISO timestamp (e.g., '2026-01-25T14:00:00')"},
+            "remind_before": {"type": "string", "description": "When to show 'due soon' warning (e.g., '2h', '24h')"}
+        },
+        "required": ["content"]
+    }
+)
+async def working_memory_add(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Add a working memory item."""
+    try:
+        sys.path.insert(0, SCRIPTS_DIR)
+        from working_memory import get_store, WorkingMemoryError
+        from datetime import datetime
+
+        content = args.get("content", "").strip()
+        if not content:
+            return {"content": [{"type": "text", "text": "content is required"}], "is_error": True}
+
+        tag = args.get("tag")
+        ttl = args.get("ttl")
+        pinned = args.get("pinned", False)
+        deadline_str = args.get("deadline")
+        remind_before = args.get("remind_before")
+
+        # Parse deadline if provided
+        deadline_at = None
+        if deadline_str:
+            try:
+                deadline_at = datetime.fromisoformat(deadline_str)
+                if deadline_at.tzinfo is None:
+                    import zoneinfo
+                    tz = zoneinfo.ZoneInfo("America/Chicago")
+                    deadline_at = deadline_at.replace(tzinfo=tz)
+            except Exception as e:
+                return {"content": [{"type": "text", "text": f"Invalid deadline format: {e}"}], "is_error": True}
+
+        store = get_store()
+        item = store.add_item(
+            content=content,
+            tag=tag,
+            ttl=ttl,
+            pinned=pinned,
+            deadline_at=deadline_at,
+            remind_before=remind_before,
+        )
+
+        status = "pinned" if item.pinned else f"TTL={item.ttl_initial}"
+        return {"content": [{"type": "text", "text": f"Added to working memory [{status}]: {content[:80]}..."}]}
+
+    except Exception as e:
+        return {"content": [{"type": "text", "text": f"Error: {str(e)}"}], "is_error": True}
+
+
+@register_tool("memory")
+@tool(
+    name="working_memory_update",
+    description="""Update an existing working memory item by its display index (1-based).
+
+You can update content, TTL, tag, pinned status, or deadline.""",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "index": {"type": "integer", "description": "The item number to update (1-based, as shown in prompt)"},
+            "content": {"type": "string", "description": "New content (replaces existing)"},
+            "append": {"type": "string", "description": "Text to append to existing content"},
+            "tag": {"type": "string", "description": "New tag (empty string to clear)"},
+            "ttl": {"type": "integer", "description": "Reset TTL to this value"},
+            "pinned": {"type": "boolean", "description": "Set pinned status"},
+            "deadline": {"type": "string", "description": "New deadline as ISO timestamp"},
+            "remind_before": {"type": "string", "description": "When to show 'due soon' warning"}
+        },
+        "required": ["index"]
+    }
+)
+async def working_memory_update(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Update a working memory item."""
+    try:
+        sys.path.insert(0, SCRIPTS_DIR)
+        from working_memory import get_store, WorkingMemoryError
+        from datetime import datetime
+
+        index = args.get("index")
+        if not index or index < 1:
+            return {"content": [{"type": "text", "text": "Valid index (1+) is required"}], "is_error": True}
+
+        # Parse deadline if provided
+        deadline_at = None
+        deadline_str = args.get("deadline")
+        if deadline_str:
+            try:
+                deadline_at = datetime.fromisoformat(deadline_str)
+                if deadline_at.tzinfo is None:
+                    import zoneinfo
+                    tz = zoneinfo.ZoneInfo("America/Chicago")
+                    deadline_at = deadline_at.replace(tzinfo=tz)
+            except Exception as e:
+                return {"content": [{"type": "text", "text": f"Invalid deadline format: {e}"}], "is_error": True}
+
+        store = get_store()
+        item = store.update_item(
+            index=index,
+            new_content=args.get("content"),
+            append=args.get("append"),
+            ttl=args.get("ttl"),
+            tag=args.get("tag"),
+            pinned=args.get("pinned"),
+            deadline_at=deadline_at,
+            remind_before=args.get("remind_before"),
+        )
+
+        return {"content": [{"type": "text", "text": f"Updated item {index}: {item.content[:80]}..."}]}
+
+    except Exception as e:
+        return {"content": [{"type": "text", "text": f"Error: {str(e)}"}], "is_error": True}
+
+
+@register_tool("memory")
+@tool(
+    name="working_memory_remove",
+    description="Remove a working memory item by its display index (1-based).",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "index": {"type": "integer", "description": "The item number to remove (1-based)"}
+        },
+        "required": ["index"]
+    }
+)
+async def working_memory_remove(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Remove a working memory item."""
+    try:
+        sys.path.insert(0, SCRIPTS_DIR)
+        from working_memory import get_store, WorkingMemoryError
+
+        index = args.get("index")
+        if not index or index < 1:
+            return {"content": [{"type": "text", "text": "Valid index (1+) is required"}], "is_error": True}
+
+        store = get_store()
+        removed = store.remove_item(index)
+
+        return {"content": [{"type": "text", "text": f"Removed: {removed.content[:80]}..."}]}
+
+    except Exception as e:
+        return {"content": [{"type": "text", "text": f"Error: {str(e)}"}], "is_error": True}
+
+
+@register_tool("memory")
+@tool(
+    name="working_memory_list",
+    description="List all current working memory items with their status.",
+    input_schema={"type": "object", "properties": {}}
+)
+async def working_memory_list(args: Dict[str, Any]) -> Dict[str, Any]:
+    """List working memory items."""
+    try:
+        sys.path.insert(0, SCRIPTS_DIR)
+        from working_memory import get_store
+
+        store = get_store()
+        items = store.list_items()
+
+        if not items:
+            return {"content": [{"type": "text", "text": "Working memory is empty."}]}
+
+        lines = []
+        for i, item in enumerate(items, 1):
+            status = "[PINNED]" if item.pinned else f"[TTL {item.ttl_remaining}/{item.ttl_initial}]"
+            tag = f"[{item.tag}]" if item.tag else ""
+            lines.append(f"{i}. {status} {tag} {item.content[:100]}...")
+
+        return {"content": [{"type": "text", "text": "\n".join(lines)}]}
+
+    except Exception as e:
+        return {"content": [{"type": "text", "text": f"Error: {str(e)}"}], "is_error": True}
+
+
+@register_tool("memory")
+@tool(
+    name="working_memory_snapshot",
+    description="""Promote a working memory item to permanent storage (memory.md).
+
+This "snapshots" an ephemeral working memory note into the permanent self-journal.
+Use this when a temporary observation or note becomes important enough to persist.
+
+The item will be added to the specified section in memory.md. By default, the
+original working memory item is removed after promotion (set keep=true to retain it).""",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "index": {"type": "integer", "description": "The item number to promote (1-based)"},
+            "section": {
+                "type": "string",
+                "description": "Section in memory.md (e.g., 'Self-Reflections', 'Working Theories', 'Lessons Learned')",
+                "default": "Promoted from Working Memory"
+            },
+            "keep": {
+                "type": "boolean",
+                "description": "If true, keep the item in working memory after promotion (default: false)",
+                "default": False
+            },
+            "note": {
+                "type": "string",
+                "description": "Optional note to append to the content when saving"
+            }
+        },
+        "required": ["index"]
+    }
+)
+async def working_memory_snapshot(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Promote working memory item to memory.md."""
+    try:
+        sys.path.insert(0, SCRIPTS_DIR)
+        from working_memory import get_store, WorkingMemoryError
+        import datetime
+        import re
+
+        index = args.get("index")
+        section = args.get("section", "Promoted from Working Memory")
+        keep = args.get("keep", False)
+        note = args.get("note", "")
+
+        if not index or index < 1:
+            return {"content": [{"type": "text", "text": "Valid index (1+) is required"}], "is_error": True}
+
+        # Get the working memory item
+        store = get_store()
+        items = store.list_items()
+
+        if not items:
+            return {"content": [{"type": "text", "text": "Working memory is empty."}], "is_error": True}
+
+        if index > len(items):
+            return {"content": [{"type": "text", "text": f"No item at index {index}. Valid: 1-{len(items)}"}], "is_error": True}
+
+        item = items[index - 1]
+        content = item.content
+
+        # Add note if provided
+        if note:
+            content = f"{content} — {note}"
+
+        # Add tag context if present
+        if item.tag:
+            content = f"[{item.tag}] {content}"
+
+        # Now append to memory.md
+        memory_path = os.path.join(os.path.dirname(SCRIPTS_DIR), "memory.md")
+
+        if not os.path.exists(memory_path):
+            return {"content": [{"type": "text", "text": "memory.md not found"}], "is_error": True}
+
+        with open(memory_path, 'r') as f:
+            memory_content = f.read()
+
+        # Find section and append
+        section_marker = f"## {section}"
+        if section_marker in memory_content:
+            start_idx = memory_content.index(section_marker) + len(section_marker)
+            next_section = memory_content.find("\n## ", start_idx)
+            if next_section == -1:
+                next_section = memory_content.find("\n---", start_idx)
+
+            if next_section != -1:
+                memory_content = (
+                    memory_content[:next_section].rstrip() +
+                    f"\n- {content}\n" +
+                    memory_content[next_section:]
+                )
+            else:
+                memory_content = memory_content.rstrip() + f"\n- {content}\n"
+        else:
+            memory_content = memory_content.rstrip() + f"\n\n## {section}\n\n- {content}\n"
+
+        # Update timestamp
+        today = datetime.date.today().isoformat()
+        if "*Last updated:" in memory_content:
+            memory_content = re.sub(
+                r'\*Last updated: .*\*',
+                f'*Last updated: {today}*',
+                memory_content
+            )
+
+        with open(memory_path, 'w') as f:
+            f.write(memory_content)
+
+        result = f"Promoted to memory.md [{section}]: {content[:80]}..."
+
+        # Remove from working memory unless keep=true
+        if not keep:
+            store.remove_item(index)
+            result += "\nRemoved from working memory."
+        else:
+            result += "\nKept in working memory."
+
+        return {"content": [{"type": "text", "text": result}]}
+
+    except Exception as e:
+        import traceback
+        return {"content": [{"type": "text", "text": f"Error: {str(e)}\n{traceback.format_exc()}"}], "is_error": True}

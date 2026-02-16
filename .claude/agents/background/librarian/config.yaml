@@ -1,6 +1,8 @@
 name: librarian
 model: sonnet
 description: "Memory extraction agent - processes conversation exchanges to extract atomic memories and organize them into threads."
+timeout_seconds: 120
+max_turns: 200
 
 # Background agents don't use tools - they process structured input and return structured output
 tools: []

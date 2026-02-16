@@ -1,0 +1,26 @@
+# CUSTOMIZE: Replace {agent_name} with your agent's name (lowercase, underscores)
+name: {agent_name}
+model: sonnet
+description: "{One-line description of what this agent does}"
+timeout_seconds: 300
+max_turns: 200
+
+# Background agents don't use tools - they process structured input and return structured output
+tools: []
+
+# CUSTOMIZE: Define your output schema or reference an external file
+# Option A: Reference a schema file in this directory
+output_format:
+  type: json_schema
+  schema_ref: {agent_name}_output_schema.json
+
+# Option B: Inline schema (uncomment and customize)
+# output_format:
+#   type: json_schema
+#   json_schema:
+#     type: object
+#     properties:
+#       result:
+#         type: string
+#         description: "The agent's output"
+#     required: [result]

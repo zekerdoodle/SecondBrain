@@ -43,12 +43,86 @@ from .constants import (
 logger = logging.getLogger("mcp_tools")
 
 
+def _inject_chat_context(tools, chat_id: str):
+    """Wrap MCP tool handlers that need chat context with closures capturing the chat_id.
+
+    This enables concurrent chat support: each ClaudeWrapper gets its own MCP server
+    with tool handlers that know which chat they belong to, eliminating the need for
+    a global CURRENT_CHAT_ID env var.
+    """
+    from claude_agent_sdk import SdkMcpTool
+
+    # Tools that need to know their source chat_id
+    CONTEXT_TOOLS = {"invoke_agent", "invoke_agent_chain"}
+
+    wrapped = []
+    for t in tools:
+        tool_name = getattr(t, 'name', getattr(t, '__name__', ''))
+        if tool_name in CONTEXT_TOOLS:
+            original_handler = t.handler
+
+            # Create closure that captures both handler and chat_id
+            def _make_wrapper(handler, cid):
+                async def wrapper(args):
+                    args["_source_chat_id"] = cid
+                    return await handler(args)
+                return wrapper
+
+            wrapped.append(SdkMcpTool(
+                name=t.name,
+                description=t.description,
+                input_schema=t.input_schema,
+                handler=_make_wrapper(original_handler, chat_id),
+                annotations=getattr(t, 'annotations', None),
+            ))
+        else:
+            wrapped.append(t)
+    return wrapped
+
+
+def _inject_agent_context(tools, agent_name: str):
+    """Wrap memory tool handlers so they resolve the correct per-agent memory file.
+
+    For non-primary agents, injects ``_agent_name`` into the args dict so that
+    ``memory_append`` and ``memory_read`` target ``.claude/agents/{name}/memory.md``
+    instead of the primary agent's ``.claude/memory.md``.
+    """
+    from claude_agent_sdk import SdkMcpTool
+
+    MEMORY_TOOLS = {"memory_append", "memory_read"}
+
+    wrapped = []
+    for t in tools:
+        tool_name = getattr(t, 'name', getattr(t, '__name__', ''))
+        if tool_name in MEMORY_TOOLS:
+            original_handler = t.handler
+
+            def _make_wrapper(handler, name):
+                async def wrapper(args):
+                    args["_agent_name"] = name
+                    return await handler(args)
+                return wrapper
+
+            wrapped.append(SdkMcpTool(
+                name=t.name,
+                description=t.description,
+                input_schema=t.input_schema,
+                handler=_make_wrapper(original_handler, agent_name),
+                annotations=getattr(t, 'annotations', None),
+            ))
+        else:
+            wrapped.append(t)
+    return wrapped
+
+
 def create_mcp_server(
     name: str = "second_brain",
     version: str = "1.0.0",
     include_categories: Optional[List[str]] = None,
     include_tools: Optional[List[str]] = None,
     exclude_tools: Optional[List[str]] = None,
+    chat_id: Optional[str] = None,
+    agent_name: Optional[str] = None,
 ):
     """
     Create MCP server with specified tools.
@@ -61,6 +135,13 @@ def create_mcp_server(
         include_tools: List of specific tool names to include
                       Takes precedence over include_categories
         exclude_tools: List of tool names to exclude from the final set
+        chat_id: Source chat ID for concurrent session support. When provided,
+                tool handlers that need chat context (invoke_agent, invoke_agent_chain)
+                get wrapped with closures that inject this ID, eliminating the need
+                for the global CURRENT_CHAT_ID env var.
+        agent_name: Agent name for memory isolation. When provided, memory_append
+                   and memory_read target .claude/agents/{name}/memory.md instead
+                   of the primary agent's .claude/memory.md.
 
     Returns:
         MCP server instance
@@ -78,7 +159,15 @@ def create_mcp_server(
         exclude_set = set(exclude_tools)
         tools = [t for t in tools if getattr(t, 'name', getattr(t, '__name__', '')) not in exclude_set]
 
-    logger.info(f"Creating MCP server '{name}' with {len(tools)} tools")
+    # Inject chat context for concurrent session support
+    if chat_id:
+        tools = _inject_chat_context(tools, chat_id)
+
+    # Inject agent context for memory isolation
+    if agent_name:
+        tools = _inject_agent_context(tools, agent_name)
+
+    logger.info(f"Creating MCP server '{name}' with {len(tools)} tools (chat_id={chat_id}, agent={agent_name})")
 
     return create_sdk_mcp_server(
         name=name,
@@ -103,6 +192,8 @@ def _load_all_tools():
     from . import forms
     from . import moltbook
     from . import llm
+    from . import chess
+    from . import image
 
 
 # Auto-load tools when module is imported

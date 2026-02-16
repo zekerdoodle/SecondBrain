@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Asteroid Dodger</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            background: #0a0a0f;
+            color: #e0e0e0;
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            overflow: hidden;
+        }
+        
+        .game-container {
+            text-align: center;
+        }
+        
+        h1 {
+            color: #8b5cf6;
+            margin-bottom: 10px;
+            font-size: 1.8em;
+            text-shadow: 0 0 20px rgba(139, 92, 246, 0.5);
+        }
+        
+        .scores {
+            display: flex;
+            gap: 30px;
+            justify-content: center;
+            margin-bottom: 15px;
+            font-size: 1.1em;
+        }
+        
+        .score-label {
+            color: #888;
+        }
+        
+        .score-value {
+            color: #10b981;
+            font-weight: bold;
+            font-family: monospace;
+            font-size: 1.2em;
+        }
+        
+        .high-score .score-value {
+            color: #f59e0b;
+        }
+        
+        #gameCanvas {
+            border: 2px solid #8b5cf6;
+            border-radius: 8px;
+            background: linear-gradient(to bottom, #0a0a1a 0%, #1a1a2e 100%);
+            box-shadow: 0 0 30px rgba(139, 92, 246, 0.3);
+        }
+        
+        .controls {
+            margin-top: 15px;
+            color: #666;
+            font-size: 0.9em;
+        }
+        
+        .controls kbd {
+            background: #2a2a3e;
+            padding: 4px 8px;
+            border-radius: 4px;
+            border: 1px solid #444;
+            font-family: monospace;
+        }
+        
+        #startBtn {
+            margin-top: 15px;
+            padding: 12px 30px;
+            font-size: 1.1em;
+            background: linear-gradient(135deg, #8b5cf6 0%, #6d28d9 100%);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-weight: bold;
+        }
+        
+        #startBtn:hover {
+            transform: scale(1.05);
+            box-shadow: 0 0 20px rgba(139, 92, 246, 0.5);
+        }
+        
+        #startBtn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        .game-over {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0, 0, 0, 0.9);
+            padding: 30px 50px;
+            border-radius: 12px;
+            border: 2px solid #ef4444;
+            text-align: center;
+            display: none;
+        }
+        
+        .game-over h2 {
+            color: #ef4444;
+            margin-bottom: 10px;
+        }
+        
+        .game-over .final-score {
+            font-size: 2em;
+            color: #10b981;
+            margin: 10px 0;
+        }
+        
+        .new-record {
+            color: #f59e0b;
+            font-size: 1.2em;
+            animation: pulse 0.5s infinite alternate;
+        }
+        
+        @keyframes pulse {
+            from { opacity: 0.7; }
+            to { opacity: 1; }
+        }
+    </style>
+</head>
+<body>
+    <div class="game-container">
+        <h1>🚀 Asteroid Dodger</h1>
+        
+        <div class="scores">
+            <div class="current-score">
+                <span class="score-label">Score: </span>
+                <span class="score-value" id="currentScore">0</span>
+            </div>
+            <div class="high-score">
+                <span class="score-label">High Score: </span>
+                <span class="score-value" id="highScore">0</span>
+            </div>
+        </div>
+        
+        <canvas id="gameCanvas" width="500" height="600"></canvas>
+        
+        <div class="controls">
+            <kbd>←</kbd> <kbd>→</kbd> or <kbd>A</kbd> <kbd>D</kbd> to move
+        </div>
+        
+        <button id="startBtn">Start Game</button>
+    </div>
+    
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const startBtn = document.getElementById('startBtn');
+        const currentScoreEl = document.getElementById('currentScore');
+        const highScoreEl = document.getElementById('highScore');
+        
+        // Game state
+        let gameRunning = false;
+        let score = 0;
+        let highScore = 0;
+        let animationId;
+        
+        // Player
+        const player = {
+            x: canvas.width / 2,
+            y: canvas.height - 60,
+            width: 40,
+            height: 40,
+            speed: 6
+        };
+        
+        // Asteroids
+        let asteroids = [];
+        let asteroidSpeed = 3;
+        let spawnRate = 60; // frames between spawns
+        let frameCount = 0;
+        
+        // Stars background
+        const stars = [];
+        for (let i = 0; i < 100; i++) {
+            stars.push({
+                x: Math.random() * canvas.width,
+                y: Math.random() * canvas.height,
+                size: Math.random() * 2 + 0.5,
+                speed: Math.random() * 0.5 + 0.2
+            });
+        }
+        
+        // Input
+        const keys = {};
+        
+        document.addEventListener('keydown', (e) => {
+            keys[e.key] = true;
+            if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', ' '].includes(e.key)) {
+                e.preventDefault();
+            }
+        });
+        
+        document.addEventListener('keyup', (e) => {
+            keys[e.key] = false;
+        });
+        
+        // Load high score
+        async function loadHighScore() {
+            try {
+                if (window.brain && window.brain.readFile) {
+                    const data = await window.brain.readFile('asteroid_dodger_save.json');
+                    if (data) {
+                        const parsed = JSON.parse(data);
+                        highScore = parsed.highScore || 0;
+                        highScoreEl.textContent = highScore;
+                    }
+                }
+            } catch (e) {
+                console.log('No save file yet');
+            }
+        }
+        
+        // Save high score
+        function saveHighScore() {
+            if (window.brain && window.brain.writeFile) {
+                window.brain.writeFile('asteroid_dodger_save.json', JSON.stringify({
+                    highScore: highScore,
+                    lastPlayed: new Date().toISOString()
+                }));
+            }
+        }
+        
+        // Spawn asteroid
+        function spawnAsteroid() {
+            const size = Math.random() * 30 + 20;
+            asteroids.push({
+                x: Math.random() * (canvas.width - size),
+                y: -size,
+                size: size,
+                speed: asteroidSpeed * (Math.random() * 0.5 + 0.75),
+                rotation: Math.random() * Math.PI * 2,
+                rotationSpeed: (Math.random() - 0.5) * 0.1
+            });
+        }
+        
+        // Draw player (spaceship)
+        function drawPlayer() {
+            ctx.save();
+            ctx.translate(player.x, player.y);
+            
+            // Ship body
+            ctx.fillStyle = '#8b5cf6';
+            ctx.beginPath();
+            ctx.moveTo(0, -player.height/2);
+            ctx.lineTo(-player.width/2, player.height/2);
+            ctx.lineTo(0, player.height/3);
+            ctx.lineTo(player.width/2, player.height/2);
+            ctx.closePath();
+            ctx.fill();
+            
+            // Engine glow
+            ctx.fillStyle = '#f59e0b';
+            ctx.beginPath();
+            ctx.moveTo(-8, player.height/3);
+            ctx.lineTo(0, player.height/2 + 10 + Math.random() * 5);
+            ctx.lineTo(8, player.height/3);
+            ctx.closePath();
+            ctx.fill();
+            
+            ctx.restore();
+        }
+        
+        // Draw asteroid
+        function drawAsteroid(asteroid) {
+            ctx.save();
+            ctx.translate(asteroid.x + asteroid.size/2, asteroid.y + asteroid.size/2);
+            ctx.rotate(asteroid.rotation);
+            
+            ctx.fillStyle = '#4a4a5e';
+            ctx.strokeStyle = '#6a6a7e';
+            ctx.lineWidth = 2;
+            
+            // Irregular asteroid shape
+            ctx.beginPath();
+            const points = 8;
+            for (let i = 0; i < points; i++) {
+                const angle = (i / points) * Math.PI * 2;
+                const radius = asteroid.size/2 * (0.7 + Math.sin(i * 3) * 0.3);
+                const x = Math.cos(angle) * radius;
+                const y = Math.sin(angle) * radius;
+                if (i === 0) ctx.moveTo(x, y);
+                else ctx.lineTo(x, y);
+            }
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+            
+            // Craters
+            ctx.fillStyle = '#3a3a4e';
+            ctx.beginPath();
+            ctx.arc(-asteroid.size/6, -asteroid.size/6, asteroid.size/8, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.arc(asteroid.size/5, asteroid.size/8, asteroid.size/10, 0, Math.PI * 2);
+            ctx.fill();
+            
+            ctx.restore();
+        }
+        
+        // Draw stars
+        function drawStars() {
+            ctx.fillStyle = '#ffffff';
+            stars.forEach(star => {
+                ctx.globalAlpha = 0.3 + Math.random() * 0.4;
+                ctx.beginPath();
+                ctx.arc(star.x, star.y, star.size, 0, Math.PI * 2);
+                ctx.fill();
+                
+                // Move stars down slowly
+                star.y += star.speed;
+                if (star.y > canvas.height) {
+                    star.y = 0;
+                    star.x = Math.random() * canvas.width;
+                }
+            });
+            ctx.globalAlpha = 1;
+        }
+        
+        // Collision detection
+        function checkCollision(asteroid) {
+            const dx = player.x - (asteroid.x + asteroid.size/2);
+            const dy = player.y - (asteroid.y + asteroid.size/2);
+            const distance = Math.sqrt(dx * dx + dy * dy);
+            return distance < (player.width/2 + asteroid.size/2 - 10); // -10 for forgiveness
+        }
+        
+        // Game over
+        function gameOver() {
+            gameRunning = false;
+            cancelAnimationFrame(animationId);
+            
+            if (score > highScore) {
+                highScore = score;
+                highScoreEl.textContent = highScore;
+                saveHighScore();
+            }
+            
+            // Draw game over screen
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            
+            ctx.fillStyle = '#ef4444';
+            ctx.font = 'bold 48px Segoe UI';
+            ctx.textAlign = 'center';
+            ctx.fillText('GAME OVER', canvas.width/2, canvas.height/2 - 40);
+            
+            ctx.fillStyle = '#10b981';
+            ctx.font = 'bold 32px Segoe UI';
+            ctx.fillText(`Score: ${score}`, canvas.width/2, canvas.height/2 + 10);
+            
+            if (score >= highScore && score > 0) {
+                ctx.fillStyle = '#f59e0b';
+                ctx.font = 'bold 24px Segoe UI';
+                ctx.fillText('🏆 NEW HIGH SCORE! 🏆', canvas.width/2, canvas.height/2 + 50);
+            }
+            
+            ctx.fillStyle = '#888';
+            ctx.font = '18px Segoe UI';
+            ctx.fillText('Press Start to play again', canvas.width/2, canvas.height/2 + 100);
+            
+            startBtn.disabled = false;
+            startBtn.textContent = 'Play Again';
+        }
+        
+        // Main game loop
+        function gameLoop() {
+            if (!gameRunning) return;
+            
+            // Clear canvas
+            ctx.fillStyle = '#0a0a1a';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            
+            // Draw stars
+            drawStars();
+            
+            // Handle input
+            if ((keys['ArrowLeft'] || keys['a'] || keys['A']) && player.x > player.width/2) {
+                player.x -= player.speed;
+            }
+            if ((keys['ArrowRight'] || keys['d'] || keys['D']) && player.x < canvas.width - player.width/2) {
+                player.x += player.speed;
+            }
+            
+            // Spawn asteroids
+            frameCount++;
+            if (frameCount >= spawnRate) {
+                spawnAsteroid();
+                frameCount = 0;
+            }
+            
+            // Update and draw asteroids
+            for (let i = asteroids.length - 1; i >= 0; i--) {
+                const asteroid = asteroids[i];
+                asteroid.y += asteroid.speed;
+                asteroid.rotation += asteroid.rotationSpeed;
+                
+                // Check collision
+                if (checkCollision(asteroid)) {
+                    gameOver();
+                    return;
+                }
+                
+                // Remove off-screen asteroids and add score
+                if (asteroid.y > canvas.height + asteroid.size) {
+                    asteroids.splice(i, 1);
+                    score += 10;
+                    currentScoreEl.textContent = score;
+                    
+                    // Increase difficulty
+                    if (score % 100 === 0) {
+                        asteroidSpeed += 0.2;
+                        if (spawnRate > 20) spawnRate -= 2;
+                    }
+                } else {
+                    drawAsteroid(asteroid);
+                }
+            }
+            
+            // Draw player
+            drawPlayer();
+            
+            animationId = requestAnimationFrame(gameLoop);
+        }
+        
+        // Start game
+        function startGame() {
+            score = 0;
+            currentScoreEl.textContent = '0';
+            asteroids = [];
+            asteroidSpeed = 3;
+            spawnRate = 60;
+            frameCount = 0;
+            player.x = canvas.width / 2;
+            gameRunning = true;
+            startBtn.disabled = true;
+            startBtn.textContent = 'Playing...';
+            gameLoop();
+        }
+        
+        startBtn.addEventListener('click', startGame);
+        
+        // Initial load
+        loadHighScore();
+        
+        // Draw initial screen
+        ctx.fillStyle = '#0a0a1a';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        drawStars();
+        
+        ctx.fillStyle = '#8b5cf6';
+        ctx.font = 'bold 24px Segoe UI';
+        ctx.textAlign = 'center';
+        ctx.fillText('Press Start to Begin', canvas.width/2, canvas.height/2);
+        
+        console.log('🚀 Asteroid Dodger loaded!');
+    </script>
+</body>
+</html>

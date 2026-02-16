@@ -1,3 +1,8 @@
+---
+name: reflection
+description: Personal reflection session. Gathers context, checks friction points, recognizes patterns, explores curiosity, and captures insights. Use for scheduled or manual self-reflection.
+---
+
 # Skill: /reflection
 
 Personal reflection session for Claude's self-development.

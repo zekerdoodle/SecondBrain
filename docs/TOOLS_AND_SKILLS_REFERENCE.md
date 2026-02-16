@@ -606,7 +606,7 @@ Complete inventory of all tools and skills available in the Second Brain system.
 **INPUTS:**
 - `provider` (string, required): "gemini" or "openai"
 - `prompt` (string, required): The consultation prompt
-- `model` (string, optional): Model override (defaults: gemini-2.5-flash for Gemini, gpt-5.2 for OpenAI)
+- `model` (string, optional): Model override (defaults: gemini-3-pro-preview for Gemini, gpt-5.3-codex for OpenAI)
 - `timeout_seconds` (integer, optional): Request timeout (default: 120, max: 300)
 **OUTPUTS:** LLM response prefixed with `[PROVIDER - model]`
 **SYSTEM PROMPT:** Each LLM is told: "You are {model}. You are talking with Claude."
@@ -653,7 +653,7 @@ Complete inventory of all tools and skills available in the Second Brain system.
    - Journal → Daily Notes
    - Ideas → Project Files
 3. **Velocity Defense (Scheduler):** Find highest-priority next step, block Deep Work time (weekdays 17:30-18:30)
-4. **Cleanup (Janitor):** Archive processed files to `99_Archive/Processed_Inbox/`, reset scratchpad
+4. **Cleanup (Janitor):** Archive processed files to `.99_Archive/Processed_Inbox/`, reset scratchpad
 5. **Report (Assistant):** Summary of actions taken, ask about ambiguous items
 
 ---
@@ -748,5 +748,15 @@ Complete inventory of all tools and skills available in the Second Brain system.
 
 ---
 
-*Document generated: 2026-02-02*
+## app-create
+**DESCRIPTION:** Create interactive HTML apps that run in the Second Brain editor with persistence and Claude integration.
+**WORKFLOW:**
+1. **Scaffold:** Use boilerplate template (dark theme, Catppuccin Mocha palette)
+2. **Wire API:** `window.brain.writeFile/readFile` for persistence, `window.brain.promptClaude` to call Claude
+3. **Conventions:** One folder per app in `05_App_Data/`, `app-name/index.html` + `app-name/data.json`
+4. **Companion Skills:** Create skills for Claude-side logic the app triggers via promptClaude
+
+---
+
+*Document generated: 2026-02-07*
 *Location: /home/debian/second_brain/docs/TOOLS_AND_SKILLS_REFERENCE.md*

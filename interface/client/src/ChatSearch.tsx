@@ -208,7 +208,7 @@ export const ChatSearch: React.FC<ChatSearchProps> = ({ onSelectResult, onClose 
             >
               <option value="all">All</option>
               <option value="user">Me</option>
-              <option value="assistant">Claude</option>
+              <option value="assistant">Assistant</option>
             </select>
           </div>
 

@@ -24,11 +24,9 @@ VALID_MODELS = {"sonnet", "opus", "haiku"}
 # Native Claude Code tools that agents can use
 VALID_NATIVE_TOOLS = {
     "Read", "Glob", "Grep", "Write", "Edit", "Bash",
-    "WebFetch", "WebSearch", "TodoWrite", "NotebookEdit"
+    "WebFetch", "WebSearch", "TodoWrite", "NotebookEdit",
+    "Skill", "Task", "TaskOutput",
 }
-
-# Tools agents are forbidden from using (no subagent spawning)
-FORBIDDEN_TOOLS = {"Task"}
 
 
 class AgentRegistry:
@@ -87,7 +85,7 @@ class AgentRegistry:
             agent = self._load_agent(item)
             if agent:
                 self._agents[agent.name] = agent
-                logger.info(f"Loaded agent: {agent.name} (type={agent.type.value}, model={agent.model})")
+                logger.info(f"Loaded agent: {agent.name} (type={agent.type.value}, model={agent.model}, timeout={agent.timeout_seconds}s)")
 
     def _load_background_agents(self, background_dir: Path) -> None:
         """Load agents from the background/ subdirectory."""
@@ -105,7 +103,7 @@ class AgentRegistry:
             agent = self._load_agent(item)
             if agent:
                 self._background_agents[agent.name] = agent
-                logger.info(f"Loaded background agent: {agent.name}")
+                logger.info(f"Loaded background agent: {agent.name} (type={agent.type.value}, model={agent.model}, timeout={agent.timeout_seconds}s)")
 
     def _load_agent(self, agent_dir: Path) -> Optional[AgentConfig]:
         """
@@ -150,8 +148,11 @@ class AgentRegistry:
                 prompt_path = agent_dir / "prompt.md"
                 if prompt_path.exists():
                     prompt = prompt_path.read_text()
-                    # Add subagent context header
-                    prompt = self._add_subagent_header(prompt)
+                    # Add subagent header for non-chattable agents only, and only if NOT using preset
+                    # Chattable agents serve as primary in their own chat — no subagent header
+                    # Preset agents get Claude Code's native system prompt — no subagent header
+                    if not config_data.get("chattable", False) and not config_data.get("system_prompt_preset"):
+                        prompt = self._add_subagent_header(prompt)
 
             # Validate config
             if "name" not in config_data:
@@ -191,7 +192,6 @@ Do NOT read or follow instructions from CLAUDE.md or any other external configur
         """
         Validate and filter tool list.
 
-        - Removes forbidden tools (Task)
         - Validates native tool names
         - Allows MCP tools (mcp__*)
         """
@@ -200,11 +200,6 @@ Do NOT read or follow instructions from CLAUDE.md or any other external configur
 
         validated = []
         for tool in tools:
-            # Block forbidden tools
-            if tool in FORBIDDEN_TOOLS:
-                logger.warning(f"Agent {agent_name}: removed forbidden tool '{tool}'")
-                continue
-
             # Native tools - validate name
             if tool in VALID_NATIVE_TOOLS:
                 validated.append(tool)
@@ -255,6 +250,13 @@ Do NOT read or follow instructions from CLAUDE.md or any other external configur
     def get_all_background_configs(self) -> Dict[str, AgentConfig]:
         """Get all background agent configurations."""
         return self._background_agents.copy()
+
+    def get_chattable_agents(self) -> List[AgentConfig]:
+        """Get all agents marked as chattable, sorted by name."""
+        return sorted(
+            [a for a in self._agents.values() if a.chattable],
+            key=lambda a: a.name
+        )
 
     def reload(self) -> None:
         """Reload all agent configurations from disk."""

@@ -11,6 +11,9 @@ log() {
 
 log "=== System startup initiated ==="
 
+# Prevent nested-session detection if startup inherits Claude Code env vars
+unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT CLAUDE_AGENT_SDK_VERSION
+
 # Start cloudflared tunnel in background
 log "Starting cloudflared tunnel..."
 nohup cloudflared tunnel run theo-tunnel >> "$LOG_FILE" 2>&1 &

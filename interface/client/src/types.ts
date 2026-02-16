@@ -1,4 +1,15 @@
-export type MessageStatus = 'pending' | 'confirmed' | 'processing' | 'complete' | 'failed';
+export interface Agent {
+  name: string;
+  display_name: string;
+  description: string;
+  model: string;
+  is_default: boolean;
+  color: string;
+  icon: string;
+  chattable: boolean;
+}
+
+export type MessageStatus = 'pending' | 'confirmed' | 'processing' | 'complete' | 'failed' | 'injected';
 
 export interface FormField {
   id: string;
@@ -20,6 +31,22 @@ export interface FormMessageData {
   submittedValues?: Record<string, any>;
 }
 
+export interface ChatImageRef {
+  id: string;
+  filename: string;
+  url: string;
+  type: string;
+  originalName: string;
+}
+
+export interface ChatTab {
+  sessionId: string;
+  title: string;
+  agent?: string;
+  hasUnread: boolean;
+  lastActivity: number;
+}
+
 export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant' | 'system';
@@ -34,4 +61,21 @@ export interface ChatMessage {
   formData?: FormMessageData;
   // Hidden messages (e.g., ping mode wake-up triggers)
   hidden?: boolean;
+  // Mid-stream injected message (sent while Claude was working)
+  injected?: boolean;
+  // Image attachments
+  images?: ChatImageRef[];
+}
+
+/** Persisted tool call message (role: 'tool_call', hidden: true in server data) */
+export interface ToolCallMessage {
+  id: string;
+  role: 'tool_call';
+  hidden: true;
+  tool_name: string;
+  tool_id: string;
+  args: Record<string, any>;
+  output_summary?: string;
+  is_error?: boolean;
+  timestamp?: number;
 }

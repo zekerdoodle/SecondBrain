@@ -1,6 +1,8 @@
 name: gardener
 model: sonnet
 description: "Memory maintenance agent - identifies duplicates, consolidates threads, adjusts importance, and flags stale content."
+timeout_seconds: 300
+max_turns: 200
 
 # Background agents don't use tools - they process structured input and return structured output
 tools: []

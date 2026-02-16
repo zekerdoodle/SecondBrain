@@ -1,5 +1,8 @@
 """
 Vault Path Utilities (Ported)
+
+For Second Brain, the canonical vault location is interface/server/vault.
+This module provides path utilities that work regardless of the current working directory.
 """
 from __future__ import annotations
 
@@ -19,19 +22,43 @@ CLONES_SUBDIR = "clones"
 UPLOADS_SUBDIR = "uploads"
 PathInput = Union[str, Path]
 
+
+def _get_project_root() -> Path:
+    """
+    Determine the Second Brain project root from this module's location.
+
+    This file is at: .claude/scripts/theo_ports/utils/vault_paths.py
+    Project root is 5 levels up.
+    """
+    return Path(__file__).resolve().parent.parent.parent.parent.parent
+
+
 def get_vault_root(config: Optional[dict] = None) -> Path:
+    """
+    Get the canonical vault root directory.
+
+    Priority:
+    1. THEO_VAULT_ROOT environment variable (for testing/overrides)
+    2. Absolute path: {project_root}/interface/server/vault
+
+    This ensures forms, submissions, and other vault data always go to the
+    same location regardless of the process's working directory.
+    """
     override = _resolve_env_override()
     if override is not None:
         return override
 
-    # Default to .agent/vault for Antigravity context??
-    # No, keep Theo's "vault" relative behavior (cwd/vault).
-    preferred = Path("vault")
+    # Use absolute path to canonical vault location
+    # This is where all forms data actually lives
+    project_root = _get_project_root()
+    vault_path = project_root / "interface" / "server" / "vault"
+
     try:
-        preferred.mkdir(parents=True, exist_ok=True)
+        vault_path.mkdir(parents=True, exist_ok=True)
     except Exception:
         pass
-    return preferred
+
+    return vault_path
 
 def get_backups_root(config: Optional[dict] = None) -> Path:
     vault_root = get_vault_root(config)

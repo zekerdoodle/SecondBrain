@@ -1,0 +1,1106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Agent Dashboard</title>
+  <link rel="stylesheet" href="/file/05_App_Data/_shared/theme.css">
+  <style>
+    /* ============================================================
+       LAYOUT
+       ============================================================ */
+    body { padding-bottom: 56px; }
+
+    .header {
+      position: sticky; top: 0; z-index: 50;
+      background: var(--bg-deep);
+      border-bottom: 1px solid var(--border);
+      padding: var(--sp-md) var(--sp-lg);
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .header h1 { font-size: var(--font-size-xl); font-weight: 700; display: flex; align-items: center; gap: var(--sp-sm); }
+    .header .subtitle { font-size: var(--font-size-xs); color: var(--text-muted); }
+
+    .tab-page { display: none; padding: var(--sp-lg); }
+    .tab-page.active { display: block; }
+
+    /* ============================================================
+       STATS BAR
+       ============================================================ */
+    .stats-bar {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+      gap: var(--sp-md);
+      margin-bottom: var(--sp-lg);
+    }
+    .stat-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: var(--sp-md) var(--sp-lg);
+      text-align: center;
+    }
+    .stat-card .stat-value {
+      font-size: var(--font-size-2xl);
+      font-weight: 700;
+      font-family: var(--font-mono);
+    }
+    .stat-card .stat-label {
+      font-size: var(--font-size-xs);
+      color: var(--text-muted);
+      margin-top: 2px;
+    }
+    .stat-active .stat-value { color: var(--success); }
+    .stat-silent .stat-value { color: var(--ctp-mauve); }
+    .stat-agents .stat-value { color: var(--ctp-peach); }
+    .stat-inactive .stat-value { color: var(--text-muted); }
+
+    /* ============================================================
+       SCHEDULE CARDS
+       ============================================================ */
+    .schedule-list { display: flex; flex-direction: column; gap: var(--sp-md); }
+
+    .schedule-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-xl);
+      padding: var(--sp-lg);
+      transition: border-color var(--ease-normal);
+      animation: slideIn 0.2s ease-out;
+    }
+    .schedule-card:hover { border-color: var(--border-hover); }
+    .schedule-card.inactive { opacity: 0.5; }
+
+    .sc-top { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--sp-md); margin-bottom: var(--sp-sm); }
+    .sc-top-left { display: flex; align-items: center; gap: var(--sp-sm); flex: 1; min-width: 0; }
+
+    .sc-status {
+      width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0;
+      margin-top: 3px;
+    }
+    .sc-status.active { background: var(--success); box-shadow: 0 0 6px rgba(166,227,161,0.5); }
+    .sc-status.inactive { background: var(--text-muted); }
+    .sc-status.error { background: var(--danger); box-shadow: 0 0 6px rgba(243,139,168,0.5); }
+
+    .sc-title {
+      font-weight: 600;
+      font-size: var(--font-size-md);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .sc-badges { display: flex; gap: var(--sp-xs); flex-shrink: 0; flex-wrap: wrap; }
+    .badge {
+      display: inline-flex; align-items: center; gap: 3px;
+      padding: 2px 8px;
+      border-radius: var(--radius-full);
+      font-size: var(--font-size-xs);
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    .badge-agent { background: rgba(250,179,135,0.15); color: var(--ctp-peach); }
+    .badge-prompt { background: rgba(137,180,250,0.15); color: var(--ctp-blue); }
+    .badge-silent { background: rgba(203,166,247,0.15); color: var(--ctp-mauve); }
+    .badge-project { background: rgba(148,226,213,0.15); color: var(--ctp-teal); }
+    .badge-once { background: rgba(249,226,175,0.15); color: var(--ctp-yellow); }
+
+    .sc-prompt {
+      font-size: var(--font-size-sm);
+      color: var(--text-secondary);
+      line-height: 1.5;
+      margin-bottom: var(--sp-md);
+      max-height: 60px;
+      overflow: hidden;
+      position: relative;
+    }
+    .sc-prompt.expanded { max-height: none; }
+    .sc-prompt-toggle {
+      background: none; border: none; color: var(--accent);
+      font-size: var(--font-size-xs); cursor: pointer; padding: 0;
+      font-family: inherit; font-weight: 600;
+    }
+
+    .sc-meta {
+      display: flex; flex-wrap: wrap; gap: var(--sp-sm) var(--sp-lg);
+      font-size: var(--font-size-xs); color: var(--text-muted);
+    }
+    .sc-meta span { display: flex; align-items: center; gap: 4px; }
+    .sc-meta .meta-icon { font-size: 12px; }
+
+    .sc-actions {
+      display: flex; gap: var(--sp-sm); margin-top: var(--sp-md);
+      padding-top: var(--sp-md); border-top: 1px solid var(--border);
+    }
+
+    .sc-id {
+      font-family: var(--font-mono);
+      font-size: var(--font-size-xs);
+      color: var(--text-muted);
+      background: var(--bg);
+      padding: 1px 6px;
+      border-radius: var(--radius-sm);
+    }
+
+    /* ============================================================
+       TIMELINE VIEW
+       ============================================================ */
+    .timeline-container { overflow-x: auto; }
+
+    .timeline {
+      position: relative;
+      min-height: 400px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-xl);
+      padding: var(--sp-lg);
+    }
+
+    .timeline-hours {
+      display: flex;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: var(--sp-sm);
+      margin-bottom: var(--sp-lg);
+    }
+    .timeline-hour {
+      flex: 1;
+      text-align: center;
+      font-size: var(--font-size-xs);
+      color: var(--text-muted);
+      font-family: var(--font-mono);
+      min-width: 40px;
+    }
+    .timeline-hour.current { color: var(--accent); font-weight: 700; }
+
+    .timeline-rows { display: flex; flex-direction: column; gap: var(--sp-sm); }
+    .timeline-row {
+      display: flex; align-items: center; gap: var(--sp-sm);
+      min-height: 28px;
+    }
+    .timeline-row-label {
+      width: 120px; flex-shrink: 0;
+      font-size: var(--font-size-xs);
+      color: var(--text-secondary);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      text-align: right;
+      padding-right: var(--sp-sm);
+    }
+    .timeline-row-bar {
+      flex: 1;
+      position: relative;
+      height: 28px;
+      background: var(--bg);
+      border-radius: var(--radius-sm);
+    }
+    .timeline-marker {
+      position: absolute;
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      top: 50%; transform: translateY(-50%);
+      cursor: pointer;
+      transition: transform var(--ease-fast);
+    }
+    .timeline-marker:hover { transform: translateY(-50%) scale(1.5); }
+    .timeline-marker-label {
+      position: absolute;
+      bottom: calc(100% + 4px);
+      left: 50%; transform: translateX(-50%);
+      font-size: 9px;
+      color: var(--text-muted);
+      white-space: nowrap;
+      display: none;
+      background: var(--bg-surface);
+      padding: 2px 6px;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border);
+    }
+    .timeline-marker:hover .timeline-marker-label { display: block; }
+
+    .timeline-now-line {
+      position: absolute;
+      top: 0; bottom: 0;
+      width: 2px;
+      background: var(--danger);
+      opacity: 0.6;
+      z-index: 5;
+    }
+    .timeline-now-label {
+      position: absolute;
+      top: -18px;
+      transform: translateX(-50%);
+      font-size: 9px;
+      color: var(--danger);
+      font-weight: 600;
+    }
+
+    /* ============================================================
+       FILTER BAR
+       ============================================================ */
+    .filter-bar {
+      display: flex; gap: var(--sp-sm); margin-bottom: var(--sp-lg);
+      flex-wrap: wrap; align-items: center;
+    }
+    .filter-bar input[type="search"] {
+      max-width: 240px;
+      padding: var(--sp-sm) var(--sp-md);
+      font-size: var(--font-size-sm);
+    }
+    .filter-chip {
+      padding: 4px 12px;
+      border-radius: var(--radius-full);
+      border: 1px solid var(--border);
+      background: none;
+      color: var(--text-secondary);
+      font-size: var(--font-size-xs);
+      font-weight: 600;
+      font-family: inherit;
+      cursor: pointer;
+      transition: all var(--ease-fast);
+    }
+    .filter-chip.active { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+    .filter-chip:hover:not(.active) { border-color: var(--border-hover); color: var(--text); }
+
+    /* ============================================================
+       EDIT MODAL
+       ============================================================ */
+    .edit-modal .modal { max-width: 520px; max-height: 90vh; overflow-y: auto; }
+    .edit-modal .field { margin-bottom: var(--sp-md); }
+    .edit-modal .modal-actions { display: flex; gap: var(--sp-sm); justify-content: flex-end; margin-top: var(--sp-lg); }
+
+    /* ============================================================
+       CREATE FORM
+       ============================================================ */
+    .create-section {
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-xl);
+      padding: var(--sp-2xl);
+      max-width: 600px;
+    }
+    .create-section h2 { font-size: var(--font-size-lg); margin-bottom: var(--sp-lg); }
+
+    .schedule-presets {
+      display: flex; flex-wrap: wrap; gap: var(--sp-sm);
+      margin-top: var(--sp-xs);
+    }
+    .preset-btn {
+      padding: 4px 10px;
+      border-radius: var(--radius-full);
+      border: 1px solid var(--border);
+      background: none;
+      color: var(--text-muted);
+      font-size: var(--font-size-xs);
+      font-family: inherit;
+      cursor: pointer;
+      transition: all var(--ease-fast);
+    }
+    .preset-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+    /* ============================================================
+       RESPONSIVE
+       ============================================================ */
+    @media (max-width: 600px) {
+      .stats-bar { grid-template-columns: repeat(2, 1fr); }
+      .sc-badges { display: none; }
+      .sc-meta { flex-direction: column; gap: var(--sp-xs); }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ========== HEADER ========== -->
+  <div class="header">
+    <div>
+      <h1><span style="font-size: 24px;">🤖</span> Agent Dashboard</h1>
+      <div class="subtitle">Schedule viewer & manager</div>
+    </div>
+    <button class="btn btn-sm btn-secondary" onclick="loadTasks()" title="Refresh">
+      <span style="font-size: 14px;">🔄</span> Refresh
+    </button>
+  </div>
+
+  <!-- ========== TAB BAR ========== -->
+  <div class="tab-bar-top" id="tab-bar">
+    <button class="tab-btn active" data-tab="overview" onclick="switchTab('overview')">Overview</button>
+    <button class="tab-btn" data-tab="schedules" onclick="switchTab('schedules')">Schedules</button>
+    <button class="tab-btn" data-tab="timeline" onclick="switchTab('timeline')">Timeline</button>
+    <button class="tab-btn" data-tab="create" onclick="switchTab('create')">+ New</button>
+  </div>
+
+  <!-- ========== OVERVIEW TAB ========== -->
+  <div class="tab-page active" id="page-overview">
+    <div class="stats-bar" id="stats-bar"></div>
+
+    <h2 style="font-size: var(--font-size-lg); margin-bottom: var(--sp-md);">Next Up</h2>
+    <div id="next-up-list" class="schedule-list"></div>
+
+    <h2 style="font-size: var(--font-size-lg); margin: var(--sp-xl) 0 var(--sp-md);">Recently Ran</h2>
+    <div id="recently-ran-list" class="schedule-list"></div>
+  </div>
+
+  <!-- ========== SCHEDULES TAB ========== -->
+  <div class="tab-page" id="page-schedules">
+    <div class="filter-bar">
+      <input type="search" id="search-input" placeholder="Search schedules..." oninput="renderSchedules()">
+      <button class="filter-chip active" data-filter="all" onclick="setFilter('all')">All</button>
+      <button class="filter-chip" data-filter="agent" onclick="setFilter('agent')">Agents</button>
+      <button class="filter-chip" data-filter="prompt" onclick="setFilter('prompt')">Prompts</button>
+      <button class="filter-chip" data-filter="silent" onclick="setFilter('silent')">Silent</button>
+      <button class="filter-chip" data-filter="inactive" onclick="setFilter('inactive')">Inactive</button>
+    </div>
+    <div id="schedules-list" class="schedule-list"></div>
+  </div>
+
+  <!-- ========== TIMELINE TAB ========== -->
+  <div class="tab-page" id="page-timeline">
+    <div class="timeline-container">
+      <div class="timeline" id="timeline"></div>
+    </div>
+  </div>
+
+  <!-- ========== CREATE TAB ========== -->
+  <div class="tab-page" id="page-create">
+    <div class="create-section">
+      <h2>Create New Schedule</h2>
+
+      <div class="field">
+        <label>Type</label>
+        <select id="create-type" onchange="toggleAgentField()">
+          <option value="prompt">Prompt (sends to Claude)</option>
+          <option value="agent">Agent (invokes a specific agent)</option>
+        </select>
+      </div>
+
+      <div class="field" id="create-agent-field" style="display:none;">
+        <label>Agent</label>
+        <select id="create-agent">
+          <option value="claude_code">claude_code</option>
+          <option value="information_gatherer">information_gatherer</option>
+          <option value="general_purpose">general_purpose</option>
+          <option value="deep_think">deep_think</option>
+          <option value="deep_research">deep_research</option>
+          <option value="coder">coder</option>
+          <option value="html_expert">html_expert</option>
+          <option value="librarian">librarian</option>
+          <option value="gardener">gardener</option>
+          <option value="chronicler">chronicler</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <label>Prompt</label>
+        <textarea id="create-prompt" rows="6" placeholder="What should this task do?"></textarea>
+      </div>
+
+      <div class="field">
+        <label>Schedule</label>
+        <input type="text" id="create-schedule" placeholder='e.g. "daily at 09:00", "every 4 hours", "0 3 * * 0"'>
+        <div class="schedule-presets">
+          <button class="preset-btn" onclick="setPreset('every 30 minutes')">Every 30m</button>
+          <button class="preset-btn" onclick="setPreset('every 1 hours')">Every 1h</button>
+          <button class="preset-btn" onclick="setPreset('every 4 hours')">Every 4h</button>
+          <button class="preset-btn" onclick="setPreset('daily at 06:00')">Daily 6am</button>
+          <button class="preset-btn" onclick="setPreset('daily at 09:00')">Daily 9am</button>
+          <button class="preset-btn" onclick="setPreset('daily at 21:00')">Daily 9pm</button>
+          <button class="preset-btn" onclick="setPreset('0 3 * * 0')">Weekly Sun 3am</button>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>Project (optional)</label>
+        <input type="text" id="create-project" placeholder="e.g. job-search-2026">
+      </div>
+
+      <div style="display: flex; gap: var(--sp-md); align-items: center;">
+        <label style="display: flex; align-items: center; gap: var(--sp-sm); cursor: pointer; font-size: var(--font-size-sm);">
+          <input type="checkbox" id="create-silent"> Silent (background, no chat)
+        </label>
+      </div>
+
+      <div style="margin-top: var(--sp-xl);">
+        <button class="btn btn-primary" onclick="createTask()">Create Schedule</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== EDIT MODAL ========== -->
+  <div class="modal-overlay edit-modal" id="edit-modal">
+    <div class="modal">
+      <h3 class="modal-title" style="margin-bottom: var(--sp-lg);">Edit Schedule</h3>
+
+      <div class="field">
+        <label>ID</label>
+        <input type="text" id="edit-id" disabled class="font-mono">
+      </div>
+
+      <div class="field">
+        <label>Prompt</label>
+        <textarea id="edit-prompt" rows="5"></textarea>
+      </div>
+
+      <div class="field">
+        <label>Schedule</label>
+        <input type="text" id="edit-schedule">
+      </div>
+
+      <div class="field">
+        <label>Project</label>
+        <input type="text" id="edit-project" placeholder="(none)">
+      </div>
+
+      <div style="display: flex; gap: var(--sp-xl); margin-bottom: var(--sp-md);">
+        <label style="display: flex; align-items: center; gap: var(--sp-sm); cursor: pointer; font-size: var(--font-size-sm);">
+          <input type="checkbox" id="edit-active"> Active
+        </label>
+        <label style="display: flex; align-items: center; gap: var(--sp-sm); cursor: pointer; font-size: var(--font-size-sm);">
+          <input type="checkbox" id="edit-silent"> Silent
+        </label>
+      </div>
+
+      <div class="modal-actions">
+        <button class="btn btn-sm btn-danger" onclick="deleteTask()">Delete</button>
+        <div style="flex:1"></div>
+        <button class="btn btn-sm btn-secondary" onclick="closeEditModal()">Cancel</button>
+        <button class="btn btn-sm btn-primary" onclick="saveEdit()">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== TOAST ========== -->
+  <div class="toast" id="toast"></div>
+
+  <script>
+    /* ============================================================
+       STATE
+       ============================================================ */
+    let tasks = [];
+    let currentFilter = 'all';
+    let editingTaskId = null;
+
+    const TASKS_PATH = 'agent-dashboard/tasks.json';
+
+    /* ============================================================
+       DATA LAYER
+       ============================================================ */
+    async function loadTasks() {
+      try {
+        const raw = await window.brain.readFile(TASKS_PATH);
+        if (raw) {
+          tasks = JSON.parse(raw);
+        } else {
+          tasks = [];
+        }
+      } catch (e) {
+        console.error('Failed to load tasks:', e);
+        tasks = [];
+      }
+      renderAll();
+    }
+
+    async function saveTasks() {
+      try {
+        await window.brain.writeFile(TASKS_PATH, JSON.stringify(tasks, null, 2));
+      } catch (e) {
+        console.error('Failed to save tasks:', e);
+        toast('Failed to save!', 'error');
+      }
+    }
+
+    /* ============================================================
+       RENDERING
+       ============================================================ */
+    function renderAll() {
+      renderStats();
+      renderOverview();
+      renderSchedules();
+      renderTimeline();
+    }
+
+    function renderStats() {
+      const active = tasks.filter(t => t.active !== false);
+      const silent = active.filter(t => t.silent);
+      const agents = active.filter(t => t.type === 'agent');
+      const inactive = tasks.filter(t => t.active === false);
+
+      document.getElementById('stats-bar').innerHTML = `
+        <div class="stat-card stat-active">
+          <div class="stat-value">${active.length}</div>
+          <div class="stat-label">Active</div>
+        </div>
+        <div class="stat-card stat-silent">
+          <div class="stat-value">${silent.length}</div>
+          <div class="stat-label">Silent</div>
+        </div>
+        <div class="stat-card stat-agents">
+          <div class="stat-value">${agents.length}</div>
+          <div class="stat-label">Agent Tasks</div>
+        </div>
+        <div class="stat-card stat-inactive">
+          <div class="stat-value">${inactive.length}</div>
+          <div class="stat-label">Inactive</div>
+        </div>
+      `;
+    }
+
+    function renderOverview() {
+      // Next Up: tasks sorted by when they'll next fire
+      const active = tasks.filter(t => t.active !== false);
+      const withNext = active.map(t => ({ ...t, _next: getNextRunTime(t) }))
+        .filter(t => t._next)
+        .sort((a, b) => a._next - b._next)
+        .slice(0, 5);
+
+      document.getElementById('next-up-list').innerHTML = withNext.length
+        ? withNext.map(t => renderCardCompact(t, `Next: ${formatRelative(t._next)}`)).join('')
+        : '<div class="empty-state"><div class="empty-icon">📭</div><div class="empty-title">No upcoming tasks</div></div>';
+
+      // Recently ran: sorted by last_run desc
+      const recent = [...tasks]
+        .filter(t => t.last_run)
+        .sort((a, b) => new Date(b.last_run) - new Date(a.last_run))
+        .slice(0, 5);
+
+      document.getElementById('recently-ran-list').innerHTML = recent.length
+        ? recent.map(t => renderCardCompact(t, `Ran: ${formatRelative(new Date(t.last_run))}`)).join('')
+        : '<div class="empty-state"><div class="empty-icon">🕰</div><div class="empty-title">No recent runs</div></div>';
+    }
+
+    function renderCardCompact(task, subtitle) {
+      const title = getTaskTitle(task);
+      const statusClass = task.active === false ? 'inactive' : (task.last_error ? 'error' : 'active');
+
+      return `
+        <div class="schedule-card ${task.active === false ? 'inactive' : ''}" onclick="openEditModal('${task.id}')">
+          <div class="sc-top">
+            <div class="sc-top-left">
+              <div class="sc-status ${statusClass}"></div>
+              <span class="sc-title">${esc(title)}</span>
+            </div>
+            <div class="sc-badges">
+              ${task.type === 'agent' ? `<span class="badge badge-agent">🤖 ${esc(task.agent || '?')}</span>` : '<span class="badge badge-prompt">💬 prompt</span>'}
+              ${task.silent ? '<span class="badge badge-silent">🔇</span>' : ''}
+              ${task.project ? `<span class="badge badge-project">📂 ${esc(task.project)}</span>` : ''}
+            </div>
+          </div>
+          <div class="sc-meta">
+            <span><span class="meta-icon">⏰</span> ${esc(task.schedule)}</span>
+            <span><span class="meta-icon">📍</span> ${subtitle}</span>
+            <span class="sc-id">${task.id}</span>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderSchedules() {
+      const search = (document.getElementById('search-input')?.value || '').toLowerCase();
+      let filtered = tasks;
+
+      // Apply filter
+      if (currentFilter === 'agent') filtered = filtered.filter(t => t.type === 'agent');
+      else if (currentFilter === 'prompt') filtered = filtered.filter(t => t.type !== 'agent');
+      else if (currentFilter === 'silent') filtered = filtered.filter(t => t.silent);
+      else if (currentFilter === 'inactive') filtered = filtered.filter(t => t.active === false);
+      else filtered = filtered.filter(t => t.active !== false); // 'all' = active only
+
+      // Apply search
+      if (search) {
+        filtered = filtered.filter(t =>
+          (t.prompt || '').toLowerCase().includes(search) ||
+          (t.agent || '').toLowerCase().includes(search) ||
+          (t.id || '').toLowerCase().includes(search) ||
+          (t.schedule || '').toLowerCase().includes(search) ||
+          (t.project || '').toLowerCase().includes(search)
+        );
+      }
+
+      const list = document.getElementById('schedules-list');
+      if (!filtered.length) {
+        list.innerHTML = '<div class="empty-state"><div class="empty-icon">🔍</div><div class="empty-title">No matching schedules</div></div>';
+        return;
+      }
+
+      list.innerHTML = filtered.map(task => {
+        const title = getTaskTitle(task);
+        const statusClass = task.active === false ? 'inactive' : (task.last_error ? 'error' : 'active');
+        const promptPreview = (task.prompt || '').replace(/\n/g, ' ').substring(0, 200);
+        const lastRun = task.last_run ? formatRelative(new Date(task.last_run)) : 'Never';
+
+        return `
+          <div class="schedule-card ${task.active === false ? 'inactive' : ''}">
+            <div class="sc-top">
+              <div class="sc-top-left">
+                <div class="sc-status ${statusClass}"></div>
+                <span class="sc-title">${esc(title)}</span>
+              </div>
+              <div class="sc-badges">
+                ${task.type === 'agent' ? `<span class="badge badge-agent">🤖 ${esc(task.agent || '?')}</span>` : '<span class="badge badge-prompt">💬 prompt</span>'}
+                ${task.silent ? '<span class="badge badge-silent">🔇 silent</span>' : ''}
+                ${task.project ? `<span class="badge badge-project">📂 ${esc(task.project)}</span>` : ''}
+                ${task.schedule.toLowerCase().startsWith('once') ? '<span class="badge badge-once">⏱ once</span>' : ''}
+              </div>
+            </div>
+            <div class="sc-prompt" id="prompt-${task.id}">${esc(promptPreview)}</div>
+            ${(task.prompt || '').length > 200 ? `<button class="sc-prompt-toggle" onclick="togglePrompt('${task.id}', this)">Show more</button>` : ''}
+            <div class="sc-meta">
+              <span><span class="meta-icon">⏰</span> ${esc(task.schedule)}</span>
+              <span><span class="meta-icon">🕐</span> Last: ${lastRun}</span>
+              <span><span class="meta-icon">📅</span> Created: ${task.created_at ? new Date(task.created_at).toLocaleDateString() : '?'}</span>
+              <span class="sc-id">${task.id}</span>
+            </div>
+            <div class="sc-actions">
+              <button class="btn btn-sm btn-ghost" onclick="toggleActive('${task.id}')">
+                ${task.active !== false ? '⏸ Pause' : '▶ Resume'}
+              </button>
+              <button class="btn btn-sm btn-ghost" onclick="toggleSilent('${task.id}')">
+                ${task.silent ? '🔔 Unmute' : '🔇 Mute'}
+              </button>
+              <button class="btn btn-sm btn-ghost" onclick="openEditModal('${task.id}')">✏️ Edit</button>
+              <div style="flex:1"></div>
+              <button class="btn btn-sm btn-ghost" style="color: var(--danger);" onclick="confirmDelete('${task.id}')">🗑</button>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    /* ============================================================
+       TIMELINE
+       ============================================================ */
+    function renderTimeline() {
+      const now = new Date();
+      const currentHour = now.getHours();
+      const active = tasks.filter(t => t.active !== false);
+
+      // Build hour labels
+      let hoursHtml = '';
+      for (let h = 0; h < 24; h++) {
+        const label = h === 0 ? '12a' : h < 12 ? `${h}a` : h === 12 ? '12p' : `${h-12}p`;
+        hoursHtml += `<div class="timeline-hour ${h === currentHour ? 'current' : ''}">${label}</div>`;
+      }
+
+      // Build rows for each task
+      const colors = [
+        'var(--ctp-blue)', 'var(--ctp-green)', 'var(--ctp-peach)', 'var(--ctp-mauve)',
+        'var(--ctp-teal)', 'var(--ctp-pink)', 'var(--ctp-yellow)', 'var(--ctp-red)',
+        'var(--ctp-sapphire)', 'var(--ctp-flamingo)', 'var(--ctp-lavender)', 'var(--ctp-rosewater)'
+      ];
+
+      let rowsHtml = '';
+      active.forEach((task, i) => {
+        const title = getTaskTitle(task);
+        const color = colors[i % colors.length];
+        const runTimes = getDailyRunTimes(task);
+
+        let markersHtml = '';
+        runTimes.forEach(hour => {
+          const leftPct = (hour / 24) * 100;
+          markersHtml += `
+            <div class="timeline-marker" style="left: calc(${leftPct}% - 4px); background: ${color}; box-shadow: 0 0 6px ${color};"
+                 onclick="openEditModal('${task.id}')">
+              <div class="timeline-marker-label">${title} @ ${formatHour(hour)}</div>
+            </div>
+          `;
+        });
+
+        rowsHtml += `
+          <div class="timeline-row">
+            <div class="timeline-row-label" title="${esc(title)}">${esc(title)}</div>
+            <div class="timeline-row-bar">${markersHtml}</div>
+          </div>
+        `;
+      });
+
+      // Now line
+      const nowPct = ((currentHour + now.getMinutes() / 60) / 24) * 100;
+      const nowLineStyle = `left: calc(120px + var(--sp-sm) + (100% - 120px - var(--sp-sm)) * ${nowPct / 100})`;
+
+      document.getElementById('timeline').innerHTML = `
+        <div class="timeline-hours">${hoursHtml}</div>
+        <div class="timeline-rows" style="position: relative;">
+          ${rowsHtml}
+          <div class="timeline-now-line" style="left: ${nowPct}%;"><div class="timeline-now-label">now</div></div>
+        </div>
+      `;
+    }
+
+    /* ============================================================
+       SCHEDULE PARSING HELPERS
+       ============================================================ */
+    function getTaskTitle(task) {
+      const prompt = task.prompt || '';
+      // Try to extract a meaningful title from the first line
+      const firstLine = prompt.split('\n')[0].replace(/^[\/#!\*\s]+/, '').trim();
+      if (firstLine.length > 5 && firstLine.length < 80) return firstLine;
+      // Fallback: use agent name or truncated prompt
+      if (task.agent) return `${task.agent} task`;
+      return prompt.substring(0, 50).replace(/\n/g, ' ') + (prompt.length > 50 ? '...' : '');
+    }
+
+    function getNextRunTime(task) {
+      const now = new Date();
+      const schedule = (task.schedule || '').toLowerCase().trim();
+      const lastRun = task.last_run ? new Date(task.last_run) : null;
+
+      // "every X minutes/hours"
+      const everyMatch = schedule.match(/every\s+(\d+)?\s*(minute|hour|day)s?/);
+      if (everyMatch) {
+        const val = parseInt(everyMatch[1] || '1');
+        const unit = everyMatch[2];
+        if (lastRun) {
+          const ms = unit === 'minute' ? val * 60000 : unit === 'hour' ? val * 3600000 : val * 86400000;
+          return new Date(lastRun.getTime() + ms);
+        }
+        return now;
+      }
+
+      // "daily at HH:MM(am/pm)"
+      const dailyMatch = schedule.match(/daily at\s+(\d{1,2}):(\d{2})\s*(am|pm)?/);
+      if (dailyMatch) {
+        let hour = parseInt(dailyMatch[1]);
+        const min = parseInt(dailyMatch[2]);
+        const meridiem = dailyMatch[3];
+        if (meridiem === 'pm' && hour !== 12) hour += 12;
+        if (meridiem === 'am' && hour === 12) hour = 0;
+
+        const target = new Date(now);
+        target.setHours(hour, min, 0, 0);
+        if (target <= now) target.setDate(target.getDate() + 1);
+        return target;
+      }
+
+      // Cron: "min hour dom month dow"
+      const cronMatch = schedule.match(/^(\d+|\*)\s+(\d+|\*)\s+(\d+|\*)\s+(\d+|\*)\s+(\d+|\*)$/);
+      if (cronMatch) {
+        const [_, cmin, chour] = cronMatch;
+        if (cmin !== '*' && chour !== '*') {
+          const target = new Date(now);
+          target.setHours(parseInt(chour), parseInt(cmin), 0, 0);
+          if (target <= now) target.setDate(target.getDate() + 1);
+          return target;
+        }
+      }
+
+      // "once at ..."
+      const onceMatch = schedule.match(/once at\s+(.+)/);
+      if (onceMatch) {
+        try {
+          return new Date(onceMatch[1].trim());
+        } catch(e) {}
+      }
+
+      return null;
+    }
+
+    function getDailyRunTimes(task) {
+      const schedule = (task.schedule || '').toLowerCase().trim();
+      const times = [];
+
+      // "daily at HH:MM(am/pm)"
+      const dailyMatch = schedule.match(/daily at\s+(\d{1,2}):(\d{2})\s*(am|pm)?/);
+      if (dailyMatch) {
+        let hour = parseInt(dailyMatch[1]);
+        const min = parseInt(dailyMatch[2]);
+        const meridiem = dailyMatch[3];
+        if (meridiem === 'pm' && hour !== 12) hour += 12;
+        if (meridiem === 'am' && hour === 12) hour = 0;
+        times.push(hour + min / 60);
+        return times;
+      }
+
+      // Cron
+      const cronMatch = schedule.match(/^(\d+|\*)\s+(\d+|\*)\s+(\d+|\*)\s+(\d+|\*)\s+(\d+|\*)$/);
+      if (cronMatch) {
+        const [_, cmin, chour] = cronMatch;
+        if (cmin !== '*' && chour !== '*') {
+          times.push(parseInt(chour) + parseInt(cmin) / 60);
+        }
+        return times;
+      }
+
+      // "every X hours" - show approximate markers
+      const everyMatch = schedule.match(/every\s+(\d+)?\s*(minute|hour|day)s?/);
+      if (everyMatch) {
+        const val = parseInt(everyMatch[1] || '1');
+        const unit = everyMatch[2];
+        if (unit === 'hour') {
+          for (let h = 0; h < 24; h += val) times.push(h);
+        } else if (unit === 'minute' && val >= 30) {
+          for (let m = 0; m < 24 * 60; m += val) times.push(m / 60);
+        }
+        return times;
+      }
+
+      // "once at ..."
+      const onceMatch = schedule.match(/once at\s+(.+)/);
+      if (onceMatch) {
+        try {
+          const d = new Date(onceMatch[1].trim());
+          times.push(d.getHours() + d.getMinutes() / 60);
+        } catch(e) {}
+      }
+
+      return times;
+    }
+
+    function formatHour(h) {
+      const hour = Math.floor(h);
+      const min = Math.round((h - hour) * 60);
+      const suffix = hour < 12 ? 'am' : 'pm';
+      const display = hour === 0 ? 12 : hour > 12 ? hour - 12 : hour;
+      return min === 0 ? `${display}${suffix}` : `${display}:${String(min).padStart(2, '0')}${suffix}`;
+    }
+
+    function formatRelative(date) {
+      if (!date || isNaN(date)) return '?';
+      const now = new Date();
+      const diffMs = date - now;
+      const absDiff = Math.abs(diffMs);
+      const future = diffMs > 0;
+
+      if (absDiff < 60000) return future ? 'in < 1m' : '< 1m ago';
+      if (absDiff < 3600000) {
+        const mins = Math.round(absDiff / 60000);
+        return future ? `in ${mins}m` : `${mins}m ago`;
+      }
+      if (absDiff < 86400000) {
+        const hrs = Math.round(absDiff / 3600000);
+        return future ? `in ${hrs}h` : `${hrs}h ago`;
+      }
+      const days = Math.round(absDiff / 86400000);
+      return future ? `in ${days}d` : `${days}d ago`;
+    }
+
+    /* ============================================================
+       ACTIONS
+       ============================================================ */
+    async function toggleActive(id) {
+      const task = tasks.find(t => t.id === id);
+      if (!task) return;
+      task.active = task.active === false ? true : false;
+      await saveTasks();
+      renderAll();
+      toast(task.active ? 'Schedule resumed' : 'Schedule paused', 'success');
+    }
+
+    async function toggleSilent(id) {
+      const task = tasks.find(t => t.id === id);
+      if (!task) return;
+      task.silent = !task.silent;
+      await saveTasks();
+      renderAll();
+      toast(task.silent ? 'Muted' : 'Unmuted', 'success');
+    }
+
+    async function confirmDelete(id) {
+      if (confirm(`Delete schedule ${id}? This cannot be undone.`)) {
+        tasks = tasks.filter(t => t.id !== id);
+        await saveTasks();
+        renderAll();
+        toast('Schedule deleted', 'success');
+      }
+    }
+
+    /* ============================================================
+       EDIT MODAL
+       ============================================================ */
+    function openEditModal(id) {
+      const task = tasks.find(t => t.id === id);
+      if (!task) return;
+      editingTaskId = id;
+
+      document.getElementById('edit-id').value = task.id;
+      document.getElementById('edit-prompt').value = task.prompt || '';
+      document.getElementById('edit-schedule').value = task.schedule || '';
+      document.getElementById('edit-project').value = task.project || '';
+      document.getElementById('edit-active').checked = task.active !== false;
+      document.getElementById('edit-silent').checked = !!task.silent;
+
+      document.getElementById('edit-modal').classList.add('show');
+    }
+
+    function closeEditModal() {
+      document.getElementById('edit-modal').classList.remove('show');
+      editingTaskId = null;
+    }
+
+    async function saveEdit() {
+      const task = tasks.find(t => t.id === editingTaskId);
+      if (!task) return;
+
+      task.prompt = document.getElementById('edit-prompt').value;
+      task.schedule = document.getElementById('edit-schedule').value;
+      task.active = document.getElementById('edit-active').checked;
+      task.silent = document.getElementById('edit-silent').checked;
+
+      const project = document.getElementById('edit-project').value.trim();
+      if (project) task.project = project;
+      else delete task.project;
+
+      await saveTasks();
+      closeEditModal();
+      renderAll();
+      toast('Schedule updated', 'success');
+    }
+
+    async function deleteTask() {
+      if (!editingTaskId) return;
+      if (confirm(`Delete schedule ${editingTaskId}?`)) {
+        tasks = tasks.filter(t => t.id !== editingTaskId);
+        await saveTasks();
+        closeEditModal();
+        renderAll();
+        toast('Schedule deleted', 'success');
+      }
+    }
+
+    /* ============================================================
+       CREATE
+       ============================================================ */
+    function toggleAgentField() {
+      const type = document.getElementById('create-type').value;
+      document.getElementById('create-agent-field').style.display = type === 'agent' ? 'block' : 'none';
+    }
+
+    function setPreset(val) {
+      document.getElementById('create-schedule').value = val;
+    }
+
+    async function createTask() {
+      const type = document.getElementById('create-type').value;
+      const prompt = document.getElementById('create-prompt').value.trim();
+      const schedule = document.getElementById('create-schedule').value.trim();
+      const project = document.getElementById('create-project').value.trim();
+      const silent = document.getElementById('create-silent').checked;
+      const agent = document.getElementById('create-agent').value;
+
+      if (!prompt) { toast('Prompt is required', 'error'); return; }
+      if (!schedule) { toast('Schedule is required', 'error'); return; }
+
+      const id = Math.random().toString(16).substring(2, 10);
+      const newTask = {
+        id,
+        prompt,
+        schedule,
+        created_at: new Date().toISOString(),
+        last_run: new Date().toISOString(),
+        active: true,
+        silent,
+        type,
+      };
+
+      if (type === 'agent') newTask.agent = agent;
+      if (project) newTask.project = project;
+
+      tasks.push(newTask);
+      await saveTasks();
+      renderAll();
+
+      // Reset form
+      document.getElementById('create-prompt').value = '';
+      document.getElementById('create-schedule').value = '';
+      document.getElementById('create-project').value = '';
+      document.getElementById('create-silent').checked = false;
+
+      switchTab('schedules');
+      toast('Schedule created!', 'success');
+    }
+
+    /* ============================================================
+       PROMPT EXPAND / COLLAPSE
+       ============================================================ */
+    function togglePrompt(id, btn) {
+      const el = document.getElementById(`prompt-${id}`);
+      if (!el) return;
+      const task = tasks.find(t => t.id === id);
+      if (!task) return;
+
+      if (el.classList.contains('expanded')) {
+        el.classList.remove('expanded');
+        el.textContent = (task.prompt || '').replace(/\n/g, ' ').substring(0, 200);
+        btn.textContent = 'Show more';
+      } else {
+        el.classList.add('expanded');
+        el.textContent = task.prompt || '';
+        el.style.whiteSpace = 'pre-wrap';
+        btn.textContent = 'Show less';
+      }
+    }
+
+    /* ============================================================
+       FILTER & TABS
+       ============================================================ */
+    function setFilter(filter) {
+      currentFilter = filter;
+      document.querySelectorAll('.filter-chip').forEach(el => {
+        el.classList.toggle('active', el.dataset.filter === filter);
+      });
+      renderSchedules();
+    }
+
+    function switchTab(tab) {
+      document.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.tab === tab);
+      });
+      document.querySelectorAll('.tab-page').forEach(page => {
+        page.classList.toggle('active', page.id === `page-${tab}`);
+      });
+      // Re-render timeline when switching to it (for accurate "now" line)
+      if (tab === 'timeline') renderTimeline();
+    }
+
+    /* ============================================================
+       UTILITIES
+       ============================================================ */
+    function esc(str) {
+      const div = document.createElement('div');
+      div.textContent = str || '';
+      return div.innerHTML;
+    }
+
+    function toast(msg, type = 'success') {
+      const el = document.getElementById('toast');
+      el.textContent = msg;
+      el.className = `toast ${type} show`;
+      setTimeout(() => el.classList.remove('show'), 2500);
+    }
+
+    // Close modal on overlay click
+    document.getElementById('edit-modal').addEventListener('click', function(e) {
+      if (e.target === this) closeEditModal();
+    });
+
+    // Close modal on Escape
+    document.addEventListener('keydown', e => {
+      if (e.key === 'Escape') closeEditModal();
+    });
+
+    /* ============================================================
+       INIT
+       ============================================================ */
+    // Wait for brain bridge
+    function waitForBrain() {
+      return new Promise(resolve => {
+        if (window.brain && window.brain.readFile) return resolve();
+        const check = setInterval(() => {
+          if (window.brain && window.brain.readFile) {
+            clearInterval(check);
+            resolve();
+          }
+        }, 100);
+        // Timeout after 5s
+        setTimeout(() => { clearInterval(check); resolve(); }, 5000);
+      });
+    }
+
+    waitForBrain().then(() => {
+      loadTasks();
+      // Auto-refresh every 60 seconds
+      setInterval(loadTasks, 60000);
+    });
+
+    console.log('🤖 Agent Dashboard loaded!');
+  </script>
+</body>
+</html>

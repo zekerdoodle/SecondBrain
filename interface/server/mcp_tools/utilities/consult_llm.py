@@ -28,7 +28,7 @@ from ..registry import register_tool
 
 # Default models
 DEFAULT_GEMINI_MODEL = "gemini-3-pro-preview"  # Latest, most capable
-DEFAULT_OPENAI_MODEL = "gpt-5.2"  # Codex default
+DEFAULT_OPENAI_MODEL = "gpt-5.3-codex"  # Codex default, high reasoning
 
 # Timeouts
 DEFAULT_TIMEOUT = 120  # 2 minutes
@@ -157,6 +157,7 @@ async def _consult_openai(
         cmd = (
             f'codex exec --skip-git-repo-check '
             f'-m {model} '
+            f'-c model_reasoning_effort="high" '
             f'{_shell_quote(full_prompt)} 2>&1'
         )
 
@@ -310,11 +311,11 @@ This establishes peer dialogue, not delegation.
 
 Providers:
 - gemini: Google's Gemini 3 Pro (default: gemini-3-pro-preview)
-- openai: OpenAI GPT-5.2 via Codex (default: gpt-5.2)
+- openai: OpenAI GPT-5.3-Codex via Codex CLI (default: gpt-5.3-codex, high reasoning)
 
 Models available:
 - Gemini: gemini-3-pro-preview, gemini-3-flash-preview, gemini-2.5-pro, gemini-2.5-flash
-- OpenAI: gpt-5.2, o3, o4-mini
+- OpenAI: gpt-5.3-codex, gpt-5.2, o3, o4-mini
 
 This is stateless - each call is independent with no conversation memory.
 
@@ -339,7 +340,7 @@ Example use cases:
             },
             "model": {
                 "type": "string",
-                "description": "Optional model override. Defaults: gemini-3-pro-preview for Gemini, gpt-5.2 for OpenAI"
+                "description": "Optional model override. Defaults: gemini-3-pro-preview for Gemini, gpt-5.3-codex for OpenAI"
             },
             "timeout_seconds": {
                 "type": "integer",

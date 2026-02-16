@@ -1,0 +1,26 @@
+name: deep_research
+description: "Multi-phase research orchestrator. Decomposes questions, fans out parallel\
+  \ information gatherers, iteratively replans, then synthesizes via Deep Think. Use\
+  \ for questions requiring thorough investigation \u2014 the 5-15 minute deep dive."
+model: opus
+type: sdk
+timeout_seconds: 1800
+max_turns: 200
+chattable: false
+color: '#2ecc71'
+icon: search
+tools:
+- Skill
+- Read
+- Glob
+- Grep
+- Write
+- Bash
+- TodoWrite
+- mcp__brain__web_search
+- mcp__brain__page_parser
+- mcp__brain__invoke_agent
+- mcp__brain__invoke_agent_chain
+- mcp__brain__consult_llm
+- mcp__brain__memory_append
+- mcp__brain__memory_read

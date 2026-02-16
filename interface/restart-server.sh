@@ -9,11 +9,17 @@ cd "$SCRIPT_DIR"
 # Port the server runs on
 PORT=8000
 
+# Prevent nested-session detection when restarted from inside Claude Code
+unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT CLAUDE_AGENT_SDK_VERSION
+
 echo "Quick restart (skipping frontend build)..."
 
-# Kill previous server
+# Gracefully stop previous server (SIGTERM first so shutdown handler can save state)
+fuser -k -TERM $PORT/tcp 2>/dev/null
+sleep 2
+# Force kill if still running
 fuser -k $PORT/tcp 2>/dev/null
-sleep 1
+sleep 0.5
 
 # Start server
 cd server

@@ -1,0 +1,2334 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hypertrophy Tracker</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: #1e1e2e; color: #cdd6f4;
+  min-height: 100vh; overflow-x: hidden;
+  padding-bottom: 70px;
+}
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: #1e1e2e; }
+::-webkit-scrollbar-thumb { background: #45475a; border-radius: 3px; }
+
+/* === TAB NAV (bottom) === */
+.tab-bar {
+  display: flex; background: #181825; border-top: 1px solid #313244;
+  position: fixed; bottom: 0; left: 0; right: 0; z-index: 100;
+}
+.tab-btn {
+  flex: 1; padding: 10px 4px 8px; text-align: center; cursor: pointer;
+  color: #6c7086; font-size: 10px; font-weight: 600; letter-spacing: 0.3px;
+  border: none; background: none; border-top: 2px solid transparent;
+  transition: color 0.2s, border-color 0.2s;
+  display: flex; flex-direction: column; align-items: center; gap: 3px;
+}
+.tab-btn:hover { color: #a6adc8; }
+.tab-btn.active { color: #89b4fa; border-top-color: #89b4fa; }
+.tab-icon { font-size: 18px; }
+
+/* === MAIN CONTENT === */
+main { padding: 16px; max-width: 600px; margin: 0 auto; }
+.tab-content { display: none; }
+.tab-content.active { display: block; }
+
+/* === CARDS === */
+.card {
+  background: #313244; border-radius: 12px; padding: 16px; margin-bottom: 12px;
+  border: 1px solid #45475a;
+}
+.card-header { font-size: 15px; font-weight: 600; margin-bottom: 8px; color: #cdd6f4; }
+.card-sub { font-size: 12px; color: #6c7086; }
+.card-clickable { cursor: pointer; transition: all 0.15s; -webkit-tap-highlight-color: transparent; }
+.card-clickable:hover { border-color: #585b70; }
+.card-clickable:active { transform: scale(0.98); }
+
+/* === BUTTONS === */
+.btn {
+  border: none; border-radius: 10px; padding: 12px 20px; cursor: pointer;
+  font-weight: 600; font-size: 14px; transition: all 0.15s;
+  -webkit-tap-highlight-color: transparent;
+}
+.btn-primary { background: #89b4fa; color: #1e1e2e; }
+.btn-primary:hover { background: #b4befe; }
+.btn-secondary { background: #45475a; color: #cdd6f4; }
+.btn-secondary:hover { background: #585b70; }
+.btn-success { background: #a6e3a1; color: #1e1e2e; }
+.btn-success:hover { background: #94e2d5; }
+.btn-danger { background: #f38ba8; color: #1e1e2e; }
+.btn-danger:hover { background: #eba0ac; }
+.btn-warning { background: #f9e2af; color: #1e1e2e; }
+.btn-warning:hover { background: #f5c2e7; }
+.btn-large { padding: 16px 28px; font-size: 16px; width: 100%; }
+.btn-small { padding: 8px 14px; font-size: 12px; }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn-ghost { background: none; color: #6c7086; padding: 8px 12px; font-size: 12px; border: none; cursor: pointer; }
+.btn-ghost:hover { color: #cdd6f4; }
+.btn-row { display: flex; gap: 8px; margin-top: 12px; }
+
+/* === INPUTS === */
+input, textarea, select {
+  background: #1e1e2e; border: 1px solid #45475a; color: #cdd6f4;
+  padding: 12px 16px; border-radius: 10px; font-size: 15px; width: 100%;
+  -webkit-appearance: none;
+}
+input:focus, textarea:focus, select:focus { outline: none; border-color: #89b4fa; }
+input[type="number"] { -moz-appearance: textfield; }
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; }
+textarea { resize: vertical; min-height: 60px; font-family: inherit; }
+label { font-size: 13px; color: #a6adc8; font-weight: 600; display: block; margin-bottom: 6px; }
+.form-group { margin-bottom: 16px; }
+.form-row { display: flex; gap: 10px; }
+.form-row > * { flex: 1; }
+
+/* === STAT BADGES === */
+.stat-row { display: flex; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+.stat-badge {
+  flex: 1; min-width: 80px; background: #1e1e2e; border-radius: 10px; padding: 12px;
+  text-align: center; border: 1px solid #45475a;
+}
+.stat-value { font-size: 22px; font-weight: 700; color: #89b4fa; }
+.stat-label { font-size: 11px; color: #6c7086; margin-top: 2px; }
+
+/* === BADGES / CHIPS === */
+.badge {
+  display: inline-block; padding: 4px 10px; border-radius: 6px; font-size: 11px;
+  font-weight: 600; letter-spacing: 0.3px; text-transform: uppercase;
+}
+.badge-primary { background: rgba(137,180,250,0.15); color: #89b4fa; }
+.badge-secondary { background: rgba(166,227,161,0.15); color: #a6e3a1; }
+.badge-maintenance { background: rgba(249,226,175,0.15); color: #f9e2af; }
+.badge-active { background: rgba(137,180,250,0.2); color: #89b4fa; }
+.badge-completed { background: rgba(166,227,161,0.2); color: #a6e3a1; }
+.badge-upcoming { background: rgba(108,112,134,0.2); color: #6c7086; }
+
+/* === CHIP SELECT === */
+.chip-group { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip {
+  padding: 8px 16px; border-radius: 20px; border: 1px solid #45475a;
+  background: #1e1e2e; color: #a6adc8; font-size: 13px; font-weight: 500;
+  cursor: pointer; transition: all 0.15s; -webkit-tap-highlight-color: transparent;
+}
+.chip:hover { border-color: #89b4fa; color: #89b4fa; }
+.chip.selected { background: #89b4fa; color: #1e1e2e; border-color: #89b4fa; }
+.chip-sm { padding: 5px 12px; font-size: 12px; }
+
+/* === PRIORITY SELECT === */
+.priority-select { display: flex; gap: 6px; }
+.priority-opt {
+  flex: 1; padding: 8px; text-align: center; border-radius: 8px;
+  border: 1px solid #45475a; background: #1e1e2e; color: #6c7086;
+  font-size: 12px; font-weight: 600; cursor: pointer; transition: all 0.15s;
+}
+.priority-opt:hover { border-color: #585b70; }
+.priority-opt.sel-primary { background: rgba(137,180,250,0.2); color: #89b4fa; border-color: #89b4fa; }
+.priority-opt.sel-secondary { background: rgba(166,227,161,0.2); color: #a6e3a1; border-color: #a6e3a1; }
+.priority-opt.sel-maintenance { background: rgba(249,226,175,0.2); color: #f9e2af; border-color: #f9e2af; }
+
+/* === WIZARD STEPPER === */
+.wizard-steps {
+  display: flex; gap: 4px; margin-bottom: 20px; padding: 0 4px;
+}
+.wizard-step {
+  flex: 1; height: 4px; border-radius: 2px; background: #45475a; transition: background 0.3s;
+}
+.wizard-step.done { background: #a6e3a1; }
+.wizard-step.current { background: #89b4fa; }
+.wizard-title { font-size: 20px; font-weight: 700; margin-bottom: 4px; }
+.wizard-subtitle { font-size: 13px; color: #6c7086; margin-bottom: 20px; }
+
+/* === SESSION CARD === */
+.session-card {
+  background: #313244; border-radius: 12px; padding: 14px 16px; margin-bottom: 10px;
+  border: 2px solid #45475a; cursor: pointer; transition: all 0.15s;
+}
+.session-card:hover { border-color: #585b70; }
+.session-card.active-session { border-color: #89b4fa; }
+.session-card.completed-session { border-color: #a6e3a1; opacity: 0.8; }
+.session-card-title { font-size: 14px; font-weight: 600; margin-bottom: 4px; }
+.session-card-groups { font-size: 12px; color: #6c7086; }
+
+/* === WORKOUT VIEW === */
+.workout-header {
+  background: #181825; border-radius: 12px; padding: 16px; margin-bottom: 16px;
+  border: 1px solid #313244;
+}
+.workout-title { font-size: 18px; font-weight: 700; }
+.workout-subtitle { font-size: 13px; color: #6c7086; margin-top: 4px; }
+
+.muscle-group-section { margin-bottom: 20px; }
+.muscle-group-header {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 12px;
+  padding-bottom: 8px; border-bottom: 1px solid #45475a;
+}
+.muscle-group-name { font-size: 16px; font-weight: 700; }
+
+.exercise-block { margin-bottom: 16px; }
+.exercise-header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 8px; padding: 8px 0;
+}
+.exercise-name { font-size: 14px; font-weight: 600; }
+.exercise-meta { font-size: 11px; color: #6c7086; }
+
+.set-row {
+  display: flex; align-items: center; gap: 6px; margin-bottom: 6px; padding: 6px 8px;
+  background: #1e1e2e; border-radius: 8px; border: 1px solid #45475a;
+}
+.set-num { width: 28px; font-size: 12px; color: #6c7086; font-weight: 600; text-align: center; flex-shrink: 0; }
+.set-input {
+  width: 60px; padding: 8px; text-align: center; font-size: 14px; font-weight: 600;
+  border-radius: 6px; background: #313244; border: 1px solid #45475a; color: #cdd6f4;
+}
+.set-input:focus { border-color: #89b4fa; outline: none; }
+.set-input-label { font-size: 10px; color: #585b70; text-align: center; }
+.set-target { font-size: 11px; color: #585b70; text-align: center; }
+.set-col { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.set-done-wrap { flex-shrink: 0; display: flex; align-items: center; justify-content: center; width: 28px; }
+.set-done-cb {
+  appearance: none; -webkit-appearance: none; width: 22px; height: 22px;
+  border: 2px solid #585b70; border-radius: 6px; background: #1e1e2e;
+  cursor: pointer; position: relative; transition: all 0.15s;
+}
+.set-done-cb:checked {
+  background: #a6e3a1; border-color: #a6e3a1;
+}
+.set-done-cb:checked::after {
+  content: '\2713'; position: absolute; top: 50%; left: 50%;
+  transform: translate(-50%, -50%); font-size: 14px; color: #1e1e2e; font-weight: 700;
+}
+.set-row.set-completed { border-color: #a6e3a1; opacity: 0.75; }
+.set-type-select {
+  font-size: 11px; padding: 2px 4px; background: #313244; border: 1px solid #45475a;
+  color: #cdd6f4; border-radius: 4px; cursor: pointer; max-width: 72px;
+}
+.set-type-select:focus { border-color: #89b4fa; outline: none; }
+.set-type-badge {
+  font-size: 9px; padding: 1px 5px; border-radius: 3px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.5px; white-space: nowrap;
+}
+.set-type-badge.myorep { background: #cba6f722; color: #cba6f7; }
+.set-type-badge.myorep_match { background: #f5c2e722; color: #f5c2e7; }
+.set-type-badge.giant { background: #fab38722; color: #fab387; }
+.set-type-badge.straight { background: #45475a44; color: #6c7086; }
+.set-row.set-completed .set-input { background: #1e1e2e; color: #6c7086; }
+
+/* === PROMPT MODAL === */
+.modal-overlay {
+  position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.7); z-index: 200;
+  display: flex; align-items: center; justify-content: center;
+  padding: 16px; opacity: 0; pointer-events: none; transition: opacity 0.2s;
+}
+.modal-overlay.show { opacity: 1; pointer-events: auto; }
+.modal {
+  background: #313244; border-radius: 16px; padding: 24px; width: 100%;
+  max-width: 400px; border: 1px solid #45475a;
+}
+.modal-title { font-size: 18px; font-weight: 700; margin-bottom: 6px; }
+.modal-subtitle { font-size: 13px; color: #6c7086; margin-bottom: 20px; }
+.modal-options { display: flex; flex-direction: column; gap: 8px; }
+.modal-opt {
+  padding: 14px 16px; border-radius: 10px; border: 1px solid #45475a;
+  background: #1e1e2e; color: #cdd6f4; font-size: 14px; font-weight: 500;
+  cursor: pointer; transition: all 0.15s; text-align: center;
+}
+.modal-opt:hover { border-color: #89b4fa; background: #252540; }
+.modal-opt.selected { border-color: #89b4fa; background: rgba(137,180,250,0.15); color: #89b4fa; }
+
+/* === ALERT / NOTIFICATION === */
+.alert {
+  padding: 12px 16px; border-radius: 10px; margin-bottom: 12px; font-size: 13px;
+  border: 1px solid;
+}
+.alert-info { background: rgba(137,180,250,0.1); border-color: rgba(137,180,250,0.3); color: #89b4fa; }
+.alert-warning { background: rgba(249,226,175,0.1); border-color: rgba(249,226,175,0.3); color: #f9e2af; }
+.alert-danger { background: rgba(243,139,168,0.1); border-color: rgba(243,139,168,0.3); color: #f38ba8; }
+.alert-success { background: rgba(166,227,161,0.1); border-color: rgba(166,227,161,0.3); color: #a6e3a1; }
+
+/* === NOTIFICATION TOAST === */
+.toast {
+  position: fixed; top: 16px; left: 50%; transform: translateX(-50%) translateY(-100px);
+  background: #313244; color: #cdd6f4; padding: 12px 20px; border-radius: 10px;
+  font-size: 13px; font-weight: 600; z-index: 300; border: 1px solid #45475a;
+  transition: transform 0.3s ease; pointer-events: none;
+}
+.toast.show { transform: translateX(-50%) translateY(0); }
+.toast.error { border-color: #f38ba8; color: #f38ba8; }
+.toast.success { border-color: #a6e3a1; color: #a6e3a1; }
+
+/* === EMPTY STATE === */
+.empty-state {
+  text-align: center; padding: 48px 24px; color: #6c7086;
+}
+.empty-icon { font-size: 48px; margin-bottom: 12px; }
+.empty-title { font-size: 18px; font-weight: 700; color: #a6adc8; margin-bottom: 8px; }
+.empty-text { font-size: 13px; margin-bottom: 20px; line-height: 1.5; }
+
+/* === SEARCH === */
+.search-wrap { position: relative; margin-bottom: 12px; }
+.search-wrap input { padding-left: 40px; }
+.search-icon { position: absolute; left: 14px; top: 50%; transform: translateY(-50%); color: #6c7086; font-size: 14px; }
+
+/* === WEEK NAV === */
+.week-nav {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 16px; padding: 8px 0;
+}
+.week-nav-label { font-size: 16px; font-weight: 700; }
+.week-nav-btn {
+  background: #45475a; border: none; color: #cdd6f4; width: 36px; height: 36px;
+  border-radius: 8px; cursor: pointer; font-size: 16px; display: flex;
+  align-items: center; justify-content: center; transition: background 0.15s;
+}
+.week-nav-btn:hover { background: #585b70; }
+.week-nav-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+/* === SWAP SUGGESTION === */
+.swap-suggestion {
+  background: rgba(249,226,175,0.1); border: 1px solid rgba(249,226,175,0.3);
+  border-radius: 10px; padding: 12px; margin-top: 8px; font-size: 13px;
+}
+.swap-suggestion.urgent {
+  background: rgba(243,139,168,0.1); border-color: rgba(243,139,168,0.3);
+}
+
+/* === HISTORY CHART === */
+.chart-container { position: relative; height: 250px; margin: 16px 0; }
+
+/* === DELOAD BANNER === */
+.deload-banner {
+  background: rgba(243,139,168,0.1); border: 1px solid rgba(243,139,168,0.3);
+  border-radius: 12px; padding: 16px; margin-bottom: 16px; text-align: center;
+}
+.deload-banner .deload-icon { font-size: 32px; margin-bottom: 8px; }
+.deload-banner .deload-title { font-size: 16px; font-weight: 700; color: #f38ba8; }
+.deload-banner .deload-text { font-size: 13px; color: #a6adc8; margin-top: 4px; }
+
+/* === MISC === */
+.divider { height: 1px; background: #45475a; margin: 16px 0; }
+.text-muted { color: #6c7086; }
+.text-sm { font-size: 12px; }
+.text-center { text-align: center; }
+.mt-8 { margin-top: 8px; }
+.mt-12 { margin-top: 12px; }
+.mt-16 { margin-top: 16px; }
+.mb-8 { margin-bottom: 8px; }
+.mb-12 { margin-bottom: 12px; }
+.mb-16 { margin-bottom: 16px; }
+.gap-8 { gap: 8px; }
+.flex { display: flex; }
+.flex-between { display: flex; justify-content: space-between; align-items: center; }
+.fade-in { animation: fadeIn 0.2s ease; }
+@keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+.hidden { display: none !important; }
+</style>
+</head>
+<body>
+
+<!-- Toast Notification -->
+<div id="toast" class="toast"></div>
+
+<!-- Modal Overlay -->
+<div id="modal-overlay" class="modal-overlay" onclick="if(event.target===this)closeModal()">
+  <div class="modal" id="modal-content"></div>
+</div>
+
+<!-- Tab Content -->
+<main>
+  <div id="tab-dashboard" class="tab-content active"></div>
+  <div id="tab-builder" class="tab-content"></div>
+  <div id="tab-workout" class="tab-content"></div>
+  <div id="tab-history" class="tab-content"></div>
+  <div id="tab-exercises" class="tab-content"></div>
+</main>
+
+<!-- Bottom Tab Bar -->
+<div class="tab-bar">
+  <button class="tab-btn active" data-tab="dashboard">
+    <span class="tab-icon">&#127968;</span>Home
+  </button>
+  <button class="tab-btn" data-tab="builder">
+    <span class="tab-icon">&#128295;</span>Builder
+  </button>
+  <button class="tab-btn" data-tab="workout">
+    <span class="tab-icon">&#128170;</span>Workout
+  </button>
+  <button class="tab-btn" data-tab="history">
+    <span class="tab-icon">&#128200;</span>History
+  </button>
+  <button class="tab-btn" data-tab="exercises">
+    <span class="tab-icon">&#128218;</span>Exercises
+  </button>
+</div>
+
+<script>
+// ============================================================
+// DATA LAYER
+// ============================================================
+const DATA_PATH = 'hypertrophy/';
+let exerciseLib = { exercises: [] };
+let mesocycles = [];
+let history = [];
+let activeMesoId = null;
+let currentTab = 'dashboard';
+
+// Wizard state
+let wizard = { step: 0, meso: null };
+
+// Workout state
+let activeWorkout = null; // { mesoId, microIdx, sessionIdx }
+
+// History view state
+let historyExercise = null;
+
+// Microcycle view state
+let viewingWeek = 0;
+
+async function readJSON(file) {
+  try {
+    const raw = await window.brain.readFile(DATA_PATH + file);
+    if (!raw || raw.trim() === '') return null;
+    return JSON.parse(raw);
+  } catch (e) { console.error('Read error:', file, e); return null; }
+}
+
+async function writeJSON(file, data) {
+  try {
+    await window.brain.writeFile(DATA_PATH + file, JSON.stringify(data, null, 2));
+  } catch (e) { console.error('Write error:', file, e); toast('Failed to save', 'error'); }
+}
+
+async function loadAll() {
+  const [ex, meso, hist] = await Promise.all([
+    readJSON('exercises.json'),
+    readJSON('mesocycles.json'),
+    readJSON('history.json')
+  ]);
+  exerciseLib = ex || { exercises: [] };
+  mesocycles = meso || [];
+  history = hist || [];
+}
+
+async function saveMesocycles() { await writeJSON('mesocycles.json', mesocycles); }
+async function saveHistory() { await writeJSON('history.json', history); }
+async function saveExercises() { await writeJSON('exercises.json', exerciseLib); }
+
+function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
+
+function toast(msg, type = '') {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = 'toast show' + (type ? ' ' + type : '');
+  setTimeout(() => el.className = 'toast', 2500);
+}
+
+function roundTo5(n) { return Math.round(n / 5) * 5; }
+
+// ============================================================
+// TAB NAVIGATION
+// ============================================================
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+    currentTab = btn.dataset.tab;
+    renderCurrentTab();
+  });
+});
+
+function switchTab(tab) {
+  document.querySelectorAll('.tab-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.tab === tab);
+  });
+  document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+  document.getElementById('tab-' + tab).classList.add('active');
+  currentTab = tab;
+  renderCurrentTab();
+}
+
+function renderCurrentTab() {
+  switch (currentTab) {
+    case 'dashboard': renderDashboard(); break;
+    case 'builder': renderBuilder(); break;
+    case 'workout': renderWorkout(); break;
+    case 'history': renderHistory(); break;
+    case 'exercises': renderExercises(); break;
+  }
+}
+
+// ============================================================
+// MODAL SYSTEM
+// ============================================================
+function showModal(html) {
+  document.getElementById('modal-content').innerHTML = html;
+  document.getElementById('modal-overlay').classList.add('show');
+}
+
+function closeModal() {
+  document.getElementById('modal-overlay').classList.remove('show');
+}
+
+// ============================================================
+// HELPER: Get active mesocycle
+// ============================================================
+function getActiveMeso() {
+  return mesocycles.find(m => m.status === 'active') || null;
+}
+
+function getActiveMicro(meso) {
+  if (!meso) return null;
+  return meso.microcycles.find(mc => mc.status === 'active') || null;
+}
+
+function getNextSession(meso) {
+  const micro = getActiveMicro(meso);
+  if (!micro) return null;
+  return micro.sessions.find(s => s.status !== 'completed') || null;
+}
+
+function getMuscleGroups() {
+  const groups = new Set();
+  exerciseLib.exercises.forEach(e => groups.add(e.muscleGroup));
+  return Array.from(groups).sort();
+}
+
+function getExercisesForGroup(group) {
+  return exerciseLib.exercises.filter(e => e.muscleGroup === group);
+}
+
+// ============================================================
+// DASHBOARD
+// ============================================================
+function renderDashboard() {
+  const area = document.getElementById('tab-dashboard');
+  const meso = getActiveMeso();
+
+  if (mesocycles.length === 0) {
+    area.innerHTML = `
+      <div class="empty-state fade-in">
+        <div class="empty-icon">&#128170;</div>
+        <div class="empty-title">No Mesocycles Yet</div>
+        <div class="empty-text">Create your first mesocycle to start tracking your hypertrophy training with smart progression.</div>
+        <button class="btn btn-primary btn-large" onclick="startNewMeso()">Create Mesocycle</button>
+      </div>
+    `;
+    return;
+  }
+
+  let html = '<div class="fade-in">';
+
+  // Active mesocycle summary
+  if (meso) {
+    const micro = getActiveMicro(meso);
+    const nextSess = getNextSession(meso);
+    const completedSessions = meso.microcycles.reduce((sum, mc) =>
+      sum + mc.sessions.filter(s => s.status === 'completed').length, 0);
+    const totalSessions = meso.microcycles.reduce((sum, mc) => sum + mc.sessions.length, 0);
+
+    html += `
+      <div class="workout-header mb-16">
+        <div class="flex-between">
+          <div>
+            <div class="workout-title">${esc(meso.name)}</div>
+            <div class="workout-subtitle">
+              ${micro ? `Week ${micro.weekNumber}` : 'Starting'} &middot; RPE ${micro ? micro.targetRPE : meso.startingRPE}
+            </div>
+          </div>
+          <span class="badge badge-active">Active</span>
+        </div>
+        <div class="stat-row mt-12">
+          <div class="stat-badge">
+            <div class="stat-value">${micro ? micro.weekNumber : 1}</div>
+            <div class="stat-label">Week</div>
+          </div>
+          <div class="stat-badge">
+            <div class="stat-value">${completedSessions}/${totalSessions}</div>
+            <div class="stat-label">Sessions</div>
+          </div>
+          <div class="stat-badge">
+            <div class="stat-value">${meso.microcycles.length}</div>
+            <div class="stat-label">Weeks</div>
+          </div>
+        </div>
+        ${nextSess ? `
+          <button class="btn btn-success btn-large mt-8" onclick="startSession('${meso.id}', ${meso.microcycles.indexOf(micro)}, ${micro.sessions.indexOf(nextSess)})">
+            Start: ${esc(nextSess.dayLabel)}
+          </button>
+        ` : `
+          <div class="alert alert-success mt-8">All sessions for this week are complete!</div>
+        `}
+      </div>
+    `;
+  }
+
+  // New meso button
+  html += `<button class="btn btn-primary btn-large mb-16" onclick="startNewMeso()">+ New Mesocycle</button>`;
+
+  // All mesocycles list
+  html += `<div class="card-header mb-8">All Mesocycles</div>`;
+  mesocycles.forEach(m => {
+    const totalWeeks = m.microcycles.length;
+    const completedWeeks = m.microcycles.filter(mc => mc.status === 'completed').length;
+    html += `
+      <div class="card card-clickable" onclick="viewMesocycle('${m.id}')">
+        <div class="flex-between">
+          <div>
+            <div class="card-header" style="margin-bottom:2px">${esc(m.name)}</div>
+            <div class="card-sub">${totalWeeks} week${totalWeeks !== 1 ? 's' : ''} &middot; ${completedWeeks} completed &middot; RPE ${m.startingRPE}</div>
+          </div>
+          <span class="badge badge-${m.status === 'active' ? 'active' : 'completed'}">${m.status}</span>
+        </div>
+      </div>
+    `;
+  });
+
+  html += '</div>';
+  area.innerHTML = html;
+}
+
+function viewMesocycle(mesoId) {
+  activeMesoId = mesoId;
+  const meso = mesocycles.find(m => m.id === mesoId);
+  if (!meso) return;
+  const micro = getActiveMicro(meso);
+  viewingWeek = micro ? meso.microcycles.indexOf(micro) : 0;
+  switchTab('workout');
+}
+
+function startNewMeso() {
+  wizard = {
+    step: 0,
+    meso: {
+      id: uid(),
+      name: '',
+      startingRPE: 7,
+      status: 'active',
+      createdAt: new Date().toISOString(),
+      microcycles: [{
+        id: uid(),
+        weekNumber: 1,
+        targetRPE: 7,
+        sessions: [],
+        status: 'active'
+      }]
+    }
+  };
+  switchTab('builder');
+}
+
+// ============================================================
+// MESOCYCLE BUILDER (Wizard)
+// ============================================================
+const WIZARD_STEPS = ['Name & RPE', 'Sessions', 'Muscle Groups', 'Exercises', 'Review'];
+
+function renderBuilder() {
+  const area = document.getElementById('tab-builder');
+  if (!wizard.meso) {
+    area.innerHTML = `
+      <div class="empty-state fade-in">
+        <div class="empty-icon">&#128295;</div>
+        <div class="empty-title">Mesocycle Builder</div>
+        <div class="empty-text">Start building a new mesocycle from the Dashboard.</div>
+        <button class="btn btn-primary btn-large" onclick="startNewMeso()">Create Mesocycle</button>
+      </div>
+    `;
+    return;
+  }
+
+  let html = '<div class="fade-in">';
+
+  // Step indicator
+  html += '<div class="wizard-steps">';
+  for (let i = 0; i < WIZARD_STEPS.length; i++) {
+    const cls = i < wizard.step ? 'done' : i === wizard.step ? 'current' : '';
+    html += `<div class="wizard-step ${cls}"></div>`;
+  }
+  html += '</div>';
+
+  switch (wizard.step) {
+    case 0: html += renderWizardStep0(); break;
+    case 1: html += renderWizardStep1(); break;
+    case 2: html += renderWizardStep2(); break;
+    case 3: html += renderWizardStep3(); break;
+    case 4: html += renderWizardStep4(); break;
+  }
+
+  html += '</div>';
+  area.innerHTML = html;
+}
+
+function renderWizardStep0() {
+  const m = wizard.meso;
+  return `
+    <div class="wizard-title">Name & Starting RPE</div>
+    <div class="wizard-subtitle">Give your mesocycle a name and set the starting difficulty.</div>
+    <div class="form-group">
+      <label>Mesocycle Name</label>
+      <input type="text" id="wiz-name" value="${esc(m.name)}" placeholder="e.g. Spring Bulk, Push/Pull/Legs">
+    </div>
+    <div class="form-group">
+      <label>Starting RPE (Week 1)</label>
+      <input type="number" id="wiz-rpe" value="${m.startingRPE}" min="5" max="10" step="0.5"
+        style="font-size:20px; text-align:center; max-width:120px;">
+      <div class="text-sm text-muted mt-8">Typically 6-7 for most lifters. This increases each week based on priority.</div>
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-secondary" onclick="wizard.meso=null; switchTab('dashboard')">Cancel</button>
+      <button class="btn btn-primary" onclick="wizNext0()" style="flex:2">Next &rarr;</button>
+    </div>
+  `;
+}
+
+function wizNext0() {
+  const name = document.getElementById('wiz-name').value.trim();
+  const rpe = parseFloat(document.getElementById('wiz-rpe').value) || 7;
+  if (!name) { toast('Enter a name'); return; }
+  wizard.meso.name = name;
+  wizard.meso.startingRPE = rpe;
+  wizard.meso.microcycles[0].targetRPE = rpe;
+  wizard.step = 1;
+  renderBuilder();
+}
+
+function renderWizardStep1() {
+  const sessions = wizard.meso.microcycles[0].sessions;
+  let html = `
+    <div class="wizard-title">Sessions</div>
+    <div class="wizard-subtitle">How many workouts per week? Name each one.</div>
+  `;
+
+  if (sessions.length === 0) {
+    html += `
+      <div class="form-group">
+        <label>Number of Sessions</label>
+        <div class="chip-group">
+          ${[2,3,4,5,6,7].map(n => `<div class="chip" onclick="initSessions(${n})">${n}</div>`).join('')}
+        </div>
+      </div>
+    `;
+  } else {
+    sessions.forEach((s, i) => {
+      html += `
+        <div class="form-group">
+          <label>Session ${i + 1}</label>
+          <input type="text" class="wiz-session-name" data-idx="${i}" value="${esc(s.dayLabel)}" placeholder="e.g. Push A, Upper Body, Legs">
+        </div>
+      `;
+    });
+    html += `
+      <div class="btn-row">
+        <button class="btn btn-ghost" onclick="initSessions(0)">Reset</button>
+        <button class="btn btn-secondary" onclick="wizard.step=0; renderBuilder()">&larr; Back</button>
+        <button class="btn btn-primary" onclick="wizNext1()" style="flex:2">Next &rarr;</button>
+      </div>
+    `;
+  }
+  return html;
+}
+
+function initSessions(n) {
+  if (n === 0) {
+    wizard.meso.microcycles[0].sessions = [];
+    renderBuilder();
+    return;
+  }
+  const sessions = [];
+  for (let i = 0; i < n; i++) {
+    sessions.push({
+      id: uid(),
+      dayLabel: `Day ${i + 1}`,
+      muscleGroups: [],
+      status: 'upcoming',
+      completedAt: null
+    });
+  }
+  wizard.meso.microcycles[0].sessions = sessions;
+  renderBuilder();
+}
+
+function wizNext1() {
+  const inputs = document.querySelectorAll('.wiz-session-name');
+  inputs.forEach(inp => {
+    const idx = parseInt(inp.dataset.idx);
+    const val = inp.value.trim();
+    if (val) wizard.meso.microcycles[0].sessions[idx].dayLabel = val;
+  });
+  wizard.step = 2;
+  renderBuilder();
+}
+
+function renderWizardStep2() {
+  const sessions = wizard.meso.microcycles[0].sessions;
+  const groups = getMuscleGroups();
+
+  let html = `
+    <div class="wizard-title">Muscle Groups</div>
+    <div class="wizard-subtitle">Assign muscle groups to each session and set their priority.</div>
+  `;
+
+  sessions.forEach((s, si) => {
+    html += `
+      <div class="card mb-12">
+        <div class="card-header">${esc(s.dayLabel)}</div>
+    `;
+
+    // Show assigned groups
+    s.muscleGroups.forEach((mg, gi) => {
+      html += `
+        <div class="flex-between mb-8" style="padding:6px 0;">
+          <span style="font-size:14px;font-weight:500;">${esc(mg.muscleGroup)}</span>
+          <div style="display:flex;align-items:center;gap:6px;">
+            <div class="priority-select">
+              <div class="priority-opt ${mg.priority === 'primary' ? 'sel-primary' : ''}"
+                onclick="setGroupPriority(${si},${gi},'primary')">P</div>
+              <div class="priority-opt ${mg.priority === 'secondary' ? 'sel-secondary' : ''}"
+                onclick="setGroupPriority(${si},${gi},'secondary')">S</div>
+              <div class="priority-opt ${mg.priority === 'maintenance' ? 'sel-maintenance' : ''}"
+                onclick="setGroupPriority(${si},${gi},'maintenance')">M</div>
+            </div>
+            <button class="btn-ghost" onclick="removeGroup(${si},${gi})" style="color:#f38ba8;font-size:16px;">&times;</button>
+          </div>
+        </div>
+      `;
+    });
+
+    // Add group button
+    html += `
+        <div class="chip-group mt-8" style="flex-wrap:wrap;">
+          ${groups.filter(g => !s.muscleGroups.find(mg => mg.muscleGroup === g)).map(g =>
+            `<div class="chip chip-sm" onclick="addGroup(${si},'${esc(g)}')">${esc(g)}</div>`
+          ).join('')}
+        </div>
+      </div>
+    `;
+  });
+
+  html += `
+    <div class="btn-row">
+      <button class="btn btn-secondary" onclick="wizard.step=1; renderBuilder()">&larr; Back</button>
+      <button class="btn btn-primary" onclick="wizNext2()" style="flex:2">Next &rarr;</button>
+    </div>
+  `;
+  return html;
+}
+
+function addGroup(si, group) {
+  wizard.meso.microcycles[0].sessions[si].muscleGroups.push({
+    muscleGroup: group,
+    priority: 'primary',
+    soreness: null,
+    exercises: []
+  });
+  renderBuilder();
+}
+
+function removeGroup(si, gi) {
+  wizard.meso.microcycles[0].sessions[si].muscleGroups.splice(gi, 1);
+  renderBuilder();
+}
+
+function setGroupPriority(si, gi, priority) {
+  wizard.meso.microcycles[0].sessions[si].muscleGroups[gi].priority = priority;
+  renderBuilder();
+}
+
+function wizNext2() {
+  const sessions = wizard.meso.microcycles[0].sessions;
+  const hasGroups = sessions.some(s => s.muscleGroups.length > 0);
+  if (!hasGroups) { toast('Add at least one muscle group'); return; }
+  wizard.step = 3;
+  renderBuilder();
+}
+
+function renderWizardStep3() {
+  const sessions = wizard.meso.microcycles[0].sessions;
+
+  let html = `
+    <div class="wizard-title">Exercises & Sets</div>
+    <div class="wizard-subtitle">Pick exercises, set rep ranges, and starting loads for Week 1.</div>
+  `;
+
+  sessions.forEach((s, si) => {
+    if (s.muscleGroups.length === 0) return;
+    html += `<div class="card mb-12"><div class="card-header mb-12">${esc(s.dayLabel)}</div>`;
+
+    s.muscleGroups.forEach((mg, gi) => {
+      const available = getExercisesForGroup(mg.muscleGroup);
+      html += `
+        <div class="muscle-group-section">
+          <div class="muscle-group-header">
+            <span class="muscle-group-name">${esc(mg.muscleGroup)}</span>
+            <span class="badge badge-${mg.priority}">${mg.priority}</span>
+          </div>
+      `;
+
+      // List assigned exercises
+      mg.exercises.forEach((ex, ei) => {
+        html += `
+          <div class="exercise-block" style="background:#1e1e2e;border-radius:10px;padding:12px;margin-bottom:8px;border:1px solid #45475a;">
+            <div class="flex-between mb-8">
+              <span class="exercise-name">${esc(ex.name)}</span>
+              <button class="btn-ghost" onclick="removeExercise(${si},${gi},${ei})" style="color:#f38ba8;">&times;</button>
+            </div>
+        `;
+
+        ex.sets.forEach((set, setIdx) => {
+          const sType = set.setType || 'straight';
+          const set0Type = ex.sets[0]?.setType || 'straight';
+          const canMyoMatch = setIdx > 0 && set0Type === 'straight';
+          const isMyoMatch = sType === 'myorep_match';
+          html += `
+            <div class="set-row">
+              <div class="set-num">${setIdx + 1}</div>
+              <div class="set-col">
+                <div class="set-input-label">Type</div>
+                <select class="set-type-select" onchange="updateSetType(${si},${gi},${ei},${setIdx},this.value)">
+                  <option value="straight" ${sType === 'straight' ? 'selected' : ''}>Straight</option>
+                  <option value="myorep" ${sType === 'myorep' ? 'selected' : ''}>Myorep</option>
+                  ${canMyoMatch ? `<option value="myorep_match" ${sType === 'myorep_match' ? 'selected' : ''}>Myo Match</option>` : ''}
+                  <option value="giant" ${sType === 'giant' ? 'selected' : ''}>Giant</option>
+                </select>
+              </div>
+              <div class="set-col">
+                <div class="set-input-label">Reps</div>
+                <div style="display:flex;gap:4px;align-items:center;">
+                  <input type="number" class="set-input" style="width:45px;" value="${isMyoMatch ? (ex.sets[0]?.repRange[0] || set.repRange[0]) : set.repRange[0]}"
+                    onchange="updateSetRange(${si},${gi},${ei},${setIdx},0,this.value)" ${isMyoMatch ? 'disabled style="width:45px;opacity:0.5;"' : ''}>
+                  <span style="color:#6c7086;">-</span>
+                  <input type="number" class="set-input" style="width:45px;" value="${isMyoMatch ? (ex.sets[0]?.repRange[1] || set.repRange[1]) : set.repRange[1]}"
+                    onchange="updateSetRange(${si},${gi},${ei},${setIdx},1,this.value)" ${isMyoMatch ? 'disabled style="width:45px;opacity:0.5;"' : ''}>
+                </div>
+              </div>
+              <div class="set-col">
+                <div class="set-input-label">Load</div>
+                <input type="number" class="set-input" value="${isMyoMatch ? (ex.sets[0]?.targetLoad || set.targetLoad) : set.targetLoad}"
+                  onchange="updateSetLoad(${si},${gi},${ei},${setIdx},this.value)" ${isMyoMatch ? 'disabled style="opacity:0.5;"' : ''}>
+              </div>
+              <button class="btn-ghost" onclick="removeSet(${si},${gi},${ei},${setIdx})" style="color:#f38ba8;font-size:14px;">&times;</button>
+            </div>
+          `;
+        });
+
+        html += `
+            <button class="btn btn-ghost mt-8" onclick="addSet(${si},${gi},${ei})">+ Add Set</button>
+          </div>
+        `;
+      });
+
+      // Add exercise selector
+      const unassigned = available.filter(a => !mg.exercises.find(e => e.exerciseId === a.id));
+      if (unassigned.length > 0) {
+        html += `
+          <div style="margin-top:8px;">
+            <select onchange="addExercise(${si},${gi},this.value);this.value='';" style="font-size:13px;padding:8px 12px;">
+              <option value="">+ Add Exercise...</option>
+              ${unassigned.map(e => `<option value="${e.id}">${esc(e.name)}</option>`).join('')}
+            </select>
+          </div>
+        `;
+      }
+
+      // Inline add new exercise
+      html += `
+        <div style="margin-top:6px;display:flex;gap:6px;">
+          <input type="text" id="new-ex-${si}-${gi}" placeholder="New exercise name..." style="font-size:12px;padding:8px;">
+          <button class="btn btn-secondary btn-small" onclick="addNewExercise(${si},${gi})">Add</button>
+        </div>
+      `;
+
+      html += `</div>`; // muscle-group-section
+    });
+
+    html += `</div>`; // card
+  });
+
+  html += `
+    <div class="btn-row">
+      <button class="btn btn-secondary" onclick="wizard.step=2; renderBuilder()">&larr; Back</button>
+      <button class="btn btn-primary" onclick="wizNext3()" style="flex:2">Next &rarr;</button>
+    </div>
+  `;
+  return html;
+}
+
+function addExercise(si, gi, exId) {
+  if (!exId) return;
+  const ex = exerciseLib.exercises.find(e => e.id === exId);
+  if (!ex) return;
+  wizard.meso.microcycles[0].sessions[si].muscleGroups[gi].exercises.push({
+    exerciseId: ex.id,
+    name: ex.name,
+    muscleGroup: ex.muscleGroup,
+    jointPainHistory: [],
+    sets: [{ repRange: [8, 12], targetLoad: 0, targetReps: 8, targetRPE: wizard.meso.startingRPE, setType: 'straight' }]
+  });
+  renderBuilder();
+}
+
+function addNewExercise(si, gi) {
+  const input = document.getElementById(`new-ex-${si}-${gi}`);
+  const name = input.value.trim();
+  if (!name) return;
+  const mg = wizard.meso.microcycles[0].sessions[si].muscleGroups[gi].muscleGroup;
+  const newEx = { id: uid(), name, muscleGroup: mg };
+  exerciseLib.exercises.push(newEx);
+  saveExercises();
+  wizard.meso.microcycles[0].sessions[si].muscleGroups[gi].exercises.push({
+    exerciseId: newEx.id,
+    name: newEx.name,
+    muscleGroup: newEx.muscleGroup,
+    jointPainHistory: [],
+    sets: [{ repRange: [8, 12], targetLoad: 0, targetReps: 8, targetRPE: wizard.meso.startingRPE, setType: 'straight' }]
+  });
+  renderBuilder();
+}
+
+function removeExercise(si, gi, ei) {
+  wizard.meso.microcycles[0].sessions[si].muscleGroups[gi].exercises.splice(ei, 1);
+  renderBuilder();
+}
+
+function addSet(si, gi, ei) {
+  const ex = wizard.meso.microcycles[0].sessions[si].muscleGroups[gi].exercises[ei];
+  const lastSet = ex.sets[ex.sets.length - 1] || { repRange: [8, 12], targetLoad: 0, targetReps: 8, targetRPE: wizard.meso.startingRPE, setType: 'straight' };
+  ex.sets.push({ ...lastSet, repRange: [...lastSet.repRange], setType: lastSet.setType || 'straight' });
+  renderBuilder();
+}
+
+function removeSet(si, gi, ei, setIdx) {
+  const ex = wizard.meso.microcycles[0].sessions[si].muscleGroups[gi].exercises[ei];
+  if (ex.sets.length <= 1) { toast('Need at least 1 set'); return; }
+  ex.sets.splice(setIdx, 1);
+  renderBuilder();
+}
+
+function updateSetRange(si, gi, ei, setIdx, which, val) {
+  wizard.meso.microcycles[0].sessions[si].muscleGroups[gi].exercises[ei].sets[setIdx].repRange[which] = parseInt(val) || 0;
+}
+
+function updateSetLoad(si, gi, ei, setIdx, val) {
+  const set = wizard.meso.microcycles[0].sessions[si].muscleGroups[gi].exercises[ei].sets[setIdx];
+  set.targetLoad = parseFloat(val) || 0;
+  set.targetReps = set.repRange[0]; // Start at bottom of range
+}
+
+function updateSetType(si, gi, ei, setIdx, val) {
+  const ex = wizard.meso.microcycles[0].sessions[si].muscleGroups[gi].exercises[ei];
+  ex.sets[setIdx].setType = val;
+  // If changing set 0 away from straight, reset any myorep_match sets
+  if (setIdx === 0 && val !== 'straight') {
+    ex.sets.forEach((s, i) => { if (i > 0 && s.setType === 'myorep_match') s.setType = 'straight'; });
+  }
+  // If setting to myorep_match, sync with set 0
+  if (val === 'myorep_match' && setIdx > 0) {
+    const set0 = ex.sets[0];
+    ex.sets[setIdx].repRange = [...set0.repRange];
+    ex.sets[setIdx].targetLoad = set0.targetLoad;
+    ex.sets[setIdx].targetReps = set0.targetReps;
+  }
+  renderBuilder();
+}
+
+function wizNext3() {
+  const sessions = wizard.meso.microcycles[0].sessions;
+  const hasExercises = sessions.some(s => s.muscleGroups.some(mg => mg.exercises.length > 0));
+  if (!hasExercises) { toast('Add at least one exercise'); return; }
+  wizard.step = 4;
+  renderBuilder();
+}
+
+function renderWizardStep4() {
+  const meso = wizard.meso;
+  const sessions = meso.microcycles[0].sessions;
+
+  let html = `
+    <div class="wizard-title">Review Mesocycle</div>
+    <div class="wizard-subtitle">Everything look good? Hit create to start training.</div>
+    <div class="card mb-12">
+      <div class="card-header">${esc(meso.name)}</div>
+      <div class="card-sub">Starting RPE: ${meso.startingRPE} &middot; ${sessions.length} sessions/week</div>
+    </div>
+  `;
+
+  sessions.forEach(s => {
+    html += `<div class="card mb-12"><div class="card-header mb-8">${esc(s.dayLabel)}</div>`;
+    s.muscleGroups.forEach(mg => {
+      html += `
+        <div style="margin-bottom:8px;">
+          <div class="flex-between mb-4">
+            <span style="font-weight:600;font-size:13px;">${esc(mg.muscleGroup)}</span>
+            <span class="badge badge-${mg.priority}">${mg.priority}</span>
+          </div>
+      `;
+      mg.exercises.forEach(ex => {
+        const typeAbbrev = { straight: '', myorep: ' Myo', myorep_match: ' M.M', giant: ' Giant' };
+        const setsInfo = ex.sets.map((s, i) => `Set ${i+1}${typeAbbrev[s.setType || 'straight']}: ${s.targetLoad}lbs × ${s.repRange[0]}-${s.repRange[1]}`).join(', ');
+        html += `<div class="text-sm text-muted" style="padding-left:8px;margin-bottom:2px;">${esc(ex.name)} — ${ex.sets.length} set${ex.sets.length > 1 ? 's' : ''} (${setsInfo})</div>`;
+      });
+      html += `</div>`;
+    });
+    html += `</div>`;
+  });
+
+  html += `
+    <div class="btn-row">
+      <button class="btn btn-secondary" onclick="wizard.step=3; renderBuilder()">&larr; Back</button>
+      <button class="btn btn-success" onclick="createMesocycle()" style="flex:2">Create Mesocycle &#10003;</button>
+    </div>
+  `;
+  return html;
+}
+
+async function createMesocycle() {
+  // Deactivate any existing active meso
+  mesocycles.forEach(m => { if (m.status === 'active') m.status = 'completed'; });
+
+  // Set target reps/RPE for all sets in week 1
+  const micro = wizard.meso.microcycles[0];
+  micro.sessions.forEach(s => {
+    s.muscleGroups.forEach(mg => {
+      const rpe = getRPEForPriority(mg.priority, wizard.meso.startingRPE, 1);
+      mg.exercises.forEach(ex => {
+        ex.sets.forEach(set => {
+          set.targetReps = set.repRange[0];
+          set.targetRPE = rpe;
+        });
+      });
+    });
+  });
+
+  mesocycles.push(wizard.meso);
+  await saveMesocycles();
+  wizard = { step: 0, meso: null };
+  toast('Mesocycle created!', 'success');
+  switchTab('dashboard');
+}
+
+// ============================================================
+// WORKOUT VIEW (Session + Microcycle combined)
+// ============================================================
+function renderWorkout() {
+  const area = document.getElementById('tab-workout');
+  const meso = activeMesoId ? mesocycles.find(m => m.id === activeMesoId) : getActiveMeso();
+
+  if (!meso) {
+    area.innerHTML = `
+      <div class="empty-state fade-in">
+        <div class="empty-icon">&#128170;</div>
+        <div class="empty-title">No Active Mesocycle</div>
+        <div class="empty-text">Create a mesocycle from the Dashboard to start working out.</div>
+        <button class="btn btn-primary btn-large" onclick="switchTab('dashboard')">Go to Dashboard</button>
+      </div>
+    `;
+    return;
+  }
+
+  // If there's an active workout session, show the session view
+  if (activeWorkout && activeWorkout.mesoId === meso.id) {
+    renderSessionView(area, meso);
+    return;
+  }
+
+  // Otherwise show microcycle overview
+  renderMicrocycleView(area, meso);
+}
+
+function renderMicrocycleView(area, meso) {
+  const weekIdx = Math.max(0, Math.min(viewingWeek, meso.microcycles.length - 1));
+  const micro = meso.microcycles[weekIdx];
+  if (!micro) return;
+
+  // Determine max viewable week (current active + 1, per spec)
+  const activeIdx = meso.microcycles.findIndex(mc => mc.status === 'active');
+  const maxViewable = Math.min(activeIdx + 1, meso.microcycles.length - 1);
+
+  let html = '<div class="fade-in">';
+
+  // Header with meso name
+  html += `
+    <div class="workout-header">
+      <div class="workout-title">${esc(meso.name)}</div>
+      <div class="workout-subtitle">${meso.microcycles.length} week mesocycle &middot; RPE ${meso.startingRPE} start</div>
+    </div>
+  `;
+
+  // Week nav
+  html += `
+    <div class="week-nav">
+      <button class="week-nav-btn" onclick="navWeek(-1)" ${weekIdx <= 0 ? 'disabled' : ''}>&laquo;</button>
+      <div>
+        <div class="week-nav-label">Week ${micro.weekNumber}</div>
+        <div class="text-sm text-muted text-center">RPE ${micro.targetRPE}</div>
+      </div>
+      <button class="week-nav-btn" onclick="navWeek(1)" ${weekIdx >= maxViewable ? 'disabled' : ''}>&raquo;</button>
+    </div>
+  `;
+
+  // Session cards
+  micro.sessions.forEach((s, si) => {
+    const statusCls = s.status === 'completed' ? 'completed-session' : s.status === 'active' ? 'active-session' : '';
+    const groups = s.muscleGroups.map(mg => mg.muscleGroup).join(', ');
+    const icon = s.status === 'completed' ? '&#10003;' : s.status === 'active' ? '&#9654;' : '&#9711;';
+
+    html += `
+      <div class="session-card ${statusCls}" onclick="startSession('${meso.id}', ${weekIdx}, ${si})">
+        <div class="flex-between">
+          <div>
+            <div class="session-card-title">${icon} ${esc(s.dayLabel)}</div>
+            <div class="session-card-groups">${esc(groups) || 'No muscle groups'}</div>
+          </div>
+          <span class="badge badge-${s.status === 'completed' ? 'completed' : s.status === 'active' ? 'active' : 'upcoming'}">${s.status}</span>
+        </div>
+        ${s.completedAt ? `<div class="text-sm text-muted mt-8">Completed ${new Date(s.completedAt).toLocaleDateString()}</div>` : ''}
+      </div>
+    `;
+  });
+
+  // Complete mesocycle button (if all weeks done)
+  const allDone = meso.microcycles.every(mc => mc.status === 'completed');
+  if (allDone) {
+    html += `
+      <div class="divider"></div>
+      <button class="btn btn-warning btn-large" onclick="completeMesocycle('${meso.id}')">Complete Mesocycle</button>
+    `;
+  }
+
+  html += '</div>';
+  area.innerHTML = html;
+}
+
+function navWeek(delta) {
+  viewingWeek += delta;
+  renderWorkout();
+}
+
+function startSession(mesoId, microIdx, sessionIdx) {
+  activeWorkout = { mesoId, microIdx, sessionIdx };
+  activeMesoId = mesoId;
+  viewingWeek = microIdx;
+  const meso = mesocycles.find(m => m.id === mesoId);
+  const session = meso.microcycles[microIdx].sessions[sessionIdx];
+  session.status = 'active';
+  saveMesocycles();
+  switchTab('workout');
+}
+
+function renderSessionView(area, meso) {
+  const { microIdx, sessionIdx } = activeWorkout;
+  const micro = meso.microcycles[microIdx];
+  const session = micro.sessions[sessionIdx];
+
+  let html = '<div class="fade-in">';
+
+  // Header
+  html += `
+    <div class="workout-header">
+      <div class="flex-between">
+        <div>
+          <div class="workout-title">${esc(session.dayLabel)}</div>
+          <div class="workout-subtitle">Week ${micro.weekNumber} &middot; Target RPE ${micro.targetRPE}</div>
+        </div>
+        <button class="btn btn-secondary btn-small" onclick="exitSession()">Back</button>
+      </div>
+    </div>
+  `;
+
+  // Soreness prompts needed? Check if there are muscle groups that appeared in a prior session
+  const sorenessNeeded = session.muscleGroups.filter(mg => mg.soreness === null && needsSorenessPrompt(meso, microIdx, sessionIdx, mg.muscleGroup));
+  if (sorenessNeeded.length > 0) {
+    html += `<div class="alert alert-info mb-12">Tap a muscle group below to log soreness from your last session.</div>`;
+    sorenessNeeded.forEach(mg => {
+      html += `
+        <div class="card card-clickable mb-8" onclick="promptSoreness('${esc(mg.muscleGroup)}')">
+          <div class="flex-between">
+            <span style="font-weight:600;">${esc(mg.muscleGroup)}</span>
+            <span class="badge badge-upcoming">Needs soreness</span>
+          </div>
+        </div>
+      `;
+    });
+    html += `<div class="divider"></div>`;
+  }
+
+  // Exercise blocks
+  session.muscleGroups.forEach((mg, mgIdx) => {
+    html += `
+      <div class="muscle-group-section">
+        <div class="muscle-group-header">
+          <span class="muscle-group-name">${esc(mg.muscleGroup)}</span>
+          <span class="badge badge-${mg.priority}">${mg.priority}</span>
+          ${mg.soreness ? `<span class="text-sm text-muted">(${mg.soreness})</span>` : ''}
+        </div>
+    `;
+
+    mg.exercises.forEach((ex, exIdx) => {
+      // Check for joint pain swap suggestion
+      const swapSuggestion = checkJointPainSwap(ex);
+
+      html += `
+        <div class="exercise-block">
+          <div class="exercise-header">
+            <div>
+              <div class="exercise-name">${esc(ex.name)}</div>
+              <div class="exercise-meta">${ex.sets[0]?.repRange[0]}-${ex.sets[0]?.repRange[1]} reps &middot; Target RPE ${Math.round(ex.sets[0]?.targetRPE || micro.targetRPE)}</div>
+            </div>
+            <div style="display:flex;gap:4px;">
+              <button class="btn btn-ghost btn-small" onclick="addWorkoutSet(${mgIdx},${exIdx})">+Set</button>
+            </div>
+          </div>
+      `;
+
+      if (swapSuggestion) {
+        html += `
+          <div class="swap-suggestion ${swapSuggestion.urgent ? 'urgent' : ''} mb-8">
+            ${swapSuggestion.urgent ? '&#9888;' : '&#128161;'} ${swapSuggestion.message}
+            <button class="btn btn-secondary btn-small mt-8" onclick="promptExerciseSwap(${mgIdx},${exIdx})">Swap Exercise</button>
+          </div>
+        `;
+      }
+
+      // Set headers
+      html += `
+        <div class="set-row" style="background:none;border:none;padding:2px 8px;">
+          <div class="set-num">#</div>
+          <div class="set-col"><div class="set-input-label">Type</div></div>
+          <div class="set-col" style="width:60px"><div class="set-input-label">Load</div></div>
+          <div class="set-col" style="width:60px"><div class="set-input-label">Reps</div></div>
+          <div class="set-col" style="width:60px"><div class="set-input-label">RPE</div></div>
+          <div class="set-done-wrap"><div class="set-input-label">Done</div></div>
+          <div style="width:24px"></div>
+        </div>
+      `;
+
+      ex.sets.forEach((set, setIdx) => {
+        const isDone = set.actualLoad != null;
+        const sType = set.setType || 'straight';
+        const set0Type = ex.sets[0]?.setType || 'straight';
+        const canMyoMatch = setIdx > 0 && set0Type === 'straight';
+        const isMyoMatch = sType === 'myorep_match';
+        // For myorep_match, show set 0's actual (if done) or target values
+        const set0 = ex.sets[0];
+        const myoLoad = set0 ? (set0.actualLoad ?? set0.targetLoad) : set.targetLoad;
+        const myoReps = set0 ? (set0.actualReps ?? set0.targetReps) : set.targetReps;
+        const displayLoad = isMyoMatch ? myoLoad : (set.actualLoad ?? set.targetLoad);
+        const displayReps = isMyoMatch ? myoReps : (set.actualReps ?? set.targetReps);
+        const targetLoadDisplay = isMyoMatch ? myoLoad : set.targetLoad;
+        const targetRepsDisplay = isMyoMatch ? myoReps : set.targetReps;
+        const typeLabels = { straight: 'Str', myorep: 'Myo', myorep_match: 'M.M', giant: 'Giant' };
+        html += `
+          <div class="set-row ${isDone ? 'set-completed' : ''}">
+            <div class="set-num">${setIdx + 1}</div>
+            <div class="set-col">
+              <select class="set-type-select" onchange="updateWorkoutSetType(${mgIdx},${exIdx},${setIdx},this.value)">
+                <option value="straight" ${sType === 'straight' ? 'selected' : ''}>Str</option>
+                <option value="myorep" ${sType === 'myorep' ? 'selected' : ''}>Myo</option>
+                ${canMyoMatch ? `<option value="myorep_match" ${isMyoMatch ? 'selected' : ''}>M.M</option>` : ''}
+                <option value="giant" ${sType === 'giant' ? 'selected' : ''}>Giant</option>
+              </select>
+            </div>
+            <div class="set-col">
+              <input type="number" class="set-input" value="${displayLoad}"
+                data-path="${mgIdx}.${exIdx}.${setIdx}.load"
+                onchange="updateActual(this)" placeholder="${targetLoadDisplay}" ${isMyoMatch ? 'disabled style="opacity:0.5;"' : ''}>
+              <div class="set-target">${targetLoadDisplay}</div>
+            </div>
+            <div class="set-col">
+              <input type="number" class="set-input" value="${displayReps}"
+                data-path="${mgIdx}.${exIdx}.${setIdx}.reps"
+                onchange="updateActual(this)" placeholder="${targetRepsDisplay}" ${isMyoMatch ? 'disabled style="opacity:0.5;"' : ''}>
+              <div class="set-target">${targetRepsDisplay}</div>
+            </div>
+            <div class="set-col">
+              <input type="number" class="set-input" value="${set.actualRPE ?? Math.round(set.targetRPE)}"
+                data-path="${mgIdx}.${exIdx}.${setIdx}.rpe"
+                onchange="updateActual(this)" placeholder="${Math.round(set.targetRPE)}" step="0.5">
+              <div class="set-target">${Math.round(set.targetRPE)}</div>
+            </div>
+            <div class="set-done-wrap">
+              <input type="checkbox" class="set-done-cb" ${isDone ? 'checked' : ''}
+                onchange="toggleSetDone(this,${mgIdx},${exIdx},${setIdx})">
+            </div>
+            <button class="btn-ghost" onclick="removeWorkoutSet(${mgIdx},${exIdx},${setIdx})" style="color:#f38ba8;font-size:12px;width:24px;padding:0;">&times;</button>
+          </div>
+        `;
+      });
+
+      // Joint pain prompt after exercise is logged
+      const allSetsLogged = ex.sets.every(s => s.actualLoad != null);
+      if (allSetsLogged && ex._jointPainLogged == null) {
+        html += `
+          <div class="mt-8">
+            <div class="text-sm text-muted mb-4">Joint/connective tissue fatigue for ${esc(ex.name)}?</div>
+            <div class="chip-group">
+              <div class="chip chip-sm" onclick="logJointPain(${mgIdx},${exIdx},'none')" style="border-color:#a6e3a1;color:#a6e3a1;">None</div>
+              <div class="chip chip-sm" onclick="logJointPain(${mgIdx},${exIdx},'meh')" style="border-color:#f9e2af;color:#f9e2af;">Meh</div>
+              <div class="chip chip-sm" onclick="logJointPain(${mgIdx},${exIdx},'ow')" style="border-color:#fab387;color:#fab387;">Ow</div>
+              <div class="chip chip-sm" onclick="logJointPain(${mgIdx},${exIdx},'super_ow')" style="border-color:#f38ba8;color:#f38ba8;">Super Ow</div>
+            </div>
+          </div>
+        `;
+      } else if (ex._jointPainLogged) {
+        html += `<div class="text-sm mt-4" style="color:#6c7086;">Joint pain: <strong>${ex._jointPainLogged}</strong></div>`;
+      }
+
+      html += `</div>`; // exercise-block
+    });
+
+    html += `</div>`; // muscle-group-section
+  });
+
+  // Complete session button
+  html += `
+    <div class="divider"></div>
+    <button class="btn btn-success btn-large" onclick="completeSession()">Complete Session &#10003;</button>
+    <div class="text-sm text-muted text-center mt-8">This will save your workout and auto-progress the next session.</div>
+  `;
+
+  html += '</div>';
+  area.innerHTML = html;
+}
+
+function exitSession() {
+  activeWorkout = null;
+  renderWorkout();
+}
+
+function needsSorenessPrompt(meso, microIdx, sessionIdx, muscleGroup) {
+  // Check if this muscle group appeared in any prior completed session
+  for (let mi = 0; mi <= microIdx; mi++) {
+    const micro = meso.microcycles[mi];
+    const maxSi = mi < microIdx ? micro.sessions.length : sessionIdx;
+    for (let si = 0; si < maxSi; si++) {
+      const sess = micro.sessions[si];
+      if (sess.status === 'completed' && sess.muscleGroups.some(mg => mg.muscleGroup === muscleGroup)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function promptSoreness(muscleGroup) {
+  showModal(`
+    <div class="modal-title">Recovery Check</div>
+    <div class="modal-subtitle">How sore are you in <strong>${esc(muscleGroup)}</strong> from your last session?</div>
+    <div class="modal-options">
+      <div class="modal-opt" onclick="setSoreness('${esc(muscleGroup)}','forever_ago')">&#128526; Forever Ago <div class="text-sm text-muted">Fully recovered, no soreness at all</div></div>
+      <div class="modal-opt" onclick="setSoreness('${esc(muscleGroup)}','recently')">&#128528; Recently <div class="text-sm text-muted">Some residual soreness, but manageable</div></div>
+      <div class="modal-opt" onclick="setSoreness('${esc(muscleGroup)}','owie')">&#129324; Owie <div class="text-sm text-muted">Still quite sore from last time</div></div>
+    </div>
+  `);
+}
+
+function setSoreness(muscleGroup, level) {
+  if (!activeWorkout) return;
+  const meso = mesocycles.find(m => m.id === activeWorkout.mesoId);
+  const session = meso.microcycles[activeWorkout.microIdx].sessions[activeWorkout.sessionIdx];
+  const mg = session.muscleGroups.find(mg => mg.muscleGroup === muscleGroup);
+  if (mg) mg.soreness = level;
+  closeModal();
+  saveMesocycles();
+  renderWorkout();
+}
+
+function updateActual(input) {
+  if (!activeWorkout) return;
+  const [mgIdx, exIdx, setIdx, field] = input.dataset.path.split('.').map((v, i) => i < 3 ? parseInt(v) : v);
+  const meso = mesocycles.find(m => m.id === activeWorkout.mesoId);
+  const set = meso.microcycles[activeWorkout.microIdx].sessions[activeWorkout.sessionIdx]
+    .muscleGroups[mgIdx].exercises[exIdx].sets[setIdx];
+  const val = parseFloat(input.value);
+  if (field === 'load') set.actualLoad = val;
+  else if (field === 'reps') set.actualReps = val;
+  else if (field === 'rpe') set.actualRPE = val;
+  saveMesocycles();
+}
+
+function toggleSetDone(cb, mgIdx, exIdx, setIdx) {
+  if (!activeWorkout) return;
+  const meso = mesocycles.find(m => m.id === activeWorkout.mesoId);
+  const ex = meso.microcycles[activeWorkout.microIdx].sessions[activeWorkout.sessionIdx]
+    .muscleGroups[mgIdx].exercises[exIdx];
+  const set = ex.sets[setIdx];
+
+  if (cb.checked) {
+    const sType = set.setType || 'straight';
+    if (sType === 'myorep_match' && setIdx > 0) {
+      // Myorep match: lock to set 0's actual values
+      const set0 = ex.sets[0];
+      set.actualLoad = set0.actualLoad ?? set0.targetLoad;
+      set.actualReps = set0.actualReps ?? set0.targetReps;
+      // Only RPE is editable for myorep_match
+      const row = cb.closest('.set-row');
+      const rpeInput = row.querySelectorAll('.set-input:not([disabled])');
+      set.actualRPE = parseFloat(rpeInput[0]?.value) || set.targetRPE;
+    } else {
+      // Stamp current input values as actuals (reads from the DOM inputs in this row)
+      const row = cb.closest('.set-row');
+      const inputs = row.querySelectorAll('.set-input');
+      set.actualLoad = parseFloat(inputs[0].value) || set.targetLoad;
+      set.actualReps = parseFloat(inputs[1].value) || set.targetReps;
+      set.actualRPE = parseFloat(inputs[2].value) || set.targetRPE;
+    }
+  } else {
+    // Unchecking: clear actuals
+    delete set.actualLoad;
+    delete set.actualReps;
+    delete set.actualRPE;
+  }
+  saveMesocycles();
+  renderWorkout();
+}
+
+function updateWorkoutSetType(mgIdx, exIdx, setIdx, val) {
+  if (!activeWorkout) return;
+  const meso = mesocycles.find(m => m.id === activeWorkout.mesoId);
+  const ex = meso.microcycles[activeWorkout.microIdx].sessions[activeWorkout.sessionIdx]
+    .muscleGroups[mgIdx].exercises[exIdx];
+  ex.sets[setIdx].setType = val;
+  // If changing set 0 away from straight, reset any myorep_match sets
+  if (setIdx === 0 && val !== 'straight') {
+    ex.sets.forEach((s, i) => { if (i > 0 && s.setType === 'myorep_match') s.setType = 'straight'; });
+  }
+  // If setting to myorep_match, sync targets with set 0
+  if (val === 'myorep_match' && setIdx > 0) {
+    const set0 = ex.sets[0];
+    ex.sets[setIdx].targetLoad = set0.actualLoad ?? set0.targetLoad;
+    ex.sets[setIdx].targetReps = set0.actualReps ?? set0.targetReps;
+    // Clear actuals since values changed
+    delete ex.sets[setIdx].actualLoad;
+    delete ex.sets[setIdx].actualReps;
+    delete ex.sets[setIdx].actualRPE;
+  }
+  saveMesocycles();
+  renderWorkout();
+}
+
+function addWorkoutSet(mgIdx, exIdx) {
+  if (!activeWorkout) return;
+  const meso = mesocycles.find(m => m.id === activeWorkout.mesoId);
+  const ex = meso.microcycles[activeWorkout.microIdx].sessions[activeWorkout.sessionIdx]
+    .muscleGroups[mgIdx].exercises[exIdx];
+  const lastSet = ex.sets[ex.sets.length - 1];
+  ex.sets.push({
+    repRange: [...lastSet.repRange],
+    targetLoad: lastSet.targetLoad,
+    targetReps: lastSet.targetReps,
+    targetRPE: lastSet.targetRPE,
+    setType: lastSet.setType || 'straight'
+  });
+  saveMesocycles();
+  renderWorkout();
+}
+
+function removeWorkoutSet(mgIdx, exIdx, setIdx) {
+  if (!activeWorkout) return;
+  const meso = mesocycles.find(m => m.id === activeWorkout.mesoId);
+  const ex = meso.microcycles[activeWorkout.microIdx].sessions[activeWorkout.sessionIdx]
+    .muscleGroups[mgIdx].exercises[exIdx];
+  if (ex.sets.length <= 1) { toast('Need at least 1 set'); return; }
+  ex.sets.splice(setIdx, 1);
+  saveMesocycles();
+  renderWorkout();
+}
+
+function logJointPain(mgIdx, exIdx, level) {
+  if (!activeWorkout) return;
+  const meso = mesocycles.find(m => m.id === activeWorkout.mesoId);
+  const ex = meso.microcycles[activeWorkout.microIdx].sessions[activeWorkout.sessionIdx]
+    .muscleGroups[mgIdx].exercises[exIdx];
+  ex._jointPainLogged = level;
+  ex.jointPainHistory.push(level);
+  saveMesocycles();
+  renderWorkout();
+}
+
+function checkJointPainSwap(ex) {
+  const hist = ex.jointPainHistory || [];
+  if (hist.length === 0) return null;
+
+  // Super Ow: 2 of last 3
+  const last3 = hist.slice(-3);
+  const superOwCount = last3.filter(h => h === 'super_ow').length;
+  if (superOwCount >= 2) {
+    return { urgent: true, message: `Serious joint pain detected! ${ex.name} has caused "Super Ow" ${superOwCount} of the last ${last3.length} sessions. Strongly recommend swapping this exercise.` };
+  }
+
+  // Ow: 2 of last 5
+  const last5 = hist.slice(-5);
+  const owCount = last5.filter(h => h === 'ow' || h === 'super_ow').length;
+  if (owCount >= 2) {
+    return { urgent: false, message: `Joint discomfort trend: ${ex.name} has caused pain ${owCount} of the last ${last5.length} sessions. Consider swapping.` };
+  }
+
+  // Meh: 6 of last 10
+  const last10 = hist.slice(-10);
+  const mehCount = last10.filter(h => h === 'meh' || h === 'ow' || h === 'super_ow').length;
+  if (mehCount >= 6) {
+    return { urgent: false, message: `Minor joint irritation adding up: ${mehCount} of last ${last10.length} sessions had some discomfort. Worth considering a swap.` };
+  }
+
+  return null;
+}
+
+function promptExerciseSwap(mgIdx, exIdx) {
+  if (!activeWorkout) return;
+  const meso = mesocycles.find(m => m.id === activeWorkout.mesoId);
+  const mg = meso.microcycles[activeWorkout.microIdx].sessions[activeWorkout.sessionIdx].muscleGroups[mgIdx];
+  const ex = mg.exercises[exIdx];
+  const available = getExercisesForGroup(mg.muscleGroup).filter(e =>
+    e.id !== ex.exerciseId && !mg.exercises.find(x => x.exerciseId === e.id)
+  );
+
+  let optionsHtml = available.map(e =>
+    `<div class="modal-opt" onclick="swapExercise(${mgIdx},${exIdx},'${e.id}')">${esc(e.name)}</div>`
+  ).join('');
+
+  if (available.length === 0) {
+    optionsHtml = `<div class="text-muted text-center">No other exercises available for ${mg.muscleGroup}. Add more in the Exercises tab.</div>`;
+  }
+
+  showModal(`
+    <div class="modal-title">Swap Exercise</div>
+    <div class="modal-subtitle">Replace <strong>${esc(ex.name)}</strong> with:</div>
+    <div class="modal-options">${optionsHtml}</div>
+    <button class="btn btn-ghost mt-12" onclick="closeModal()" style="width:100%">Cancel</button>
+  `);
+}
+
+function swapExercise(mgIdx, exIdx, newExId) {
+  if (!activeWorkout) return;
+  const meso = mesocycles.find(m => m.id === activeWorkout.mesoId);
+  const mg = meso.microcycles[activeWorkout.microIdx].sessions[activeWorkout.sessionIdx].muscleGroups[mgIdx];
+  const oldEx = mg.exercises[exIdx];
+  const newExData = exerciseLib.exercises.find(e => e.id === newExId);
+  if (!newExData) return;
+
+  mg.exercises[exIdx] = {
+    exerciseId: newExData.id,
+    name: newExData.name,
+    muscleGroup: newExData.muscleGroup,
+    jointPainHistory: [],
+    sets: oldEx.sets.map(s => ({
+      repRange: [...s.repRange],
+      targetLoad: s.targetLoad,
+      targetReps: s.targetReps,
+      targetRPE: s.targetRPE,
+      setType: s.setType || 'straight'
+    }))
+  };
+
+  closeModal();
+  saveMesocycles();
+  toast(`Swapped to ${newExData.name}`, 'success');
+  renderWorkout();
+}
+
+// ============================================================
+// PROGRESSION ENGINE
+// ============================================================
+function classifyPerformance(exercise) {
+  // Average across sets
+  const sets = exercise.sets.filter(s => s.actualLoad != null);
+  if (sets.length === 0) return 'matched';
+
+  let totalLoadDiff = 0, totalRepsDiff = 0, totalRIRDiff = 0;
+  sets.forEach(s => {
+    totalLoadDiff += (s.actualLoad || 0) - (s.targetLoad || 0);
+    totalRepsDiff += (s.actualReps || 0) - (s.targetReps || 0);
+    // RIR = inverse of RPE. Higher RIR means easier. target RPE 8 = target RIR 2
+    // actual RPE 7 = actual RIR 3 → RIR diff = +1 (better than expected)
+    const targetRIR = 10 - (s.targetRPE || 8);
+    const actualRIR = 10 - (s.actualRPE || 8);
+    totalRIRDiff += actualRIR - targetRIR;
+  });
+
+  const n = sets.length;
+  const avgLoadDiff = totalLoadDiff / n;
+  const avgRepsDiff = totalRepsDiff / n;
+  const avgRIRDiff = totalRIRDiff / n;
+
+  // Exceeded: load >= target AND (reps > target OR RIR > target)
+  if (avgLoadDiff >= 0 && (avgRepsDiff > 0 || avgRIRDiff > 0)) return 'exceeded';
+
+  // Below: any metric below without others compensating
+  if (avgLoadDiff < -2 || avgRepsDiff < -1 || avgRIRDiff < -1) return 'below';
+
+  return 'matched';
+}
+
+function progressExercise(exercise, priority, microTargetRPE, prevPerformances) {
+  // Clone sets for the next session
+  const newSets = exercise.sets.map((s, sIdx) => {
+    const type = s.setType || 'straight';
+    const base = {
+      repRange: [...s.repRange],
+      targetLoad: s.actualLoad || s.targetLoad,
+      targetReps: s.actualReps || s.targetReps,
+      targetRPE: microTargetRPE,
+      setType: type
+    };
+    // Myorep match: always inherit from set 0
+    if (type === 'myorep_match' && sIdx > 0) {
+      const set0 = exercise.sets[0];
+      base.targetLoad = set0.actualLoad || set0.targetLoad;
+      base.targetReps = set0.actualReps || set0.targetReps;
+    }
+    return base;
+  });
+
+  const perf = classifyPerformance(exercise);
+
+  if (perf === 'below') {
+    // Check for consecutive below performances
+    const belowCount = countConsecutiveBelow(prevPerformances);
+    if (belowCount >= 2) {
+      // Deload: reduce load by 10%, reset reps to bottom of range
+      newSets.forEach(s => {
+        const st = s.setType || 'straight';
+        if (st === 'myorep_match') return; // handled below
+        if (st !== 'giant') s.targetLoad = roundTo5(s.targetLoad * 0.9);
+        s.targetReps = s.repRange[0];
+      });
+      // Sync myorep_match with set 0
+      if (newSets[0]) newSets.forEach((s, i) => {
+        if (i > 0 && (s.setType || 'straight') === 'myorep_match') {
+          s.targetLoad = newSets[0].targetLoad;
+          s.targetReps = newSets[0].targetReps;
+        }
+      });
+      return { sets: newSets, perf, deload: belowCount >= 3 ? 'forced' : 'suggested' };
+    }
+    // Just repeat
+    return { sets: newSets, perf, deload: null };
+  }
+
+  // Helper: progress a single set with load increase (or cap for giant sets)
+  function progressSet(s, addReps, loadMultiplier) {
+    // Myorep match sets inherit from set 0, skip individual progression
+    if ((s.setType || 'straight') === 'myorep_match') return;
+    const newReps = s.targetReps + addReps;
+    if (newReps <= s.repRange[1]) {
+      s.targetReps = newReps;
+    } else if ((s.setType || 'straight') === 'giant') {
+      // Giant sets: never increase load, cap reps at top of range
+      s.targetReps = s.repRange[1];
+    } else {
+      s.targetLoad = roundTo5(s.targetLoad * loadMultiplier);
+      s.targetReps = s.repRange[0];
+    }
+  }
+
+  if (priority === 'primary') {
+    if (perf === 'exceeded') {
+      // +2 reps to first set, +1 to rest (if in range)
+      newSets.forEach((s, i) => progressSet(s, i === 0 ? 2 : 1, 1.03));
+    } else {
+      // Matched: +1 rep all sets
+      newSets.forEach(s => progressSet(s, 1, 1.025));
+    }
+  } else {
+    // Secondary and Maintenance: same logic for exceeded & matched
+    newSets.forEach(s => progressSet(s, 1, 1.025));
+  }
+
+  // Sync myorep_match sets with set 0 after progression
+  const set0 = newSets[0];
+  if (set0) {
+    newSets.forEach((s, i) => {
+      if (i > 0 && (s.setType || 'straight') === 'myorep_match') {
+        s.targetLoad = set0.targetLoad;
+        s.targetReps = set0.targetReps;
+      }
+    });
+  }
+
+  return { sets: newSets, perf, deload: null };
+}
+
+function countConsecutiveBelow(prevPerformances) {
+  let count = 0;
+  for (let i = prevPerformances.length - 1; i >= 0; i--) {
+    if (prevPerformances[i] === 'below') count++;
+    else break;
+  }
+  return count;
+}
+
+function progressSets(soreness, priority) {
+  // Set progression based on soreness x priority
+  // Returns how many sets to add
+  if (priority === 'maintenance') return 0;
+
+  if (soreness === 'owie' || !soreness) return 0;
+
+  if (priority === 'primary') {
+    if (soreness === 'recently') return 1;
+    if (soreness === 'forever_ago') return 2;
+  }
+
+  if (priority === 'secondary') {
+    if (soreness === 'recently') return 0;
+    if (soreness === 'forever_ago') return 1;
+  }
+
+  return 0;
+}
+
+function getRPEForPriority(priority, startingRPE, weekNumber) {
+  // Calculate target RPE based on priority and week number
+  // Week 1 uses startingRPE, each subsequent week adds the increment
+  const weeksElapsed = weekNumber - 1;
+  if (priority === 'primary') return Math.min(10, startingRPE + weeksElapsed * 0.75);
+  if (priority === 'secondary') return Math.min(10, startingRPE + weeksElapsed * 0.25);
+  return 7; // Maintenance holds at 7
+}
+
+function getPreviousPerformances(meso, exerciseId, upToMicroIdx, upToSessionIdx) {
+  const perfs = [];
+  for (let mi = 0; mi <= upToMicroIdx; mi++) {
+    const micro = meso.microcycles[mi];
+    if (!micro) break;
+    for (let si = 0; si < micro.sessions.length; si++) {
+      if (mi === upToMicroIdx && si >= upToSessionIdx) break;
+      const session = micro.sessions[si];
+      if (session.status !== 'completed') continue;
+      session.muscleGroups.forEach(mg => {
+        mg.exercises.forEach(ex => {
+          if (ex.exerciseId === exerciseId) {
+            perfs.push(classifyPerformance(ex));
+          }
+        });
+      });
+    }
+  }
+  return perfs;
+}
+
+function generateNextMicrocycle(meso, completedMicroIdx) {
+  const completedMicro = meso.microcycles[completedMicroIdx];
+  const nextWeekNum = completedMicro.weekNumber + 1;
+
+  // Build new sessions based on completed ones
+  const newSessions = completedMicro.sessions.map(session => {
+    const newMGs = session.muscleGroups.map(mg => {
+      const nextRPE = getRPEForPriority(mg.priority, meso.startingRPE, nextWeekNum);
+
+      // Get soreness for set progression
+      const setsToAdd = progressSets(mg.soreness, mg.priority);
+
+      const newExercises = mg.exercises.map(ex => {
+        const prevPerfs = getPreviousPerformances(meso, ex.exerciseId, completedMicroIdx + 1, 0);
+        prevPerfs.push(classifyPerformance(ex));
+        const result = progressExercise(ex, mg.priority, nextRPE, prevPerfs);
+
+        return {
+          exerciseId: ex.exerciseId,
+          name: ex.name,
+          muscleGroup: ex.muscleGroup,
+          jointPainHistory: [...ex.jointPainHistory],
+          sets: result.sets,
+          _lastPerf: result.perf,
+          _deload: result.deload
+        };
+      });
+
+      // Add extra sets based on soreness/priority
+      if (setsToAdd > 0 && newExercises.length > 0) {
+        for (let i = 0; i < setsToAdd; i++) {
+          const randExIdx = Math.floor(Math.random() * newExercises.length);
+          const randEx = newExercises[randExIdx];
+          const lastSet = randEx.sets[randEx.sets.length - 1];
+          randEx.sets.push({
+            repRange: [...lastSet.repRange],
+            targetLoad: lastSet.targetLoad,
+            targetReps: lastSet.targetReps,
+            targetRPE: lastSet.targetRPE,
+            setType: lastSet.setType || 'straight'
+          });
+        }
+      }
+
+      return {
+        muscleGroup: mg.muscleGroup,
+        priority: mg.priority,
+        soreness: null, // Reset for next week
+        exercises: newExercises
+      };
+    });
+
+    return {
+      id: uid(),
+      dayLabel: session.dayLabel,
+      muscleGroups: newMGs,
+      status: 'upcoming',
+      completedAt: null
+    };
+  });
+
+  // Calculate target RPE for display (using primary RPE progression as the headline number)
+  const nextTargetRPE = getRPEForPriority('primary', meso.startingRPE, nextWeekNum);
+
+  return {
+    id: uid(),
+    weekNumber: nextWeekNum,
+    targetRPE: parseFloat(nextTargetRPE.toFixed(2)),
+    sessions: newSessions,
+    status: 'active'
+  };
+}
+
+async function completeSession() {
+  if (!activeWorkout) return;
+  const meso = mesocycles.find(m => m.id === activeWorkout.mesoId);
+  const { microIdx, sessionIdx } = activeWorkout;
+  const session = meso.microcycles[microIdx].sessions[sessionIdx];
+
+  // Verify all sets have actuals
+  let incomplete = false;
+  session.muscleGroups.forEach(mg => {
+    mg.exercises.forEach(ex => {
+      ex.sets.forEach(s => {
+        if (s.actualLoad == null) incomplete = true;
+      });
+    });
+  });
+
+  if (incomplete) {
+    showModal(`
+      <div class="modal-title">Incomplete Session</div>
+      <div class="modal-subtitle">Some sets don't have actual values logged. Complete anyway?</div>
+      <div class="modal-options">
+        <div class="modal-opt" onclick="forceCompleteSession()">Complete Anyway</div>
+        <div class="modal-opt" onclick="closeModal()">Go Back</div>
+      </div>
+    `);
+    return;
+  }
+
+  await doCompleteSession();
+}
+
+async function forceCompleteSession() {
+  closeModal();
+  await doCompleteSession();
+}
+
+async function doCompleteSession() {
+  const meso = mesocycles.find(m => m.id === activeWorkout.mesoId);
+  const { microIdx, sessionIdx } = activeWorkout;
+  const micro = meso.microcycles[microIdx];
+  const session = micro.sessions[sessionIdx];
+
+  // Guard: prevent double-completion
+  if (session.status === 'completed') {
+    toast('Session already completed', 'warning');
+    activeWorkout = null;
+    renderWorkout();
+    return;
+  }
+
+  // Fill in any missing actuals with targets
+  session.muscleGroups.forEach(mg => {
+    mg.exercises.forEach(ex => {
+      ex.sets.forEach(s => {
+        if (s.actualLoad == null) s.actualLoad = s.targetLoad;
+        if (s.actualReps == null) s.actualReps = s.targetReps;
+        if (s.actualRPE == null) s.actualRPE = s.targetRPE;
+      });
+    });
+  });
+
+  session.status = 'completed';
+  session.completedAt = new Date().toISOString();
+
+  // Save to history
+  history.push({
+    mesoId: meso.id,
+    mesoName: meso.name,
+    weekNumber: micro.weekNumber,
+    sessionLabel: session.dayLabel,
+    completedAt: session.completedAt,
+    muscleGroups: JSON.parse(JSON.stringify(session.muscleGroups))
+  });
+
+  // Check if all sessions in this microcycle are complete
+  const allSessionsDone = micro.sessions.every(s => s.status === 'completed');
+  if (allSessionsDone) {
+    micro.status = 'completed';
+
+    // Generate next microcycle
+    const nextMicro = generateNextMicrocycle(meso, microIdx);
+    meso.microcycles.push(nextMicro);
+
+    // Check for deload warnings
+    let hasDeload = false;
+    nextMicro.sessions.forEach(s => {
+      s.muscleGroups.forEach(mg => {
+        mg.exercises.forEach(ex => {
+          if (ex._deload) hasDeload = true;
+        });
+      });
+    });
+
+    if (hasDeload) {
+      toast('Deload suggested for some exercises next week', 'warning');
+    } else {
+      toast(`Week ${micro.weekNumber} complete! Week ${nextMicro.weekNumber} generated.`, 'success');
+    }
+  } else {
+    toast('Session complete!', 'success');
+  }
+
+  await Promise.all([saveMesocycles(), saveHistory()]);
+  activeWorkout = null;
+  renderWorkout();
+}
+
+async function completeMesocycle(mesoId) {
+  const meso = mesocycles.find(m => m.id === mesoId);
+  if (!meso) return;
+  meso.status = 'completed';
+  await saveMesocycles();
+  activeMesoId = null;
+  toast('Mesocycle completed!', 'success');
+  switchTab('dashboard');
+}
+
+// ============================================================
+// HISTORY & STATS
+// ============================================================
+function renderHistory() {
+  const area = document.getElementById('tab-history');
+
+  if (history.length === 0) {
+    area.innerHTML = `
+      <div class="empty-state fade-in">
+        <div class="empty-icon">&#128200;</div>
+        <div class="empty-title">No History Yet</div>
+        <div class="empty-text">Complete your first workout to see performance data here.</div>
+      </div>
+    `;
+    return;
+  }
+
+  if (historyExercise) {
+    renderExerciseHistory(area);
+    return;
+  }
+
+  let html = '<div class="fade-in">';
+  html += `<div class="wizard-title mb-16">History & Stats</div>`;
+
+  // Show muscle groups with exercise drill-down
+  const groupMap = {};
+  history.forEach(h => {
+    h.muscleGroups.forEach(mg => {
+      if (!groupMap[mg.muscleGroup]) groupMap[mg.muscleGroup] = {};
+      mg.exercises.forEach(ex => {
+        if (!groupMap[mg.muscleGroup][ex.exerciseId]) {
+          groupMap[mg.muscleGroup][ex.exerciseId] = { name: ex.name, sessions: 0 };
+        }
+        groupMap[mg.muscleGroup][ex.exerciseId].sessions++;
+      });
+    });
+  });
+
+  Object.keys(groupMap).sort().forEach(group => {
+    html += `<div class="card mb-12"><div class="card-header mb-8">${esc(group)}</div>`;
+    Object.entries(groupMap[group]).forEach(([exId, data]) => {
+      html += `
+        <div class="card-clickable" style="padding:10px 0;border-bottom:1px solid #45475a;cursor:pointer;" onclick="viewExerciseHistory('${exId}')">
+          <div class="flex-between">
+            <span style="font-size:14px;">${esc(data.name)}</span>
+            <span class="text-sm text-muted">${data.sessions} sessions</span>
+          </div>
+        </div>
+      `;
+    });
+    html += `</div>`;
+  });
+
+  // Recent sessions
+  html += `<div class="card-header mb-8 mt-16">Recent Sessions</div>`;
+  const recent = [...history].reverse().slice(0, 10);
+  recent.forEach(h => {
+    const groups = h.muscleGroups.map(mg => mg.muscleGroup).join(', ');
+    html += `
+      <div class="card mb-8">
+        <div class="flex-between">
+          <div>
+            <div style="font-weight:600;font-size:14px;">${esc(h.sessionLabel)}</div>
+            <div class="text-sm text-muted">${esc(h.mesoName)} &middot; Week ${h.weekNumber}</div>
+          </div>
+          <div class="text-sm text-muted">${new Date(h.completedAt).toLocaleDateString()}</div>
+        </div>
+        <div class="text-sm text-muted mt-4">${esc(groups)}</div>
+      </div>
+    `;
+  });
+
+  html += '</div>';
+  area.innerHTML = html;
+}
+
+function viewExerciseHistory(exId) {
+  historyExercise = exId;
+  renderHistory();
+}
+
+function renderExerciseHistory(area) {
+  const exId = historyExercise;
+
+  // Gather all sessions with this exercise
+  const sessions = [];
+  history.forEach(h => {
+    h.muscleGroups.forEach(mg => {
+      mg.exercises.forEach(ex => {
+        if (ex.exerciseId === exId) {
+          sessions.push({
+            date: h.completedAt,
+            week: h.weekNumber,
+            mesoName: h.mesoName,
+            sets: ex.sets,
+            perf: classifyPerformance(ex)
+          });
+        }
+      });
+    });
+  });
+
+  if (sessions.length === 0) {
+    historyExercise = null;
+    renderHistory();
+    return;
+  }
+
+  const exName = sessions[0].sets.length > 0 ?
+    (exerciseLib.exercises.find(e => e.id === exId)?.name || exId) : exId;
+
+  let html = '<div class="fade-in">';
+  html += `
+    <button class="btn btn-ghost mb-12" onclick="historyExercise=null; renderHistory()">&larr; Back to History</button>
+    <div class="wizard-title mb-4">${esc(exName)}</div>
+    <div class="text-sm text-muted mb-16">${sessions.length} sessions logged</div>
+  `;
+
+  // Chart
+  const labels = sessions.map((s, i) => `W${s.week}`);
+  const avgLoads = sessions.map(s => {
+    const loggedSets = s.sets.filter(st => st.actualLoad != null);
+    if (loggedSets.length === 0) return 0;
+    return loggedSets.reduce((sum, st) => sum + (st.actualLoad || 0), 0) / loggedSets.length;
+  });
+  const avgReps = sessions.map(s => {
+    const loggedSets = s.sets.filter(st => st.actualReps != null);
+    if (loggedSets.length === 0) return 0;
+    return loggedSets.reduce((sum, st) => sum + (st.actualReps || 0), 0) / loggedSets.length;
+  });
+  const volume = sessions.map(s => {
+    return s.sets.reduce((sum, st) => sum + ((st.actualLoad || 0) * (st.actualReps || 0)), 0);
+  });
+
+  html += `<div class="chart-container"><canvas id="history-chart"></canvas></div>`;
+
+  // Performance badges
+  html += `<div class="stat-row mb-16">`;
+  const exceeded = sessions.filter(s => s.perf === 'exceeded').length;
+  const matched = sessions.filter(s => s.perf === 'matched').length;
+  const below = sessions.filter(s => s.perf === 'below').length;
+  html += `
+    <div class="stat-badge"><div class="stat-value" style="color:#a6e3a1;">${exceeded}</div><div class="stat-label">Exceeded</div></div>
+    <div class="stat-badge"><div class="stat-value" style="color:#89b4fa;">${matched}</div><div class="stat-label">Matched</div></div>
+    <div class="stat-badge"><div class="stat-value" style="color:#f38ba8;">${below}</div><div class="stat-label">Below</div></div>
+  `;
+  html += `</div>`;
+
+  // Session list
+  sessions.reverse().forEach(s => {
+    const perfColor = s.perf === 'exceeded' ? '#a6e3a1' : s.perf === 'matched' ? '#89b4fa' : '#f38ba8';
+    html += `
+      <div class="card mb-8">
+        <div class="flex-between mb-4">
+          <div class="text-sm text-muted">${esc(s.mesoName)} &middot; Week ${s.week}</div>
+          <span class="badge" style="background:${perfColor}22;color:${perfColor};">${s.perf}</span>
+        </div>
+        ${s.sets.map((st, i) => {
+          const sType = st.setType || 'straight';
+          const typeLabel = sType !== 'straight' ? `<span class="set-type-badge ${sType}">${({myorep:'Myo',myorep_match:'M.M',giant:'Giant',straight:''})[sType]}</span> ` : '';
+          return `<div class="text-sm" style="padding:2px 0;color:#a6adc8;">
+            Set ${i+1}: ${typeLabel}${st.actualLoad || st.targetLoad}lbs &times; ${st.actualReps || st.targetReps} @ RPE ${Math.round(st.actualRPE || st.targetRPE)}
+          </div>`;
+        }).join('')}
+      </div>
+    `;
+  });
+
+  html += '</div>';
+  area.innerHTML = html;
+
+  // Render chart after DOM update
+  setTimeout(() => {
+    const canvas = document.getElementById('history-chart');
+    if (!canvas) return;
+    new Chart(canvas, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [
+          {
+            label: 'Avg Load (lbs)',
+            data: avgLoads,
+            borderColor: '#89b4fa',
+            backgroundColor: 'rgba(137,180,250,0.1)',
+            tension: 0.3, fill: true, yAxisID: 'y'
+          },
+          {
+            label: 'Volume (load×reps)',
+            data: volume,
+            borderColor: '#a6e3a1',
+            backgroundColor: 'rgba(166,227,161,0.1)',
+            tension: 0.3, fill: true, yAxisID: 'y1'
+          }
+        ]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { labels: { color: '#6c7086', font: { size: 11 } } } },
+        scales: {
+          x: { ticks: { color: '#6c7086' }, grid: { color: '#313244' } },
+          y: { position: 'left', ticks: { color: '#89b4fa' }, grid: { color: '#313244' }, title: { display: true, text: 'Load', color: '#89b4fa' } },
+          y1: { position: 'right', ticks: { color: '#a6e3a1' }, grid: { display: false }, title: { display: true, text: 'Volume', color: '#a6e3a1' } }
+        }
+      }
+    });
+  }, 50);
+}
+
+// ============================================================
+// EXERCISE LIBRARY
+// ============================================================
+let exerciseSearch = '';
+
+function renderExercises() {
+  const area = document.getElementById('tab-exercises');
+  const groups = getMuscleGroups();
+
+  let html = '<div class="fade-in">';
+  html += `<div class="wizard-title mb-16">Exercise Library</div>`;
+
+  // Search
+  html += `
+    <div class="search-wrap mb-16">
+      <span class="search-icon">&#128269;</span>
+      <input type="text" id="exercise-search" placeholder="Search exercises..." value="${esc(exerciseSearch)}"
+        oninput="exerciseSearch=this.value; renderExercises()">
+    </div>
+  `;
+
+  // Add new exercise
+  html += `
+    <div class="card mb-16">
+      <div class="card-header mb-8">Add Exercise</div>
+      <div class="form-row">
+        <div class="form-group" style="flex:2">
+          <input type="text" id="new-exercise-name" placeholder="Exercise name">
+        </div>
+        <div class="form-group" style="flex:1">
+          <select id="new-exercise-group" onchange="document.getElementById('custom-group-wrap').classList.toggle('hidden', this.value !== '__custom')">
+            ${groups.map(g => `<option value="${esc(g)}">${esc(g)}</option>`).join('')}
+            <option value="__custom">+ Custom Group</option>
+          </select>
+        </div>
+      </div>
+      <div id="custom-group-wrap" class="form-group hidden">
+        <input type="text" id="new-exercise-custom-group" placeholder="New muscle group name">
+      </div>
+      <button class="btn btn-primary" onclick="addExerciseToLib()">Add Exercise</button>
+    </div>
+  `;
+
+  // Grouped list
+  const filtered = exerciseLib.exercises.filter(e =>
+    !exerciseSearch || e.name.toLowerCase().includes(exerciseSearch.toLowerCase()) || e.muscleGroup.toLowerCase().includes(exerciseSearch.toLowerCase())
+  );
+
+  const grouped = {};
+  filtered.forEach(e => {
+    if (!grouped[e.muscleGroup]) grouped[e.muscleGroup] = [];
+    grouped[e.muscleGroup].push(e);
+  });
+
+  Object.keys(grouped).sort().forEach(group => {
+    html += `<div class="card mb-12"><div class="card-header mb-8">${esc(group)} <span class="text-sm text-muted">(${grouped[group].length})</span></div>`;
+    grouped[group].forEach(e => {
+      html += `
+        <div class="flex-between" style="padding:6px 0;border-bottom:1px solid #45475a22;">
+          <span style="font-size:14px;">${esc(e.name)}</span>
+          <button class="btn-ghost" onclick="deleteExercise('${e.id}')" style="color:#f38ba8;font-size:12px;">&times;</button>
+        </div>
+      `;
+    });
+    html += `</div>`;
+  });
+
+  if (filtered.length === 0) {
+    html += `<div class="text-muted text-center">No exercises found.</div>`;
+  }
+
+  html += '</div>';
+  area.innerHTML = html;
+}
+
+async function addExerciseToLib() {
+  const name = document.getElementById('new-exercise-name').value.trim();
+  let group = document.getElementById('new-exercise-group').value;
+  if (group === '__custom') {
+    group = document.getElementById('new-exercise-custom-group').value.trim();
+    if (!group) { toast('Enter a muscle group name'); return; }
+  }
+  if (!name) { toast('Enter an exercise name'); return; }
+
+  exerciseLib.exercises.push({ id: uid(), name, muscleGroup: group });
+  await saveExercises();
+  toast(`Added ${name}`, 'success');
+  renderExercises();
+}
+
+async function deleteExercise(id) {
+  exerciseLib.exercises = exerciseLib.exercises.filter(e => e.id !== id);
+  await saveExercises();
+  toast('Exercise removed', 'success');
+  renderExercises();
+}
+
+// ============================================================
+// UTILITY
+// ============================================================
+function esc(str) {
+  if (str == null) return '';
+  return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+// ============================================================
+// INIT
+// ============================================================
+async function init() {
+  await loadAll();
+  renderDashboard();
+}
+
+init();
+</script>
+</body>
+</html>

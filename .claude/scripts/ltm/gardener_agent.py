@@ -19,16 +19,16 @@ if str(_new_location) not in sys.path:
 # Re-export everything from the new location
 from gardener_runner import (
     run_gardener,
-    run_gardener_cycle,
-    apply_gardener_results,
+    run_gardener_batched,
     run_gardener_sync,
-    GARDENER_OUTPUT_SCHEMA,
+    run_maintenance,
+    get_thread_health,
 )
 
 # For backward compatibility, also expose the system prompt
 def _get_system_prompt():
     """Load the gardener system prompt from the new location."""
-    prompt_path = _new_location / "gardener.md"
+    prompt_path = _new_location / "prompt.md"
     if prompt_path.exists():
         return prompt_path.read_text()
     return ""
@@ -37,9 +37,9 @@ GARDENER_SYSTEM_PROMPT = _get_system_prompt()
 
 __all__ = [
     "run_gardener",
-    "run_gardener_cycle",
-    "apply_gardener_results",
+    "run_gardener_batched",
     "run_gardener_sync",
+    "run_maintenance",
+    "get_thread_health",
     "GARDENER_SYSTEM_PROMPT",
-    "GARDENER_OUTPUT_SCHEMA",
 ]

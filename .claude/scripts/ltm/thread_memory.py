@@ -31,13 +31,22 @@ class Thread:
     created_at: str = ""
     last_updated: str = ""
     embedding_id: Optional[str] = None
+    # v2 fields: scope and split lineage
+    scope: str = ""  # Describes what content belongs in this thread
+    split_from: Optional[str] = None  # Parent thread ID if created by split
+    split_into: Optional[List[str]] = None  # Child thread IDs if this was split
+    # v3 field: thread type
+    thread_type: str = "topical"  # "topical" (default) or "conversation" (immutable snapshot)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Thread":
-        return cls(**data)
+        # Only pass fields that the dataclass knows about (handles old data gracefully)
+        valid_fields = {f.name for f in cls.__dataclass_fields__.values()}
+        filtered = {k: v for k, v in data.items() if k in valid_fields}
+        return cls(**filtered)
 
 
 def _generate_id() -> str:
@@ -87,7 +96,7 @@ class ThreadMemoryManager:
             with open(self.threads_file, 'w') as f:
                 json.dump({
                     "threads": [t.to_dict() for t in self.threads],
-                    "version": 2,
+                    "version": 4,
                     "last_modified": datetime.now().isoformat()
                 }, f, indent=2)
 
@@ -96,7 +105,10 @@ class ThreadMemoryManager:
         name: str,
         description: str,
         memory_ids: Optional[List[str]] = None,
-        embed: bool = True
+        embed: bool = True,
+        scope: str = "",
+        split_from: Optional[str] = None,
+        thread_type: str = "topical"
     ) -> Thread:
         """
         Create a new thread.
@@ -106,6 +118,9 @@ class ThreadMemoryManager:
             description: Thread description
             memory_ids: Initial memory IDs to include
             embed: Whether to create an embedding
+            scope: What kind of content belongs in this thread
+            split_from: Parent thread ID if created by a split
+            thread_type: Thread type - "topical" (default) or "conversation" (immutable snapshot)
 
         Returns:
             The created Thread
@@ -117,7 +132,10 @@ class ThreadMemoryManager:
             description=description,
             memory_ids=memory_ids or [],
             created_at=now,
-            last_updated=now
+            last_updated=now,
+            scope=scope or description,  # Default scope to description
+            split_from=split_from,
+            thread_type=thread_type
         )
 
         # Create embedding for thread
@@ -298,6 +316,19 @@ class ThreadMemoryManager:
             logger.error(f"Thread search failed: {e}")
             return []
 
+    def get_conversation_thread_for_room(self, room_id: str) -> Optional[Thread]:
+        """Get the conversation thread associated with a room/chat ID.
+
+        Conversation threads store the room ID in their scope field
+        as 'room:{room_id}'. Returns None if no conversation thread
+        exists for this room.
+        """
+        scope_key = f"room:{room_id}"
+        for t in self.threads:
+            if t.thread_type == "conversation" and t.scope == scope_key:
+                return t
+        return None
+
     def get_threads_for_memory(self, memory_id: str) -> List[Thread]:
         """Get all threads containing a specific memory."""
         return [t for t in self.threads if memory_id in t.memory_ids]
@@ -434,14 +465,16 @@ class ThreadMemoryManager:
         if result["errors"]:
             return result
 
-        # Create new threads
+        # Create new threads with split lineage
         created_threads = []
         try:
             for nt in new_threads:
                 new_thread = self.create(
                     name=nt["name"],
-                    description=nt["description"],
-                    memory_ids=nt["atom_ids"]
+                    description=nt.get("description", ""),
+                    memory_ids=nt["atom_ids"],
+                    scope=nt.get("scope", nt.get("description", "")),
+                    split_from=source_thread_id
                 )
                 created_threads.append(new_thread)
                 result["new_thread_ids"].append(new_thread.id)
@@ -460,6 +493,11 @@ class ThreadMemoryManager:
             result["errors"].append(f"Failed to create new threads: {e}")
             result["new_thread_ids"] = []
             return result
+
+        # Record split_into on source thread
+        if source_thread.split_into is None:
+            source_thread.split_into = []
+        source_thread.split_into.extend(result["new_thread_ids"])
 
         # Remove atoms from source thread
         self.update(

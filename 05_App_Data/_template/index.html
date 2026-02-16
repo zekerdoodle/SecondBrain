@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hello Brain</title>
+<link rel="stylesheet" href="/file/05_App_Data/_shared/theme.css">
+<style>
+  .container { max-width: 640px; margin: 0 auto; padding: var(--sp-lg); }
+  h1 { font-size: var(--font-size-2xl); font-weight: 700; margin-bottom: var(--sp-lg); }
+  .counter { font-size: var(--font-size-xl); font-weight: 700; color: var(--accent); }
+</style>
+  <script type="module" crossorigin>(function(){const r=document.createElement("link").relList;if(r&&r.supports&&r.supports("modulepreload"))return;for(const e of document.querySelectorAll('link[rel="modulepreload"]'))a(e);new MutationObserver(e=>{for(const t of e)if(t.type==="childList")for(const i of t.addedNodes)i.tagName==="LINK"&&i.rel==="modulepreload"&&a(i)}).observe(document,{childList:!0,subtree:!0});function u(e){const t={};return e.integrity&&(t.integrity=e.integrity),e.referrerPolicy&&(t.referrerPolicy=e.referrerPolicy),e.crossOrigin==="use-credentials"?t.credentials="include":e.crossOrigin==="anonymous"?t.credentials="omit":t.credentials="same-origin",t}function a(e){if(e.ep)return;e.ep=!0;const t=u(e);fetch(e.href,t)}})();const l="brain-app-template",d=BrainKit.store(l);let n=0;const c=document.getElementById("count");async function m(){const o=await d.read("state.json",{count:0,note:""});n=o.count||0,c.textContent=n;const r=document.getElementById("note-input");o.note&&(r.value=o.note)}async function s(){const o=document.getElementById("note-input").value;await d.write("state.json",{count:n,note:o})}document.getElementById("increment").addEventListener("click",async()=>{n++,c.textContent=n,await s()});document.getElementById("decrement").addEventListener("click",async()=>{n--,c.textContent=n,await s()});document.getElementById("reset").addEventListener("click",async()=>{n=0,c.textContent=n,await s(),BrainKit.toast("Counter reset","success")});document.getElementById("save-note").addEventListener("click",async()=>{await s(),BrainKit.toast("Note saved!","success")});m();</script>
+</head>
+<body>
+<div class="container">
+  <h1>Hello Brain</h1>
+
+  <div class="card mb-lg">
+    <div class="card-header">Persistent Counter</div>
+    <p class="mb-md text-secondary">This counter is saved to your Second Brain and persists across sessions.</p>
+    <div class="flex items-center gap-lg">
+      <button class="btn btn-secondary" id="decrement">-</button>
+      <span class="counter" id="count">0</span>
+      <button class="btn btn-secondary" id="increment">+</button>
+      <button class="btn btn-ghost btn-sm" id="reset">Reset</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">Quick Note</div>
+    <div class="field">
+      <label>Write something</label>
+      <input type="text" id="note-input" placeholder="Type a note..." />
+    </div>
+    <button class="btn btn-primary" id="save-note">Save Note</button>
+  </div>
+</div>
+
+<script src="/file/05_App_Data/_shared/brain-kit.js"></script>
+</body>
+</html>

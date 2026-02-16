@@ -16,7 +16,7 @@ import argparse
 import logging
 from pathlib import Path
 from datetime import datetime
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 # Setup paths
 SCRIPT_DIR = Path(__file__).parent
@@ -67,7 +67,7 @@ def load_chat(chat_file: Path) -> Dict[str, Any]:
         return {}
 
 
-def extract_exchanges(chat: Dict[str, Any]) -> List[Dict[str, Any]]:
+def extract_exchanges(chat: Dict[str, Any], chat_id: Optional[str] = None) -> List[Dict[str, Any]]:
     """
     Extract user/assistant exchange pairs from a chat.
 
@@ -77,10 +77,19 @@ def extract_exchanges(chat: Dict[str, Any]) -> List[Dict[str, Any]]:
 
     Excludes librarian and gardener maintenance runs.
 
-    Returns list of exchanges with user_message, assistant_message, timestamp.
+    Args:
+        chat: The parsed chat JSON data.
+        chat_id: The chat/room ID (filename stem). Used as session_id for
+                 deterministic room attribution. Falls back to chat's
+                 sessionId field if not provided.
+
+    Returns list of exchanges with user_message, assistant_message, timestamp, session_id.
     """
     messages = chat.get("messages", [])
     exchanges = []
+
+    # Use the chat file's ID as the room identifier (matches live pipeline)
+    room_id = chat_id or chat.get("sessionId", "unknown")
 
     i = 0
     while i < len(messages):
@@ -134,7 +143,7 @@ def extract_exchanges(chat: Dict[str, Any]) -> List[Dict[str, Any]]:
                 exchanges.append({
                     "user_message": trigger_content,
                     "assistant_message": assistant_content,
-                    "session_id": chat.get("sessionId", "unknown"),
+                    "session_id": room_id,
                     "timestamp": timestamp
                 })
 
@@ -182,12 +191,8 @@ async def process_batch(
 
         # Get existing memories for deduplication
         existing_memories = [
-            {"content": m.content, "id": m.id, "importance": m.importance}
+            {"content": m.content, "id": m.id}
             for m in atom_mgr.list_all()[-200:]  # More context for backfill
-        ]
-        existing_threads = [
-            {"name": t.name, "description": t.description, "memory_ids": t.memory_ids}
-            for t in thread_mgr.list_all()
         ]
 
         # Try to use Agent SDK (only works within Claude Code context)
@@ -195,16 +200,33 @@ async def process_batch(
             try:
                 from librarian_agent import run_librarian, apply_librarian_results
 
-                # Run Librarian
-                results = await run_librarian(exchanges, existing_memories, existing_threads)
+                # Group exchanges by room for deterministic attribution
+                room_groups: Dict[str, List[Dict[str, Any]]] = {}
+                for ex in exchanges:
+                    rid = ex.get("session_id", "unknown")
+                    if rid not in room_groups:
+                        room_groups[rid] = []
+                    room_groups[rid].append(ex)
 
-                # Apply results
-                stats = await apply_librarian_results(results)
+                batch_stats: Dict[str, Any] = {
+                    "memories_created": 0,
+                    "memories_skipped_duplicate": 0,
+                    "new_atom_ids": [],
+                    "errors": []
+                }
+
+                for rid, room_exs in room_groups.items():
+                    results = await run_librarian(room_exs, existing_memories, room_id=rid)
+                    stats = await apply_librarian_results(results)
+                    batch_stats["memories_created"] += stats.get("memories_created", 0)
+                    batch_stats["memories_skipped_duplicate"] += stats.get("memories_skipped_duplicate", 0)
+                    batch_stats["new_atom_ids"].extend(stats.get("new_atom_ids", []))
+                    batch_stats["errors"].extend(stats.get("errors", []))
 
                 return {
                     "status": "completed",
                     "exchanges_count": len(exchanges),
-                    **stats
+                    **batch_stats
                 }
             except ImportError as e:
                 if "claude_agent_sdk" in str(e):
@@ -357,7 +379,7 @@ async def run_backfill(
         if not chat:
             continue
 
-        exchanges = extract_exchanges(chat)
+        exchanges = extract_exchanges(chat, chat_id=chat_id)
         logger.info(f"Chat {chat_id}: {len(exchanges)} exchanges")
 
         all_exchanges.extend(exchanges)
@@ -431,7 +453,7 @@ def main():
         for chat_id, path in all_chats:
             chat = load_chat(path)
             title = chat.get("title", "Untitled")[:50]
-            exchanges = len(extract_exchanges(chat))
+            exchanges = len(extract_exchanges(chat, chat_id=chat_id))
             status = "✓" if chat_id in processed else " "
             print(f"  [{status}] {chat_id[:8]}... - {title} ({exchanges} exchanges)")
         return

@@ -32,23 +32,22 @@ SYSTEM_PROMPT_TEMPLATE = "You are {model}. You are talking with Claude."
 PROVIDERS = {
     "gemini": {
         "command": "gemini",
-        "default_model": "gemini-2.5-flash",
+        "default_model": "gemini-3-pro-preview",
         "available_models": [
+            "gemini-3-pro-preview",
+            "gemini-3-flash-preview",
+            "gemini-2.5-pro",
             "gemini-2.5-flash",
-            "gemini-2.5-pro", 
-            "gemini-2.0-flash",
-            "gemini-1.5-pro",
-            "gemini-1.5-flash",
         ],
     },
     "openai": {
         "command": "codex",
-        "default_model": "gpt-5.2",
+        "default_model": "gpt-5.3-codex",
         "available_models": [
+            "gpt-5.3-codex",
             "gpt-5.2",
-            "o3-mini",
-            "o1",
-            "gpt-4.1",
+            "o3",
+            "o4-mini",
         ],
     },
 }
@@ -81,6 +80,7 @@ def build_codex_command(prompt: str, model: str, system_prompt: str) -> list:
         "exec",
         "--skip-git-repo-check",
         "-m", model,
+        "-c", 'model_reasoning_effort="high"',
         full_prompt,
     ]
 
@@ -98,7 +98,7 @@ async def run_llm_command(
     try:
         # Source the venv to get the CLI tools in PATH
         venv_activate = os.path.expanduser("~/second_brain/venv/bin/activate")
-        full_command = f"source {venv_activate} && {shlex.join(command)}"
+        full_command = f". {venv_activate} && {shlex.join(command)}"
         
         logger.info(f"Running LLM command: {command[0]} ...")
         
@@ -216,8 +216,8 @@ These are colleagues, not subordinates. Ask for their genuine opinion.
 The response is for YOUR use - synthesize and share with Zeke in your own words.
 
 Providers:
-- gemini: Google's Gemini models (default: gemini-2.5-flash)
-- openai: OpenAI's GPT models via Codex CLI (default: gpt-5.2)
+- gemini: Google's Gemini 3 Pro (default: gemini-3-pro-preview)
+- openai: OpenAI GPT-5.3-Codex via Codex CLI (default: gpt-5.3-codex, high reasoning)
 
 Example prompts:
 - "What are the weaknesses in this approach: [description]"
@@ -238,7 +238,7 @@ Example prompts:
             },
             "model": {
                 "type": "string",
-                "description": "Specific model to use (optional, uses provider default). Gemini: gemini-2.5-flash/pro, OpenAI: gpt-5.2, o3-mini, o1",
+                "description": "Specific model to use (optional, uses provider default). Gemini: gemini-3-pro-preview/flash-preview, OpenAI: gpt-5.3-codex, gpt-5.2, o3",
             },
             "timeout": {
                 "type": "integer",

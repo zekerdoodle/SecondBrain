@@ -27,13 +27,18 @@ Use this for self-reminders, recurring syncs, maintenance tasks, or any automate
 
 By default, scheduled tasks appear in chat history and notify the user when they run.
 Set silent=true for background maintenance tasks (like Librarian/Gardener) that shouldn't
-appear in the main chat list or trigger notifications.""",
+appear in the main chat list or trigger notifications.
+
+Room targeting: Use room_id to deliver the scheduled output to a specific conversation room.
+If room_id is specified, the task will run with that room's history as context, and the
+output will appear in that room. If not specified, uses the active room or creates a new chat.""",
     input_schema={
         "type": "object",
         "properties": {
             "prompt": {"type": "string", "description": "The prompt to execute"},
             "schedule": {"type": "string", "description": "Schedule: 'every X minutes/hours', 'daily at HH:MM', or 'once at YYYY-MM-DDTHH:MM:SS'"},
-            "silent": {"type": "boolean", "description": "If true, task runs silently (no chat history, no notifications). Use for maintenance tasks. Default: false", "default": False}
+            "silent": {"type": "boolean", "description": "If true, task runs silently (no chat history, no notifications). Use for maintenance tasks. Default: false", "default": False},
+            "room_id": {"type": "string", "description": "Optional: Target room ID. Output will be delivered to this room with its history as context. If not specified, uses active room or creates new chat."}
         },
         "required": ["prompt", "schedule"]
     }
@@ -46,11 +51,12 @@ async def schedule_self(args: Dict[str, Any]) -> Dict[str, Any]:
         prompt = args.get("prompt", "")
         schedule = args.get("schedule", "")
         silent = args.get("silent", False)
+        room_id = args.get("room_id")
 
         if not prompt or not schedule:
             return {"content": [{"type": "text", "text": "Both prompt and schedule are required"}], "is_error": True}
 
-        result = scheduler_tool.add_task(prompt, schedule, silent=silent)
+        result = scheduler_tool.add_task(prompt, schedule, silent=silent, room_id=room_id)
         return {"content": [{"type": "text", "text": result}]}
 
     except Exception as e:
@@ -84,7 +90,7 @@ async def scheduler_list(args: Dict[str, Any]) -> Dict[str, Any]:
     name="scheduler_update",
     description="""Update an existing scheduled task.
 
-Use this to toggle silent mode, enable/disable tasks, or change schedule/prompt.
+Use this to toggle silent mode, enable/disable tasks, change schedule/prompt, or update room targeting.
 Get task IDs from scheduler_list.""",
     input_schema={
         "type": "object",
@@ -93,7 +99,8 @@ Get task IDs from scheduler_list.""",
             "silent": {"type": "boolean", "description": "Set silent mode (true = no chat history/notifications)"},
             "active": {"type": "boolean", "description": "Enable (true) or disable (false) the task"},
             "schedule": {"type": "string", "description": "New schedule string"},
-            "prompt": {"type": "string", "description": "New prompt text"}
+            "prompt": {"type": "string", "description": "New prompt text"},
+            "room_id": {"type": "string", "description": "Set target room ID. Use empty string to clear room targeting."}
         },
         "required": ["task_id"]
     }
@@ -111,7 +118,8 @@ async def scheduler_update(args: Dict[str, Any]) -> Dict[str, Any]:
             silent=args.get("silent"),
             active=args.get("active"),
             schedule=args.get("schedule"),
-            prompt=args.get("prompt")
+            prompt=args.get("prompt"),
+            room_id=args.get("room_id")
         )
         return {"content": [{"type": "text", "text": result}]}
     except Exception as e:

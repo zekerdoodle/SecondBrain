@@ -2,6 +2,10 @@ name: your_agent_name
 type: sdk                    # sdk | cli
 model: sonnet               # sonnet | opus | haiku
 description: "Brief description of what this agent does."
+chattable: false             # true to show in chat dropdown
+color: "#6C7086"
+icon: bot                    # heart, zap, brain, search, globe, code, layers, sparkles, bot
+# system_prompt_preset: claude_code  # Use Claude Code's native system prompt; prompt.md becomes append content
 tools:
   - Read
   - Write

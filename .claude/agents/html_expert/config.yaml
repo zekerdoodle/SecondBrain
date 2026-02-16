@@ -1,0 +1,22 @@
+name: html_expert
+description: 'Expert HTML/CSS/JS builder. Takes structured content specs and produces
+  beautiful, self-contained HTML pages optimized for reading experience. Used for:
+  research reports, creative stories, dashboards, galleries, and any content that
+  deserves better than raw markdown.'
+model: opus
+type: sdk
+timeout_seconds: 1200
+max_turns: 50
+chattable: true
+color: '#e74c3c'
+icon: code
+tools:
+- Skill
+- Read
+- Write
+- Edit
+- mcp__brain__bash
+- mcp__brain__generate_image
+- mcp__brain__edit_image
+- mcp__brain__memory_append
+- mcp__brain__memory_read

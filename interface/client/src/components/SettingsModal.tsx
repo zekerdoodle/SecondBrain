@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { X, Sun, Moon, Check, Palette, FolderX, Plus, Settings, FileEdit, Type } from 'lucide-react';
+import { X, Sun, Moon, Check, Palette, FolderX, Plus, Settings, FileEdit, Type, RefreshCw, Monitor } from 'lucide-react';
 import { clsx } from 'clsx';
 import { API_URL } from '../config';
 
@@ -9,22 +9,32 @@ const UI_FONTS = [
   { name: 'Inter', value: "'Inter', -apple-system, BlinkMacSystemFont, sans-serif", category: 'Sans-serif' },
   { name: 'Source Sans', value: "'Source Sans 3', -apple-system, BlinkMacSystemFont, sans-serif", category: 'Sans-serif' },
   { name: 'System Default', value: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif", category: 'Sans-serif' },
+  { name: 'JetBrains Mono', value: "'JetBrains Mono', 'Fira Code', Consolas, monospace", category: 'Monospace' },
 ];
 
 const CHAT_FONTS = [
   { name: 'Inter', value: "'Inter', -apple-system, BlinkMacSystemFont, sans-serif", category: 'Sans-serif' },
   { name: 'Source Sans', value: "'Source Sans 3', -apple-system, BlinkMacSystemFont, sans-serif", category: 'Sans-serif' },
+  { name: 'Atkinson Hyperlegible', value: "'Atkinson Hyperlegible', -apple-system, BlinkMacSystemFont, sans-serif", category: 'Accessible' },
+  { name: 'OpenDyslexic', value: "'OpenDyslexic', -apple-system, BlinkMacSystemFont, sans-serif", category: 'Accessible' },
   { name: 'Merriweather', value: "'Merriweather', Georgia, serif", category: 'Serif' },
   { name: 'Lora', value: "'Lora', Georgia, serif", category: 'Serif' },
   { name: 'Crimson Pro', value: "'Crimson Pro', Georgia, serif", category: 'Serif' },
+  { name: 'Georgia', value: "Georgia, 'Times New Roman', serif", category: 'Serif' },
+  { name: 'JetBrains Mono', value: "'JetBrains Mono', 'Fira Code', Consolas, monospace", category: 'Monospace' },
+  { name: 'Fira Code', value: "'Fira Code', Consolas, Monaco, monospace", category: 'Monospace' },
 ];
 
 const EDITOR_FONTS = [
   { name: 'Merriweather', value: "'Merriweather', Georgia, serif", category: 'Serif' },
   { name: 'Lora', value: "'Lora', Georgia, serif", category: 'Serif' },
   { name: 'Crimson Pro', value: "'Crimson Pro', Georgia, serif", category: 'Serif' },
+  { name: 'Georgia', value: "Georgia, 'Times New Roman', serif", category: 'Serif' },
   { name: 'Inter', value: "'Inter', -apple-system, BlinkMacSystemFont, sans-serif", category: 'Sans-serif' },
   { name: 'Source Sans', value: "'Source Sans 3', -apple-system, BlinkMacSystemFont, sans-serif", category: 'Sans-serif' },
+  { name: 'Atkinson Hyperlegible', value: "'Atkinson Hyperlegible', -apple-system, BlinkMacSystemFont, sans-serif", category: 'Accessible' },
+  { name: 'OpenDyslexic', value: "'OpenDyslexic', -apple-system, BlinkMacSystemFont, sans-serif", category: 'Accessible' },
+  { name: 'JetBrains Mono', value: "'JetBrains Mono', 'Fira Code', Consolas, monospace", category: 'Monospace' },
 ];
 
 const FONT_SIZES = [
@@ -47,7 +57,7 @@ const ACCENT_COLORS = [
 ];
 
 export type ThemeMode = 'light' | 'dark' | 'system';
-export type SettingsTab = 'appearance' | 'typography' | 'exclusions' | 'editor';
+export type SettingsTab = 'appearance' | 'typography' | 'exclusions' | 'editor' | 'system';
 
 export interface ThemePreferences {
   mode: ThemeMode;
@@ -192,6 +202,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
   const [newFile, setNewFile] = useState('');
   const [newPattern, setNewPattern] = useState('');
 
+  // Restart state
+  const [restartConfirm, setRestartConfirm] = useState(false);
+  const [restartLoading, setRestartLoading] = useState(false);
+  const [restartStatus, setRestartStatus] = useState<'idle' | 'restarting' | 'error'>('idle');
+  const [restartError, setRestartError] = useState<string | null>(null);
+
   // Apply theme when preferences change
   useEffect(() => {
     applyTheme(preferences);
@@ -280,6 +296,26 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
       setUiConfigLoading(false);
     }
   }, [uiConfig, onExclusionsChanged, onDefaultEditorFileChanged, originalDefaultFile]);
+
+  const handleRestart = useCallback(async (rebuild: boolean = false) => {
+    setRestartLoading(true);
+    setRestartError(null);
+    setRestartStatus('idle');
+    try {
+      const res = await fetch(`${API_URL}/restart?rebuild=${rebuild}`, { method: 'POST' });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({ detail: 'Unknown error' }));
+        throw new Error(data.detail || 'Failed to restart server');
+      }
+      setRestartStatus('restarting');
+      setRestartConfirm(false);
+    } catch (e) {
+      setRestartError(e instanceof Error ? e.message : 'Failed to restart server');
+      setRestartStatus('error');
+    } finally {
+      setRestartLoading(false);
+    }
+  }, []);
 
   const setMode = (mode: ThemeMode) => {
     setPreferences(prev => ({ ...prev, mode }));
@@ -372,7 +408,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
       />
 
       {/* Modal - full screen on mobile, centered card on desktop */}
-      <div className="relative bg-[var(--bg-secondary)] shadow-xl w-full animate-modal-content border border-[var(--border-color)] flex flex-col md:rounded-xl md:max-w-lg md:mx-4 md:max-h-[85vh] max-h-[100dvh] h-full md:h-auto">
+      <div className="relative bg-[var(--bg-secondary)] shadow-xl w-full animate-modal-content border border-[var(--border-color)] flex flex-col md:rounded-xl md:max-w-xl md:mx-4 md:max-h-[85vh] max-h-[100dvh] h-full md:h-auto">
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--border-color)] shrink-0">
           <div className="flex items-center gap-2">
@@ -388,87 +424,37 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
         </div>
 
         {/* Tabs */}
-        <div className="flex border-b border-[var(--border-color)] shrink-0">
-          <button
-            onClick={() => setActiveTab('appearance')}
-            className={clsx(
-              "flex-1 py-3.5 md:py-3 px-4 text-sm font-medium transition-colors relative touch-manipulation",
-              activeTab === 'appearance'
-                ? "text-[var(--text-primary)]"
-                : "text-[var(--text-secondary)] hover:text-[var(--text-primary)] active:text-[var(--text-primary)]"
-            )}
-          >
-            <div className="flex items-center justify-center gap-2">
-              <Palette size={16} />
-              Appearance
-            </div>
-            {activeTab === 'appearance' && (
-              <div
-                className="absolute bottom-0 left-0 right-0 h-0.5"
-                style={{ backgroundColor: preferences.accentColor }}
-              />
-            )}
-          </button>
-          <button
-            onClick={() => setActiveTab('typography')}
-            className={clsx(
-              "flex-1 py-3.5 md:py-3 px-4 text-sm font-medium transition-colors relative touch-manipulation",
-              activeTab === 'typography'
-                ? "text-[var(--text-primary)]"
-                : "text-[var(--text-secondary)] hover:text-[var(--text-primary)] active:text-[var(--text-primary)]"
-            )}
-          >
-            <div className="flex items-center justify-center gap-2">
-              <Type size={16} />
-              Typography
-            </div>
-            {activeTab === 'typography' && (
-              <div
-                className="absolute bottom-0 left-0 right-0 h-0.5"
-                style={{ backgroundColor: preferences.accentColor }}
-              />
-            )}
-          </button>
-          <button
-            onClick={() => setActiveTab('exclusions')}
-            className={clsx(
-              "flex-1 py-3.5 md:py-3 px-4 text-sm font-medium transition-colors relative touch-manipulation",
-              activeTab === 'exclusions'
-                ? "text-[var(--text-primary)]"
-                : "text-[var(--text-secondary)] hover:text-[var(--text-primary)] active:text-[var(--text-primary)]"
-            )}
-          >
-            <div className="flex items-center justify-center gap-2">
-              <FolderX size={16} />
-              Exclusions
-            </div>
-            {activeTab === 'exclusions' && (
-              <div
-                className="absolute bottom-0 left-0 right-0 h-0.5"
-                style={{ backgroundColor: preferences.accentColor }}
-              />
-            )}
-          </button>
-          <button
-            onClick={() => setActiveTab('editor')}
-            className={clsx(
-              "flex-1 py-3.5 md:py-3 px-4 text-sm font-medium transition-colors relative touch-manipulation",
-              activeTab === 'editor'
-                ? "text-[var(--text-primary)]"
-                : "text-[var(--text-secondary)] hover:text-[var(--text-primary)] active:text-[var(--text-primary)]"
-            )}
-          >
-            <div className="flex items-center justify-center gap-2">
-              <FileEdit size={16} />
-              Editor
-            </div>
-            {activeTab === 'editor' && (
-              <div
-                className="absolute bottom-0 left-0 right-0 h-0.5"
-                style={{ backgroundColor: preferences.accentColor }}
-              />
-            )}
-          </button>
+        <div className="flex border-b border-[var(--border-color)] shrink-0 overflow-x-auto scrollbar-hide">
+          {([
+            { id: 'appearance' as const, icon: Palette, label: 'Appearance' },
+            { id: 'typography' as const, icon: Type, label: 'Typography' },
+            { id: 'exclusions' as const, icon: FolderX, label: 'Exclusions' },
+            { id: 'editor' as const, icon: FileEdit, label: 'Editor' },
+            { id: 'system' as const, icon: Monitor, label: 'System' },
+          ]).map(({ id, icon: Icon, label }) => (
+            <button
+              key={id}
+              onClick={() => setActiveTab(id)}
+              className={clsx(
+                "flex-1 min-w-0 py-3.5 md:py-3 px-3 md:px-4 text-sm font-medium transition-colors relative touch-manipulation",
+                activeTab === id
+                  ? "text-[var(--text-primary)]"
+                  : "text-[var(--text-secondary)] hover:text-[var(--text-primary)] active:text-[var(--text-primary)]"
+              )}
+              title={label}
+            >
+              <div className="flex items-center justify-center gap-2">
+                <Icon size={16} className="shrink-0" />
+                <span className="hidden md:inline">{label}</span>
+              </div>
+              {activeTab === id && (
+                <div
+                  className="absolute bottom-0 left-0 right-0 h-0.5"
+                  style={{ backgroundColor: preferences.accentColor }}
+                />
+              )}
+            </button>
+          ))}
         </div>
 
         {/* Content */}
@@ -601,9 +587,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
             <>
               {/* Font Size */}
               <div>
-                <label className="block text-sm font-medium text-[var(--text-primary)] mb-3">
+                <label className="block text-sm font-medium text-[var(--text-primary)] mb-2">
                   Font Size
                 </label>
+                <p className="text-xs text-[var(--text-muted)] mb-3">
+                  Applies to all chat messages (yours and Claude's) and the message input
+                </p>
                 <div className="flex gap-2">
                   {FONT_SIZES.map(({ name, value, scale }) => (
                     <button
@@ -629,7 +618,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
                   Interface Font
                 </label>
                 <p className="text-xs text-[var(--text-muted)] mb-3">
-                  Used for buttons, labels, and navigation
+                  Applies to buttons, menus, sidebar, headers, and all UI elements outside of content areas
                 </p>
                 <select
                   value={typography.fontUI}
@@ -648,7 +637,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
                   Chat Font
                 </label>
                 <p className="text-xs text-[var(--text-muted)] mb-3">
-                  Used for messages in the chat panel
+                  Applies to all chat messages (both your messages and Claude's responses) and the message input area
                 </p>
                 <select
                   value={typography.fontChat}
@@ -667,7 +656,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
                   Editor Font
                 </label>
                 <p className="text-xs text-[var(--text-muted)] mb-3">
-                  Used for reading and editing documents
+                  Applies to the document editor for reading and writing notes, markdown files, and long-form content
                 </p>
                 <select
                   value={typography.fontEditor}
@@ -939,6 +928,88 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
               )}
             </>
           )}
+
+          {activeTab === 'system' && (
+            <>
+              <p className="text-sm text-[var(--text-secondary)]">
+                Server management and system controls.
+              </p>
+
+              {/* Server Restart */}
+              <div>
+                <label className="block text-sm font-medium text-[var(--text-primary)] mb-2">
+                  Server Restart
+                </label>
+                <p className="text-xs text-[var(--text-muted)] mb-4">
+                  Restart the backend server to apply configuration changes, reload MCP tools, or recover from errors. The page will automatically reconnect.
+                </p>
+
+                {restartStatus === 'restarting' && (
+                  <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-600 dark:text-amber-400 text-sm mb-4 flex items-center gap-2">
+                    <RefreshCw size={16} className="animate-spin" />
+                    Server is restarting... The page will reconnect automatically.
+                  </div>
+                )}
+
+                {restartError && (
+                  <div className="p-3 rounded-lg bg-red-500/10 border border-red-500/20 text-red-500 text-sm mb-4">
+                    {restartError}
+                  </div>
+                )}
+
+                {!restartConfirm ? (
+                  <div className="flex gap-3">
+                    <button
+                      onClick={() => setRestartConfirm(true)}
+                      disabled={restartLoading || restartStatus === 'restarting'}
+                      className="flex items-center gap-2 px-4 py-2.5 text-sm font-medium rounded-lg border border-[var(--border-color)] bg-[var(--bg-tertiary)] text-[var(--text-primary)] hover:bg-[var(--border-color)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed touch-manipulation active:scale-95"
+                    >
+                      <RefreshCw size={16} />
+                      Restart Server
+                    </button>
+                  </div>
+                ) : (
+                  <div className="p-4 rounded-xl border border-amber-500/30 bg-amber-500/5 space-y-3">
+                    <p className="text-sm text-[var(--text-primary)] font-medium">
+                      Are you sure? This will briefly disconnect all clients.
+                    </p>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => handleRestart(false)}
+                        disabled={restartLoading}
+                        className="flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed touch-manipulation active:scale-95"
+                        style={{ backgroundColor: preferences.accentColor }}
+                      >
+                        {restartLoading ? (
+                          <RefreshCw size={14} className="animate-spin" />
+                        ) : (
+                          <RefreshCw size={14} />
+                        )}
+                        Quick Restart
+                      </button>
+                      <button
+                        onClick={() => handleRestart(true)}
+                        disabled={restartLoading}
+                        className="flex items-center gap-2 px-4 py-2.5 text-sm font-medium rounded-lg border border-[var(--border-color)] bg-[var(--bg-tertiary)] text-[var(--text-primary)] hover:bg-[var(--border-color)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed touch-manipulation active:scale-95"
+                      >
+                        Full Rebuild
+                      </button>
+                      <button
+                        onClick={() => setRestartConfirm(false)}
+                        disabled={restartLoading}
+                        className="px-4 py-2.5 text-sm font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors touch-manipulation"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                    <p className="text-xs text-[var(--text-muted)]">
+                      <strong>Quick Restart</strong> restarts the Python server only (~5s). <strong>Full Rebuild</strong> also rebuilds the frontend (~30s).
+                    </p>
+                  </div>
+                )}
+              </div>
+            </>
+          )}
         </div>
 
         {/* Footer */}
@@ -970,6 +1041,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
               >
                 Reset to Default
               </button>
+              <button
+                onClick={onClose}
+                className="px-5 py-2.5 text-sm font-medium text-white rounded-lg transition-colors active:scale-95 touch-manipulation"
+                style={{ backgroundColor: preferences.accentColor }}
+              >
+                Done
+              </button>
+            </>
+          ) : activeTab === 'system' ? (
+            <>
+              <div />
               <button
                 onClick={onClose}
                 className="px-5 py-2.5 text-sm font-medium text-white rounded-lg transition-colors active:scale-95 touch-manipulation"
