@@ -6,10 +6,14 @@ type: primary
 timeout_seconds: 1800
 max_turns: 200
 chattable: true
-color: '#7659e8'
-icon: sparkles
-native_tools:
-- Skill
+icon: anchor
+skills:
+- moltbook
+- project-task
+- resume-thread
+- character-gen
+- sync
+native_tools: []
 mcp_tools:
 - mcp__brain__working_memory_add
 - mcp__brain__working_memory_update
@@ -35,7 +39,6 @@ mcp_tools:
 - mcp__brain__moltbook_respond_challenge
 - mcp__brain__moltbook_challenge_log
 - mcp__brain__consult_llm
-- mcp__brain__chess
 - mcp__brain__fal_text_to_image
 - mcp__brain__fal_image_to_image
 - mcp__brain__fal_multi_ref_image
@@ -45,17 +48,11 @@ mcp_tools:
 - mcp__brain__forms_save
 - mcp__brain__forms_list
 - mcp__brain__bash
-- mcp__brain__ltm_add_memory
 - mcp__brain__ltm_search
-- mcp__brain__ltm_get_context
 - mcp__brain__restart_server
 - mcp__brain__process_list
 - mcp__brain__compact_conversation
 - mcp__brain__web_search
 - mcp__brain__page_parser
 - mcp__brain__send_critical_notification
-- mcp__brain__google_create_tasks_and_events
-- mcp__brain__google_list
-- mcp__brain__google_delete_task
-- mcp__brain__google_update_task
-- mcp__brain__google_auth
+- mcp__brain__fetch_skill

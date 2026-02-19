@@ -9,7 +9,6 @@ color: "#9B59B6"
 icon: brain
 timeout_seconds: 600
 tools:
-- Skill
 - Read
 - Write
 - mcp__brain__consult_llm

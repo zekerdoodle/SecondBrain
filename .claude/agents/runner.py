@@ -13,13 +13,12 @@ import json
 import logging
 import os
 import sys
-import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 from models import (
-    AgentConfig, AgentInvocation, AgentResult, AgentType, InvocationMode
+    AgentConfig, AgentInvocation, AgentResult, InvocationMode
 )
 from agent_notifications import get_notification_queue
 
@@ -37,9 +36,6 @@ EXECUTIONS_LOG = Path(__file__).parent / "executions.json"
 
 # Default working directory for agents
 WORKING_DIR = "/home/debian/second_brain"
-
-# Claude CLI binary path
-CLAUDE_CLI = "/home/debian/second_brain/interface/server/venv/lib/python3.11/site-packages/claude_agent_sdk/_bundled/claude"
 
 
 def _build_project_metadata_block(
@@ -144,8 +140,8 @@ async def invoke_agent(
             max_turns=config.max_turns,
             output_format=config.output_format,
             prompt=config.prompt,
-            prompt_appendage=config.prompt_appendage,
             system_prompt_preset=config.system_prompt_preset,
+            skills=config.skills,
         )
 
     # Inject project metadata into prompt if project is specified
@@ -199,18 +195,11 @@ async def invoke_agent(
 async def _run_agent(config: AgentConfig, invocation: AgentInvocation) -> AgentResult:
     """
     Execute an agent and return the result.
-
-    Routes to appropriate runner based on agent type.
-    Process registration is handled by each runner individually
-    so they can capture the correct subprocess PID.
     """
     started_at = datetime.utcnow()
 
     try:
-        if config.type == AgentType.CLI:
-            response = await _run_cli_agent(config, invocation)
-        else:
-            response = await _run_sdk_agent(config, invocation)
+        response = await _run_sdk_agent(config, invocation)
 
         return AgentResult(
             agent=config.name,
@@ -314,99 +303,150 @@ async def _run_sdk_agent(config: AgentConfig, invocation: AgentInvocation) -> st
         if append_content:
             system_prompt["append"] = append_content
     else:
-        system_prompt = config.prompt
+        # Replace mode: instructions + agent-specific memory in a plain string
+        parts = []
+        if config.prompt:
+            parts.append(config.prompt)
+        # Include per-agent memory.md alongside instructions
+        agent_memory_path = Path(__file__).parent / config.name / "memory.md"
+        if agent_memory_path.exists():
+            try:
+                memory_content = agent_memory_path.read_text().strip()
+                if memory_content:
+                    parts.append(
+                        "\n---\n\n"
+                        "Your persistent memory (notes you've saved across conversations):\n\n"
+                        f"{memory_content}"
+                    )
+                    logger.info(f"Agent '{config.name}': loaded memory.md for replace-mode system prompt")
+            except Exception as e:
+                logger.warning(f"Agent '{config.name}': could not read memory.md for replace: {e}")
+        system_prompt = "\n".join(parts) if parts else ""
 
-    # Build options
-    # If agent has Skill in its tools, enable project settings so the CLI
-    # discovers skills from .claude/skills/. We swap CLAUDE.md to a minimal
-    # stub to prevent identity bleed from the primary agent's content.
-    has_skills = config.tools and "Skill" in config.tools
+    # Build MCP server if the agent uses any mcp__brain__ tools.
+    # Without this, the SDK subprocess has no MCP server to resolve those tool names.
+    MCP_PREFIX = "mcp__brain__"
+    mcp_servers = {}
+
+    # Determine if this agent has skill access (for auto-including fetch_skill)
+    agent_has_skills = config.skills is None or (isinstance(config.skills, list) and len(config.skills) > 0)
+
+    if config.tools:
+        mcp_tool_names = [t for t in config.tools if t.startswith(MCP_PREFIX)]
+
+        # Auto-include fetch_skill if agent has skill access and it's not already listed
+        fetch_skill_mcp = f"{MCP_PREFIX}fetch_skill"
+        if agent_has_skills and fetch_skill_mcp not in mcp_tool_names:
+            mcp_tool_names.append(fetch_skill_mcp)
+
+        if mcp_tool_names:
+            # Strip prefix to get internal tool names for the MCP registry
+            internal_names = [t[len(MCP_PREFIX):] for t in mcp_tool_names]
+            try:
+                from mcp_tools import create_mcp_server
+                mcp_server = create_mcp_server(
+                    name="brain",
+                    include_tools=internal_names,
+                    agent_name=config.name,
+                    allowed_skills=config.skills,
+                )
+                mcp_servers["brain"] = mcp_server
+                logger.info(
+                    f"Created MCP server for agent '{config.name}' with "
+                    f"{len(internal_names)} tools: {internal_names}"
+                )
+            except Exception as e:
+                logger.error(f"Failed to create MCP server for agent '{config.name}': {e}")
+    elif agent_has_skills:
+        # Agent has no tools configured but has skill access — create MCP server
+        # with just fetch_skill so the agent can load skills on demand
+        try:
+            from mcp_tools import create_mcp_server
+            mcp_server = create_mcp_server(
+                name="brain",
+                include_tools=["fetch_skill"],
+                agent_name=config.name,
+                allowed_skills=config.skills,
+            )
+            mcp_servers["brain"] = mcp_server
+            mcp_tool_names = [f"{MCP_PREFIX}fetch_skill"]
+            logger.info(f"Created MCP server for agent '{config.name}' with fetch_skill only")
+        except Exception as e:
+            logger.error(f"Failed to create fetch_skill MCP server for agent '{config.name}': {e}")
+
+    # Build the effective allowed_tools list (config.tools + any auto-added tools)
+    effective_tools = list(config.tools) if config.tools else []
+    if agent_has_skills:
+        fetch_skill_mcp = f"{MCP_PREFIX}fetch_skill"
+        if fetch_skill_mcp not in effective_tools:
+            effective_tools.append(fetch_skill_mcp)
+
+    # Inject the shared "Available agents" block into the system prompt — but only
+    # if this agent has access to any agent-calling tools (invoke_agent, etc.).
+    # Agents without agent tools never see the agent list.
+    try:
+        from mcp_tools.agents import get_agent_list_for_prompt
+        agent_list_block = get_agent_list_for_prompt(effective_tools)
+        if agent_list_block:
+            if isinstance(system_prompt, dict):
+                # Preset mode — append to the "append" field
+                existing = system_prompt.get("append", "")
+                system_prompt["append"] = existing + agent_list_block
+            else:
+                # Replace mode — append to the string
+                system_prompt = system_prompt + agent_list_block
+            logger.info(f"Agent '{config.name}': injected agent list into system prompt")
+    except Exception as e:
+        logger.warning(f"Agent '{config.name}': failed to inject agent list: {e}")
+
     options = ClaudeAgentOptions(
         model=config.model,
         system_prompt=system_prompt,
-        allowed_tools=config.tools if config.tools else None,
+        allowed_tools=effective_tools if effective_tools else None,
         permission_mode="bypassPermissions",
-        setting_sources=["project"] if has_skills else [],
+        setting_sources=[],  # Never load project settings for subagents
         max_turns=config.max_turns,
+        mcp_servers=mcp_servers if mcp_servers else None,
     )
 
     # Add output format if specified
     if config.output_format:
         options.output_format = config.output_format
 
-    # CONCURRENCY-SAFE CLAUDE.md HANDLING
-    # Instead of swapping the shared CLAUDE.md (which races when agents run in parallel),
-    # we write a per-invocation temp CLAUDE.md and point the SDK at a temp working directory
-    # that symlinks everything except CLAUDE.md from the real .claude/ directory.
-    temp_claude_dir = None
-    claude_md_path = Path(__file__).parent.parent  # .claude/
-    if has_skills and (claude_md_path / "CLAUDE.md").exists():
+    # Inject skill menu (lightweight list of available skills) into the prompt.
+    # Full skill bodies are loaded on demand via the fetch_skill MCP tool.
+    effective_prompt = invocation.prompt
+    if agent_has_skills:
         try:
-            # Build agent-scoped CLAUDE.md content
-            sections = [
-                f"# Agent: {config.name}\n\n"
-                "Your system instructions are provided via the system prompt.\n"
-                "Follow only those instructions.\n"
-            ]
-
-            # Include per-agent memory.md if it exists (skip for preset agents —
-            # they already get memory via the system prompt append field)
-            agent_memory_path = Path(__file__).parent / config.name / "memory.md"
-            if not config.system_prompt_preset and agent_memory_path.exists():
-                try:
-                    memory_content = agent_memory_path.read_text().strip()
-                    if memory_content:
-                        sections.append(
-                            "\n---\n\n"
-                            "Your persistent memory (notes you've saved across conversations):\n\n"
-                            f"{memory_content}"
-                        )
-                        logger.info(f"CLAUDE.md: included memory.md for agent '{config.name}'")
-                except Exception as e:
-                    logger.warning(f"CLAUDE.md: could not read memory.md for agent '{config.name}': {e}")
-
-            # Create a temp .claude/ directory with symlinks to all real contents
-            # but a unique CLAUDE.md for this invocation
-            temp_claude_dir = tempfile.mkdtemp(prefix=f"agent_{config.name}_")
-            temp_dot_claude = Path(temp_claude_dir) / ".claude"
-            temp_dot_claude.mkdir()
-
-            # Symlink all items from real .claude/ except CLAUDE.md
-            real_dot_claude = claude_md_path
-            for item in real_dot_claude.iterdir():
-                if item.name == "CLAUDE.md":
-                    continue
-                target = temp_dot_claude / item.name
-                target.symlink_to(item)
-
-            # Write the agent-scoped CLAUDE.md
-            (temp_dot_claude / "CLAUDE.md").write_text("".join(sections))
-            logger.info(f"CLAUDE.md: created isolated copy for agent '{config.name}' at {temp_claude_dir}")
-
-            # Override the working directory for this invocation
-            options.cwd = temp_claude_dir
-
+            from skill_injector import get_skill_reminder
+            skill_reminder = get_skill_reminder(allowed_skills=config.skills)
+            if skill_reminder:
+                effective_prompt = f"{skill_reminder}\n\n{invocation.prompt}"
+                logger.info(f"Injected skill menu into agent '{config.name}' prompt")
         except Exception as e:
-            logger.warning(f"CLAUDE.md: failed to create isolated copy for agent '{config.name}': {e}")
-            temp_claude_dir = None
+            logger.warning(f"Skill menu injection failed for agent '{config.name}': {e}")
 
     result_text = ""
 
     try:
         async with asyncio.timeout(config.timeout_seconds):
-            result_text = await _consume_query(invocation.prompt, options)
+            result_text = await _consume_query(effective_prompt, options)
     except asyncio.TimeoutError:
+        raise
+    except ExceptionGroup as eg:
+        # Unwrap TaskGroup/ExceptionGroup to log actual sub-exceptions
+        import traceback
+        for i, exc in enumerate(eg.exceptions):
+            logger.error(f"Agent '{config.name}' sub-exception {i}: {type(exc).__name__}: {exc}")
+            logger.error("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
+        raise
+    except Exception as e:
+        import traceback
+        logger.error(f"Agent '{config.name}' exception: {type(e).__name__}: {e}")
+        logger.error("".join(traceback.format_exception(type(e), e, e.__traceback__)))
         raise
 
     finally:
-        # Clean up temp directory (symlinks are safe to remove)
-        if temp_claude_dir is not None:
-            try:
-                import shutil
-                shutil.rmtree(temp_claude_dir, ignore_errors=True)
-                logger.info(f"CLAUDE.md: cleaned up isolated copy for agent '{config.name}'")
-            except Exception as e:
-                logger.warning(f"CLAUDE.md: failed to clean up temp dir for agent '{config.name}': {e}")
         if reg_id:
             try:
                 deregister_process(reg_id)
@@ -419,11 +459,34 @@ async def _run_sdk_agent(config: AgentConfig, invocation: AgentInvocation) -> st
 async def _consume_query(prompt: str, options) -> str:
     """
     Consume the async generator from query() and return the final result.
+
+    When MCP servers are configured, the prompt is sent as an AsyncIterable
+    (streaming mode) so the SDK keeps stdin open for the bidirectional MCP
+    control protocol. Without this, the CLI subprocess can't send MCP JSONRPC
+    requests back through stdin/stdout.
     """
     from claude_agent_sdk import query
 
+    # Determine if we need streaming mode for MCP bridge
+    has_mcp = bool(options.mcp_servers)
+
+    if has_mcp:
+        # Wrap prompt in an async iterable so the SDK uses stream_input(),
+        # which keeps stdin open for MCP JSONRPC communication.
+        async def _prompt_stream():
+            yield {
+                "type": "user",
+                "session_id": "",
+                "message": {"role": "user", "content": prompt},
+                "parent_tool_use_id": None,
+            }
+
+        effective_prompt = _prompt_stream()
+    else:
+        effective_prompt = prompt
+
     result_text = ""
-    async for message in query(prompt=prompt, options=options):
+    async for message in query(prompt=effective_prompt, options=options):
         # Capture final result
         if hasattr(message, "result"):
             result_text = message.result
@@ -431,138 +494,6 @@ async def _consume_query(prompt: str, options) -> str:
             result_text = json.dumps(message.structured_output, indent=2)
 
     return result_text
-
-
-async def _run_cli_agent(config: AgentConfig, invocation: AgentInvocation) -> str:
-    """
-    Run a CLI-based agent using claude --print.
-
-    Used for claude_code agent which needs full Claude Code capabilities.
-    """
-    logger.info(f"Running CLI agent '{config.name}' with model {config.model}, timeout {config.timeout_seconds}s")
-
-    # Build command
-    # If agent has Skill in its tools, enable project settings so the CLI
-    # discovers skills from .claude/skills/.
-    has_skills = config.tools and "Skill" in config.tools
-    cmd = [
-        CLAUDE_CLI,
-        "--print",
-        "--dangerously-skip-permissions",
-        "--model", config.model,
-        "--setting-sources", "project" if has_skills else "",
-        "--output-format", "json",  # Use JSON to extract final model reply
-    ]
-
-    # Add system prompt appendage if present
-    if config.prompt_appendage:
-        cmd.extend(["--append-system-prompt", config.prompt_appendage])
-
-    # Add the prompt
-    cmd.append(invocation.prompt)
-
-    # Run the command
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        cwd=WORKING_DIR,
-        env={**os.environ}
-    )
-
-    # Register in process registry with the actual subprocess PID
-    task_desc = invocation.prompt[:80] if invocation.prompt else "active"
-    reg_id = None
-    try:
-        reg_id = register_process(config.name, task=task_desc, pid=proc.pid)
-    except Exception as e:
-        logger.warning(f"Failed to register agent '{config.name}' in process registry: {e}")
-
-    try:
-        stdout, stderr = await asyncio.wait_for(
-            proc.communicate(),
-            timeout=config.timeout_seconds
-        )
-
-        stdout_text = stdout.decode().strip()
-        stderr_text = stderr.decode().strip()
-        return_code = proc.returncode
-
-        logger.info(f"CLI agent '{config.name}' completed with return code {return_code}")
-
-        if return_code != 0:
-            error_msg = f"Agent exited with code {return_code}"
-            if stderr_text:
-                error_msg += f"\nstderr: {stderr_text}"
-            if stdout_text:
-                error_msg += f"\nstdout: {stdout_text}"
-            raise RuntimeError(error_msg)
-
-        # Parse JSON output to extract the final model reply
-        return _extract_final_reply(stdout_text, config.name)
-
-    except asyncio.TimeoutError:
-        # Kill the subprocess to prevent zombie processes
-        try:
-            proc.kill()
-            await proc.wait()
-            logger.info(f"Killed timed-out CLI agent '{config.name}' (PID {proc.pid})")
-        except ProcessLookupError:
-            pass  # Already dead
-        raise
-
-    finally:
-        if reg_id:
-            try:
-                deregister_process(reg_id)
-            except Exception as e:
-                logger.warning(f"Failed to deregister agent '{config.name}': {e}")
-
-
-def _extract_final_reply(json_output: str, agent_name: str) -> str:
-    """
-    Extract the final model reply from Claude CLI JSON output.
-
-    The JSON output is an array of messages. We look for the message
-    with type="result" which contains the final response in its "result" field.
-
-    Args:
-        json_output: Raw JSON output from claude --print --output-format json
-        agent_name: Agent name for logging
-
-    Returns:
-        The final model reply text
-    """
-    try:
-        messages = json.loads(json_output)
-
-        # Find the result message
-        for msg in messages:
-            if msg.get("type") == "result":
-                result = msg.get("result", "")
-                if result:
-                    return result
-                # If result is empty, check if there was an error
-                if msg.get("is_error"):
-                    error_msg = msg.get("error", "Unknown error")
-                    raise RuntimeError(f"Agent returned error: {error_msg}")
-
-        # Fallback: look for assistant message content
-        for msg in reversed(messages):
-            if msg.get("type") == "assistant":
-                message_data = msg.get("message", {})
-                content = message_data.get("content", [])
-                for block in content:
-                    if block.get("type") == "text":
-                        return block.get("text", "")
-
-        logger.warning(f"CLI agent '{agent_name}' produced no extractable result")
-        return ""
-
-    except json.JSONDecodeError as e:
-        logger.error(f"Failed to parse CLI agent JSON output: {e}")
-        # Fallback to returning raw output if JSON parsing fails
-        return json_output
 
 
 def _log_execution(invocation: AgentInvocation, result: AgentResult) -> None:

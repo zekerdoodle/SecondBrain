@@ -24,27 +24,16 @@ if AGENTS_DIR not in sys.path:
 
 
 def _build_schedule_tool_schema():
-    """Build tool schema dynamically from registry."""
-    from registry import get_registry
+    """Build tool schema dynamically from registry.
 
-    registry = get_registry()
-    all_agents = registry.get_all_configs()
-    all_background = registry.get_all_background_configs()
-    combined = {**all_agents, **all_background}
+    The agent list is NOT embedded here — it's injected once by
+    ``create_mcp_server()`` when any agent tool is present.
+    """
+    from . import build_agent_list_block
 
-    # Build description
-    agent_lines = []
-    for name, config in sorted(combined.items()):
-        desc = config.description or "No description"
-        agent_lines.append(f"- {name}: {desc}")
+    _, agent_names = build_agent_list_block()
 
-    agent_list = "\n".join(agent_lines)
-    agent_names = list(combined.keys())
-
-    description = f"""Schedule an agent to run at a specific time or interval.
-
-Available agents:
-{agent_list}
+    description = """Schedule an agent to run at a specific time or interval.
 
 Schedule formats:
 - "every X minutes" - Run every X minutes
@@ -54,9 +43,11 @@ Schedule formats:
 - "once at YYYY-MM-DDTHH:MM:SS" - Run once at specific datetime
 - Cron syntax: "minute hour day-of-month month day-of-week" (e.g., "30 2 * * *" for daily at 2:30am)
 
-Visibility: By default (silent=true), scheduled agents run in the background. Their output is written
-to 00_Inbox/agent_outputs/ for async review during syncs. Set silent=false to create a visible chat
-with notifications when the agent completes — useful for user-facing tasks like news briefings.
+Visibility (silent parameter):
+- silent=true (default): the user does NOT see this. Agent runs invisibly in the background,
+  output saved to 00_Inbox/agent_outputs/ for async review during syncs.
+- silent=false: the user WILL see this. Creates a visible chat with notifications when the agent completes.
+  Use for user-facing tasks like news briefings or anything the user should be aware of.
 
 Output routing: If room_id is specified, agent output is delivered directly to that room."""
 
@@ -82,7 +73,7 @@ Output routing: If room_id is specified, agent output is delivered directly to t
             },
             "silent": {
                 "type": "boolean",
-                "description": "If true (default), agent runs in background without visible chat or notifications. If false, creates a visible chat and sends notifications when done."
+                "description": "If true (default): the user does NOT see this — agent runs invisibly. If false: the user WILL see this — creates a visible chat with notifications."
             },
             "project": {
                 "description": "Optional: Target project for output routing. When specified, agent output is tagged with YAML frontmatter for automatic routing to the project's _status.md during morning sync.",

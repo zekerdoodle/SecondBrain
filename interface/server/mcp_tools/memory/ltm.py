@@ -87,7 +87,7 @@ This is the main way to retrieve memory context for a conversation. It uses a th
 strategy: finds relevant threads, includes whole threads (to preserve context), and fills
 remaining budget with individual relevant facts.
 
-Uses recency-weighted scoring based on query type.""",
+Uses purely semantic scoring — recency is handled separately by the recent-memory block.""",
     input_schema={
         "type": "object",
         "properties": {

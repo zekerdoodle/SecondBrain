@@ -2,6 +2,7 @@ import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import MDEditor from '@uiw/react-md-editor';
 import { FileText, Eye, Edit2, RotateCcw, Check, ExternalLink, X } from 'lucide-react';
 import { useCodeBlockWrap } from './hooks/useCodeBlockWrap';
+import { escapeNonHtmlTags } from './utils/escapeNonHtmlTags';
 import { clsx } from 'clsx';
 import { API_URL } from './config';
 
@@ -403,9 +404,9 @@ export const EditorView: React.FC<EditorViewProps> = ({
     );
   }, [handleLinkClick]);
 
-  // Transform markdown content to support wiki links
+  // Transform markdown content to support wiki links and escape non-standard HTML tags
   const processedMarkdown = useMemo(() => {
-    return transformWikiLinks(markdown);
+    return escapeNonHtmlTags(transformWikiLinks(markdown));
   }, [markdown]);
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Tab') {

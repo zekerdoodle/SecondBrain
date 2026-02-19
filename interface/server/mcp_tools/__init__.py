@@ -53,7 +53,7 @@ def _inject_chat_context(tools, chat_id: str):
     from claude_agent_sdk import SdkMcpTool
 
     # Tools that need to know their source chat_id
-    CONTEXT_TOOLS = {"invoke_agent", "invoke_agent_chain"}
+    CONTEXT_TOOLS = {"invoke_agent", "invoke_agent_chain", "invoke_agent_parallel"}
 
     wrapped = []
     for t in tools:
@@ -81,20 +81,22 @@ def _inject_chat_context(tools, chat_id: str):
 
 
 def _inject_agent_context(tools, agent_name: str):
-    """Wrap memory tool handlers so they resolve the correct per-agent memory file.
+    """Wrap agent-context-sensitive tool handlers to inject the calling agent's name.
 
-    For non-primary agents, injects ``_agent_name`` into the args dict so that
-    ``memory_append`` and ``memory_read`` target ``.claude/agents/{name}/memory.md``
-    instead of the primary agent's ``.claude/memory.md``.
+    For non-primary agents, injects ``_agent_name`` into the args dict so that:
+    - ``memory_append`` and ``memory_read`` target ``.claude/agents/{name}/memory.md``
+      instead of the primary agent's ``.claude/memory.md``.
+    - ``schedule_self`` creates an agent-type scheduled task (dispatched via the agent
+      runner) instead of a prompt-type task (dispatched via ClaudeWrapper).
     """
     from claude_agent_sdk import SdkMcpTool
 
-    MEMORY_TOOLS = {"memory_append", "memory_read"}
+    AGENT_CONTEXT_TOOLS = {"memory_append", "memory_read", "schedule_self"}
 
     wrapped = []
     for t in tools:
         tool_name = getattr(t, 'name', getattr(t, '__name__', ''))
-        if tool_name in MEMORY_TOOLS:
+        if tool_name in AGENT_CONTEXT_TOOLS:
             original_handler = t.handler
 
             def _make_wrapper(handler, name):
@@ -115,6 +117,45 @@ def _inject_agent_context(tools, agent_name: str):
     return wrapped
 
 
+
+def _inject_skill_context(tools, allowed_skills):
+    """Wrap fetch_skill handler with a closure that injects the agent's allowed skills.
+
+    Same pattern as ``_inject_agent_context`` — the closure captures the per-agent
+    ``allowed_skills`` list and injects it as ``_allowed_skills`` in the args dict.
+
+    Args:
+        tools: List of SdkMcpTool objects
+        allowed_skills: None (all skills) or list of skill names this agent can access
+    """
+    from claude_agent_sdk import SdkMcpTool
+
+    SKILL_TOOLS = {"fetch_skill"}
+
+    wrapped = []
+    for t in tools:
+        tool_name = getattr(t, 'name', getattr(t, '__name__', ''))
+        if tool_name in SKILL_TOOLS:
+            original_handler = t.handler
+
+            def _make_wrapper(handler, skills):
+                async def wrapper(args):
+                    args["_allowed_skills"] = skills
+                    return await handler(args)
+                return wrapper
+
+            wrapped.append(SdkMcpTool(
+                name=t.name,
+                description=t.description,
+                input_schema=t.input_schema,
+                handler=_make_wrapper(original_handler, allowed_skills),
+                annotations=getattr(t, 'annotations', None),
+            ))
+        else:
+            wrapped.append(t)
+    return wrapped
+
+
 def create_mcp_server(
     name: str = "second_brain",
     version: str = "1.0.0",
@@ -123,6 +164,7 @@ def create_mcp_server(
     exclude_tools: Optional[List[str]] = None,
     chat_id: Optional[str] = None,
     agent_name: Optional[str] = None,
+    allowed_skills=None,
 ):
     """
     Create MCP server with specified tools.
@@ -142,6 +184,9 @@ def create_mcp_server(
         agent_name: Agent name for memory isolation. When provided, memory_append
                    and memory_read target .claude/agents/{name}/memory.md instead
                    of the primary agent's .claude/memory.md.
+        allowed_skills: Per-agent skill filter for fetch_skill tool.
+                       None = all skills, list = only these skills.
+                       Sentinel "NO_SKILLS" string skips skill context injection entirely.
 
     Returns:
         MCP server instance
@@ -167,6 +212,11 @@ def create_mcp_server(
     if agent_name:
         tools = _inject_agent_context(tools, agent_name)
 
+    # Inject skill context (allowed_skills filtering) for fetch_skill tool
+    # Skip if allowed_skills is the sentinel "NO_SKILLS" (agent has skills: [])
+    if allowed_skills != "NO_SKILLS":
+        tools = _inject_skill_context(tools, allowed_skills)
+
     logger.info(f"Creating MCP server '{name}' with {len(tools)} tools (chat_id={chat_id}, agent={agent_name})")
 
     return create_sdk_mcp_server(
@@ -184,6 +234,7 @@ def _load_all_tools():
     from . import gmail
     from . import youtube
     from . import spotify
+    from . import finance
     from . import scheduler
     from . import memory
     from . import utilities
@@ -194,6 +245,7 @@ def _load_all_tools():
     from . import llm
     from . import chess
     from . import image
+    from . import skills
 
 
 # Auto-load tools when module is imported

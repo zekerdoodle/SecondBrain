@@ -63,32 +63,28 @@ ALL_NATIVE_TOOLS = {
     # File operations
     "Read", "Write", "Edit", "Glob", "Grep", "NotebookEdit",
     # Execution
-    "Bash", "Task", "TaskOutput", "KillShell",
+    "Bash", "Task", "TaskOutput", "TaskStop", "KillShell",
     # Web
     "WebFetch", "WebSearch",
     # UI/Interaction
-    "AskUserQuestion", "Skill", "TodoWrite",
+    "AskUserQuestion", "TodoWrite",
     # Plan mode
     "EnterPlanMode", "ExitPlanMode",
 }
 
 
-# Lock to prevent concurrent CLAUDE.md swaps between agents.
-# When a non-primary agent launches with setting_sources=["project"],
-# we temporarily write a minimal CLAUDE.md to prevent identity bleed
-# from Ren's content. This lock serializes those swaps.
-_claude_md_lock = asyncio.Lock()
 
-
-def _load_primary_agent_config(cwd: str) -> tuple[list, list, list]:
+def _load_primary_agent_config(cwd: str) -> tuple[list, list, list, list | None, str]:
     """
     Load primary agent configuration from .claude/agents/ren/config.yaml.
 
     Returns:
-        Tuple of (mcp_tool_names, internal_tool_names, disallowed_native_tools)
+        Tuple of (mcp_tool_names, internal_tool_names, disallowed_native_tools, skills, model)
         - mcp_tool_names: e.g., ["mcp__brain__google_list", ...]
         - internal_tool_names: e.g., ["google_list", ...]
         - disallowed_native_tools: e.g., ["WebSearch", "Bash", ...]
+        - skills: list of allowed skill names, or None for all skills
+        - model: the configured model string (e.g., "sonnet", "opus")
 
     Falls back to legacy agent_config.yaml if new config doesn't exist.
     """
@@ -109,7 +105,7 @@ def _load_primary_agent_config(cwd: str) -> tuple[list, list, list]:
         logger.info("No primary agent config found, using all tools")
         mcp_tools = list(ALL_MCP_TOOLS)
         internal_tools = [t.replace(MCP_PREFIX, "") for t in mcp_tools]
-        return mcp_tools, internal_tools, ["WebSearch"]  # Default: only disable WebSearch
+        return mcp_tools, internal_tools, ["WebSearch"], None, "sonnet"  # Default: all skills, sonnet model
 
     try:
         with open(config_path) as f:
@@ -119,7 +115,14 @@ def _load_primary_agent_config(cwd: str) -> tuple[list, list, list]:
             logger.warning("Empty config file, using all tools")
             mcp_tools = list(ALL_MCP_TOOLS)
             internal_tools = [t.replace(MCP_PREFIX, "") for t in mcp_tools]
-            return mcp_tools, internal_tools, ["WebSearch"]
+            return mcp_tools, internal_tools, ["WebSearch"], None, "sonnet"
+
+        # === Model configuration ===
+        configured_model = config.get("model", "sonnet")
+        if configured_model not in {"sonnet", "opus", "haiku"}:
+            logger.warning(f"Invalid model '{configured_model}' in primary agent config, defaulting to sonnet")
+            configured_model = "sonnet"
+        logger.info(f"Primary agent model from config: {configured_model}")
 
         # === Native tools configuration ===
         disallowed_native = []
@@ -145,7 +148,7 @@ def _load_primary_agent_config(cwd: str) -> tuple[list, list, list]:
             logger.info("No MCP tools config, using all MCP tools")
             mcp_tools = list(ALL_MCP_TOOLS)
             internal_tools = [t.replace(MCP_PREFIX, "") for t in mcp_tools]
-            return mcp_tools, internal_tools, disallowed_native
+            return mcp_tools, internal_tools, disallowed_native, None, configured_model
 
         allowed = set()
 
@@ -191,13 +194,21 @@ def _load_primary_agent_config(cwd: str) -> tuple[list, list, list]:
         if excluded_internal:
             logger.info(f"Excluded MCP tools: {sorted(excluded_internal)}")
 
-        return mcp_tool_names, internal_tool_names, disallowed_native
+        # === Skills configuration ===
+        # skills: list → only these skills; skills: null/missing → all skills
+        skills = config.get("skills")
+        if skills is not None:
+            logger.info(f"Primary agent skills restricted to: {skills}")
+        else:
+            logger.info("Primary agent has access to all skills")
+
+        return mcp_tool_names, internal_tool_names, disallowed_native, skills, configured_model
 
     except Exception as e:
         logger.error(f"Error loading primary agent config: {e}")
         mcp_tools = list(ALL_MCP_TOOLS)
         internal_tools = [t.replace(MCP_PREFIX, "") for t in mcp_tools]
-        return mcp_tools, internal_tools, ["WebSearch"]
+        return mcp_tools, internal_tools, ["WebSearch"], None, "sonnet"
 
 
 class MessageInjectionQueue:
@@ -334,159 +345,50 @@ class ClaudeWrapper:
         )
         return truncated + marker
 
-    def _refresh_claude_md(self) -> None:
+    async def _refresh_claude_md(self, query: str = "") -> None:
         """
-        Write .claude/CLAUDE.md with static content (prompt.md + memory.md).
+        Write .claude/CLAUDE.md with ALL memory context (no instructions).
 
         CLAUDE.md is loaded from disk by the CLI via setting_sources=["project"].
         This channel has NO size limit (unlike CLI args which cap at 128KB).
-        Only the primary agent loads CLAUDE.md — subagents either omit
-        setting_sources or set it to [].
+        Only the primary agent loads CLAUDE.md — subagents set setting_sources=[].
 
-        Called before each query so memory.md changes are picked up.
+        Contains:
+          1. Persistent memory (memory.md) — always loaded
+          2. Working memory — ephemeral scratchpad items
+          3. Recent memory — conversation threads from last 24h
+          4. Semantic LTM — query-dependent long-term memory retrieval
+
+        Instructions (prompt.md) are NOT here — they go in the system_prompt
+        SDK arg (replace mode). Clean separation: file = knowledge,
+        system_prompt arg = instructions, prompt = conversation.
+
+        Called before each query so dynamic memory is fresh.
         """
         claude_md_path = Path(self.cwd) / ".claude" / "CLAUDE.md"
         sections = []
 
-        # ── 1. Primary agent instructions (prompt.md) ──
-        prompt_path = Path(self.cwd) / ".claude" / "agents" / "ren" / "prompt.md"
-        if prompt_path.exists():
-            try:
-                sections.append(prompt_path.read_text())
-                logger.info(f"CLAUDE.md: loaded prompt.md ({prompt_path.stat().st_size} bytes)")
-            except Exception as e:
-                logger.warning(f"CLAUDE.md: could not read prompt.md: {e}")
+        # ── 0. Current date (always present) ──
+        from datetime import datetime
+        sections.append(f"Current date: {datetime.now().strftime('%Y-%m-%d')}")
 
-        # ── 2. Self-journal (memory.md) ──
+        # ── 1. Persistent memory (memory.md) — always present ──
         memory_path = Path(self.cwd) / ".claude" / "memory.md"
         if memory_path.exists():
             try:
                 memory_preamble = (
-                    "Your permanent self-journal. You write here to remember things\n"
+                    "My permanent self-journal. I write here to remember things\n"
                     "across all conversations — preferences, lessons learned, operating\n"
                     "rules, and facts that must always be available regardless of topic.\n"
                     "Update or remove entries as things change."
                 )
                 memory_content = memory_path.read_text()
-                sections.append(f"\n---\n\n{memory_preamble}\n\n{memory_content}")
+                sections.append(f"## Persistent Memory\n\n{memory_preamble}\n\n{memory_content}")
                 logger.info(f"CLAUDE.md: loaded memory.md ({memory_path.stat().st_size} bytes)")
             except Exception as e:
                 logger.warning(f"CLAUDE.md: could not read memory.md: {e}")
 
-        if sections:
-            combined = "\n".join(sections)
-            try:
-                # Atomic write: write to temp file then rename to prevent partial reads
-                # during concurrent access from multiple chat sessions
-                fd, tmp_path = tempfile.mkstemp(
-                    dir=str(claude_md_path.parent),
-                    prefix=".CLAUDE.md.",
-                    suffix=".tmp"
-                )
-                try:
-                    with os.fdopen(fd, 'w') as f:
-                        f.write(combined)
-                    os.rename(tmp_path, str(claude_md_path))
-                except Exception:
-                    # Clean up temp file on failure
-                    try:
-                        os.unlink(tmp_path)
-                    except OSError:
-                        pass
-                    raise
-                logger.info(f"CLAUDE.md: wrote {len(combined)} bytes atomically to {claude_md_path}")
-            except Exception as e:
-                logger.warning(f"CLAUDE.md: could not write: {e}")
-
-    def _write_agent_claude_md(self, agent_name: str) -> None:
-        """
-        Write an agent-scoped CLAUDE.md for non-primary agents.
-
-        When a non-primary agent uses setting_sources=["project"] (for Skill
-        discovery), the SDK also loads .claude/CLAUDE.md. Normally that file
-        contains Ren's personality and memory, causing identity bleed.
-
-        This method overwrites CLAUDE.md with an agent-scoped version that
-        includes only:
-        1. A directive pointing the agent to its system prompt
-        2. The agent's own memory.md (if it exists)
-
-        This prevents identity bleed while giving each agent its own
-        persistent memory that survives across conversations.
-        """
-        claude_md_path = Path(self.cwd) / ".claude" / "CLAUDE.md"
-
-        sections = [
-            f"# Agent: {agent_name}\n\n"
-            "Your system instructions are provided via the system prompt.\n"
-            "Follow only those instructions.\n"
-        ]
-
-        # Include per-agent memory.md if it exists
-        memory_path = Path(self.cwd) / ".claude" / "agents" / agent_name / "memory.md"
-        if memory_path.exists():
-            try:
-                memory_content = memory_path.read_text().strip()
-                if memory_content:
-                    sections.append(
-                        "\n---\n\n"
-                        "Your persistent memory (notes you've saved across conversations):\n\n"
-                        f"{memory_content}"
-                    )
-                    logger.info(f"CLAUDE.md: included memory.md for agent '{agent_name}' ({memory_path.stat().st_size} bytes)")
-            except Exception as e:
-                logger.warning(f"CLAUDE.md: could not read memory.md for agent '{agent_name}': {e}")
-
-        content = "".join(sections)
-        try:
-            fd, tmp_path = tempfile.mkstemp(
-                dir=str(claude_md_path.parent),
-                prefix=".CLAUDE.md.",
-                suffix=".tmp"
-            )
-            try:
-                with os.fdopen(fd, 'w') as f:
-                    f.write(content)
-                os.rename(tmp_path, str(claude_md_path))
-            except Exception:
-                try:
-                    os.unlink(tmp_path)
-                except OSError:
-                    pass
-                raise
-            logger.info(f"CLAUDE.md: wrote minimal stub for agent '{agent_name}'")
-        except Exception as e:
-            logger.warning(f"CLAUDE.md: could not write agent stub: {e}")
-
-    async def _build_system_prompt(self, user_query: Optional[str] = None) -> str:
-        """
-        Build the dynamic system prompt (working memory + semantic LTM only).
-
-        Static content (prompt.md, memory.md) lives in CLAUDE.md, loaded from
-        disk by the CLI — no size limit. This system prompt only carries the
-        per-query dynamic context, giving semantic LTM nearly the full 125KB
-        CLI arg budget.
-
-        Budget breakdown:
-          CLAUDE.md (disk, unlimited): prompt.md (~9KB) + memory.md (~35KB)
-          System prompt (CLI arg, 125KB):
-            1. Working memory   (~2KB, reserves 5KB for LTM)
-            2. Recent memory    (conversation threads from last 24h, capped at 20KB)
-            3. Semantic LTM     (gets remaining budget, excludes recent threads)
-        """
-        MAX_BYTES = self._MAX_SYSTEM_PROMPT_BYTES
-
-        def _byte_len(s: str) -> int:
-            return len(s.encode("utf-8"))
-
-        # Refresh CLAUDE.md with latest static content before the CLI reads it
-        self._refresh_claude_md()
-
-        # ── 1. Working memory ──
-        system_prompt = ""
-        current_bytes = 0
-        LTM_RESERVE = 5_000
-
+        # ── 2. Working memory ──
         try:
             import sys
             scripts_dir = Path(self.cwd) / ".claude" / "scripts"
@@ -496,16 +398,10 @@ class ClaudeWrapper:
             store = get_store()
             wm_block = store.format_prompt_block()
             if wm_block:
-                wm_budget = MAX_BYTES - current_bytes - LTM_RESERVE
-                if wm_budget > 0:
-                    wm_block = self._truncate_to_byte_limit(wm_block, wm_budget, label="working memory")
-                    system_prompt += f"<working-memory>\n{wm_block}\n</working-memory>\n\n"
-                    current_bytes = _byte_len(system_prompt)
-                    logger.info(f"Injected working memory ({len(store.list_items())} items), {current_bytes} bytes")
-                else:
-                    logger.warning(f"No budget for working memory (cumulative {current_bytes} bytes)")
+                sections.append(f"<working-memory>\n{wm_block}\n</working-memory>")
+                logger.info(f"CLAUDE.md: loaded working memory ({len(store.list_items())} items)")
         except Exception as e:
-            logger.debug(f"Could not inject working memory: {e}")
+            logger.debug(f"CLAUDE.md: could not load working memory: {e}")
 
         # ── Session filtering (shared by recent memory + semantic LTM) ──
         exclude_session_id = self.chat_id if self.chat_id and self.chat_id != "new" else None
@@ -526,9 +422,9 @@ class ClaudeWrapper:
             logger.info(f"Session filter: excluding atoms from session {exclude_session_id}"
                        + (f" (after {session_uncompacted_after})" if session_uncompacted_after else ""))
 
-        # ── 2. Recent memory (conversation continuity, last 24h) ──
+        # ── 3. Recent memory (conversation continuity, last 24h) ──
         recent_thread_ids = set()
-        if user_query:
+        if query:
             try:
                 import sys
                 ltm_scripts = Path(self.cwd) / ".claude" / "scripts" / "ltm"
@@ -537,36 +433,29 @@ class ClaudeWrapper:
                 from memory_retrieval import get_recent_conversation_threads, format_recent_memory
 
                 RECENT_MEMORY_CAP = 20_000  # 20KB cap
-                recent_budget_bytes = min(RECENT_MEMORY_CAP, MAX_BYTES - current_bytes - LTM_RESERVE)
+                recent_token_budget = max(0, (RECENT_MEMORY_CAP - 200) // 5)
 
-                if recent_budget_bytes > 1000:
-                    recent_token_budget = max(0, (recent_budget_bytes - 200) // 5)
-                    recent_threads, recent_thread_ids, recent_tokens = get_recent_conversation_threads(
-                        hours=24,
-                        token_budget=recent_token_budget,
-                        exclude_room_id=self.chat_id if self.chat_id and self.chat_id != "new" else None,
-                        exclude_session_id=exclude_session_id,
-                        session_uncompacted_after=session_uncompacted_after
-                    )
+                recent_threads, recent_thread_ids, recent_tokens = get_recent_conversation_threads(
+                    hours=24,
+                    token_budget=recent_token_budget,
+                    exclude_room_id=self.chat_id if self.chat_id and self.chat_id != "new" else None,
+                    exclude_session_id=exclude_session_id,
+                    session_uncompacted_after=session_uncompacted_after
+                )
 
-                    if recent_threads:
-                        formatted = format_recent_memory(recent_threads, hours=24)
-                        if formatted and len(formatted) > 50:
-                            formatted = self._truncate_to_byte_limit(
-                                formatted, recent_budget_bytes - 100, label="recent memory"
-                            )
-                            system_prompt += f"<recent-memory>\n{formatted}\n</recent-memory>\n\n"
-                            current_bytes = _byte_len(system_prompt)
-                            logger.info(
-                                f"Injected recent memory: {len(recent_threads)} conversation threads, "
-                                f"cumulative={current_bytes} bytes"
-                            )
+                if recent_threads:
+                    formatted = format_recent_memory(recent_threads, hours=24)
+                    if formatted and len(formatted) > 50:
+                        sections.append(f"<recent-memory>\n{formatted}\n</recent-memory>")
+                        logger.info(
+                            f"CLAUDE.md: loaded recent memory: {len(recent_threads)} conversation threads"
+                        )
             except Exception as e:
-                logger.warning(f"Could not inject recent memory: {e}")
+                logger.warning(f"CLAUDE.md: could not load recent memory: {e}")
                 recent_thread_ids = set()
 
-        # ── 3. Semantic LTM (gets all remaining budget, excludes recent threads) ──
-        if user_query:
+        # ── 4. Semantic LTM (query-dependent) ──
+        if query:
             try:
                 ltm_scripts = Path(self.cwd) / ".claude" / "scripts" / "ltm"
                 if str(ltm_scripts) not in sys.path:
@@ -574,177 +463,238 @@ class ClaudeWrapper:
                 from memory_retrieval import get_memory_context, MemoryContext
                 from query_rewriter import rewrite_query
 
-                remaining_bytes = MAX_BYTES - current_bytes
-                # ~5 bytes per token for formatted output to prevent overshoot
-                ltm_token_budget = max(0, (remaining_bytes - 200) // 5)
+                # No byte budget constraint — CLAUDE.md is loaded from disk.
+                # Use a generous token budget for LTM retrieval.
+                LTM_TOKEN_BUDGET = 5_000
 
-                if ltm_token_budget < 500:
-                    logger.warning(f"Skipping semantic LTM: only {remaining_bytes} bytes remaining ({ltm_token_budget} tokens)")
-                else:
-                    logger.info(f"Semantic LTM budget: {remaining_bytes} bytes -> {ltm_token_budget} tokens")
+                # Rewrite query for better semantic search
+                rewritten = await rewrite_query(
+                    user_message=query,
+                    conversation_context=self._conversation_history
+                )
 
-                    # Rewrite query for better semantic search
-                    rewritten = await rewrite_query(
-                        user_message=user_query,
-                        conversation_context=self._conversation_history
+                # Run multiple queries with weighted budget allocation
+                all_memories = []
+                seen_atom_ids = set()
+                all_threads = []
+                seen_thread_ids = set()
+
+                total_weight = sum(q.weight for q in rewritten.queries) or 1.0
+
+                for q in rewritten.queries:
+                    budget_for_query = int(LTM_TOKEN_BUDGET * (q.weight / total_weight))
+                    if budget_for_query < 100:
+                        continue
+
+                    context = get_memory_context(
+                        q.text,
+                        token_budget=budget_for_query,
+                        exclude_session_id=exclude_session_id,
+                        session_uncompacted_after=session_uncompacted_after,
+                        exclude_thread_ids=recent_thread_ids
                     )
 
-                    # Run multiple queries with weighted budget allocation
-                    all_memories = []
-                    seen_atom_ids = set()
-                    all_threads = []
-                    seen_thread_ids = set()
+                    for mem in context.atomic_memories:
+                        mem_id = mem.get('id', str(mem.get('content', '')))
+                        if mem_id not in seen_atom_ids:
+                            all_memories.append(mem)
+                            seen_atom_ids.add(mem_id)
 
-                    # Allocate budget proportional to query weights
-                    total_weight = sum(q.weight for q in rewritten.queries) or 1.0
+                    for thread in context.threads:
+                        tid = thread.get('id')
+                        if tid and tid not in seen_thread_ids:
+                            all_threads.append(thread)
+                            seen_thread_ids.add(tid)
 
-                    for q in rewritten.queries:
-                        budget_for_query = int(ltm_token_budget * (q.weight / total_weight))
-                        if budget_for_query < 100:
-                            continue
+                if all_memories or all_threads:
+                    # ── Enforce total token budget on merged results ──
+                    # Individual queries respect their budget share, but
+                    # merging across queries can exceed the total. Truncate
+                    # threads (lowest-scoring first) and atoms to fit.
+                    from memory_retrieval import count_tokens
 
-                        context = get_memory_context(
-                            q.text,
-                            token_budget=budget_for_query,
-                            recency_weight=q.recency_bias,
-                            exclude_session_id=exclude_session_id,
-                            session_uncompacted_after=session_uncompacted_after,
-                            exclude_thread_ids=recent_thread_ids
+                    budget_threads = []
+                    used_tokens = 0
+                    for t in all_threads:
+                        t_tokens = 10  # header overhead
+                        for m in t.get("memories", []):
+                            t_tokens += count_tokens(m.get("content", "")) + 5
+                        if used_tokens + t_tokens <= LTM_TOKEN_BUDGET:
+                            budget_threads.append(t)
+                            used_tokens += t_tokens
+                        else:
+                            logger.debug(
+                                f"LTM budget trim: dropping thread '{t.get('name')}' "
+                                f"({t_tokens} tokens, {used_tokens}/{LTM_TOKEN_BUDGET} used)"
+                            )
+
+                    budget_atoms = []
+                    for m in all_memories[:100]:
+                        m_tokens = count_tokens(m.get("content", "")) + 5
+                        if used_tokens + m_tokens <= LTM_TOKEN_BUDGET:
+                            budget_atoms.append(m)
+                            used_tokens += m_tokens
+
+                    trimmed_threads = len(all_threads) - len(budget_threads)
+                    trimmed_atoms = min(len(all_memories), 100) - len(budget_atoms)
+                    if trimmed_threads or trimmed_atoms:
+                        logger.info(
+                            f"LTM budget enforcement: trimmed {trimmed_threads} threads, "
+                            f"{trimmed_atoms} atoms to fit {LTM_TOKEN_BUDGET} token budget "
+                            f"({used_tokens} tokens used)"
                         )
 
-                        # Dedupe atoms across queries
-                        for mem in context.atomic_memories:
-                            mem_id = mem.get('id', str(mem.get('content', '')))
-                            if mem_id not in seen_atom_ids:
-                                all_memories.append(mem)
-                                seen_atom_ids.add(mem_id)
+                    merged = MemoryContext(
+                        atomic_memories=budget_atoms,
+                        threads=budget_threads,
+                        total_tokens=used_tokens,
+                        token_breakdown={}
+                    )
+                    formatted = merged.format_for_prompt()
 
-                        # Dedupe threads across queries
-                        for thread in context.threads:
-                            tid = thread.get('id')
-                            if tid and tid not in seen_thread_ids:
-                                all_threads.append(thread)
-                                seen_thread_ids.add(tid)
-
-                    if all_memories or all_threads:
-                        merged = MemoryContext(
-                            atomic_memories=all_memories[:100],
-                            threads=all_threads,
-                            total_tokens=0,
-                            token_breakdown={}
+                    if formatted and len(formatted) > 50:
+                        sections.append(f"<semantic-memory>\n{formatted}\n</semantic-memory>")
+                        query_summary = [(q.text, f"w={q.weight}") for q in rewritten.queries]
+                        logger.info(
+                            f"CLAUDE.md: loaded semantic LTM via queries {query_summary}: "
+                            f"{len(budget_threads)} threads, {len(budget_atoms)} atoms, "
+                            f"{used_tokens}/{LTM_TOKEN_BUDGET} tokens"
                         )
-                        formatted = merged.format_for_prompt()
-
-                        if formatted and len(formatted) > 50:
-                            formatted = self._truncate_to_byte_limit(
-                                formatted, remaining_bytes - 100, label="semantic LTM"
-                            )
-                            system_prompt += f"<semantic-memory>\n{formatted}\n</semantic-memory>\n"
-                            current_bytes = _byte_len(system_prompt)
-                            query_summary = [(q.text, f"w={q.weight}", f"r={q.recency_bias}") for q in rewritten.queries]
-                            logger.info(
-                                f"Injected semantic LTM via rewritten queries {query_summary} "
-                                f"(global_recency={rewritten.global_recency_weight}): "
-                                f"{len(all_threads)} threads, {len(all_memories)} atoms, "
-                                f"cumulative={current_bytes} bytes"
-                            )
             except Exception as e:
-                logger.warning(f"Could not inject semantic LTM: {e}")
+                logger.warning(f"CLAUDE.md: could not load semantic LTM: {e}")
 
-        # ── Final safety check ──
-        final_bytes = _byte_len(system_prompt)
-        if final_bytes > MAX_BYTES:
-            logger.error(f"System prompt {final_bytes} bytes exceeds limit {MAX_BYTES}, hard-truncating!")
-            system_prompt = self._truncate_to_byte_limit(system_prompt, MAX_BYTES, label="final system prompt")
-            final_bytes = _byte_len(system_prompt)
+        # ── Write CLAUDE.md atomically ──
+        if sections:
+            combined = "\n\n---\n\n".join(sections)
+            try:
+                fd, tmp_path = tempfile.mkstemp(
+                    dir=str(claude_md_path.parent),
+                    prefix=".CLAUDE.md.",
+                    suffix=".tmp"
+                )
+                try:
+                    with os.fdopen(fd, 'w') as f:
+                        f.write(combined)
+                    os.rename(tmp_path, str(claude_md_path))
+                except Exception:
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        pass
+                    raise
+                logger.info(f"CLAUDE.md: wrote {len(combined)} bytes ({len(combined)/1024:.1f}KB) atomically")
+            except Exception as e:
+                logger.warning(f"CLAUDE.md: could not write: {e}")
 
-        logger.info(
-            f"Final system prompt: {final_bytes} bytes ({final_bytes / 1024:.1f}KB, "
-            f"{final_bytes * 100 // MAX_BYTES}% of {MAX_BYTES // 1024}KB limit) "
-            f"[static content in CLAUDE.md]"
-        )
+    def _build_primary_system_prompt(self) -> str:
+        """
+        Build the system_prompt for the primary agent (Ren).
 
-        return system_prompt
+        Returns Ren's prompt.md content as a plain string. This REPLACES
+        the native system prompt entirely — Ren is a coordinator, not a
+        coder, so she doesn't need Claude Code's native preamble.
+
+        Memory lives in CLAUDE.md (loaded via setting_sources=["project"]).
+        Instructions live here. Clean separation.
+        """
+        prompt_path = Path(self.cwd) / ".claude" / "agents" / "ren" / "prompt.md"
+        if prompt_path.exists():
+            try:
+                content = prompt_path.read_text()
+                logger.info(f"Primary system prompt: loaded prompt.md ({len(content)} bytes)")
+                return content
+            except Exception as e:
+                logger.warning(f"Could not read primary agent prompt.md: {e}")
+                return ""
+        else:
+            logger.warning("Primary agent prompt.md not found")
+            return ""
 
     async def _build_options(self, user_query: Optional[str] = None) -> ClaudeAgentOptions:
-        """Build SDK options with proper system prompt and settings."""
+        """Build SDK options for the primary agent (Ren).
 
-        # Build minimal system prompt (CLAUDE.md loaded via setting_sources)
-        # Pass user_query for semantic memory retrieval
-        system_prompt = await self._build_system_prompt(user_query=user_query)
+        Architecture:
+          - system_prompt: Ren's prompt.md (replace mode — NOT preset+append)
+          - CLAUDE.md (disk, via setting_sources=["project"]): All memory
+          - prompt: User message + chat history + injected skills
+        """
+
+        # Refresh CLAUDE.md with all memory context (query-dependent)
+        await self._refresh_claude_md(query=user_query or "")
+
+        # Ren's instructions as system_prompt (replace mode — she's a
+        # coordinator, not a coder, so no Claude Code preamble needed)
+        system_prompt = self._build_primary_system_prompt()
 
         # Build MCP servers config with FILTERED tools based on primary agent config
-        # This is the PRIMARY enforcement mechanism for tool exclusions
         mcp_servers = {}
         mcp_tool_names = []
         disallowed_native_tools = ["WebSearch"]  # Default fallback
 
+        # Default model — will be overridden by config if available
+        primary_model = "sonnet"
+
         if create_mcp_server:
-            # Load tool config - returns MCP names, internal names, and disallowed native tools
-            mcp_tool_names, internal_tool_names, disallowed_native_tools = _load_primary_agent_config(self.cwd)
+            mcp_tool_names, internal_tool_names, disallowed_native_tools, primary_skills, primary_model = _load_primary_agent_config(self.cwd)
+
+            # Auto-include fetch_skill if skills are configured
+            if primary_skills is None or len(primary_skills) > 0:
+                fetch_skill_mcp = f"{MCP_PREFIX}fetch_skill"
+                if fetch_skill_mcp not in mcp_tool_names:
+                    mcp_tool_names.append(fetch_skill_mcp)
+                if "fetch_skill" not in internal_tool_names:
+                    internal_tool_names.append("fetch_skill")
+
+            # Store skills for use in run_prompt() skill menu injection
+            self._primary_skills = primary_skills
 
             if internal_tool_names:
-                # Create MCP server with ONLY the allowed tools
-                # This ensures excluded tools (like LTM for primary agent) literally don't exist
-                # Pass chat_id for concurrent session support (tools get chat context via closure)
                 filtered_mcp_server = create_mcp_server(
-                    name="brain",  # Must match the key in mcp_servers dict
+                    name="brain",
                     include_tools=internal_tool_names,
                     chat_id=self.chat_id,
+                    allowed_skills=primary_skills,  # Respect config.yaml skills list
                 )
                 mcp_servers["brain"] = filtered_mcp_server
                 logger.info(f"Created filtered MCP server with {len(internal_tool_names)} tools")
             else:
                 logger.warning("No MCP tools allowed, MCP server not created")
 
+        # Inject the shared "Available agents" block into Ren's system prompt.
+        # Ren always has agent tools, but this keeps the logic consistent and
+        # uses the same single source of truth as subagents.
+        try:
+            from mcp_tools.agents import get_agent_list_for_prompt
+            agent_list_block = get_agent_list_for_prompt(mcp_tool_names)
+            if agent_list_block:
+                system_prompt = system_prompt + agent_list_block
+                logger.info("Primary agent: injected agent list into system prompt")
+        except Exception as e:
+            logger.warning(f"Primary agent: failed to inject agent list: {e}")
+
+        logger.info(f"Primary agent (Ren) using model: {primary_model}")
         options = ClaudeAgentOptions(
-            # Use latest Claude Opus (auto-updates to newest version)
-            model="opus",
+            model=primary_model,
 
-            # Adaptive thinking (Opus 4.6 default): Claude dynamically decides
-            # when and how much to think. Effort defaults to "high" when omitted.
-            # Removed deprecated max_thinking_tokens/budget_tokens — see:
-            # https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking
-
-            # Dynamic system prompt: only working memory + semantic LTM.
-            # Static content (prompt.md, memory.md) is in CLAUDE.md, loaded from
-            # disk via setting_sources — no CLI arg size limit.
+            # Instructions only — memory is in CLAUDE.md (disk, no size limit)
             system_prompt=system_prompt,
 
-            # Use Claude Code's tools (schemas injected separately from system prompt)
+            # Use Claude Code's tools
             tools={"type": "preset", "preset": "claude_code"},
 
-            # Disable native tools based on config (computed from native_tools allowlist)
-            disallowed_tools=disallowed_native_tools,
+            # Disable native tools based on config
+            # Always disallow Skill — skills are handled by the fetch_skill MCP tool
+            disallowed_tools=disallowed_native_tools + ["Skill"],
 
-            # Load project settings (ONLY the primary agent loads these):
-            # - CLAUDE.md: personality (prompt.md) + self-journal (memory.md)
-            # - Skills from .claude/skills/
-            # Subagents either omit setting_sources or set it to [] — they
-            # never see CLAUDE.md, which is how we scope it to primary only.
+            # CLAUDE.md = memory context, loaded from disk (no size limit)
             setting_sources=["project"],
 
-            # Custom MCP tools for Second Brain functionality
-            # Server is created with only allowed tools (filtered at creation time)
+            # MCP tools (filtered at creation time)
             mcp_servers=mcp_servers if mcp_servers else None,
+            allowed_tools=mcp_tool_names if mcp_servers else None,
 
-            # Also specify allowed_tools as a secondary safeguard
-            # This acts as defense-in-depth in case SDK behavior changes
-            # Include "Skill" so the primary agent can invoke skills from .claude/skills/
-            allowed_tools=(mcp_tool_names + ["Skill"]) if mcp_servers else ["Skill"],
-
-            # Bypass all permission prompts - this VM is ours
             permission_mode="bypassPermissions",
-
-            # Working directory
             cwd=self.cwd,
-
-            # Session management: always fresh sessions, never resume.
-            # Conversation history is injected into the prompt by the caller.
-            # This eliminates "session expired" errors and ensures Claude
-            # always sees the same prompt format regardless of code path.
-
-            # Enable partial message streaming for better UX
             include_partial_messages=True,
         )
 
@@ -810,6 +760,27 @@ class ClaudeWrapper:
             query_text = prompt
 
         options = await self._build_options(user_query=query_text)
+
+        # Inject skill menu (lightweight list of available skills) into the prompt.
+        # Full skill bodies are loaded on demand via the fetch_skill MCP tool.
+        # Respects config.yaml skills list (set by _build_options).
+        try:
+            import sys as _sys
+            _agents_dir = str(Path(self.cwd) / ".claude" / "agents")
+            if _agents_dir not in _sys.path:
+                _sys.path.insert(0, _agents_dir)
+            from skill_injector import get_skill_reminder
+            primary_skills = getattr(self, '_primary_skills', None)
+            skill_reminder = get_skill_reminder(allowed_skills=primary_skills)
+            if skill_reminder:
+                if isinstance(prompt, list):
+                    # Multimodal: prepend skill menu as a text block
+                    prompt = [{"type": "text", "text": skill_reminder}] + prompt
+                else:
+                    prompt = f"{skill_reminder}\n\n{prompt}"
+                logger.info("Injected skill menu into primary agent prompt")
+        except Exception as e:
+            logger.warning(f"Skill menu injection failed for primary agent: {e}")
 
         logger.info(f"Running Claude SDK: fresh session, streaming_input={use_streaming_input}")
 
@@ -1090,10 +1061,17 @@ class ClaudeWrapper:
         mcp_tool_names = [t for t in agent_tools if t.startswith("mcp__")]
         native_tool_names = [t for t in agent_tools if not t.startswith("mcp__")]
 
+        # Auto-include fetch_skill if agent has skill access
+        agent_skills = getattr(agent_config, "skills", None)
+        agent_has_skills = agent_skills is None or (isinstance(agent_skills, list) and len(agent_skills) > 0)
+        fetch_skill_mcp = f"{MCP_PREFIX}fetch_skill"
+        if agent_has_skills and fetch_skill_mcp not in mcp_tool_names:
+            mcp_tool_names.append(fetch_skill_mcp)
+
         # Compute disallowed native tools
         disallowed = [t for t in ALL_NATIVE_TOOLS if t not in native_tool_names]
 
-        # Create filtered MCP server (with agent_name for memory isolation)
+        # Create filtered MCP server (with agent_name for memory isolation, allowed_skills for fetch_skill)
         mcp_servers = {}
         if create_mcp_server and mcp_tool_names:
             internal_names = [t.replace(MCP_PREFIX, "") for t in mcp_tool_names]
@@ -1102,21 +1080,34 @@ class ClaudeWrapper:
                 include_tools=internal_names,
                 chat_id=self.chat_id,
                 agent_name=agent_config.name,
+                allowed_skills=agent_skills if agent_has_skills else "NO_SKILLS",
             )
 
         # Build allowed_tools for SDK defense-in-depth
         allowed = list(mcp_tool_names)
-        if "Skill" in native_tool_names:
-            allowed.append("Skill")
 
-        has_skills = "Skill" in native_tool_names
+        # Inject the shared "Available agents" block into the system prompt — but
+        # only if this agent has access to any agent-calling tools.
+        try:
+            from mcp_tools.agents import get_agent_list_for_prompt
+            agent_list_block = get_agent_list_for_prompt(mcp_tool_names)
+            if agent_list_block:
+                if isinstance(system_prompt, dict):
+                    # Preset mode — append to the "append" field
+                    existing = system_prompt.get("append", "")
+                    system_prompt["append"] = existing + agent_list_block
+                else:
+                    system_prompt = system_prompt + agent_list_block
+                logger.info(f"Chattable agent '{agent_config.name}': injected agent list into system prompt")
+        except Exception as e:
+            logger.warning(f"Chattable agent '{agent_config.name}': failed to inject agent list: {e}")
 
         return ClaudeAgentOptions(
             model=agent_config.model,
             system_prompt=system_prompt,
             tools={"type": "preset", "preset": "claude_code"},
             disallowed_tools=disallowed,
-            setting_sources=["project"] if has_skills else [],
+            setting_sources=[],  # Skills handled by fetch_skill MCP tool, no project settings needed
             mcp_servers=mcp_servers if mcp_servers else None,
             allowed_tools=allowed if allowed else None,
             permission_mode="bypassPermissions",
@@ -1135,31 +1126,37 @@ class ClaudeWrapper:
         Execute a prompt through a chattable agent and stream results.
 
         Similar to run_prompt() but uses agent-specific options instead of
-        the primary agent's full LTM + CLAUDE.md pipeline.
-
-        For agents with Skill tool (which require setting_sources=["project"]),
-        we temporarily swap CLAUDE.md to a minimal stub to prevent identity
-        bleed from Ren's content. The swap is protected by _claude_md_lock
-        and restored after the SDK subprocess caches its config at init.
+        the primary agent's full LTM + CLAUDE.md pipeline. Subagents use
+        setting_sources=[] so they never load CLAUDE.md or project settings.
+        Skills are handled by the skill injector, not the native Skill tool.
         """
         self._conversation_history = conversation_history or []
         options = self._build_agent_options(agent_config)
 
+        # Inject skill menu (lightweight list of available skills) into the prompt.
+        # Full skill bodies are loaded on demand via the fetch_skill MCP tool.
+        agent_skills = getattr(agent_config, "skills", None)
+        agent_has_skills = agent_skills is None or (isinstance(agent_skills, list) and len(agent_skills) > 0)
+        if agent_has_skills:
+            try:
+                import sys as _sys
+                _agents_dir = str(Path(self.cwd) / ".claude" / "agents")
+                if _agents_dir not in _sys.path:
+                    _sys.path.insert(0, _agents_dir)
+                from skill_injector import get_skill_reminder
+                skill_reminder = get_skill_reminder(allowed_skills=agent_skills)
+                if skill_reminder:
+                    if isinstance(prompt, list):
+                        prompt = [{"type": "text", "text": skill_reminder}] + prompt
+                    else:
+                        prompt = f"{skill_reminder}\n\n{prompt}"
+                    logger.info(f"Injected skill menu into agent '{agent_config.name}' prompt")
+            except Exception as e:
+                logger.warning(f"Skill menu injection failed for agent '{agent_config.name}': {e}")
+
         logger.info(f"Running agent chat '{agent_config.name}': model={agent_config.model}, streaming_input={use_streaming_input}")
 
-        # Determine if we need to swap CLAUDE.md to prevent identity bleed
-        has_skills = agent_config.tools and "Skill" in agent_config.tools
-        claude_md_swapped = False
-
         try:
-            # If agent uses setting_sources=["project"], swap CLAUDE.md
-            # to a minimal stub before the SDK reads it at startup.
-            if has_skills:
-                await _claude_md_lock.acquire()
-                self._write_agent_claude_md(agent_config.name)
-                claude_md_swapped = True
-                logger.info(f"CLAUDE.md: swapped for agent '{agent_config.name}' (lock acquired)")
-
             self.client = ClaudeSDKClient(options=options)
 
             if use_streaming_input:
@@ -1200,13 +1197,6 @@ class ClaudeWrapper:
 
                 elif isinstance(message, SystemMessage):
                     if message.subtype == "init":
-                        # SDK subprocess has started and cached CLAUDE.md.
-                        # Restore Ren's version and release the lock.
-                        if claude_md_swapped:
-                            self._refresh_claude_md()
-                            _claude_md_lock.release()
-                            claude_md_swapped = False
-                            logger.info(f"CLAUDE.md: restored after agent '{agent_config.name}' init (lock released)")
                         session_id = message.data.get("session_id", str(uuid.uuid4()))
                         self._current_session_id = session_id
                         yield {"type": "session_init", "id": session_id}
@@ -1294,17 +1284,6 @@ class ClaudeWrapper:
             yield {"type": "error", "text": str(e)}
 
         finally:
-            # Ensure CLAUDE.md is restored and lock released if still held
-            if claude_md_swapped:
-                try:
-                    self._refresh_claude_md()
-                except Exception as e:
-                    logger.warning(f"CLAUDE.md: failed to restore after agent error: {e}")
-                try:
-                    _claude_md_lock.release()
-                except RuntimeError:
-                    pass  # Already released
-                logger.info(f"CLAUDE.md: restored in finally for agent '{agent_config.name}'")
             if self._injection_queue:
                 self._injection_queue.close()
                 self._injection_queue = None

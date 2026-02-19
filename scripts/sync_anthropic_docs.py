@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """
-Sync Anthropic Agent SDK Documentation
+Sync Anthropic Documentation
 
-Fetches all pages from the Anthropic Agent SDK documentation and saves them
-as local markdown files for offline reference by Claude Code agents.
+Fetches all pages from the Anthropic Agent SDK and Claude Code documentation
+and saves them as local markdown files for offline reference by Claude Code agents.
 
 Uses Playwright for JavaScript-rendered pages.
 
-Source: https://platform.claude.com/docs/en/agent-sdk/
+Sources:
+  - Agent SDK: https://platform.claude.com/docs/en/agent-sdk/
+  - Claude Code: https://code.claude.com/docs/en/
 """
 
 import asyncio
@@ -15,7 +17,9 @@ import hashlib
 import json
 import logging
 import re
+import sys
 import time
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -26,38 +30,129 @@ from markdownify import markdownify as md
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
 
 # Configuration
-BASE_URL = "https://platform.claude.com/docs/en/agent-sdk/"
-DOCS_DIR = Path(__file__).parent.parent / "docs" / "anthropic_agent_sdk"
+SCRIPTS_DIR = Path(__file__).parent
+DOCS_BASE_DIR = SCRIPTS_DIR.parent / "docs"
 RATE_LIMIT_DELAY = 2.0  # seconds between requests
 PAGE_LOAD_TIMEOUT = 30000  # milliseconds
 CONTENT_WAIT_TIMEOUT = 10000  # milliseconds to wait for content to load
 
-# Known pages in the Agent SDK documentation
-KNOWN_PAGES = [
-    "overview",
-    "quickstart",
-    "typescript",
-    "python",
-    "hooks",
-    "permissions",
-    "sessions",
-    "mcp",
-    "subagents",
-    "user-input",
-    "custom-tools",
-    "hosting",
-    "streaming-input",
-    "skills",
-    "modifying-system-prompts",
-    "file-checkpointing",
-    "structured-outputs",
-    "cost-tracking",
-    "secure-deployment",
-    "slash-commands",
-    "plugins",
-    "migration-guide",
-    "typescript-v2-preview",
-]
+
+@dataclass
+class DocSource:
+    """Configuration for a documentation source."""
+    name: str
+    display_name: str
+    base_url: str
+    docs_dir: Path
+    known_pages: list[str]
+    link_pattern: str  # regex to find links in the main page
+    slug_pattern: str  # regex to extract page slug from href
+
+
+# Agent SDK documentation
+AGENT_SDK_SOURCE = DocSource(
+    name="agent_sdk",
+    display_name="Anthropic Agent SDK",
+    base_url="https://platform.claude.com/docs/en/agent-sdk/",
+    docs_dir=DOCS_BASE_DIR / "anthropic_agent_sdk",
+    known_pages=[
+        "overview",
+        "quickstart",
+        "typescript",
+        "python",
+        "hooks",
+        "permissions",
+        "sessions",
+        "mcp",
+        "subagents",
+        "user-input",
+        "custom-tools",
+        "hosting",
+        "skills",
+        "modifying-system-prompts",
+        "file-checkpointing",
+        "structured-outputs",
+        "cost-tracking",
+        "secure-deployment",
+        "slash-commands",
+        "plugins",
+        "migration-guide",
+        "typescript-v2-preview",
+    ],
+    link_pattern="/agent-sdk/",
+    slug_pattern=r"/agent-sdk/([a-z0-9-]+)/?$",
+)
+
+# Claude Code documentation
+CLAUDE_CODE_SOURCE = DocSource(
+    name="claude_code",
+    display_name="Claude Code",
+    base_url="https://code.claude.com/docs/en/",
+    docs_dir=DOCS_BASE_DIR / "claude_code",
+    known_pages=[
+        "agent-teams",
+        "amazon-bedrock",
+        "analytics",
+        "authentication",
+        "best-practices",
+        "changelog",
+        "checkpointing",
+        "chrome",
+        "claude-code-on-the-web",
+        "cli-reference",
+        "common-workflows",
+        "costs",
+        "data-usage",
+        "desktop",
+        "desktop-quickstart",
+        "devcontainer",
+        "discover-plugins",
+        "fast-mode",
+        "features-overview",
+        "github-actions",
+        "gitlab-ci-cd",
+        "google-vertex-ai",
+        "headless",
+        "hooks",
+        "hooks-guide",
+        "how-claude-code-works",
+        "interactive-mode",
+        "jetbrains",
+        "keybindings",
+        "legal-and-compliance",
+        "llm-gateway",
+        "mcp",
+        "memory",
+        "microsoft-foundry",
+        "model-config",
+        "monitoring-usage",
+        "network-config",
+        "output-styles",
+        "overview",
+        "permissions",
+        "plugin-marketplaces",
+        "plugins",
+        "plugins-reference",
+        "quickstart",
+        "sandboxing",
+        "security",
+        "server-managed-settings",
+        "settings",
+        "setup",
+        "skills",
+        "slack",
+        "statusline",
+        "sub-agents",
+        "terminal-config",
+        "third-party-integrations",
+        "troubleshooting",
+        "vs-code",
+    ],
+    link_pattern="/docs/en/",
+    slug_pattern=r"/docs/en/([a-z0-9-]+)/?$",
+)
+
+ALL_SOURCES = [AGENT_SDK_SOURCE, CLAUDE_CODE_SOURCE]
 
 logging.basicConfig(
     level=logging.INFO,
@@ -139,7 +234,8 @@ def extract_title(soup: BeautifulSoup, fallback: str) -> str:
     if title_tag:
         title = title_tag.get_text(strip=True)
         # Remove common suffixes
-        for suffix in [' - Anthropic', ' | Anthropic', ' - Claude', ' | Claude']:
+        for suffix in [' - Anthropic', ' | Anthropic', ' - Claude', ' | Claude',
+                       ' - Claude Code', ' | Claude Code']:
             if title.endswith(suffix):
                 title = title[:-len(suffix)]
         return title
@@ -179,25 +275,28 @@ async def fetch_page_with_playwright(page, url: str) -> tuple[Optional[str], Opt
         return None, None
 
 
-async def discover_pages(page) -> list[str]:
+async def discover_pages(page, source: DocSource) -> list[str]:
     """Discover documentation pages by fetching the main page and finding links."""
-    logger.info("Discovering documentation pages...")
+    logger.info(f"Discovering {source.display_name} pages...")
 
-    pages = set(KNOWN_PAGES)
+    pages = set(source.known_pages)
 
     # Fetch the main page to find additional links
-    html, _ = await fetch_page_with_playwright(page, BASE_URL)
+    html, _ = await fetch_page_with_playwright(page, source.base_url)
     if html:
         soup = BeautifulSoup(html, 'html.parser')
 
-        # Find all links that point to agent-sdk subpages
+        # Find all links that point to subpages
         for link in soup.find_all('a', href=True):
             href = link['href']
-            if '/agent-sdk/' in href:
+            if source.link_pattern in href:
                 # Extract the page slug
-                match = re.search(r'/agent-sdk/([a-z0-9-]+)/?$', href)
-                if match and match.group(1) not in ['', 'agent-sdk']:
-                    pages.add(match.group(1))
+                match = re.search(source.slug_pattern, href)
+                if match:
+                    slug = match.group(1)
+                    # Exclude empty or self-referencing slugs
+                    if slug and slug not in ['agent-sdk', 'en', 'docs']:
+                        pages.add(slug)
 
     return sorted(pages)
 
@@ -205,6 +304,7 @@ async def discover_pages(page) -> list[str]:
 async def sync_page(
     page,
     page_slug: str,
+    source: DocSource,
     existing_hashes: dict[str, str]
 ) -> tuple[str, bool, Optional[str]]:
     """
@@ -213,9 +313,9 @@ async def sync_page(
     Returns:
         tuple of (page_slug, changed, error_message)
     """
-    url = urljoin(BASE_URL, page_slug)
+    url = urljoin(source.base_url, page_slug)
     filename = f"{page_slug}.md"
-    filepath = DOCS_DIR / filename
+    filepath = source.docs_dir / filename
 
     logger.info(f"Fetching: {url}")
 
@@ -230,6 +330,11 @@ async def sync_page(
     text_content = soup.get_text()
     if 'Loading...' in text_content and len(text_content) < 500:
         logger.warning(f"Page {page_slug} may not have loaded properly")
+
+    # Check for 404 pages
+    title_text = soup.find('title')
+    if title_text and 'Not Found' in title_text.get_text():
+        return (page_slug, False, "Page not found (404)")
 
     # Extract title
     title = extract_title(soup, page_slug)
@@ -257,9 +362,9 @@ async def sync_page(
     return (page_slug, True, None)
 
 
-def load_sync_metadata() -> dict:
+def load_sync_metadata(source: DocSource) -> dict:
     """Load the last sync metadata from _last_sync.json."""
-    metadata_path = DOCS_DIR / "_last_sync.json"
+    metadata_path = source.docs_dir / "_last_sync.json"
     if metadata_path.exists():
         try:
             return json.loads(metadata_path.read_text())
@@ -268,25 +373,25 @@ def load_sync_metadata() -> dict:
     return {"hashes": {}, "syncs": []}
 
 
-def save_sync_metadata(metadata: dict):
+def save_sync_metadata(metadata: dict, source: DocSource):
     """Save sync metadata to _last_sync.json."""
-    metadata_path = DOCS_DIR / "_last_sync.json"
+    metadata_path = source.docs_dir / "_last_sync.json"
     metadata_path.write_text(json.dumps(metadata, indent=2), encoding='utf-8')
 
 
-def generate_index(pages: list[tuple[str, str]]) -> str:
+def generate_index(pages: list[tuple[str, str]], source: DocSource) -> str:
     """Generate the _index.md file with links to all pages."""
     timestamp = datetime.now(timezone.utc).isoformat()
 
     content = f"""---
-source: {BASE_URL}
-title: Anthropic Agent SDK Documentation Index
+source: {source.base_url}
+title: {source.display_name} Documentation Index
 last_fetched: {timestamp}
 ---
 
-# Anthropic Agent SDK Documentation
+# {source.display_name} Documentation
 
-This is a local mirror of the [Anthropic Agent SDK documentation]({BASE_URL}).
+This is a local mirror of the [{source.display_name} documentation]({source.base_url}).
 
 ## Available Pages
 
@@ -299,7 +404,7 @@ This is a local mirror of the [Anthropic Agent SDK documentation]({BASE_URL}).
 ## About This Mirror
 
 This documentation mirror is automatically synced from the official Anthropic documentation.
-Claude Code agents can reference these files directly for up-to-date SDK information.
+Claude Code agents can reference these files directly for up-to-date information.
 
 **Last sync:** {timestamp}
 
@@ -312,61 +417,60 @@ python scripts/sync_anthropic_docs.py
     return content
 
 
-async def main():
-    """Main sync function."""
-    logger.info("Starting Anthropic Agent SDK documentation sync...")
+async def sync_source(browser, source: DocSource) -> dict:
+    """Sync all pages from a single documentation source."""
+    logger.info(f"\n{'='*60}")
+    logger.info(f"Syncing {source.display_name} documentation...")
+    logger.info(f"{'='*60}")
 
     # Ensure docs directory exists
-    DOCS_DIR.mkdir(parents=True, exist_ok=True)
+    source.docs_dir.mkdir(parents=True, exist_ok=True)
 
     # Load existing metadata
-    metadata = load_sync_metadata()
+    metadata = load_sync_metadata(source)
     existing_hashes = metadata.get("hashes", {})
 
-    async with async_playwright() as p:
-        # Launch browser
-        browser = await p.chromium.launch(headless=True)
-        context = await browser.new_context(
-            user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) SecondBrain/1.0 Chrome/120.0 Safari/537.36"
-        )
-        page = await context.new_page()
+    context = await browser.new_context(
+        user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) SecondBrain/1.0 Chrome/120.0 Safari/537.36"
+    )
+    page = await context.new_page()
 
-        try:
-            # Discover pages
-            pages = await discover_pages(page)
-            logger.info(f"Found {len(pages)} pages to sync")
+    try:
+        # Discover pages
+        pages = await discover_pages(page, source)
+        logger.info(f"Found {len(pages)} pages to sync")
 
-            # Sync each page with rate limiting
-            results = []
-            page_titles = []
+        # Sync each page with rate limiting
+        results = []
+        page_titles = []
 
-            for page_slug in pages:
-                slug, changed, error = await sync_page(page, page_slug, existing_hashes)
-                results.append((slug, changed, error))
+        for page_slug in pages:
+            slug, changed, error = await sync_page(page, page_slug, source, existing_hashes)
+            results.append((slug, changed, error))
 
-                # Read back the title from the synced file
-                filepath = DOCS_DIR / f"{slug}.md"
-                if filepath.exists():
-                    content = filepath.read_text()
-                    title_match = re.search(r'^title: (.+)$', content, re.MULTILINE)
-                    title = title_match.group(1) if title_match else slug.replace('-', ' ').title()
-                    page_titles.append((slug, title))
+            # Read back the title from the synced file
+            filepath = source.docs_dir / f"{slug}.md"
+            if filepath.exists():
+                content = filepath.read_text()
+                title_match = re.search(r'^title: (.+)$', content, re.MULTILINE)
+                title = title_match.group(1) if title_match else slug.replace('-', ' ').title()
+                page_titles.append((slug, title))
 
-                    # Update hash
-                    parts = content.split('---', 2)
-                    if len(parts) >= 3:
-                        markdown_content = parts[2].strip()
-                        metadata["hashes"][slug] = compute_hash(markdown_content)
+                # Update hash
+                parts = content.split('---', 2)
+                if len(parts) >= 3:
+                    markdown_content = parts[2].strip()
+                    metadata["hashes"][slug] = compute_hash(markdown_content)
 
-                # Rate limiting
-                await asyncio.sleep(RATE_LIMIT_DELAY)
+            # Rate limiting
+            await asyncio.sleep(RATE_LIMIT_DELAY)
 
-        finally:
-            await browser.close()
+    finally:
+        await context.close()
 
     # Generate index
-    index_content = generate_index(page_titles)
-    (DOCS_DIR / "_index.md").write_text(index_content, encoding='utf-8')
+    index_content = generate_index(page_titles, source)
+    (source.docs_dir / "_index.md").write_text(index_content, encoding='utf-8')
     logger.info("Generated _index.md")
 
     # Update sync metadata
@@ -377,23 +481,56 @@ async def main():
         "errors": [slug for slug, _, error in results if error],
     }
 
-    # Keep only last 30 sync records
     syncs = metadata.get("syncs", [])
     syncs.append(sync_record)
     metadata["syncs"] = syncs[-30:]
 
-    save_sync_metadata(metadata)
+    save_sync_metadata(metadata, source)
 
     # Summary
     updated = sum(1 for _, changed, _ in results if changed)
     errors = sum(1 for _, _, error in results if error)
-    logger.info(f"\nSync complete: {updated} updated, {len(pages) - updated - errors} unchanged, {errors} errors")
+    logger.info(f"\n{source.display_name} sync complete: {updated} updated, "
+                f"{len(pages) - updated - errors} unchanged, {errors} errors")
 
     if errors:
         logger.warning("Pages with errors:")
         for slug, _, error in results:
             if error:
                 logger.warning(f"  - {slug}: {error}")
+
+    return sync_record
+
+
+async def main():
+    """Main sync function."""
+    # Parse CLI args for source selection
+    selected_sources = ALL_SOURCES
+    if len(sys.argv) > 1:
+        source_filter = sys.argv[1].lower()
+        source_map = {s.name: s for s in ALL_SOURCES}
+        # Also accept short names
+        source_map["sdk"] = AGENT_SDK_SOURCE
+        source_map["cc"] = CLAUDE_CODE_SOURCE
+        source_map["claude-code"] = CLAUDE_CODE_SOURCE
+        if source_filter in source_map:
+            selected_sources = [source_map[source_filter]]
+        else:
+            logger.error(f"Unknown source: {source_filter}")
+            logger.error(f"Available: {', '.join(source_map.keys())}")
+            sys.exit(1)
+
+    logger.info(f"Starting documentation sync for: {', '.join(s.display_name for s in selected_sources)}")
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        try:
+            for source in selected_sources:
+                await sync_source(browser, source)
+        finally:
+            await browser.close()
+
+    logger.info("\nAll syncs complete!")
 
 
 if __name__ == "__main__":

@@ -5,7 +5,7 @@ Implements HYBRID RETRIEVAL strategy (thread-first + bonus atoms):
 
 Phase 1 - Thread Selection:
 1. Search threads and atoms by semantic similarity
-2. Score threads by composite (semantic + child relevance + recency)
+2. Score threads by semantic relevance (best of thread or child atom similarity)
 3. Fill budget with whole threads (all-or-nothing inclusion)
 
 Phase 2 - Bonus Atom Retrieval:
@@ -22,6 +22,11 @@ Example:
 
 This hybrid approach ensures both contextual coherence (through threads)
 and individual fact coverage (through bonus atoms).
+
+Note: Recency is intentionally NOT factored into semantic LTM scoring.
+Recent context is handled separately by the <recent-memory> block (last 24h
+conversation threads). Semantic LTM retrieves the most *relevant* memories
+regardless of age.
 """
 
 import logging
@@ -32,16 +37,37 @@ from datetime import datetime, timedelta
 logger = logging.getLogger("ltm.retrieval")
 
 
+def _time_of_day(hour: int) -> str:
+    """Classify an hour (0-23) into a time-of-day label."""
+    if hour < 5:
+        return "night"       # 0-4
+    elif hour < 12:
+        return "morning"     # 5-11
+    elif hour < 17:
+        return "afternoon"   # 12-16
+    elif hour < 21:
+        return "evening"     # 17-20
+    else:
+        return "night"       # 21-23
+
+
 def _format_timestamp_with_human_context(timestamp_str: str) -> str:
     """
-    Format a timestamp with a human-friendly recency label when within a week.
+    Format a timestamp as a concise human-readable recency label.
+
+    Returns ONLY the label — no ISO dates. The label includes time-of-day
+    granularity for recent items and progressively coarser labels for older ones.
 
     Examples:
-    - Today | 2026-01-25 14:30
-    - yesterday | 2026-01-24 08:00
-    - a couple days ago | 2026-01-23 16:10
-    - a few days ago | 2026-01-20 12:00
-    - 2026-01-18 09:15 (older than a week, no label)
+    - "Just now"
+    - "A couple hours ago"
+    - "This morning"
+    - "Yesterday evening"
+    - "Last night"
+    - "A couple days ago"
+    - "Last week"
+    - "In December"
+    - "In November 2025"
     """
     if not timestamp_str:
         return ""
@@ -50,32 +76,79 @@ def _format_timestamp_with_human_context(timestamp_str: str) -> str:
         dt = datetime.fromisoformat(timestamp_str)
         now = datetime.now()
         day_delta = (now.date() - dt.date()).days
+        hour_delta = (now - dt).total_seconds() / 3600
 
-        # Format the precise timestamp portion
-        date_str = dt.strftime("%Y-%m-%d %H:%M")
+        mem_tod = _time_of_day(dt.hour)
+        now_tod = _time_of_day(now.hour)
 
-        # Determine human-readable label
+        # --- Same day ---
         if day_delta == 0:
-            return f"Today | {date_str}"
-        elif day_delta == 1:
-            return f"yesterday | {date_str}"
-        elif 2 <= day_delta <= 3:
-            return f"a couple days ago | {date_str}"
-        elif 4 <= day_delta <= 6:
-            # Check if same ISO week
-            if dt.isocalendar()[1] == now.isocalendar()[1]:
-                return f"earlier this week | {date_str}"
+            if hour_delta < 0:
+                # Future timestamp (shouldn't happen, but guard)
+                return f"This {mem_tod}"
+            elif hour_delta < 1:
+                return "Just now"
+            elif hour_delta < 3:
+                return "A couple hours ago"
+            # 3+ hours ago: use time-of-day labels
+            elif mem_tod == now_tod:
+                # Same part of day — "Earlier this morning/afternoon/evening"
+                return f"Earlier this {mem_tod}"
             else:
-                return f"a few days ago | {date_str}"
+                # Different part of day — "This morning", "This afternoon", etc.
+                if mem_tod == "night" and dt.hour >= 21:
+                    return "Tonight"
+                return f"This {mem_tod}"
+
+        # --- Yesterday ---
+        elif day_delta == 1:
+            if mem_tod == "night":
+                return "Last night"
+            return f"Yesterday {mem_tod}"
+
+        # --- 2-6 days ago ---
+        elif 2 <= day_delta <= 3:
+            return "A couple days ago"
+        elif 4 <= day_delta <= 6:
+            if dt.isocalendar()[1] == now.isocalendar()[1]:
+                return "Earlier this week"
+            else:
+                return "A few days ago"
+
+        # --- 1-4 weeks ago ---
+        elif 7 <= day_delta <= 13:
+            return "Last week"
+        elif 14 <= day_delta <= 20:
+            return "A couple weeks ago"
+        elif 21 <= day_delta <= 29:
+            return "A few weeks ago"
+
+        # --- Months ago ---
         else:
-            # Older than a week - just the date, no label
-            return date_str
+            month_delta = (now.year - dt.year) * 12 + (now.month - dt.month)
+            if month_delta == 0:
+                return "Earlier this month"
+            elif month_delta == 1:
+                return "Last month"
+            elif month_delta == 2:
+                return "A couple months ago"
+            elif dt.year == now.year:
+                return f"In {dt.strftime('%B')}"
+            else:
+                return f"In {dt.strftime('%B %Y')}"
+
     except Exception:
         # Fallback: return original or truncated
         return timestamp_str[:16] if len(timestamp_str) >= 16 else timestamp_str
 
 # Token estimation (rough approximation)
 TOKENS_PER_CHAR = 0.25  # ~4 chars per token
+
+# Minimum semantic similarity score for retrieval.
+# Threads and atoms scoring below this are not included regardless of budget.
+# This prevents filling the context window with low-relevance noise.
+# e5-base-v2 cosine similarity scale: 0.3=weak, 0.5=moderate, 0.7=strong.
+MIN_SEMANTIC_SCORE = 0.65
 
 
 def count_tokens(text: str) -> int:
@@ -102,11 +175,13 @@ class MemoryContext:
     token_breakdown: Dict[str, int] = field(default_factory=dict)
 
     _PREAMBLE = (
-        "Past context retrieved from long-term memory. These are facts and events\n"
-        "from *previous* conversations — not the current one. Timestamps indicate\n"
-        "when each was recorded. Do not assume past states are still current;\n"
-        "things may have changed. Use these to inform your understanding, but\n"
-        "don't surface them unprompted — let the conversation lead."
+        "Past context from my long-term memory. These are facts and events\n"
+        "from *previous* conversations — not this one. I recorded them from\n"
+        "my first-person perspective — 'I' is me in a previous conversation.\n"
+        "the user is always referred to by name. Timestamps indicate when recorded.\n"
+        "Don't assume past states are still current; things may have changed.\n"
+        "Use these to inform understanding, but don't surface them\n"
+        "unprompted — let the conversation lead."
     )
 
     def format_for_prompt(self) -> str:
@@ -148,34 +223,22 @@ def _score_thread(
     thread: Dict[str, Any],
     semantic_score: float,
     max_atom_score: float,
-    recency_weight: float = 0.3
 ) -> float:
     """
-    Calculate composite thread score with dynamic semantic/recency weighting.
+    Calculate thread score based purely on semantic relevance.
 
-    Semantic: max of direct thread similarity or best child atom similarity (0-1)
-    Recency: normalized score based on last_updated, decays over 7 days (0-1)
+    Returns the best semantic similarity: max of direct thread embedding
+    similarity or best child atom similarity (0-1).
+
+    Recency is NOT factored in — recent context is handled separately
+    by the <recent-memory> block.
 
     Args:
-        thread: Thread dict with last_updated field
+        thread: Thread dict
         semantic_score: Direct thread embedding similarity (0-1)
         max_atom_score: Best child atom similarity (0-1)
-        recency_weight: Weight for recency vs semantic (0.0-1.0, default 0.3)
     """
-    # Base semantic score (0-1 range)
-    base_semantic = max(semantic_score, max_atom_score)
-
-    # Recency score (0-1 range, decays over 7 days)
-    try:
-        last_updated = datetime.fromisoformat(thread.get("last_updated", ""))
-        hours_old = (datetime.now() - last_updated).total_seconds() / 3600
-        # Normalize: 0 hours = 1.0, 168 hours (7 days) = 0.0
-        recency_score = max(0.0, 1.0 - (hours_old / (24 * 7)))
-    except Exception:
-        recency_score = 0.0
-
-    semantic_weight = 1.0 - recency_weight
-    return (semantic_weight * base_semantic) + (recency_weight * recency_score)
+    return max(semantic_score, max_atom_score)
 
 
 def _should_exclude_atom(
@@ -216,7 +279,6 @@ def _should_exclude_atom(
 def get_memory_context(
     query: str,
     token_budget: int = 20000,
-    recency_weight: float = 0.3,
     exclude_session_id: Optional[str] = None,
     session_uncompacted_after: Optional[str] = None,
     exclude_thread_ids: Optional[Set[str]] = None
@@ -232,11 +294,12 @@ def get_memory_context(
     - Contextual coherence: related facts stay grouped in threads
     - Coverage: individually-relevant facts aren't lost due to thread filtering
 
+    Scoring is purely semantic — no recency weighting. Recent context is
+    handled separately by the <recent-memory> block.
+
     Args:
         query: Search query (usually the user's message)
         token_budget: Maximum tokens for memory context
-        recency_weight: Weight for recency vs semantic scoring (0.0-1.0).
-            Higher values favor recent memories. Set by query rewriter.
         exclude_session_id: If provided, atoms with this source_session_id are
             filtered out (they duplicate the current conversation). Atoms from
             before a compaction boundary are kept.
@@ -326,7 +389,6 @@ def get_memory_context(
             thread_dict,
             info["semantic_score"],
             info["max_atom_score"],
-            recency_weight=recency_weight
         )
         scored_threads.append((thread_dict, composite_score))
 
@@ -335,8 +397,15 @@ def get_memory_context(
     # 5. Fill budget with whole threads
     selected_memory_ids = set()
     excluded_atom_count = 0  # Track how many atoms were filtered by session
+    below_threshold_thread_count = 0  # Track threads filtered by min score
 
     for thread_dict, score in scored_threads:
+        # Skip threads below minimum similarity threshold
+        if score < MIN_SEMANTIC_SCORE:
+            below_threshold_thread_count += 1
+            logger.debug(f"Skipping thread '{thread_dict['name']}' (score {score:.3f} < {MIN_SEMANTIC_SCORE})")
+            continue
+
         # Skip threads already included in recent memory
         if exclude_thread_ids and thread_dict["id"] in exclude_thread_ids:
             continue
@@ -387,6 +456,12 @@ def get_memory_context(
     bonus_atom_tokens = 0
 
     for atom, score in atom_hits:
+        # Stop processing once scores drop below minimum threshold
+        # (atom_hits are sorted by score descending)
+        if score < MIN_SEMANTIC_SCORE:
+            logger.debug(f"Stopping bonus atom scan (score {score:.3f} < {MIN_SEMANTIC_SCORE})")
+            break
+
         if atom.id in selected_memory_ids:
             continue
 
@@ -435,6 +510,7 @@ def get_memory_context(
         f"Retrieved memory context: {len(context.threads)} threads, "
         f"{bonus_atom_count} bonus atoms ({bonus_atom_tokens}/{max_orphan_tokens} orphan cap), "
         f"{used_tokens}/{token_budget} tokens used"
+        + (f", {below_threshold_thread_count} threads below score floor ({MIN_SEMANTIC_SCORE})" if below_threshold_thread_count else "")
         + (f", {excluded_atom_count} atoms filtered (same-session dedup)" if excluded_atom_count else "")
     )
     if bonus_atom_count > 0:
@@ -585,8 +661,10 @@ def get_recent_conversation_threads(
 def format_recent_memory(threads: List[Dict[str, Any]], hours: int = 24) -> str:
     """Format recent conversation threads for the <recent-memory> block."""
     preamble = (
-        f"Recent conversations (last {hours}h). These provide continuity across\n"
-        "conversations. Reference naturally when relevant."
+        f"My recent conversations (last {hours}h). These provide continuity\n"
+        "across conversations. I recorded them from my first-person perspective —\n"
+        "'I' is me in a previous conversation. the user is always referred to by name.\n"
+        "Reference naturally when relevant."
     )
     sections = [preamble, ""]
 

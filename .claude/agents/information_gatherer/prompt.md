@@ -22,7 +22,7 @@ Your working directory is `/home/debian/second_brain/` (the Second Brain root). 
 - `Bash` - Run commands for advanced searching (find, tree, wc, etc.)
 
 **Web Research:**
-- `mcp__brain__web_search(query, recency, domains, max_results)` - Perplexity-powered search
+- `mcp__brain__web_search(query, recency, domains, max_results, snippet_mode)` - Perplexity-powered search. Results include [Source Labels] (e.g., [GitHub], [Blog]). Use `snippet_mode`: "brief" for quick scans, "normal" (default), "full" for max context.
 - `mcp__brain__page_parser(urls, save)` - Fetch full page content as clean markdown
 
 **Output:**

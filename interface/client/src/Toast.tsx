@@ -129,7 +129,7 @@ function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }
     info: <Info size={18} className="text-blue-500" />,
     success: <CheckCircle size={18} className="text-green-500" />,
     warning: <AlertCircle size={18} className="text-amber-500" />,
-    scheduled: <Bell size={18} className="text-[#D97757]" />,
+    scheduled: <Bell size={18} className="text-[var(--accent-primary)]" />,
     notification: <MessageCircle size={18} className={toast.critical ? "text-red-500" : "text-purple-500"} />,
   };
 
@@ -137,7 +137,7 @@ function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }
     info: 'bg-blue-50 border-blue-200',
     success: 'bg-green-50 border-green-200',
     warning: 'bg-amber-50 border-amber-200',
-    scheduled: 'bg-orange-50 border-[#D97757]/30',
+    scheduled: 'bg-[var(--accent-light)] border-[var(--accent-primary)]/30',
     notification: toast.critical ? 'bg-red-50 border-red-300' : 'bg-purple-50 border-purple-200',
   };
 
@@ -157,7 +157,7 @@ function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }
         {toast.action && (
           <button
             onClick={toast.action.onClick}
-            className="mt-2 text-xs font-medium text-[#D97757] hover:text-[#c5664a] flex items-center gap-1"
+            className="mt-2 text-xs font-medium text-[var(--accent-primary)] hover:text-[var(--accent-hover)] flex items-center gap-1"
           >
             {toast.action.label}
             <ExternalLink size={12} />

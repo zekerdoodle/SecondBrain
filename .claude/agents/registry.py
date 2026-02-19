@@ -2,7 +2,7 @@
 Agent Registry - Discovery and loading of agent configurations.
 
 Scans .claude/agents/*/config.yaml for agent definitions.
-Validates configurations and loads prompts from prompt.md or prompt_appendage.md.
+Validates configurations and loads prompts from prompt.md.
 """
 
 import logging
@@ -10,7 +10,7 @@ import yaml
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from models import AgentConfig, AgentType
+from models import AgentConfig
 
 logger = logging.getLogger("agents.registry")
 
@@ -25,7 +25,7 @@ VALID_MODELS = {"sonnet", "opus", "haiku"}
 VALID_NATIVE_TOOLS = {
     "Read", "Glob", "Grep", "Write", "Edit", "Bash",
     "WebFetch", "WebSearch", "TodoWrite", "NotebookEdit",
-    "Skill", "Task", "TaskOutput",
+    "Task", "TaskOutput", "TaskStop",
 }
 
 
@@ -35,8 +35,7 @@ class AgentRegistry:
 
     Scans a base directory for agent subdirectories, each containing:
     - config.yaml - Configuration (model, tools, description)
-    - prompt.md - System prompt (for SDK agents)
-    - prompt_appendage.md - Prompt appendage (for CLI agents like claude_code)
+    - prompt.md - System prompt
 
     Usage:
         registry = AgentRegistry(Path(".claude/agents"))
@@ -112,8 +111,7 @@ class AgentRegistry:
         Expected structure:
             {agent_name}/
                 config.yaml
-                prompt.md (optional, for SDK agents)
-                prompt_appendage.md (optional, for CLI agents)
+                prompt.md (optional)
 
         Args:
             agent_dir: Path to the agent directory
@@ -132,27 +130,17 @@ class AgentRegistry:
             with open(config_path, "r") as f:
                 config_data = yaml.safe_load(f) or {}
 
-            # Load prompt based on agent type
+            # Load prompt from prompt.md
             prompt = None
-            prompt_appendage = None
 
-            agent_type = config_data.get("type", "sdk")
-
-            if agent_type == "cli":
-                # CLI agents use prompt_appendage.md
-                appendage_path = agent_dir / "prompt_appendage.md"
-                if appendage_path.exists():
-                    prompt_appendage = appendage_path.read_text()
-            else:
-                # SDK agents use prompt.md
-                prompt_path = agent_dir / "prompt.md"
-                if prompt_path.exists():
-                    prompt = prompt_path.read_text()
-                    # Add subagent header for non-chattable agents only, and only if NOT using preset
-                    # Chattable agents serve as primary in their own chat — no subagent header
-                    # Preset agents get Claude Code's native system prompt — no subagent header
-                    if not config_data.get("chattable", False) and not config_data.get("system_prompt_preset"):
-                        prompt = self._add_subagent_header(prompt)
+            prompt_path = agent_dir / "prompt.md"
+            if prompt_path.exists():
+                prompt = prompt_path.read_text()
+                # Add subagent header for non-chattable agents only, and only if NOT using preset
+                # Chattable agents serve as primary in their own chat — no subagent header
+                # Preset agents get Claude Code's native system prompt — no subagent header
+                if not config_data.get("chattable", False) and not config_data.get("system_prompt_preset"):
+                    prompt = self._add_subagent_header(prompt)
 
             # Validate config
             if "name" not in config_data:
@@ -171,7 +159,7 @@ class AgentRegistry:
                     config_data["name"]
                 )
 
-            return AgentConfig.from_dict(config_data, prompt=prompt, prompt_appendage=prompt_appendage)
+            return AgentConfig.from_dict(config_data, prompt=prompt)
 
         except Exception as e:
             logger.error(f"Failed to load agent {agent_dir.name}: {e}")

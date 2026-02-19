@@ -187,7 +187,7 @@ export const ChatSearch: React.FC<ChatSearchProps> = ({ onSelectResult, onClose 
             placeholder="Search conversations..."
             className="flex-1 outline-none text-gray-800 placeholder-gray-400"
           />
-          {isLoading && <Loader2 size={18} className="animate-spin text-[#D97757]" />}
+          {isLoading && <Loader2 size={18} className="animate-spin text-[var(--accent-primary)]" />}
           <button
             onClick={onClose}
             className="p-1.5 hover:bg-[#F5F4F2] rounded-lg text-gray-500 transition-colors"
@@ -204,7 +204,7 @@ export const ChatSearch: React.FC<ChatSearchProps> = ({ onSelectResult, onClose 
             <select
               value={roleFilter}
               onChange={e => setRoleFilter(e.target.value as 'all' | 'user' | 'assistant')}
-              className="border-none bg-[#F5F4F2] rounded px-2 py-1 text-gray-700 text-sm focus:outline-none focus:ring-1 focus:ring-[#D97757]"
+              className="border-none bg-[#F5F4F2] rounded px-2 py-1 text-gray-700 text-sm focus:outline-none focus:ring-1 focus:ring-[var(--accent-primary)]"
             >
               <option value="all">All</option>
               <option value="user">Me</option>
@@ -219,7 +219,7 @@ export const ChatSearch: React.FC<ChatSearchProps> = ({ onSelectResult, onClose 
               type="date"
               value={dateFrom}
               onChange={e => setDateFrom(e.target.value)}
-              className="border-none bg-[#F5F4F2] rounded px-2 py-1 text-gray-700 text-sm focus:outline-none focus:ring-1 focus:ring-[#D97757]"
+              className="border-none bg-[#F5F4F2] rounded px-2 py-1 text-gray-700 text-sm focus:outline-none focus:ring-1 focus:ring-[var(--accent-primary)]"
               placeholder="From"
             />
             <span className="text-gray-400">-</span>
@@ -227,7 +227,7 @@ export const ChatSearch: React.FC<ChatSearchProps> = ({ onSelectResult, onClose 
               type="date"
               value={dateTo}
               onChange={e => setDateTo(e.target.value)}
-              className="border-none bg-[#F5F4F2] rounded px-2 py-1 text-gray-700 text-sm focus:outline-none focus:ring-1 focus:ring-[#D97757]"
+              className="border-none bg-[#F5F4F2] rounded px-2 py-1 text-gray-700 text-sm focus:outline-none focus:ring-1 focus:ring-[var(--accent-primary)]"
               placeholder="To"
             />
           </div>
@@ -242,7 +242,7 @@ export const ChatSearch: React.FC<ChatSearchProps> = ({ onSelectResult, onClose 
 
         {semanticPending && (
           <div className="flex items-center gap-2 text-sm text-gray-500 mb-4 max-w-2xl mx-auto">
-            <Sparkles size={14} className="text-[#D97757]" />
+            <Sparkles size={14} className="text-[var(--accent-primary)]" />
             <span>Finding similar conversations...</span>
             <Loader2 size={14} className="animate-spin" />
           </div>
@@ -269,10 +269,10 @@ export const ChatSearch: React.FC<ChatSearchProps> = ({ onSelectResult, onClose 
               className={clsx(
                 "p-4 bg-white rounded-xl border cursor-pointer transition-all",
                 result.match_type === 'both'
-                  ? "border-[#D97757]/30 hover:border-[#D97757] shadow-sm"
+                  ? "border-[var(--accent-primary)]/30 hover:border-[var(--accent-primary)] shadow-sm"
                   : result.match_type === 'semantic'
                   ? "border-purple-200 hover:border-purple-400"
-                  : "border-[#E8E6E3] hover:border-[#D97757]",
+                  : "border-[#E8E6E3] hover:border-[var(--accent-primary)]",
                 "hover:shadow-warm-lg"
               )}
             >
@@ -292,7 +292,7 @@ export const ChatSearch: React.FC<ChatSearchProps> = ({ onSelectResult, onClose 
                   "shrink-0 mt-0.5 p-1 rounded",
                   result.role === 'user'
                     ? "bg-blue-50 text-blue-600"
-                    : "bg-[#D97757]/10 text-[#D97757]"
+                    : "bg-[var(--accent-primary)]/10 text-[var(--accent-primary)]"
                 )}>
                   {result.role === 'user' ? <User size={12} /> : <Bot size={12} />}
                 </span>
@@ -310,7 +310,7 @@ export const ChatSearch: React.FC<ChatSearchProps> = ({ onSelectResult, onClose 
                 </div>
               )}
               {result.match_type === 'both' && (
-                <div className="flex items-center gap-1 mt-2 text-xs text-[#D97757]">
+                <div className="flex items-center gap-1 mt-2 text-xs text-[var(--accent-primary)]">
                   <Sparkles size={10} />
                   <span>Keyword + semantic match</span>
                 </div>

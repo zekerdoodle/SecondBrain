@@ -1,6 +1,7 @@
 name: gardener
 model: sonnet
 description: "Memory maintenance agent - identifies duplicates, consolidates threads, adjusts importance, and flags stale content."
+icon: leaf
 timeout_seconds: 300
 max_turns: 200
 

@@ -8,10 +8,12 @@ Can be used with Claude Code CLI via: claude mcp add perplexity -- python3 /path
 
 import asyncio
 import os
+import re
 import sys
 import json
 import time
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 # Ensure we can import from the same directory
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -99,21 +101,119 @@ class PerplexitySearchClient:
             }
 
 
-def format_results(results: List[Dict[str, Any]]) -> str:
+# --- Domain label mapping ---
+DOMAIN_LABELS: Dict[str, str] = {
+    "github.com": "GitHub",
+    "gitlab.com": "GitLab",
+    "stackoverflow.com": "StackOverflow",
+    "stackexchange.com": "StackExchange",
+    "docs.python.org": "Python Docs",
+    "docs.rs": "Rust Docs",
+    "doc.rust-lang.org": "Rust Docs",
+    "developer.mozilla.org": "MDN",
+    "en.wikipedia.org": "Wikipedia",
+    "medium.com": "Blog",
+    "dev.to": "Blog",
+    "hashnode.dev": "Blog",
+    "substack.com": "Blog",
+    "news.ycombinator.com": "HN",
+    "reddit.com": "Reddit",
+    "www.reddit.com": "Reddit",
+    "arxiv.org": "arXiv",
+    "huggingface.co": "HuggingFace",
+    "pypi.org": "PyPI",
+    "npmjs.com": "npm",
+    "www.npmjs.com": "npm",
+    "crates.io": "Crates.io",
+    "docs.google.com": "Google Docs",
+    "cloud.google.com": "Google Cloud",
+    "aws.amazon.com": "AWS",
+    "learn.microsoft.com": "Microsoft Docs",
+    "anthropic.com": "Anthropic",
+    "docs.anthropic.com": "Anthropic Docs",
+    "platform.openai.com": "OpenAI Docs",
+    "openai.com": "OpenAI",
+}
+
+
+def get_source_label(url: str) -> str:
+    """Extract a human-readable source label from a URL."""
+    try:
+        parsed = urlparse(url)
+        hostname = parsed.hostname or ""
+        # Pass 1: exact match (with/without www)
+        for domain, label in DOMAIN_LABELS.items():
+            if hostname == domain or hostname == f"www.{domain}":
+                return label
+        # Pass 2: subdomain match — sort by length desc so specific domains match first
+        for domain, label in sorted(DOMAIN_LABELS.items(), key=lambda x: len(x[0]), reverse=True):
+            if hostname.endswith(f".{domain}"):
+                return label
+        clean = hostname.removeprefix("www.")
+        parts = clean.split(".")
+        if len(parts) >= 2:
+            return parts[-2].title()
+        return clean.title()
+    except Exception:
+        return "Web"
+
+
+SNIPPET_LIMITS = {
+    "brief": 200,
+    "normal": 300,  # standalone server default was 300
+    "full": 0,
+}
+
+
+def truncate_at_sentence(text: str, max_length: int) -> str:
+    """Truncate text at a sentence boundary, falling back to word boundary."""
+    if max_length <= 0 or len(text) <= max_length:
+        return text
+    truncated = text[:max_length]
+    match = None
+    for m in re.finditer(r'[.!?](?:\s|$)', truncated):
+        match = m
+    if match and match.end() > max_length * 0.4:
+        return truncated[:match.end()].rstrip()
+    last_space = truncated.rfind(" ")
+    if last_space > max_length * 0.4:
+        return truncated[:last_space].rstrip() + "..."
+    return truncated.rstrip() + "..."
+
+
+def check_result_quality(results: List[Dict[str, Any]], max_results: int) -> Optional[str]:
+    """Check if results look low-quality and return a warning if so."""
+    if not results:
+        return None
+    short_snippet_count = sum(1 for r in results if len(r.get("snippet", "")) < 50)
+    all_snippets_short = short_snippet_count == len(results)
+    very_few_results = len(results) <= 2 and max_results >= 5
+    if all_snippets_short and very_few_results:
+        return "⚠️ Results appear thin — snippets are very short and few results were returned. Try rephrasing your query or broadening search terms."
+    elif all_snippets_short:
+        return "⚠️ All result snippets are unusually short. The search may not have found strong matches — consider rephrasing."
+    elif very_few_results:
+        return f"⚠️ Only {len(results)} result(s) found (requested {max_results}). Results may not be directly relevant — try different keywords."
+    return None
+
+
+def format_results(results: List[Dict[str, Any]], snippet_mode: str = "normal") -> str:
     """Format search results for display."""
+    max_length = SNIPPET_LIMITS.get(snippet_mode, SNIPPET_LIMITS["normal"])
+
     formatted = []
     for i, r in enumerate(results, 1):
         title = r.get("title", "Untitled")
         url = r.get("url", "")
         snippet = r.get("snippet", "")
         date = r.get("date", "")
+        source_label = get_source_label(url)
 
-        entry = f"{i}. **{title}**\n   {url}"
+        entry = f"{i}. **{title}** [{source_label}]\n   {url}"
         if date:
             entry += f"\n   Published: {date}"
         if snippet:
-            if len(snippet) > 300:
-                snippet = snippet[:300] + "..."
+            snippet = truncate_at_sentence(snippet, max_length)
             entry += f"\n   {snippet}"
         formatted.append(entry)
 
@@ -140,7 +240,17 @@ async def list_tools() -> List[Tool]:
             description="""Search the web using Perplexity API.
 
 Use this to find current information, news, documentation, or any web content.
-Returns formatted search results with titles, URLs, snippets, and dates.
+Returns formatted search results with titles, URLs, source labels, snippets, and dates.
+
+Each result includes a [Source Label] (e.g., [GitHub], [Blog], [MDN], [StackOverflow])
+derived from the URL, so you can quickly assess credibility without parsing URLs.
+
+Snippet modes control how much context you get per result:
+- "brief": ~200 chars, truncated at sentence boundaries. Good for quick scans.
+- "normal" (default): ~300 chars, truncated at sentence boundaries.
+- "full": No truncation — full snippet from Perplexity. Use when you need max context.
+
+Results include a quality warning when results appear thin or low-relevance.
 
 Supports filtering by:
 - recency: "day", "week", "month", "year"
@@ -171,6 +281,12 @@ Supports filtering by:
                         "type": "array",
                         "items": {"type": "string"},
                         "description": "Domains to include/exclude (prefix '-' to exclude)"
+                    },
+                    "snippet_mode": {
+                        "type": "string",
+                        "enum": ["brief", "normal", "full"],
+                        "description": "Snippet length: 'brief' (~200 chars), 'normal' (~300 chars, default), 'full' (no truncation)",
+                        "default": "normal"
                     }
                 },
                 "required": ["query"]
@@ -188,11 +304,16 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
     if not query or not query.strip():
         return [TextContent(type="text", text="Error: Search query cannot be empty")]
 
+    max_results = arguments.get("max_results", 10)
+    snippet_mode = arguments.get("snippet_mode", "normal")
+    if snippet_mode not in SNIPPET_LIMITS:
+        snippet_mode = "normal"
+
     try:
         client = get_client()
         result = client.search(
             query=query.strip(),
-            max_results=arguments.get("max_results", 10),
+            max_results=max_results,
             recency=arguments.get("recency"),
             country=arguments.get("country"),
             domains=arguments.get("domains"),
@@ -201,14 +322,17 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
         if result.get("success"):
             results = result.get("results", [])
             if results:
-                formatted = format_results(results)
+                formatted = format_results(results, snippet_mode=snippet_mode)
+                quality_warning = check_result_quality(results, max_results)
                 output = (
                     f"## Web Search Results for: '{result['query']}'\n\n"
                     f"{formatted}\n\n"
                     f"*{result['result_count']} results in {result['search_time']}s*"
                 )
+                if quality_warning:
+                    output += f"\n\n{quality_warning}"
             else:
-                output = f"No results found for: '{result['query']}'"
+                output = f"No results found for: '{result['query']}'. Try different keywords or broader search terms."
         else:
             output = f"Search failed: {result.get('error', 'Unknown error')}"
 

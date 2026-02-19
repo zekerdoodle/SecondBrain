@@ -26,7 +26,6 @@ class InvocationMode(str, Enum):
 class AgentType(str, Enum):
     """Type of agent implementation."""
     SDK = "sdk"        # Uses Claude Agent SDK (query())
-    CLI = "cli"        # Uses Claude CLI (claude --print)
     PRIMARY = "primary"  # Configuration-only, not invocable
 
 
@@ -37,33 +36,32 @@ class AgentConfig:
 
     Attributes:
         name: Unique identifier for the agent
-        type: Implementation type (sdk or cli)
+        type: Implementation type (sdk or primary)
         model: Model to use (sonnet, opus, haiku)
         description: Human-readable description for Claude <3
-        tools: List of allowed tools (for SDK agents)
+        tools: List of allowed tools
         timeout_seconds: Maximum execution time
-        output_format: Structured output schema (for SDK agents)
+        output_format: Structured output schema
         prompt: System prompt content (loaded from prompt.md)
-        prompt_appendage: Appendage to default prompt (for CLI agents like claude_code)
     """
     name: str
     type: AgentType
     model: str
     description: str
     tools: List[str] = field(default_factory=list)
-    timeout_seconds: int = 300  # Default for SDK agents; CLI agents default to 900 in from_dict
+    timeout_seconds: int = 300
     max_turns: int = 200
     output_format: Optional[Dict[str, Any]] = None
     prompt: Optional[str] = None
-    prompt_appendage: Optional[str] = None
     system_prompt_preset: Optional[str] = None  # e.g., "claude_code" — uses SDK's SystemPromptPreset; prompt.md becomes append
+    skills: Optional[List[str]] = None  # If set, only these skills can be injected. None = all skills available.
     chattable: bool = False
     hidden: bool = False
     color: Optional[str] = None
     icon: Optional[str] = None
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any], prompt: Optional[str] = None, prompt_appendage: Optional[str] = None) -> "AgentConfig":
+    def from_dict(cls, data: Dict[str, Any], prompt: Optional[str] = None) -> "AgentConfig":
         """Create AgentConfig from a dictionary (parsed YAML)."""
         return cls(
             name=data["name"],
@@ -71,12 +69,12 @@ class AgentConfig:
             model=data.get("model", "sonnet"),
             description=data.get("description", f"Agent: {data['name']}"),
             tools=data.get("tools", []),
-            timeout_seconds=data.get("timeout_seconds") or data.get("timeout") or (300 if data.get("type") != "cli" else 900),
+            timeout_seconds=data.get("timeout_seconds") or data.get("timeout") or 300,
             max_turns=data.get("max_turns", 200),
             output_format=data.get("output_format"),
             prompt=prompt,
-            prompt_appendage=prompt_appendage,
             system_prompt_preset=data.get("system_prompt_preset"),
+            skills=data.get("skills"),
             chattable=data.get("chattable", False),
             hidden=data.get("hidden", False),
             color=data.get("color"),

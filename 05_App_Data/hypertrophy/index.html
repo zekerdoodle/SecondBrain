@@ -3,333 +3,614 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
 <title>Hypertrophy Tracker</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 <style>
-* { box-sizing: border-box; margin: 0; padding: 0; }
+/* === Second Brain Theme Variables === */
+:root, [data-theme="light"] {
+  --bg-primary: #FAF9F7;
+  --bg-secondary: #FFFFFF;
+  --bg-tertiary: #F5F4F2;
+  --text-primary: #1a1a1a;
+  --text-secondary: #6B6B6B;
+  --text-muted: #9CA3AF;
+  --border-color: #E8E6E3;
+  --border-hover: #D4D2CF;
+  --accent-primary: #D97757;
+  --accent-hover: #C4684A;
+  --accent-light: #FDF4F1;
+  --accent-r: 217;
+  --accent-g: 119;
+  --accent-b: 87;
+  --success: #10B981;
+  --warning: #F59E0B;
+  --error: #EF4444;
+  --sp-xs: 4px; --sp-sm: 8px; --sp-md: 12px; --sp-lg: 16px; --sp-xl: 20px; --sp-2xl: 24px;
+  --radius-sm: 4px; --radius-md: 8px; --radius-lg: 10px; --radius-xl: 12px; --radius-2xl: 16px; --radius-full: 9999px;
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'SF Mono', 'Fira Code', monospace;
+  --font-size-xs: 11px; --font-size-sm: 12px; --font-size-base: 13px; --font-size-md: 14px;
+  --font-size-lg: 16px; --font-size-xl: 18px; --font-size-2xl: 22px;
+  --ease-fast: 0.15s ease; --ease-normal: 0.2s ease; --ease-slow: 0.3s ease;
+  --z-base: 1; --z-sticky: 50; --z-modal: 200; --z-toast: 300;
+}
+
+[data-theme="dark"] {
+  --bg-primary: #1a1a1a;
+  --bg-secondary: #242424;
+  --bg-tertiary: #2d2d2d;
+  --text-primary: #f5f5f5;
+  --text-secondary: #a0a0a0;
+  --text-muted: #6b6b6b;
+  --border-color: #3d3d3d;
+  --border-hover: #4d4d4d;
+  --success: #34D399;
+  --warning: #FBBF24;
+  --error: #F87171;
+}
+
+/* === Base Reset & Typography === */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  background: #1e1e2e; color: #cdd6f4;
-  min-height: 100vh; overflow-x: hidden;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-md);
+  line-height: 1.5;
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow-x: hidden;
+}
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: var(--radius-full); }
+::-webkit-scrollbar-thumb:hover { background: var(--border-hover); }
+
+/* === Cards === */
+.card {
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-xl);
+  padding: var(--sp-lg);
+  border: 1px solid var(--border-color);
+}
+.card-header {
+  font-size: var(--font-size-md);
+  font-weight: 600;
+  margin-bottom: var(--sp-md);
+  color: var(--text-secondary);
+}
+
+/* === Buttons === */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: var(--sp-sm);
+  padding: 10px 20px; border-radius: var(--radius-lg); border: none; cursor: pointer;
+  font-size: var(--font-size-md); font-weight: 600; font-family: inherit;
+  transition: background var(--ease-normal), opacity var(--ease-normal); user-select: none;
+}
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-primary { background: var(--accent-primary); color: var(--bg-secondary); }
+.btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
+.btn-secondary { background: var(--bg-tertiary); color: var(--text-primary); }
+.btn-secondary:hover:not(:disabled) { background: var(--border-color); }
+.btn-success { background: var(--success); color: var(--bg-secondary); }
+.btn-success:hover:not(:disabled) { opacity: 0.9; }
+.btn-danger { background: var(--error); color: var(--bg-secondary); }
+.btn-danger:hover:not(:disabled) { opacity: 0.9; }
+.btn-ghost { background: transparent; color: var(--text-secondary); }
+.btn-ghost:hover:not(:disabled) { background: var(--bg-tertiary); color: var(--text-primary); }
+.btn-sm { padding: 6px 12px; font-size: var(--font-size-sm); border-radius: var(--radius-md); }
+
+/* === Form Inputs === */
+input[type="text"], input[type="number"], input[type="email"], input[type="password"],
+input[type="search"], input[type="url"], select, textarea {
+  width: 100%; padding: var(--sp-md) var(--sp-lg);
+  background: var(--bg-primary); color: var(--text-primary);
+  border: 1px solid var(--border-color); border-radius: var(--radius-lg);
+  font-size: var(--font-size-base); font-family: inherit; outline: none;
+  transition: border-color var(--ease-normal);
+}
+input:focus, select:focus, textarea:focus { border-color: var(--accent-primary); }
+input:disabled, select:disabled, textarea:disabled { opacity: 0.5; cursor: not-allowed; }
+textarea { resize: vertical; min-height: 80px; }
+.field { margin-bottom: 14px; }
+.field label { display: block; font-size: var(--font-size-sm); font-weight: 600; color: var(--text-secondary); margin-bottom: var(--sp-xs); }
+.field .hint { font-size: var(--font-size-xs); color: var(--text-muted); margin-top: 2px; }
+
+/* === Modal === */
+.modal-overlay {
+  position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0, 0, 0, 0.7); z-index: var(--z-modal);
+  display: flex; align-items: center; justify-content: center; padding: var(--sp-lg);
+  opacity: 0; pointer-events: none; transition: opacity var(--ease-normal);
+}
+.modal-overlay.show { opacity: 1; pointer-events: auto; }
+.modal {
+  background: var(--bg-tertiary); border-radius: var(--radius-2xl); padding: var(--sp-2xl);
+  width: 100%; max-width: 400px; border: 1px solid var(--border-color);
+}
+.modal-title { font-size: var(--font-size-xl); font-weight: 700; }
+.modal-subtitle { font-size: var(--font-size-base); color: var(--text-muted); }
+
+/* === Toast === */
+.toast {
+  position: fixed; top: var(--sp-lg); left: 50%;
+  transform: translateX(-50%) translateY(-100px);
+  background: var(--bg-tertiary); color: var(--text-primary);
+  padding: var(--sp-md) var(--sp-xl); border-radius: var(--radius-lg);
+  font-size: var(--font-size-base); font-weight: 600;
+  z-index: var(--z-toast); border: 1px solid var(--border-color);
+  transition: transform var(--ease-slow); pointer-events: none;
+}
+.toast.show { transform: translateX(-50%) translateY(0); }
+.toast.error { border-color: var(--error); color: var(--error); }
+.toast.success { border-color: var(--success); color: var(--success); }
+.toast.warning { border-color: var(--warning); color: var(--warning); }
+
+/* === Alerts === */
+.alert {
+  padding: var(--sp-md) var(--sp-lg); border-radius: var(--radius-lg);
+  margin-bottom: var(--sp-md); font-size: var(--font-size-base); border: 1px solid;
+}
+.alert-info    { background: rgba(var(--accent-r),var(--accent-g),var(--accent-b),0.1); border-color: rgba(var(--accent-r),var(--accent-g),var(--accent-b),0.3); color: var(--accent-primary); }
+.alert-success { background: rgba(16,185,129,0.1); border-color: rgba(16,185,129,0.3); color: var(--success); }
+.alert-warning { background: rgba(245,158,11,0.1); border-color: rgba(245,158,11,0.3); color: var(--warning); }
+.alert-danger  { background: rgba(239,68,68,0.1); border-color: rgba(239,68,68,0.3); color: var(--error); }
+
+/* === Toggle === */
+.toggle {
+  width: 42px; height: 24px; border-radius: var(--radius-full);
+  background: var(--border-color); position: relative; cursor: pointer;
+  transition: background var(--ease-normal); border: none; flex-shrink: 0;
+}
+.toggle.on { background: var(--accent-primary); }
+.toggle::after {
+  content: ''; position: absolute; top: 3px; left: 3px;
+  width: 18px; height: 18px; border-radius: 50%;
+  background: var(--text-primary); transition: transform var(--ease-normal);
+}
+.toggle.on::after { transform: translateX(18px); }
+
+/* === Empty State === */
+.empty-state { text-align: center; padding: 48px var(--sp-2xl); color: var(--text-muted); }
+.empty-state .empty-icon { font-size: 48px; margin-bottom: var(--sp-md); }
+.empty-state .empty-title { font-size: var(--font-size-xl); font-weight: 700; color: var(--text-secondary); margin-bottom: var(--sp-sm); }
+.empty-state .empty-subtitle { font-size: var(--font-size-base); }
+
+/* === Utilities (from theme.css) === */
+.text-primary   { color: var(--text-primary); }
+.text-accent    { color: var(--accent-primary); }
+.text-success   { color: var(--success); }
+.text-warning   { color: var(--warning); }
+.text-danger    { color: var(--error); }
+.font-mono { font-family: var(--font-mono); }
+.font-bold { font-weight: 700; }
+.flex-col { flex-direction: column; }
+.items-center { align-items: center; }
+.justify-between { justify-content: space-between; }
+.justify-center { justify-content: center; }
+.gap-xs { gap: var(--sp-xs); }
+.gap-sm { gap: var(--sp-sm); }
+.gap-md { gap: var(--sp-md); }
+.gap-lg { gap: var(--sp-lg); }
+.mb-sm { margin-bottom: var(--sp-sm); }
+.mb-md { margin-bottom: var(--sp-md); }
+.mb-lg { margin-bottom: var(--sp-lg); }
+@keyframes slideIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+.animate-slide-in { animation: slideIn 0.2s ease-out; }
+.animate-fade-in  { animation: fadeIn 0.2s ease-out; }
+
+/* === Hypertrophy Tracker — app-specific styles === */
+
+body {
+  min-height: 100vh;
   padding-bottom: 70px;
 }
-::-webkit-scrollbar { width: 6px; }
-::-webkit-scrollbar-track { background: #1e1e2e; }
-::-webkit-scrollbar-thumb { background: #45475a; border-radius: 3px; }
-
 /* === TAB NAV (bottom) === */
 .tab-bar {
-  display: flex; background: #181825; border-top: 1px solid #313244;
-  position: fixed; bottom: 0; left: 0; right: 0; z-index: 100;
+  display: flex; background: var(--bg-secondary); border-top: 1px solid var(--bg-tertiary);
+  position: fixed; bottom: 0; left: 0; right: 0; z-index: var(--z-sticky);
 }
 .tab-btn {
   flex: 1; padding: 10px 4px 8px; text-align: center; cursor: pointer;
-  color: #6c7086; font-size: 10px; font-weight: 600; letter-spacing: 0.3px;
-  border: none; background: none; border-top: 2px solid transparent;
-  transition: color 0.2s, border-color 0.2s;
+  color: var(--text-muted); font-size: var(--font-size-xs); font-weight: 600;
+  letter-spacing: 0.3px; border: none; background: none; font-family: inherit;
+  border-top: 2px solid transparent; transition: color var(--ease-normal), border-color var(--ease-normal);
   display: flex; flex-direction: column; align-items: center; gap: 3px;
 }
-.tab-btn:hover { color: #a6adc8; }
-.tab-btn.active { color: #89b4fa; border-top-color: #89b4fa; }
+.tab-btn:hover { color: var(--text-secondary); }
+.tab-btn.active { color: var(--accent-primary); border-top-color: var(--accent-primary); }
 .tab-icon { font-size: 18px; }
 
 /* === MAIN CONTENT === */
-main { padding: 16px; max-width: 600px; margin: 0 auto; }
+main { padding: var(--sp-lg); max-width: 600px; margin: 0 auto; }
 .tab-content { display: none; }
 .tab-content.active { display: block; }
 
-/* === CARDS === */
-.card {
-  background: #313244; border-radius: 12px; padding: 16px; margin-bottom: 12px;
-  border: 1px solid #45475a;
-}
-.card-header { font-size: 15px; font-weight: 600; margin-bottom: 8px; color: #cdd6f4; }
-.card-sub { font-size: 12px; color: #6c7086; }
-.card-clickable { cursor: pointer; transition: all 0.15s; -webkit-tap-highlight-color: transparent; }
-.card-clickable:hover { border-color: #585b70; }
+/* === CARD OVERRIDES === */
+.card { margin-bottom: var(--sp-md); }
+.card-header { color: var(--text-primary); font-size: 15px; }
+.card-sub { font-size: var(--font-size-sm); color: var(--text-muted); }
+.card-clickable { cursor: pointer; transition: all var(--ease-fast); -webkit-tap-highlight-color: transparent; }
+.card-clickable:hover { border-color: var(--border-hover); }
 .card-clickable:active { transform: scale(0.98); }
 
-/* === BUTTONS === */
-.btn {
-  border: none; border-radius: 10px; padding: 12px 20px; cursor: pointer;
-  font-weight: 600; font-size: 14px; transition: all 0.15s;
-  -webkit-tap-highlight-color: transparent;
-}
-.btn-primary { background: #89b4fa; color: #1e1e2e; }
-.btn-primary:hover { background: #b4befe; }
-.btn-secondary { background: #45475a; color: #cdd6f4; }
-.btn-secondary:hover { background: #585b70; }
-.btn-success { background: #a6e3a1; color: #1e1e2e; }
-.btn-success:hover { background: #94e2d5; }
-.btn-danger { background: #f38ba8; color: #1e1e2e; }
-.btn-danger:hover { background: #eba0ac; }
-.btn-warning { background: #f9e2af; color: #1e1e2e; }
-.btn-warning:hover { background: #f5c2e7; }
-.btn-large { padding: 16px 28px; font-size: 16px; width: 100%; }
-.btn-small { padding: 8px 14px; font-size: 12px; }
-.btn:disabled { opacity: 0.4; cursor: not-allowed; }
-.btn-ghost { background: none; color: #6c7086; padding: 8px 12px; font-size: 12px; border: none; cursor: pointer; }
-.btn-ghost:hover { color: #cdd6f4; }
-.btn-row { display: flex; gap: 8px; margin-top: 12px; }
+/* === BUTTON OVERRIDES === */
+.btn { -webkit-tap-highlight-color: transparent; }
+.btn-warning { background: var(--warning); color: var(--bg-secondary); }
+.btn-warning:hover:not(:disabled) { opacity: 0.9; }
+.btn-large { padding: 16px 28px; font-size: var(--font-size-lg); width: 100%; }
+.btn-small { padding: 8px 14px; font-size: var(--font-size-sm); }
+.btn-ghost { padding: 8px 12px; font-size: var(--font-size-sm); border: none; }
+.btn-row { display: flex; gap: var(--sp-sm); margin-top: var(--sp-md); }
 
-/* === INPUTS === */
-input, textarea, select {
-  background: #1e1e2e; border: 1px solid #45475a; color: #cdd6f4;
-  padding: 12px 16px; border-radius: 10px; font-size: 15px; width: 100%;
-  -webkit-appearance: none;
-}
-input:focus, textarea:focus, select:focus { outline: none; border-color: #89b4fa; }
+/* === INPUT OVERRIDES === */
+input, select, textarea { font-size: 15px; -webkit-appearance: none; }
 input[type="number"] { -moz-appearance: textfield; }
 input[type="number"]::-webkit-inner-spin-button,
 input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; }
-textarea { resize: vertical; min-height: 60px; font-family: inherit; }
-label { font-size: 13px; color: #a6adc8; font-weight: 600; display: block; margin-bottom: 6px; }
-.form-group { margin-bottom: 16px; }
+textarea { min-height: 60px; }
+label { font-size: var(--font-size-base); color: var(--text-secondary); font-weight: 600; display: block; margin-bottom: 6px; }
+.form-group { margin-bottom: var(--sp-lg); }
 .form-row { display: flex; gap: 10px; }
 .form-row > * { flex: 1; }
 
 /* === STAT BADGES === */
-.stat-row { display: flex; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+.stat-row { display: flex; gap: 10px; margin-bottom: var(--sp-md); flex-wrap: wrap; }
 .stat-badge {
-  flex: 1; min-width: 80px; background: #1e1e2e; border-radius: 10px; padding: 12px;
-  text-align: center; border: 1px solid #45475a;
+  flex: 1; min-width: 80px; background: var(--bg-primary); border-radius: var(--radius-lg);
+  padding: var(--sp-md); text-align: center; border: 1px solid var(--border-color);
 }
-.stat-value { font-size: 22px; font-weight: 700; color: #89b4fa; }
-.stat-label { font-size: 11px; color: #6c7086; margin-top: 2px; }
+.stat-value { font-size: var(--font-size-2xl); font-weight: 700; color: var(--accent-primary); }
+.stat-label { font-size: var(--font-size-xs); color: var(--text-muted); margin-top: 2px; }
 
-/* === BADGES / CHIPS === */
+/* === BADGES === */
 .badge {
-  display: inline-block; padding: 4px 10px; border-radius: 6px; font-size: 11px;
+  display: inline-block; padding: 4px 10px; border-radius: var(--radius-sm); font-size: var(--font-size-xs);
   font-weight: 600; letter-spacing: 0.3px; text-transform: uppercase;
 }
-.badge-primary { background: rgba(137,180,250,0.15); color: #89b4fa; }
-.badge-secondary { background: rgba(166,227,161,0.15); color: #a6e3a1; }
-.badge-maintenance { background: rgba(249,226,175,0.15); color: #f9e2af; }
-.badge-active { background: rgba(137,180,250,0.2); color: #89b4fa; }
-.badge-completed { background: rgba(166,227,161,0.2); color: #a6e3a1; }
-.badge-upcoming { background: rgba(108,112,134,0.2); color: #6c7086; }
+.badge-primary { background: rgba(var(--accent-r),var(--accent-g),var(--accent-b),0.15); color: var(--accent-primary); }
+.badge-secondary { background: rgba(16,185,129,0.15); color: var(--success); }
+.badge-maintenance { background: rgba(245,158,11,0.15); color: var(--warning); }
+.badge-active { background: rgba(var(--accent-r),var(--accent-g),var(--accent-b),0.2); color: var(--accent-primary); }
+.badge-completed { background: rgba(16,185,129,0.2); color: var(--success); }
+.badge-upcoming { background: rgba(156,163,175,0.2); color: var(--text-muted); }
+.badge-danger { background: rgba(239,68,68,0.15); color: var(--error); }
 
 /* === CHIP SELECT === */
-.chip-group { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip-group { display: flex; flex-wrap: wrap; gap: var(--sp-sm); }
 .chip {
-  padding: 8px 16px; border-radius: 20px; border: 1px solid #45475a;
-  background: #1e1e2e; color: #a6adc8; font-size: 13px; font-weight: 500;
-  cursor: pointer; transition: all 0.15s; -webkit-tap-highlight-color: transparent;
+  padding: 8px 16px; border-radius: var(--radius-full); border: 1px solid var(--border-color);
+  background: var(--bg-primary); color: var(--text-secondary); font-size: var(--font-size-base); font-weight: 500;
+  cursor: pointer; transition: all var(--ease-fast); -webkit-tap-highlight-color: transparent;
 }
-.chip:hover { border-color: #89b4fa; color: #89b4fa; }
-.chip.selected { background: #89b4fa; color: #1e1e2e; border-color: #89b4fa; }
-.chip-sm { padding: 5px 12px; font-size: 12px; }
+.chip:hover { border-color: var(--accent-primary); color: var(--accent-primary); }
+.chip.selected { background: var(--accent-primary); color: var(--bg-secondary); border-color: var(--accent-primary); }
+.chip-sm { padding: 5px 12px; font-size: var(--font-size-sm); }
 
 /* === PRIORITY SELECT === */
 .priority-select { display: flex; gap: 6px; }
 .priority-opt {
-  flex: 1; padding: 8px; text-align: center; border-radius: 8px;
-  border: 1px solid #45475a; background: #1e1e2e; color: #6c7086;
-  font-size: 12px; font-weight: 600; cursor: pointer; transition: all 0.15s;
+  flex: 1; padding: 8px; text-align: center; border-radius: var(--radius-md);
+  border: 1px solid var(--border-color); background: var(--bg-primary); color: var(--text-muted);
+  font-size: var(--font-size-sm); font-weight: 600; cursor: pointer; transition: all var(--ease-fast);
 }
-.priority-opt:hover { border-color: #585b70; }
-.priority-opt.sel-primary { background: rgba(137,180,250,0.2); color: #89b4fa; border-color: #89b4fa; }
-.priority-opt.sel-secondary { background: rgba(166,227,161,0.2); color: #a6e3a1; border-color: #a6e3a1; }
-.priority-opt.sel-maintenance { background: rgba(249,226,175,0.2); color: #f9e2af; border-color: #f9e2af; }
+.priority-opt:hover { border-color: var(--border-hover); }
+.priority-opt.sel-primary { background: rgba(var(--accent-r),var(--accent-g),var(--accent-b),0.2); color: var(--accent-primary); border-color: var(--accent-primary); }
+.priority-opt.sel-secondary { background: rgba(16,185,129,0.2); color: var(--success); border-color: var(--success); }
+.priority-opt.sel-maintenance { background: rgba(245,158,11,0.2); color: var(--warning); border-color: var(--warning); }
 
 /* === WIZARD STEPPER === */
-.wizard-steps {
-  display: flex; gap: 4px; margin-bottom: 20px; padding: 0 4px;
-}
+.wizard-steps { display: flex; gap: 4px; margin-bottom: 20px; padding: 0 4px; }
 .wizard-step {
-  flex: 1; height: 4px; border-radius: 2px; background: #45475a; transition: background 0.3s;
+  flex: 1; height: 4px; border-radius: 2px; background: var(--border-color);
+  transition: background var(--ease-slow);
 }
-.wizard-step.done { background: #a6e3a1; }
-.wizard-step.current { background: #89b4fa; }
+.wizard-step.done { background: var(--success); }
+.wizard-step.current { background: var(--accent-primary); }
 .wizard-title { font-size: 20px; font-weight: 700; margin-bottom: 4px; }
-.wizard-subtitle { font-size: 13px; color: #6c7086; margin-bottom: 20px; }
+.wizard-subtitle { font-size: var(--font-size-base); color: var(--text-muted); margin-bottom: 20px; }
 
 /* === SESSION CARD === */
 .session-card {
-  background: #313244; border-radius: 12px; padding: 14px 16px; margin-bottom: 10px;
-  border: 2px solid #45475a; cursor: pointer; transition: all 0.15s;
+  background: var(--bg-tertiary); border-radius: var(--radius-xl); padding: 14px 16px;
+  margin-bottom: 10px; border: 2px solid var(--border-color); cursor: pointer;
+  transition: all var(--ease-fast);
 }
-.session-card:hover { border-color: #585b70; }
-.session-card.active-session { border-color: #89b4fa; }
-.session-card.completed-session { border-color: #a6e3a1; opacity: 0.8; }
-.session-card-title { font-size: 14px; font-weight: 600; margin-bottom: 4px; }
-.session-card-groups { font-size: 12px; color: #6c7086; }
+.session-card:hover { border-color: var(--border-hover); }
+.session-card.active-session { border-color: var(--accent-primary); }
+.session-card.completed-session { border-color: var(--success); opacity: 0.8; }
+.session-card-title { font-size: var(--font-size-md); font-weight: 600; margin-bottom: 4px; }
+.session-card-groups { font-size: var(--font-size-sm); color: var(--text-muted); }
 
 /* === WORKOUT VIEW === */
 .workout-header {
-  background: #181825; border-radius: 12px; padding: 16px; margin-bottom: 16px;
-  border: 1px solid #313244;
+  background: var(--bg-secondary); border-radius: var(--radius-xl); padding: var(--sp-lg);
+  margin-bottom: var(--sp-lg); border: 1px solid var(--bg-tertiary);
 }
-.workout-title { font-size: 18px; font-weight: 700; }
-.workout-subtitle { font-size: 13px; color: #6c7086; margin-top: 4px; }
+.workout-title { font-size: var(--font-size-xl); font-weight: 700; }
+.workout-subtitle { font-size: var(--font-size-base); color: var(--text-muted); margin-top: 4px; }
 
 .muscle-group-section { margin-bottom: 20px; }
 .muscle-group-header {
-  display: flex; align-items: center; gap: 8px; margin-bottom: 12px;
-  padding-bottom: 8px; border-bottom: 1px solid #45475a;
+  display: flex; align-items: center; justify-content: space-between; gap: var(--sp-sm); margin-bottom: var(--sp-md);
+  padding-bottom: var(--sp-sm); border-bottom: 1px solid var(--border-color);
 }
-.muscle-group-name { font-size: 16px; font-weight: 700; }
+.muscle-group-name { font-size: var(--font-size-lg); font-weight: 700; }
 
-.exercise-block { margin-bottom: 16px; }
+.exercise-block { margin-bottom: var(--sp-lg); }
+
+/* Reorder buttons */
+.reorder-btn {
+  background: transparent;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0;
+  transition: background var(--ease-fast), color var(--ease-fast);
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+.reorder-btn:hover { background: var(--bg-tertiary); color: var(--text-primary); }
+.reorder-btn:disabled { opacity: 0.2; cursor: default; }
+.reorder-btn:disabled:hover { background: transparent; color: var(--text-muted); }
+.reorder-btns { display: flex; gap: 2px; margin-right: 4px; }
+
+/* === SUPERSET GROUPING === */
+.superset-group {
+  border: 2px solid var(--accent-primary);
+  border-radius: var(--radius-xl);
+  padding: var(--sp-sm) var(--sp-md);
+  margin-bottom: var(--sp-lg);
+  position: relative;
+  background: rgba(var(--accent-r), var(--accent-g), var(--accent-b), 0.04);
+}
+.superset-group .exercise-block {
+  margin-bottom: var(--sp-xs);
+}
+.superset-group .exercise-block:last-child {
+  margin-bottom: 0;
+}
+.superset-label {
+  display: inline-block;
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+  color: var(--accent-primary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 2px 8px;
+  background: rgba(var(--accent-r), var(--accent-g), var(--accent-b), 0.12);
+  border-radius: var(--radius-sm);
+  margin-bottom: var(--sp-xs);
+}
+.superset-divider {
+  height: 1px;
+  background: rgba(var(--accent-r), var(--accent-g), var(--accent-b), 0.25);
+  margin: var(--sp-xs) 0;
+}
+
 .exercise-header {
   display: flex; align-items: center; justify-content: space-between;
-  margin-bottom: 8px; padding: 8px 0;
+  margin-bottom: var(--sp-sm); padding: var(--sp-sm) 0;
 }
-.exercise-name { font-size: 14px; font-weight: 600; }
-.exercise-meta { font-size: 11px; color: #6c7086; }
+.exercise-name { font-size: var(--font-size-md); font-weight: 600; }
+.exercise-meta { font-size: var(--font-size-xs); color: var(--text-muted); }
+
+.exercise-notes-toggle {
+  display: inline-flex; align-items: center; gap: 3px;
+  font-size: var(--font-size-xs); color: var(--text-muted);
+  cursor: pointer; border: none; background: none; padding: 2px 0;
+  font-family: inherit;
+}
+.exercise-notes-toggle:hover { color: var(--text-secondary); }
+.exercise-notes-toggle.has-notes { color: var(--accent-primary); }
+.exercise-notes-area {
+  margin-top: var(--sp-xs);
+  margin-bottom: var(--sp-sm);
+}
+.exercise-notes-area textarea {
+  width: 100%; min-height: 50px; max-height: 120px;
+  padding: var(--sp-sm); font-size: var(--font-size-xs);
+  resize: vertical; border-radius: var(--radius-md);
+  background: var(--bg-primary); border: 1px solid var(--border-color);
+  color: var(--text-primary); font-family: inherit;
+}
+.exercise-notes-area textarea:focus { border-color: var(--accent-primary); outline: none; }
 
 .set-row {
   display: flex; align-items: center; gap: 6px; margin-bottom: 6px; padding: 6px 8px;
-  background: #1e1e2e; border-radius: 8px; border: 1px solid #45475a;
+  background: var(--bg-primary); border-radius: var(--radius-md); border: 1px solid var(--border-color);
 }
-.set-num { width: 28px; font-size: 12px; color: #6c7086; font-weight: 600; text-align: center; flex-shrink: 0; }
+.set-num { width: 28px; font-size: var(--font-size-sm); color: var(--text-muted); font-weight: 600; text-align: center; flex-shrink: 0; }
 .set-input {
-  width: 60px; padding: 8px; text-align: center; font-size: 14px; font-weight: 600;
-  border-radius: 6px; background: #313244; border: 1px solid #45475a; color: #cdd6f4;
+  width: 60px; padding: 8px; text-align: center; font-size: var(--font-size-md); font-weight: 600;
+  border-radius: var(--radius-sm); background: var(--bg-tertiary); border: 1px solid var(--border-color); color: var(--text-primary);
 }
-.set-input:focus { border-color: #89b4fa; outline: none; }
-.set-input-label { font-size: 10px; color: #585b70; text-align: center; }
-.set-target { font-size: 11px; color: #585b70; text-align: center; }
+.set-input:focus { border-color: var(--accent-primary); outline: none; }
+.set-input-label { font-size: 10px; color: var(--border-hover); text-align: center; }
+.set-target { font-size: var(--font-size-xs); color: var(--border-hover); text-align: center; }
 .set-col { display: flex; flex-direction: column; align-items: center; gap: 2px; }
 .set-done-wrap { flex-shrink: 0; display: flex; align-items: center; justify-content: center; width: 28px; }
 .set-done-cb {
   appearance: none; -webkit-appearance: none; width: 22px; height: 22px;
-  border: 2px solid #585b70; border-radius: 6px; background: #1e1e2e;
-  cursor: pointer; position: relative; transition: all 0.15s;
+  border: 2px solid var(--border-hover); border-radius: var(--radius-sm); background: var(--bg-primary);
+  cursor: pointer; position: relative; transition: all var(--ease-fast);
 }
-.set-done-cb:checked {
-  background: #a6e3a1; border-color: #a6e3a1;
-}
+.set-done-cb:checked { background: var(--success); border-color: var(--success); }
 .set-done-cb:checked::after {
   content: '\2713'; position: absolute; top: 50%; left: 50%;
-  transform: translate(-50%, -50%); font-size: 14px; color: #1e1e2e; font-weight: 700;
+  transform: translate(-50%, -50%); font-size: 14px; color: var(--bg-primary); font-weight: 700;
 }
-.set-row.set-completed { border-color: #a6e3a1; opacity: 0.75; }
+.set-row.set-completed { border-color: var(--success); opacity: 0.75; }
 .set-type-select {
-  font-size: 11px; padding: 2px 4px; background: #313244; border: 1px solid #45475a;
-  color: #cdd6f4; border-radius: 4px; cursor: pointer; max-width: 72px;
+  font-size: var(--font-size-xs); padding: 2px 4px; background: var(--bg-tertiary);
+  border: 1px solid var(--border-color); color: var(--text-primary); border-radius: var(--radius-sm);
+  cursor: pointer; max-width: 72px;
 }
-.set-type-select:focus { border-color: #89b4fa; outline: none; }
+.set-type-select:focus { border-color: var(--accent-primary); outline: none; }
 .set-type-badge {
   font-size: 9px; padding: 1px 5px; border-radius: 3px; font-weight: 600;
   text-transform: uppercase; letter-spacing: 0.5px; white-space: nowrap;
 }
-.set-type-badge.myorep { background: #cba6f722; color: #cba6f7; }
-.set-type-badge.myorep_match { background: #f5c2e722; color: #f5c2e7; }
-.set-type-badge.giant { background: #fab38722; color: #fab387; }
-.set-type-badge.straight { background: #45475a44; color: #6c7086; }
-.set-row.set-completed .set-input { background: #1e1e2e; color: #6c7086; }
+.set-type-badge.myorep { background: rgba(139,92,246,0.13); color: #8B5CF6; }
+.set-type-badge.myorep_match { background: rgba(236,72,153,0.13); color: #EC4899; }
+.set-type-badge.giant { background: rgba(249,115,22,0.13); color: #F97316; }
+.set-type-badge.straight { background: rgba(156,163,175,0.27); color: var(--text-muted); }
+.set-row.set-completed .set-input { background: var(--bg-primary); color: var(--text-muted); }
 
-/* === PROMPT MODAL === */
-.modal-overlay {
-  position: fixed; top: 0; left: 0; right: 0; bottom: 0;
-  background: rgba(0,0,0,0.7); z-index: 200;
-  display: flex; align-items: center; justify-content: center;
-  padding: 16px; opacity: 0; pointer-events: none; transition: opacity 0.2s;
-}
-.modal-overlay.show { opacity: 1; pointer-events: auto; }
-.modal {
-  background: #313244; border-radius: 16px; padding: 24px; width: 100%;
-  max-width: 400px; border: 1px solid #45475a;
-}
-.modal-title { font-size: 18px; font-weight: 700; margin-bottom: 6px; }
-.modal-subtitle { font-size: 13px; color: #6c7086; margin-bottom: 20px; }
-.modal-options { display: flex; flex-direction: column; gap: 8px; }
+/* === MODAL OVERRIDES === */
+.modal-subtitle { margin-bottom: 20px; }
+.modal-options { display: flex; flex-direction: column; gap: var(--sp-sm); }
 .modal-opt {
-  padding: 14px 16px; border-radius: 10px; border: 1px solid #45475a;
-  background: #1e1e2e; color: #cdd6f4; font-size: 14px; font-weight: 500;
-  cursor: pointer; transition: all 0.15s; text-align: center;
+  padding: 14px 16px; border-radius: var(--radius-lg); border: 1px solid var(--border-color);
+  background: var(--bg-primary); color: var(--text-primary); font-size: var(--font-size-md); font-weight: 500;
+  cursor: pointer; transition: all var(--ease-fast); text-align: center;
 }
-.modal-opt:hover { border-color: #89b4fa; background: #252540; }
-.modal-opt.selected { border-color: #89b4fa; background: rgba(137,180,250,0.15); color: #89b4fa; }
+.modal-opt:hover { border-color: var(--accent-primary); background: rgba(var(--accent-r),var(--accent-g),var(--accent-b),0.08); }
+.modal-opt.selected { border-color: var(--accent-primary); background: rgba(var(--accent-r),var(--accent-g),var(--accent-b),0.15); color: var(--accent-primary); }
 
-/* === ALERT / NOTIFICATION === */
-.alert {
-  padding: 12px 16px; border-radius: 10px; margin-bottom: 12px; font-size: 13px;
-  border: 1px solid;
-}
-.alert-info { background: rgba(137,180,250,0.1); border-color: rgba(137,180,250,0.3); color: #89b4fa; }
-.alert-warning { background: rgba(249,226,175,0.1); border-color: rgba(249,226,175,0.3); color: #f9e2af; }
-.alert-danger { background: rgba(243,139,168,0.1); border-color: rgba(243,139,168,0.3); color: #f38ba8; }
-.alert-success { background: rgba(166,227,161,0.1); border-color: rgba(166,227,161,0.3); color: #a6e3a1; }
-
-/* === NOTIFICATION TOAST === */
-.toast {
-  position: fixed; top: 16px; left: 50%; transform: translateX(-50%) translateY(-100px);
-  background: #313244; color: #cdd6f4; padding: 12px 20px; border-radius: 10px;
-  font-size: 13px; font-weight: 600; z-index: 300; border: 1px solid #45475a;
-  transition: transform 0.3s ease; pointer-events: none;
-}
-.toast.show { transform: translateX(-50%) translateY(0); }
-.toast.error { border-color: #f38ba8; color: #f38ba8; }
-.toast.success { border-color: #a6e3a1; color: #a6e3a1; }
-
-/* === EMPTY STATE === */
-.empty-state {
-  text-align: center; padding: 48px 24px; color: #6c7086;
-}
-.empty-icon { font-size: 48px; margin-bottom: 12px; }
-.empty-title { font-size: 18px; font-weight: 700; color: #a6adc8; margin-bottom: 8px; }
-.empty-text { font-size: 13px; margin-bottom: 20px; line-height: 1.5; }
+/* Alerts, toasts, and empty states are inlined above */
+/* === EMPTY STATE OVERRIDES === */
+.empty-icon { font-size: 48px; margin-bottom: var(--sp-md); }
+.empty-text { font-size: var(--font-size-base); margin-bottom: 20px; line-height: 1.5; }
 
 /* === SEARCH === */
-.search-wrap { position: relative; margin-bottom: 12px; }
+.search-wrap { position: relative; margin-bottom: var(--sp-md); }
 .search-wrap input { padding-left: 40px; }
-.search-icon { position: absolute; left: 14px; top: 50%; transform: translateY(-50%); color: #6c7086; font-size: 14px; }
+.search-icon { position: absolute; left: 14px; top: 50%; transform: translateY(-50%); color: var(--text-muted); font-size: var(--font-size-md); }
 
 /* === WEEK NAV === */
 .week-nav {
   display: flex; align-items: center; justify-content: space-between;
-  margin-bottom: 16px; padding: 8px 0;
+  margin-bottom: var(--sp-lg); padding: var(--sp-sm) 0;
 }
-.week-nav-label { font-size: 16px; font-weight: 700; }
+.week-nav-label { font-size: var(--font-size-lg); font-weight: 700; }
 .week-nav-btn {
-  background: #45475a; border: none; color: #cdd6f4; width: 36px; height: 36px;
-  border-radius: 8px; cursor: pointer; font-size: 16px; display: flex;
-  align-items: center; justify-content: center; transition: background 0.15s;
+  background: var(--bg-tertiary); border: none; color: var(--text-primary); width: 36px; height: 36px;
+  border-radius: var(--radius-md); cursor: pointer; font-size: var(--font-size-lg); display: flex;
+  align-items: center; justify-content: center; transition: background var(--ease-fast);
 }
-.week-nav-btn:hover { background: #585b70; }
+.week-nav-btn:hover { background: var(--border-hover); }
 .week-nav-btn:disabled { opacity: 0.3; cursor: not-allowed; }
 
 /* === SWAP SUGGESTION === */
 .swap-suggestion {
-  background: rgba(249,226,175,0.1); border: 1px solid rgba(249,226,175,0.3);
-  border-radius: 10px; padding: 12px; margin-top: 8px; font-size: 13px;
+  background: rgba(245,158,11,0.1); border: 1px solid rgba(245,158,11,0.3);
+  border-radius: var(--radius-lg); padding: var(--sp-md); margin-top: var(--sp-sm);
+  font-size: var(--font-size-base);
 }
 .swap-suggestion.urgent {
-  background: rgba(243,139,168,0.1); border-color: rgba(243,139,168,0.3);
+  background: rgba(239,68,68,0.1); border-color: rgba(239,68,68,0.3);
 }
 
 /* === HISTORY CHART === */
-.chart-container { position: relative; height: 250px; margin: 16px 0; }
+.chart-container { position: relative; height: 250px; margin: var(--sp-lg) 0; }
 
 /* === DELOAD BANNER === */
 .deload-banner {
-  background: rgba(243,139,168,0.1); border: 1px solid rgba(243,139,168,0.3);
-  border-radius: 12px; padding: 16px; margin-bottom: 16px; text-align: center;
+  background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.3);
+  border-radius: var(--radius-xl); padding: var(--sp-lg); margin-bottom: var(--sp-lg); text-align: center;
 }
-.deload-banner .deload-icon { font-size: 32px; margin-bottom: 8px; }
-.deload-banner .deload-title { font-size: 16px; font-weight: 700; color: #f38ba8; }
-.deload-banner .deload-text { font-size: 13px; color: #a6adc8; margin-top: 4px; }
+.deload-banner .deload-icon { font-size: 32px; margin-bottom: var(--sp-sm); }
+.deload-banner .deload-title { font-size: var(--font-size-lg); font-weight: 700; color: var(--error); }
+.deload-banner .deload-text { font-size: var(--font-size-base); color: var(--text-secondary); margin-top: 4px; }
 
 /* === MISC === */
-.divider { height: 1px; background: #45475a; margin: 16px 0; }
-.text-muted { color: #6c7086; }
-.text-sm { font-size: 12px; }
+.divider { height: 1px; background: var(--border-color); margin: var(--sp-lg) 0; }
+.text-muted { color: var(--text-muted); }
+.text-sm { font-size: var(--font-size-sm); }
 .text-center { text-align: center; }
+.mt-4 { margin-top: 4px; }
 .mt-8 { margin-top: 8px; }
 .mt-12 { margin-top: 12px; }
 .mt-16 { margin-top: 16px; }
+.mb-4 { margin-bottom: 4px; }
 .mb-8 { margin-bottom: 8px; }
 .mb-12 { margin-bottom: 12px; }
 .mb-16 { margin-bottom: 16px; }
-.gap-8 { gap: 8px; }
+.gap-8 { gap: var(--sp-sm); }
 .flex { display: flex; }
 .flex-between { display: flex; justify-content: space-between; align-items: center; }
 .fade-in { animation: fadeIn 0.2s ease; }
 @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 .hidden { display: none !important; }
+
+/* === EDIT CONTROLS === */
+.edit-btn {
+  background: none; border: none; color: var(--text-muted); cursor: pointer;
+  font-size: var(--font-size-md); padding: 4px 8px; transition: color var(--ease-fast);
+  -webkit-tap-highlight-color: transparent;
+}
+.edit-btn:hover { color: var(--accent-primary); }
+.edit-item {
+  background: var(--bg-primary); border-radius: var(--radius-lg); padding: var(--sp-md); margin-bottom: var(--sp-sm);
+  border: 1px solid var(--border-color);
+}
+.edit-item .flex-between { align-items: flex-start; }
+.edit-item-actions { display: flex; gap: 4px; align-items: center; flex-shrink: 0; }
+.modal-scroll { max-height: 70vh; overflow-y: auto; }
+.confirm-delete { color: var(--error); font-size: var(--font-size-sm); margin-top: var(--sp-sm); }
 </style>
+<script>
+// Second Brain Theme Bridge — reads parent app's theme from localStorage
+(function() {
+  const STORAGE_KEY = 'second-brain-theme';
+  const defaults = { mode: 'light', accentColor: '#D97757', accentHover: '#C4684A' };
+
+  function hexToRgb(hex) {
+    const r = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+    return r ? { r: parseInt(r[1],16), g: parseInt(r[2],16), b: parseInt(r[3],16) } : null;
+  }
+
+  function applyTheme() {
+    let prefs = defaults;
+    try {
+      const stored = localStorage.getItem(STORAGE_KEY);
+      if (stored) prefs = { ...defaults, ...JSON.parse(stored) };
+    } catch(e) {}
+
+    let mode = prefs.mode;
+    if (mode === 'system') {
+      mode = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    }
+
+    document.documentElement.setAttribute('data-theme', mode);
+    document.documentElement.style.setProperty('--accent-primary', prefs.accentColor);
+    document.documentElement.style.setProperty('--accent-hover', prefs.accentHover);
+
+    const rgb = hexToRgb(prefs.accentColor);
+    if (rgb) {
+      document.documentElement.style.setProperty('--accent-r', rgb.r);
+      document.documentElement.style.setProperty('--accent-g', rgb.g);
+      document.documentElement.style.setProperty('--accent-b', rgb.b);
+    }
+
+    const accentLight = prefs.accentColor + '15';
+    document.documentElement.style.setProperty('--accent-light', accentLight);
+  }
+
+  applyTheme();
+
+  // Listen for storage changes (if user changes theme while app is open)
+  window.addEventListener('storage', function(e) {
+    if (e.key === STORAGE_KEY) applyTheme();
+  });
+
+  // Listen for system theme changes
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyTheme);
+})();
+</script>
 </head>
 <body>
 
@@ -431,6 +712,15 @@ function toast(msg, type = '') {
 }
 
 function roundTo5(n) { return Math.round(n / 5) * 5; }
+
+function resolveMyoParent(sets, idx) {
+  // Walk upward from idx to find the parent set for a myorep_match
+  for (let i = idx - 1; i >= 0; i--) {
+    const t = sets[i].setType || 'straight';
+    if (t !== 'myorep_match') return sets[i];
+  }
+  return sets[0]; // Fallback
+}
 
 // ============================================================
 // TAB NAVIGATION
@@ -586,7 +876,10 @@ function renderDashboard() {
             <div class="card-header" style="margin-bottom:2px">${esc(m.name)}</div>
             <div class="card-sub">${totalWeeks} week${totalWeeks !== 1 ? 's' : ''} &middot; ${completedWeeks} completed &middot; RPE ${m.startingRPE}</div>
           </div>
-          <span class="badge badge-${m.status === 'active' ? 'active' : 'completed'}">${m.status}</span>
+          <div style="display:flex;align-items:center;gap:6px;">
+            <button class="edit-btn" onclick="event.stopPropagation();editMesocycle('${m.id}')" title="Edit">&#9998;</button>
+            <span class="badge badge-${m.status === 'active' ? 'active' : 'completed'}">${m.status}</span>
+          </div>
         </div>
       </div>
     `;
@@ -796,7 +1089,7 @@ function renderWizardStep2() {
               <div class="priority-opt ${mg.priority === 'maintenance' ? 'sel-maintenance' : ''}"
                 onclick="setGroupPriority(${si},${gi},'maintenance')">M</div>
             </div>
-            <button class="btn-ghost" onclick="removeGroup(${si},${gi})" style="color:#f38ba8;font-size:16px;">&times;</button>
+            <button class="btn-ghost" onclick="removeGroup(${si},${gi})" style="color:var(--error);font-size:16px;">&times;</button>
           </div>
         </div>
       `;
@@ -875,18 +1168,19 @@ function renderWizardStep3() {
       // List assigned exercises
       mg.exercises.forEach((ex, ei) => {
         html += `
-          <div class="exercise-block" style="background:#1e1e2e;border-radius:10px;padding:12px;margin-bottom:8px;border:1px solid #45475a;">
+          <div class="exercise-block" style="background:var(--bg-primary);border-radius:var(--radius-lg);padding:12px;margin-bottom:8px;border:1px solid var(--border-color);">
             <div class="flex-between mb-8">
               <span class="exercise-name">${esc(ex.name)}</span>
-              <button class="btn-ghost" onclick="removeExercise(${si},${gi},${ei})" style="color:#f38ba8;">&times;</button>
+              <button class="btn-ghost" onclick="removeExercise(${si},${gi},${ei})" style="color:var(--error);">&times;</button>
             </div>
         `;
 
         ex.sets.forEach((set, setIdx) => {
           const sType = set.setType || 'straight';
-          const set0Type = ex.sets[0]?.setType || 'straight';
-          const canMyoMatch = setIdx > 0 && set0Type === 'straight';
+          const aboveType = setIdx > 0 ? (ex.sets[setIdx - 1]?.setType || 'straight') : '';
+          const canMyoMatch = setIdx > 0 && (aboveType === 'straight' || aboveType === 'myorep_match');
           const isMyoMatch = sType === 'myorep_match';
+          const myoParent = isMyoMatch ? resolveMyoParent(ex.sets, setIdx) : null;
           html += `
             <div class="set-row">
               <div class="set-num">${setIdx + 1}</div>
@@ -902,19 +1196,19 @@ function renderWizardStep3() {
               <div class="set-col">
                 <div class="set-input-label">Reps</div>
                 <div style="display:flex;gap:4px;align-items:center;">
-                  <input type="number" class="set-input" style="width:45px;" value="${isMyoMatch ? (ex.sets[0]?.repRange[0] || set.repRange[0]) : set.repRange[0]}"
+                  <input type="number" class="set-input" style="width:45px;" value="${isMyoMatch ? (myoParent?.repRange[0] || set.repRange[0]) : set.repRange[0]}"
                     onchange="updateSetRange(${si},${gi},${ei},${setIdx},0,this.value)" ${isMyoMatch ? 'disabled style="width:45px;opacity:0.5;"' : ''}>
-                  <span style="color:#6c7086;">-</span>
-                  <input type="number" class="set-input" style="width:45px;" value="${isMyoMatch ? (ex.sets[0]?.repRange[1] || set.repRange[1]) : set.repRange[1]}"
+                  <span style="color:var(--text-muted);">-</span>
+                  <input type="number" class="set-input" style="width:45px;" value="${isMyoMatch ? (myoParent?.repRange[1] || set.repRange[1]) : set.repRange[1]}"
                     onchange="updateSetRange(${si},${gi},${ei},${setIdx},1,this.value)" ${isMyoMatch ? 'disabled style="width:45px;opacity:0.5;"' : ''}>
                 </div>
               </div>
               <div class="set-col">
                 <div class="set-input-label">Load</div>
-                <input type="number" class="set-input" value="${isMyoMatch ? (ex.sets[0]?.targetLoad || set.targetLoad) : set.targetLoad}"
+                <input type="number" class="set-input" value="${isMyoMatch ? (myoParent?.targetLoad || set.targetLoad) : set.targetLoad}"
                   onchange="updateSetLoad(${si},${gi},${ei},${setIdx},this.value)" ${isMyoMatch ? 'disabled style="opacity:0.5;"' : ''}>
               </div>
-              <button class="btn-ghost" onclick="removeSet(${si},${gi},${ei},${setIdx})" style="color:#f38ba8;font-size:14px;">&times;</button>
+              <button class="btn-ghost" onclick="removeSet(${si},${gi},${ei},${setIdx})" style="color:var(--error);font-size:14px;">&times;</button>
             </div>
           `;
         });
@@ -946,6 +1240,15 @@ function renderWizardStep3() {
         </div>
       `;
 
+      if (mg.exercises.length >= 2) {
+        const hasSuperset = mg.exercises.some(e => e.supersetGroup);
+        html += `
+          <button class="btn btn-ghost btn-small mt-8" onclick="promptWizardSuperset(${si},${gi})" style="color:var(--accent-primary);">
+            ${hasSuperset ? '&#128279; Edit Superset' : '&#9878; Link as Superset'}
+          </button>
+        `;
+      }
+
       html += `</div>`; // muscle-group-section
     });
 
@@ -969,6 +1272,7 @@ function addExercise(si, gi, exId) {
     exerciseId: ex.id,
     name: ex.name,
     muscleGroup: ex.muscleGroup,
+    supersetGroup: null,
     jointPainHistory: [],
     sets: [{ repRange: [8, 12], targetLoad: 0, targetReps: 8, targetRPE: wizard.meso.startingRPE, setType: 'straight' }]
   });
@@ -980,13 +1284,14 @@ function addNewExercise(si, gi) {
   const name = input.value.trim();
   if (!name) return;
   const mg = wizard.meso.microcycles[0].sessions[si].muscleGroups[gi].muscleGroup;
-  const newEx = { id: uid(), name, muscleGroup: mg };
+  const newEx = { id: uid(), name, muscleGroup: mg, notes: '' };
   exerciseLib.exercises.push(newEx);
   saveExercises();
   wizard.meso.microcycles[0].sessions[si].muscleGroups[gi].exercises.push({
     exerciseId: newEx.id,
     name: newEx.name,
     muscleGroup: newEx.muscleGroup,
+    supersetGroup: null,
     jointPainHistory: [],
     sets: [{ repRange: [8, 12], targetLoad: 0, targetReps: 8, targetRPE: wizard.meso.startingRPE, setType: 'straight' }]
   });
@@ -1025,16 +1330,19 @@ function updateSetLoad(si, gi, ei, setIdx, val) {
 function updateSetType(si, gi, ei, setIdx, val) {
   const ex = wizard.meso.microcycles[0].sessions[si].muscleGroups[gi].exercises[ei];
   ex.sets[setIdx].setType = val;
-  // If changing set 0 away from straight, reset any myorep_match sets
-  if (setIdx === 0 && val !== 'straight') {
-    ex.sets.forEach((s, i) => { if (i > 0 && s.setType === 'myorep_match') s.setType = 'straight'; });
+  // If changing to a type that can't parent a myorep_match, reset any below
+  if (val !== 'straight' && val !== 'myorep_match') {
+    for (let i = setIdx + 1; i < ex.sets.length; i++) {
+      if (ex.sets[i].setType === 'myorep_match') ex.sets[i].setType = 'straight';
+      else break;
+    }
   }
-  // If setting to myorep_match, sync with set 0
+  // If setting to myorep_match, sync with resolved parent
   if (val === 'myorep_match' && setIdx > 0) {
-    const set0 = ex.sets[0];
-    ex.sets[setIdx].repRange = [...set0.repRange];
-    ex.sets[setIdx].targetLoad = set0.targetLoad;
-    ex.sets[setIdx].targetReps = set0.targetReps;
+    const parent = resolveMyoParent(ex.sets, setIdx);
+    ex.sets[setIdx].repRange = [...parent.repRange];
+    ex.sets[setIdx].targetLoad = parent.targetLoad;
+    ex.sets[setIdx].targetReps = parent.targetReps;
   }
   renderBuilder();
 }
@@ -1157,8 +1465,13 @@ function renderMicrocycleView(area, meso) {
   // Header with meso name
   html += `
     <div class="workout-header">
-      <div class="workout-title">${esc(meso.name)}</div>
-      <div class="workout-subtitle">${meso.microcycles.length} week mesocycle &middot; RPE ${meso.startingRPE} start</div>
+      <div class="flex-between">
+        <div>
+          <div class="workout-title">${esc(meso.name)}</div>
+          <div class="workout-subtitle">${meso.microcycles.length} week mesocycle &middot; RPE ${meso.startingRPE} start</div>
+        </div>
+        <button class="edit-btn" onclick="editMesocycle('${meso.id}')" title="Edit mesocycle" style="font-size:18px;">&#9998;</button>
+      </div>
     </div>
   `;
 
@@ -1174,6 +1487,27 @@ function renderMicrocycleView(area, meso) {
     </div>
   `;
 
+  // Deload suggestion banners (dismissable, §3.1.1)
+  micro.sessions.forEach(s => {
+    s.muscleGroups.forEach(mg => {
+      mg.exercises.forEach(ex => {
+        if (ex._deload === 'suggested') {
+          html += `
+            <div class="deload-banner" id="deload-banner-${ex.exerciseId}">
+              <div class="deload-icon">&#9888;</div>
+              <div class="deload-title">Deload Suggested</div>
+              <div class="deload-text">${esc(ex.name)} has been below expectations 2 weeks in a row. Consider reducing load.</div>
+              <div class="btn-row" style="justify-content:center;margin-top:12px;">
+                <button class="btn btn-secondary btn-small" onclick="dismissDeload('${ex.exerciseId}')">Dismiss</button>
+                <button class="btn btn-warning btn-small" onclick="applyDeload('${meso.id}',${weekIdx},'${ex.exerciseId}')">Apply Deload</button>
+              </div>
+            </div>
+          `;
+        }
+      });
+    });
+  });
+
   // Session cards
   micro.sessions.forEach((s, si) => {
     const statusCls = s.status === 'completed' ? 'completed-session' : s.status === 'active' ? 'active-session' : '';
@@ -1187,12 +1521,18 @@ function renderMicrocycleView(area, meso) {
             <div class="session-card-title">${icon} ${esc(s.dayLabel)}</div>
             <div class="session-card-groups">${esc(groups) || 'No muscle groups'}</div>
           </div>
-          <span class="badge badge-${s.status === 'completed' ? 'completed' : s.status === 'active' ? 'active' : 'upcoming'}">${s.status}</span>
+          <div style="display:flex;align-items:center;gap:6px;">
+            <button class="edit-btn" onclick="event.stopPropagation();editSession('${meso.id}',${weekIdx},${si})" title="Edit session">&#9998;</button>
+            <span class="badge badge-${s.status === 'completed' ? 'completed' : s.status === 'active' ? 'active' : 'upcoming'}">${s.status}</span>
+          </div>
         </div>
         ${s.completedAt ? `<div class="text-sm text-muted mt-8">Completed ${new Date(s.completedAt).toLocaleDateString()}</div>` : ''}
       </div>
     `;
   });
+
+  // Add session button
+  html += `<button class="btn btn-secondary" style="width:100%;margin-top:8px;" onclick="addSessionToMicrocycle('${meso.id}',${weekIdx})">+ Add Session</button>`;
 
   // Complete mesocycle button (if all weeks done)
   const allDone = meso.microcycles.every(mc => mc.status === 'completed');
@@ -1212,6 +1552,42 @@ function navWeek(delta) {
   renderWorkout();
 }
 
+function dismissDeload(exId) {
+  const el = document.getElementById('deload-banner-' + exId);
+  if (el) el.remove();
+}
+
+async function applyDeload(mesoId, microIdx, exId) {
+  const meso = mesocycles.find(m => m.id === mesoId);
+  const micro = meso.microcycles[microIdx];
+  micro.sessions.forEach(s => {
+    s.muscleGroups.forEach(mg => {
+      mg.exercises.forEach(ex => {
+        if (ex.exerciseId === exId) {
+          ex.sets.forEach(s => {
+            const st = s.setType || 'straight';
+            if (st === 'myorep_match') return;
+            if (st !== 'giant') s.targetLoad = roundTo5(s.targetLoad * 0.9);
+            s.targetReps = s.repRange[0];
+          });
+          // Sync myorep_match with resolved parent
+          ex.sets.forEach((s, i) => {
+            if (i > 0 && (s.setType || 'straight') === 'myorep_match') {
+              const parent = resolveMyoParent(ex.sets, i);
+              if (parent) { s.targetLoad = parent.targetLoad; s.targetReps = parent.targetReps; }
+            }
+          });
+          ex._deload = 'forced';
+        }
+      });
+    });
+  });
+  await saveMesocycles();
+  dismissDeload(exId);
+  toast('Deload applied — load reduced 10%', 'warning');
+  renderWorkout();
+}
+
 function startSession(mesoId, microIdx, sessionIdx) {
   activeWorkout = { mesoId, microIdx, sessionIdx };
   activeMesoId = mesoId;
@@ -1221,6 +1597,142 @@ function startSession(mesoId, microIdx, sessionIdx) {
   session.status = 'active';
   saveMesocycles();
   switchTab('workout');
+}
+
+// === SUPERSET HELPERS ===
+function groupExercisesBySupersets(exercises) {
+  const groups = [];
+  const used = new Set();
+  exercises.forEach((ex, idx) => {
+    if (used.has(idx)) return;
+    if (ex.supersetGroup) {
+      const members = [];
+      exercises.forEach((e2, i2) => {
+        if (e2.supersetGroup === ex.supersetGroup) {
+          members.push({ exercise: e2, originalIndex: i2 });
+          used.add(i2);
+        }
+      });
+      groups.push({ type: 'superset', groupId: ex.supersetGroup, members });
+    } else {
+      used.add(idx);
+      groups.push({ type: 'single', exercise: ex, originalIndex: idx });
+    }
+  });
+  return groups;
+}
+
+function createSuperset(mesoId, microIdx, sessionIdx, mgIdx, exerciseIndices) {
+  const meso = mesocycles.find(m => m.id === mesoId);
+  if (!meso) return;
+  const mg = meso.microcycles[microIdx].sessions[sessionIdx].muscleGroups[mgIdx];
+  const groupId = uid();
+  exerciseIndices.forEach(ei => { mg.exercises[ei].supersetGroup = groupId; });
+  saveMesocycles();
+}
+
+function removeFromSuperset(mesoId, microIdx, sessionIdx, mgIdx, exIdx) {
+  const meso = mesocycles.find(m => m.id === mesoId);
+  if (!meso) return;
+  const mg = meso.microcycles[microIdx].sessions[sessionIdx].muscleGroups[mgIdx];
+  const ex = mg.exercises[exIdx];
+  const oldGroup = ex.supersetGroup;
+  ex.supersetGroup = null;
+  // If only one exercise left in the group, remove its supersetGroup too
+  const remaining = mg.exercises.filter(e => e.supersetGroup === oldGroup);
+  if (remaining.length === 1) remaining[0].supersetGroup = null;
+  saveMesocycles();
+}
+
+function promptSuperset(mesoId, microIdx, sessionIdx, mgIdx, exIdx) {
+  const meso = mesocycles.find(m => m.id === mesoId);
+  if (!meso) return;
+  const mg = meso.microcycles[microIdx].sessions[sessionIdx].muscleGroups[mgIdx];
+  const ex = mg.exercises[exIdx];
+
+  if (ex.supersetGroup) {
+    // Already in a superset — offer to remove
+    showModal(`
+      <div class="modal-title">Superset</div>
+      <div class="modal-subtitle"><strong>${esc(ex.name)}</strong> is in a superset.</div>
+      <div class="modal-options">
+        <div class="modal-opt" onclick="removeFromSuperset('${mesoId}',${microIdx},${sessionIdx},${mgIdx},${exIdx}); closeModal(); renderWorkout();">Remove from Superset</div>
+      </div>
+      <button class="btn btn-ghost mt-12" onclick="closeModal()" style="width:100%">Cancel</button>
+    `);
+    return;
+  }
+
+  // Show other exercises in same muscle group to link with
+  const others = mg.exercises.map((e, i) => ({ ex: e, idx: i })).filter(o => o.idx !== exIdx);
+  if (others.length === 0) {
+    toast('Need at least 2 exercises to create a superset');
+    return;
+  }
+
+  let optionsHtml = others.map(o => {
+    const inSuperset = o.ex.supersetGroup ? ' (in superset)' : '';
+    return `<div class="modal-opt" onclick="createSuperset('${mesoId}',${microIdx},${sessionIdx},${mgIdx},[${exIdx},${o.idx}]); closeModal(); renderWorkout();">${esc(o.ex.name)}${inSuperset}</div>`;
+  }).join('');
+
+  showModal(`
+    <div class="modal-title">Create Superset</div>
+    <div class="modal-subtitle">Superset <strong>${esc(ex.name)}</strong> with:</div>
+    <div class="modal-options">${optionsHtml}</div>
+    <button class="btn btn-ghost mt-12" onclick="closeModal()" style="width:100%">Cancel</button>
+  `);
+}
+
+function promptWizardSuperset(si, gi) {
+  const mg = wizard.meso.microcycles[0].sessions[si].muscleGroups[gi];
+  if (mg.exercises.length < 2) {
+    toast('Need at least 2 exercises to create a superset');
+    return;
+  }
+
+  // Multi-select: pick which exercises to group
+  let html = `
+    <div class="modal-title">Link as Superset</div>
+    <div class="modal-subtitle">Select exercises to superset together in <strong>${esc(mg.muscleGroup)}</strong>:</div>
+    <div style="margin:12px 0;">
+  `;
+  mg.exercises.forEach((ex, ei) => {
+    const checked = ex.supersetGroup ? 'checked' : '';
+    html += `<label style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border-color);cursor:pointer;font-weight:400;">
+      <input type="checkbox" class="wizard-ss-cb" value="${ei}" ${checked} style="width:18px;height:18px;">
+      ${esc(ex.name)}
+    </label>`;
+  });
+  html += `</div>
+    <div class="btn-row">
+      <button class="btn btn-ghost" onclick="clearWizardSuperset(${si},${gi}); closeModal(); renderBuilder();">Clear All</button>
+      <button class="btn btn-primary" onclick="applyWizardSuperset(${si},${gi})" style="flex:2">Apply</button>
+    </div>
+    <button class="btn btn-ghost mt-8" onclick="closeModal()" style="width:100%">Cancel</button>
+  `;
+  showModal(html);
+}
+
+function applyWizardSuperset(si, gi) {
+  const checkboxes = document.querySelectorAll('.wizard-ss-cb:checked');
+  const indices = Array.from(checkboxes).map(cb => parseInt(cb.value));
+  const mg = wizard.meso.microcycles[0].sessions[si].muscleGroups[gi];
+
+  // Clear all supersetGroups in this muscle group first
+  mg.exercises.forEach(ex => { ex.supersetGroup = null; });
+
+  if (indices.length >= 2) {
+    const groupId = uid();
+    indices.forEach(i => { mg.exercises[i].supersetGroup = groupId; });
+  }
+
+  closeModal();
+  renderBuilder();
+}
+
+function clearWizardSuperset(si, gi) {
+  const mg = wizard.meso.microcycles[0].sessions[si].muscleGroups[gi];
+  mg.exercises.forEach(ex => { ex.supersetGroup = null; });
 }
 
 function renderSessionView(area, meso) {
@@ -1238,7 +1750,10 @@ function renderSessionView(area, meso) {
           <div class="workout-title">${esc(session.dayLabel)}</div>
           <div class="workout-subtitle">Week ${micro.weekNumber} &middot; Target RPE ${micro.targetRPE}</div>
         </div>
-        <button class="btn btn-secondary btn-small" onclick="exitSession()">Back</button>
+        <div style="display:flex;gap:6px;">
+          <button class="btn btn-secondary btn-small" onclick="editSession('${meso.id}',${microIdx},${sessionIdx})">Edit</button>
+          <button class="btn btn-secondary btn-small" onclick="exitSession()">Back</button>
+        </div>
       </div>
     </div>
   `;
@@ -1265,31 +1780,55 @@ function renderSessionView(area, meso) {
     html += `
       <div class="muscle-group-section">
         <div class="muscle-group-header">
-          <span class="muscle-group-name">${esc(mg.muscleGroup)}</span>
-          <span class="badge badge-${mg.priority}">${mg.priority}</span>
-          ${mg.soreness ? `<span class="text-sm text-muted">(${mg.soreness})</span>` : ''}
+          <div style="display:flex;align-items:center;gap:var(--sp-sm);">
+            <span class="muscle-group-name">${esc(mg.muscleGroup)}</span>
+            <span class="badge badge-${mg.priority}">${mg.priority}</span>
+            ${mg.soreness ? `<span class="text-sm text-muted">(${mg.soreness})</span>` : ''}
+          </div>
+          ${session.muscleGroups.length > 1 ? `
+            <div class="reorder-btns">
+              <button class="reorder-btn" onclick="moveMuscleGroup(${mgIdx},-1)" ${mgIdx === 0 ? 'disabled' : ''} title="Move up">&#9650;</button>
+              <button class="reorder-btn" onclick="moveMuscleGroup(${mgIdx},1)" ${mgIdx === session.muscleGroups.length - 1 ? 'disabled' : ''} title="Move down">&#9660;</button>
+            </div>
+          ` : ''}
         </div>
     `;
 
-    mg.exercises.forEach((ex, exIdx) => {
-      // Check for joint pain swap suggestion
-      const swapSuggestion = checkJointPainSwap(ex);
+    // Group exercises by superset
+    const groups = groupExercisesBySupersets(mg.exercises);
 
-      html += `
+    function renderExerciseBlock(ex, exIdx) {
+      const swapSuggestion = checkJointPainSwap(ex);
+      const libEx = exerciseLib.exercises.find(e => e.id === ex.exerciseId);
+      const exNotes = libEx?.notes || '';
+      const ssIcon = ex.supersetGroup ? '&#128279;' : '&#9878;';
+      const ssTitle = ex.supersetGroup ? 'Manage Superset' : 'Superset';
+
+      let block = `
         <div class="exercise-block">
           <div class="exercise-header">
             <div>
               <div class="exercise-name">${esc(ex.name)}</div>
               <div class="exercise-meta">${ex.sets[0]?.repRange[0]}-${ex.sets[0]?.repRange[1]} reps &middot; Target RPE ${Math.round(ex.sets[0]?.targetRPE || micro.targetRPE)}</div>
+              ${exNotes ? `<button class="exercise-notes-toggle has-notes" onclick="toggleWorkoutNotes('${ex.exerciseId}')">&#128221; Notes</button>` : ''}
             </div>
-            <div style="display:flex;gap:4px;">
+            <div style="display:flex;gap:4px;align-items:center;">
+              ${mg.exercises.length > 1 ? `
+                <div class="reorder-btns">
+                  <button class="reorder-btn" onclick="moveExercise(${mgIdx},${exIdx},-1)" ${exIdx === 0 ? 'disabled' : ''} title="Move up">&#9650;</button>
+                  <button class="reorder-btn" onclick="moveExercise(${mgIdx},${exIdx},1)" ${exIdx === mg.exercises.length - 1 ? 'disabled' : ''} title="Move down">&#9660;</button>
+                </div>
+              ` : ''}
+              <button class="btn btn-ghost btn-small" onclick="promptSuperset('${meso.id}',${activeWorkout.microIdx},${activeWorkout.sessionIdx},${mgIdx},${exIdx})" title="${ssTitle}" style="font-size:12px;padding:4px 6px;">${ssIcon}</button>
+              <button class="btn btn-ghost btn-small" onclick="editExerciseInSession('${meso.id}',${activeWorkout.microIdx},${activeWorkout.sessionIdx},${mgIdx},${exIdx})">Edit</button>
               <button class="btn btn-ghost btn-small" onclick="addWorkoutSet(${mgIdx},${exIdx})">+Set</button>
             </div>
           </div>
+          ${exNotes ? `<div class="exercise-notes-area" id="workout-notes-${ex.exerciseId}" style="display:none;"><textarea placeholder="Exercise notes..." onblur="saveExerciseNotes('${ex.exerciseId}', this.value)">${esc(exNotes)}</textarea></div>` : ''}
       `;
 
       if (swapSuggestion) {
-        html += `
+        block += `
           <div class="swap-suggestion ${swapSuggestion.urgent ? 'urgent' : ''} mb-8">
             ${swapSuggestion.urgent ? '&#9888;' : '&#128161;'} ${swapSuggestion.message}
             <button class="btn btn-secondary btn-small mt-8" onclick="promptExerciseSwap(${mgIdx},${exIdx})">Swap Exercise</button>
@@ -1297,8 +1836,7 @@ function renderSessionView(area, meso) {
         `;
       }
 
-      // Set headers
-      html += `
+      block += `
         <div class="set-row" style="background:none;border:none;padding:2px 8px;">
           <div class="set-num">#</div>
           <div class="set-col"><div class="set-input-label">Type</div></div>
@@ -1313,19 +1851,17 @@ function renderSessionView(area, meso) {
       ex.sets.forEach((set, setIdx) => {
         const isDone = set.actualLoad != null;
         const sType = set.setType || 'straight';
-        const set0Type = ex.sets[0]?.setType || 'straight';
-        const canMyoMatch = setIdx > 0 && set0Type === 'straight';
+        const aboveType = setIdx > 0 ? (ex.sets[setIdx - 1]?.setType || 'straight') : '';
+        const canMyoMatch = setIdx > 0 && (aboveType === 'straight' || aboveType === 'myorep_match');
         const isMyoMatch = sType === 'myorep_match';
-        // For myorep_match, show set 0's actual (if done) or target values
-        const set0 = ex.sets[0];
-        const myoLoad = set0 ? (set0.actualLoad ?? set0.targetLoad) : set.targetLoad;
-        const myoReps = set0 ? (set0.actualReps ?? set0.targetReps) : set.targetReps;
+        const myoParent = isMyoMatch ? resolveMyoParent(ex.sets, setIdx) : null;
+        const myoLoad = myoParent ? (myoParent.actualLoad ?? myoParent.targetLoad) : set.targetLoad;
+        const myoReps = myoParent ? (myoParent.actualReps ?? myoParent.targetReps) : set.targetReps;
         const displayLoad = isMyoMatch ? myoLoad : (set.actualLoad ?? set.targetLoad);
         const displayReps = isMyoMatch ? myoReps : (set.actualReps ?? set.targetReps);
         const targetLoadDisplay = isMyoMatch ? myoLoad : set.targetLoad;
         const targetRepsDisplay = isMyoMatch ? myoReps : set.targetReps;
-        const typeLabels = { straight: 'Str', myorep: 'Myo', myorep_match: 'M.M', giant: 'Giant' };
-        html += `
+        block += `
           <div class="set-row ${isDone ? 'set-completed' : ''}">
             <div class="set-num">${setIdx + 1}</div>
             <div class="set-col">
@@ -1358,30 +1894,43 @@ function renderSessionView(area, meso) {
               <input type="checkbox" class="set-done-cb" ${isDone ? 'checked' : ''}
                 onchange="toggleSetDone(this,${mgIdx},${exIdx},${setIdx})">
             </div>
-            <button class="btn-ghost" onclick="removeWorkoutSet(${mgIdx},${exIdx},${setIdx})" style="color:#f38ba8;font-size:12px;width:24px;padding:0;">&times;</button>
+            <button class="btn-ghost" onclick="removeWorkoutSet(${mgIdx},${exIdx},${setIdx})" style="color:var(--error);font-size:12px;width:24px;padding:0;">&times;</button>
           </div>
         `;
       });
 
-      // Joint pain prompt after exercise is logged
       const allSetsLogged = ex.sets.every(s => s.actualLoad != null);
       if (allSetsLogged && ex._jointPainLogged == null) {
-        html += `
+        block += `
           <div class="mt-8">
             <div class="text-sm text-muted mb-4">Joint/connective tissue fatigue for ${esc(ex.name)}?</div>
             <div class="chip-group">
-              <div class="chip chip-sm" onclick="logJointPain(${mgIdx},${exIdx},'none')" style="border-color:#a6e3a1;color:#a6e3a1;">None</div>
-              <div class="chip chip-sm" onclick="logJointPain(${mgIdx},${exIdx},'meh')" style="border-color:#f9e2af;color:#f9e2af;">Meh</div>
-              <div class="chip chip-sm" onclick="logJointPain(${mgIdx},${exIdx},'ow')" style="border-color:#fab387;color:#fab387;">Ow</div>
-              <div class="chip chip-sm" onclick="logJointPain(${mgIdx},${exIdx},'super_ow')" style="border-color:#f38ba8;color:#f38ba8;">Super Ow</div>
+              <div class="chip chip-sm" onclick="logJointPain(${mgIdx},${exIdx},'none')" style="border-color:var(--success);color:var(--success);">None</div>
+              <div class="chip chip-sm" onclick="logJointPain(${mgIdx},${exIdx},'meh')" style="border-color:var(--warning);color:var(--warning);">Meh</div>
+              <div class="chip chip-sm" onclick="logJointPain(${mgIdx},${exIdx},'ow')" style="border-color:#F97316;color:#F97316;">Ow</div>
+              <div class="chip chip-sm" onclick="logJointPain(${mgIdx},${exIdx},'super_ow')" style="border-color:var(--error);color:var(--error);">Super Ow</div>
             </div>
           </div>
         `;
       } else if (ex._jointPainLogged) {
-        html += `<div class="text-sm mt-4" style="color:#6c7086;">Joint pain: <strong>${ex._jointPainLogged}</strong></div>`;
+        block += `<div class="text-sm mt-4" style="color:var(--text-muted);">Joint pain: <strong>${ex._jointPainLogged}</strong></div>`;
       }
 
-      html += `</div>`; // exercise-block
+      block += `</div>`; // exercise-block
+      return block;
+    }
+
+    groups.forEach(group => {
+      if (group.type === 'superset') {
+        html += `<div class="superset-group"><div class="superset-label">Superset</div>`;
+        group.members.forEach((m, mi) => {
+          html += renderExerciseBlock(m.exercise, m.originalIndex);
+          if (mi < group.members.length - 1) html += `<div class="superset-divider"></div>`;
+        });
+        html += `</div>`;
+      } else {
+        html += renderExerciseBlock(group.exercise, group.originalIndex);
+      }
     });
 
     html += `</div>`; // muscle-group-section
@@ -1435,7 +1984,27 @@ function setSoreness(muscleGroup, level) {
   const meso = mesocycles.find(m => m.id === activeWorkout.mesoId);
   const session = meso.microcycles[activeWorkout.microIdx].sessions[activeWorkout.sessionIdx];
   const mg = session.muscleGroups.find(mg => mg.muscleGroup === muscleGroup);
-  if (mg) mg.soreness = level;
+  if (!mg) { closeModal(); return; }
+  mg.soreness = level;
+
+  // Apply set progression to CURRENT session based on soreness (§5.3)
+  const setsToAdd = progressSets(level, mg.priority);
+  if (setsToAdd > 0 && mg.exercises.length > 0) {
+    for (let i = 0; i < setsToAdd; i++) {
+      const randExIdx = Math.floor(Math.random() * mg.exercises.length);
+      const randEx = mg.exercises[randExIdx];
+      const lastSet = randEx.sets[randEx.sets.length - 1];
+      randEx.sets.push({
+        repRange: [...lastSet.repRange],
+        targetLoad: lastSet.targetLoad,
+        targetReps: lastSet.targetReps,
+        targetRPE: lastSet.targetRPE,
+        setType: lastSet.setType || 'straight'
+      });
+    }
+    toast(`Added ${setsToAdd} set${setsToAdd > 1 ? 's' : ''} based on recovery`, 'success');
+  }
+
   closeModal();
   saveMesocycles();
   renderWorkout();
@@ -1464,10 +2033,10 @@ function toggleSetDone(cb, mgIdx, exIdx, setIdx) {
   if (cb.checked) {
     const sType = set.setType || 'straight';
     if (sType === 'myorep_match' && setIdx > 0) {
-      // Myorep match: lock to set 0's actual values
-      const set0 = ex.sets[0];
-      set.actualLoad = set0.actualLoad ?? set0.targetLoad;
-      set.actualReps = set0.actualReps ?? set0.targetReps;
+      // Myorep match: lock to resolved parent's actual values
+      const parent = resolveMyoParent(ex.sets, setIdx);
+      set.actualLoad = parent.actualLoad ?? parent.targetLoad;
+      set.actualReps = parent.actualReps ?? parent.targetReps;
       // Only RPE is editable for myorep_match
       const row = cb.closest('.set-row');
       const rpeInput = row.querySelectorAll('.set-input:not([disabled])');
@@ -1496,15 +2065,18 @@ function updateWorkoutSetType(mgIdx, exIdx, setIdx, val) {
   const ex = meso.microcycles[activeWorkout.microIdx].sessions[activeWorkout.sessionIdx]
     .muscleGroups[mgIdx].exercises[exIdx];
   ex.sets[setIdx].setType = val;
-  // If changing set 0 away from straight, reset any myorep_match sets
-  if (setIdx === 0 && val !== 'straight') {
-    ex.sets.forEach((s, i) => { if (i > 0 && s.setType === 'myorep_match') s.setType = 'straight'; });
+  // If changing to a type that can't parent a myorep_match, reset any below
+  if (val !== 'straight' && val !== 'myorep_match') {
+    for (let i = setIdx + 1; i < ex.sets.length; i++) {
+      if (ex.sets[i].setType === 'myorep_match') ex.sets[i].setType = 'straight';
+      else break;
+    }
   }
-  // If setting to myorep_match, sync targets with set 0
+  // If setting to myorep_match, sync targets with resolved parent
   if (val === 'myorep_match' && setIdx > 0) {
-    const set0 = ex.sets[0];
-    ex.sets[setIdx].targetLoad = set0.actualLoad ?? set0.targetLoad;
-    ex.sets[setIdx].targetReps = set0.actualReps ?? set0.targetReps;
+    const parent = resolveMyoParent(ex.sets, setIdx);
+    ex.sets[setIdx].targetLoad = parent.actualLoad ?? parent.targetLoad;
+    ex.sets[setIdx].targetReps = parent.actualReps ?? parent.targetReps;
     // Clear actuals since values changed
     delete ex.sets[setIdx].actualLoad;
     delete ex.sets[setIdx].actualReps;
@@ -1549,6 +2121,29 @@ function logJointPain(mgIdx, exIdx, level) {
     .muscleGroups[mgIdx].exercises[exIdx];
   ex._jointPainLogged = level;
   ex.jointPainHistory.push(level);
+  saveMesocycles();
+  renderWorkout();
+}
+
+function moveExercise(mgIdx, exIdx, direction) {
+  if (!activeWorkout) return;
+  const meso = mesocycles.find(m => m.id === activeWorkout.mesoId);
+  const exercises = meso.microcycles[activeWorkout.microIdx].sessions[activeWorkout.sessionIdx]
+    .muscleGroups[mgIdx].exercises;
+  const targetIdx = exIdx + direction;
+  if (targetIdx < 0 || targetIdx >= exercises.length) return;
+  [exercises[exIdx], exercises[targetIdx]] = [exercises[targetIdx], exercises[exIdx]];
+  saveMesocycles();
+  renderWorkout();
+}
+
+function moveMuscleGroup(mgIdx, direction) {
+  if (!activeWorkout) return;
+  const meso = mesocycles.find(m => m.id === activeWorkout.mesoId);
+  const muscleGroups = meso.microcycles[activeWorkout.microIdx].sessions[activeWorkout.sessionIdx].muscleGroups;
+  const targetIdx = mgIdx + direction;
+  if (targetIdx < 0 || targetIdx >= muscleGroups.length) return;
+  [muscleGroups[mgIdx], muscleGroups[targetIdx]] = [muscleGroups[targetIdx], muscleGroups[mgIdx]];
   saveMesocycles();
   renderWorkout();
 }
@@ -1618,6 +2213,7 @@ function swapExercise(mgIdx, exIdx, newExId) {
     exerciseId: newExData.id,
     name: newExData.name,
     muscleGroup: newExData.muscleGroup,
+    supersetGroup: oldEx.supersetGroup || null,
     jointPainHistory: [],
     sets: oldEx.sets.map(s => ({
       repRange: [...s.repRange],
@@ -1658,31 +2254,43 @@ function classifyPerformance(exercise) {
   const avgRepsDiff = totalRepsDiff / n;
   const avgRIRDiff = totalRIRDiff / n;
 
-  // Exceeded: load >= target AND (reps > target OR RIR > target)
-  if (avgLoadDiff >= 0 && (avgRepsDiff > 0 || avgRIRDiff > 0)) return 'exceeded';
+  // Classify each dimension: 1 = Higher, 0 = Equal, -1 = Lower
+  const loadCat = Math.abs(avgLoadDiff) <= 1 ? 0 : (avgLoadDiff > 0 ? 1 : -1);
+  const repsCat = Math.abs(avgRepsDiff) <= 0.4 ? 0 : (avgRepsDiff > 0 ? 1 : -1);
+  const rirCat = Math.abs(avgRIRDiff) <= 0.4 ? 0 : (avgRIRDiff > 0 ? 1 : -1);
 
-  // Below: any metric below without others compensating
-  if (avgLoadDiff < -2 || avgRepsDiff < -1 || avgRIRDiff < -1) return 'below';
+  // Exceeded: E/E/H, E/H/H, H/H/H (§2.1)
+  if ((loadCat === 0 && repsCat === 0 && rirCat === 1) ||
+      (loadCat === 0 && repsCat === 1 && rirCat === 1) ||
+      (loadCat === 1 && repsCat === 1 && rirCat === 1)) return 'exceeded';
 
+  // Below: L/E/E, L/L/E, L/L/L (§2.3)
+  if ((loadCat === -1 && repsCat === 0 && rirCat === 0) ||
+      (loadCat === -1 && repsCat === -1 && rirCat === 0) ||
+      (loadCat === -1 && repsCat === -1 && rirCat === -1)) return 'below';
+
+  // Matched: E/E/E and all unclassified combos (§2.4)
   return 'matched';
 }
 
 function progressExercise(exercise, priority, microTargetRPE, prevPerformances) {
-  // Clone sets for the next session
+  // Clone sets for the next session — always start from TARGETS (§3: below repeats targets)
   const newSets = exercise.sets.map((s, sIdx) => {
     const type = s.setType || 'straight';
     const base = {
       repRange: [...s.repRange],
-      targetLoad: s.actualLoad || s.targetLoad,
-      targetReps: s.actualReps || s.targetReps,
+      targetLoad: s.targetLoad,
+      targetReps: s.targetReps,
       targetRPE: microTargetRPE,
       setType: type
     };
-    // Myorep match: always inherit from set 0
+    // Myorep match: inherit from resolved parent
     if (type === 'myorep_match' && sIdx > 0) {
-      const set0 = exercise.sets[0];
-      base.targetLoad = set0.actualLoad || set0.targetLoad;
-      base.targetReps = set0.actualReps || set0.targetReps;
+      const parent = resolveMyoParent(exercise.sets, sIdx);
+      if (parent) {
+        base.targetLoad = parent.targetLoad;
+        base.targetReps = parent.targetReps;
+      }
     }
     return base;
   });
@@ -1690,26 +2298,36 @@ function progressExercise(exercise, priority, microTargetRPE, prevPerformances) 
   const perf = classifyPerformance(exercise);
 
   if (perf === 'below') {
-    // Check for consecutive below performances
+    // Below: targets are already carried forward from previous targets (not actuals)
+    // Sync myorep_match with resolved parent
+    newSets.forEach((s, i) => {
+      if (i > 0 && (s.setType || 'straight') === 'myorep_match') {
+        const parent = resolveMyoParent(newSets, i);
+        if (parent) { s.targetLoad = parent.targetLoad; s.targetReps = parent.targetReps; }
+      }
+    });
+
     const belowCount = countConsecutiveBelow(prevPerformances);
-    if (belowCount >= 2) {
-      // Deload: reduce load by 10%, reset reps to bottom of range
+    if (belowCount >= 3) {
+      // FORCED deload (§3.1.1): reduce load by 10%, reset reps
       newSets.forEach(s => {
         const st = s.setType || 'straight';
-        if (st === 'myorep_match') return; // handled below
+        if (st === 'myorep_match') return;
         if (st !== 'giant') s.targetLoad = roundTo5(s.targetLoad * 0.9);
         s.targetReps = s.repRange[0];
       });
-      // Sync myorep_match with set 0
-      if (newSets[0]) newSets.forEach((s, i) => {
+      newSets.forEach((s, i) => {
         if (i > 0 && (s.setType || 'straight') === 'myorep_match') {
-          s.targetLoad = newSets[0].targetLoad;
-          s.targetReps = newSets[0].targetReps;
+          const parent = resolveMyoParent(newSets, i);
+          if (parent) { s.targetLoad = parent.targetLoad; s.targetReps = parent.targetReps; }
         }
       });
-      return { sets: newSets, perf, deload: belowCount >= 3 ? 'forced' : 'suggested' };
+      return { sets: newSets, perf, deload: 'forced' };
     }
-    // Just repeat
+    if (belowCount >= 2) {
+      // SUGGESTED deload (§3.1.1): keep targets, flag for dismissable UI
+      return { sets: newSets, perf, deload: 'suggested' };
+    }
     return { sets: newSets, perf, deload: null };
   }
 
@@ -1731,8 +2349,13 @@ function progressExercise(exercise, priority, microTargetRPE, prevPerformances) 
 
   if (priority === 'primary') {
     if (perf === 'exceeded') {
-      // +2 reps to first set, +1 to rest (if in range)
-      newSets.forEach((s, i) => progressSet(s, i === 0 ? 2 : 1, 1.03));
+      // +2 reps to first progressable set, +1 to rest (§3.1.1)
+      let firstProgressed = false;
+      newSets.forEach(s => {
+        if ((s.setType || 'straight') === 'myorep_match') return;
+        progressSet(s, firstProgressed ? 1 : 2, 1.03);
+        firstProgressed = true;
+      });
     } else {
       // Matched: +1 rep all sets
       newSets.forEach(s => progressSet(s, 1, 1.025));
@@ -1742,16 +2365,13 @@ function progressExercise(exercise, priority, microTargetRPE, prevPerformances) 
     newSets.forEach(s => progressSet(s, 1, 1.025));
   }
 
-  // Sync myorep_match sets with set 0 after progression
-  const set0 = newSets[0];
-  if (set0) {
-    newSets.forEach((s, i) => {
-      if (i > 0 && (s.setType || 'straight') === 'myorep_match') {
-        s.targetLoad = set0.targetLoad;
-        s.targetReps = set0.targetReps;
-      }
-    });
-  }
+  // Sync myorep_match sets with resolved parent after progression
+  newSets.forEach((s, i) => {
+    if (i > 0 && (s.setType || 'straight') === 'myorep_match') {
+      const parent = resolveMyoParent(newSets, i);
+      if (parent) { s.targetLoad = parent.targetLoad; s.targetReps = parent.targetReps; }
+    }
+  });
 
   return { sets: newSets, perf, deload: null };
 }
@@ -1824,8 +2444,8 @@ function generateNextMicrocycle(meso, completedMicroIdx) {
     const newMGs = session.muscleGroups.map(mg => {
       const nextRPE = getRPEForPriority(mg.priority, meso.startingRPE, nextWeekNum);
 
-      // Get soreness for set progression
-      const setsToAdd = progressSets(mg.soreness, mg.priority);
+      // Soreness-based set progression now happens at session start (§5.3),
+      // not during next microcycle generation
 
       const newExercises = mg.exercises.map(ex => {
         const prevPerfs = getPreviousPerformances(meso, ex.exerciseId, completedMicroIdx + 1, 0);
@@ -1836,28 +2456,13 @@ function generateNextMicrocycle(meso, completedMicroIdx) {
           exerciseId: ex.exerciseId,
           name: ex.name,
           muscleGroup: ex.muscleGroup,
+          supersetGroup: ex.supersetGroup || null,
           jointPainHistory: [...ex.jointPainHistory],
           sets: result.sets,
           _lastPerf: result.perf,
           _deload: result.deload
         };
       });
-
-      // Add extra sets based on soreness/priority
-      if (setsToAdd > 0 && newExercises.length > 0) {
-        for (let i = 0; i < setsToAdd; i++) {
-          const randExIdx = Math.floor(Math.random() * newExercises.length);
-          const randEx = newExercises[randExIdx];
-          const lastSet = randEx.sets[randEx.sets.length - 1];
-          randEx.sets.push({
-            repRange: [...lastSet.repRange],
-            targetLoad: lastSet.targetLoad,
-            targetReps: lastSet.targetReps,
-            targetRPE: lastSet.targetRPE,
-            setType: lastSet.setType || 'straight'
-          });
-        }
-      }
 
       return {
         muscleGroup: mg.muscleGroup,
@@ -1967,24 +2572,33 @@ async function doCompleteSession() {
   if (allSessionsDone) {
     micro.status = 'completed';
 
-    // Generate next microcycle
+    // Generate next microcycle (guard against duplicates)
     const nextMicro = generateNextMicrocycle(meso, microIdx);
-    meso.microcycles.push(nextMicro);
+    const existingNext = meso.microcycles.find(mc => mc.weekNumber === nextMicro.weekNumber);
+    if (!existingNext) {
+      meso.microcycles.push(nextMicro);
 
-    // Check for deload warnings
-    let hasDeload = false;
-    nextMicro.sessions.forEach(s => {
-      s.muscleGroups.forEach(mg => {
-        mg.exercises.forEach(ex => {
-          if (ex._deload) hasDeload = true;
+      // Check for deload warnings
+      let hasForcedDeload = false;
+      let hasSuggestedDeload = false;
+      nextMicro.sessions.forEach(s => {
+        s.muscleGroups.forEach(mg => {
+          mg.exercises.forEach(ex => {
+            if (ex._deload === 'forced') hasForcedDeload = true;
+            if (ex._deload === 'suggested') hasSuggestedDeload = true;
+          });
         });
       });
-    });
 
-    if (hasDeload) {
-      toast('Deload suggested for some exercises next week', 'warning');
+      if (hasForcedDeload) {
+        toast('Deload forced for some exercises next week — load reduced 10%', 'error');
+      } else if (hasSuggestedDeload) {
+        toast(`Week ${micro.weekNumber} complete! Deload suggested for some exercises.`, 'warning');
+      } else {
+        toast(`Week ${micro.weekNumber} complete! Week ${nextMicro.weekNumber} generated.`, 'success');
+      }
     } else {
-      toast(`Week ${micro.weekNumber} complete! Week ${nextMicro.weekNumber} generated.`, 'success');
+      toast(`Week ${micro.weekNumber} complete!`, 'success');
     }
   } else {
     toast('Session complete!', 'success');
@@ -2003,6 +2617,140 @@ async function completeMesocycle(mesoId) {
   activeMesoId = null;
   toast('Mesocycle completed!', 'success');
   switchTab('dashboard');
+}
+
+// ============================================================
+// CRUD EDITING
+// ============================================================
+function editMesocycle(mesoId) {
+  const meso = mesocycles.find(m => m.id === mesoId); if (!meso) return;
+  showModal(`<div class="modal-title">Edit Mesocycle</div><div class="modal-scroll"><div class="form-group"><label>Name</label><input type="text" id="edit-meso-name" value="${esc(meso.name)}"></div><div class="form-group"><label>Starting RPE</label><input type="number" id="edit-meso-rpe" value="${meso.startingRPE}" min="5" max="10" step="0.5" style="max-width:120px;text-align:center;"></div><div class="form-group"><label>Status</label><select id="edit-meso-status"><option value="active" ${meso.status === 'active' ? 'selected' : ''}>Active</option><option value="completed" ${meso.status === 'completed' ? 'selected' : ''}>Completed</option></select></div><div class="btn-row"><button class="btn btn-danger btn-small" onclick="deleteMesocycle('${meso.id}')">Delete</button><button class="btn btn-secondary" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="saveMesocycleEdit('${meso.id}')" style="flex:2">Save</button></div></div>`);
+}
+async function saveMesocycleEdit(mesoId) {
+  const meso = mesocycles.find(m => m.id === mesoId); if (!meso) return;
+  const name = document.getElementById('edit-meso-name').value.trim();
+  if (!name) { toast('Name is required'); return; }
+  const rpe = parseFloat(document.getElementById('edit-meso-rpe').value) || meso.startingRPE;
+  const status = document.getElementById('edit-meso-status').value;
+  if (status === 'active' && meso.status !== 'active') { mesocycles.forEach(m => { if (m.status === 'active') m.status = 'completed'; }); }
+  meso.name = name; meso.startingRPE = rpe; meso.status = status;
+  await saveMesocycles(); closeModal(); toast('Mesocycle updated', 'success'); renderCurrentTab();
+}
+async function deleteMesocycle(mesoId) {
+  showModal(`<div class="modal-title">Delete Mesocycle?</div><div class="modal-subtitle">This will permanently delete this mesocycle and all its data. This cannot be undone.</div><div class="btn-row"><button class="btn btn-secondary" onclick="editMesocycle('${mesoId}')">Cancel</button><button class="btn btn-danger" onclick="confirmDeleteMesocycle('${mesoId}')" style="flex:2">Delete Forever</button></div>`);
+}
+async function confirmDeleteMesocycle(mesoId) {
+  mesocycles = mesocycles.filter(m => m.id !== mesoId);
+  if (activeMesoId === mesoId) activeMesoId = null;
+  if (activeWorkout && activeWorkout.mesoId === mesoId) activeWorkout = null;
+  await saveMesocycles(); closeModal(); toast('Mesocycle deleted', 'success'); switchTab('dashboard');
+}
+function editSession(mesoId, microIdx, sessionIdx) {
+  const meso = mesocycles.find(m => m.id === mesoId); if (!meso) return;
+  const session = meso.microcycles[microIdx].sessions[sessionIdx];
+  const allGroups = getMuscleGroups();
+  const assignedGroups = session.muscleGroups.map(mg => mg.muscleGroup);
+  let mgHtml = '';
+  session.muscleGroups.forEach((mg, gi) => {
+    let exHtml = '';
+    mg.exercises.forEach((ex, ei) => {
+      const ssIcon = ex.supersetGroup ? '&#128279;' : '&#9878;';
+      const ssColor = ex.supersetGroup ? 'color:var(--accent-primary);' : '';
+      exHtml += `<div class="flex-between" style="padding:4px 0;font-size:13px;"><span>${esc(ex.name)}${ex.supersetGroup ? ' <span style="font-size:10px;color:var(--accent-primary);">SS</span>' : ''}</span><div class="edit-item-actions"><button class="edit-btn" onclick="promptSuperset('${mesoId}',${microIdx},${sessionIdx},${gi},${ei})" title="Superset" style="${ssColor}">${ssIcon}</button><button class="edit-btn" onclick="editExerciseInSession('${mesoId}',${microIdx},${sessionIdx},${gi},${ei})" title="Edit">&#9998;</button><button class="edit-btn" style="color:var(--error);" onclick="removeExerciseFromSession('${mesoId}',${microIdx},${sessionIdx},${gi},${ei})" title="Remove">&times;</button></div></div>`;
+    });
+    const available = getExercisesForGroup(mg.muscleGroup).filter(a => !mg.exercises.find(e => e.exerciseId === a.id));
+    mgHtml += `<div class="edit-item"><div class="flex-between mb-8"><span style="font-weight:600;">${esc(mg.muscleGroup)}</span><div class="edit-item-actions"><div class="priority-select"><div class="priority-opt ${mg.priority === 'primary' ? 'sel-primary' : ''}" onclick="setEditGroupPriority('${mesoId}',${microIdx},${sessionIdx},${gi},'primary')">P</div><div class="priority-opt ${mg.priority === 'secondary' ? 'sel-secondary' : ''}" onclick="setEditGroupPriority('${mesoId}',${microIdx},${sessionIdx},${gi},'secondary')">S</div><div class="priority-opt ${mg.priority === 'maintenance' ? 'sel-maintenance' : ''}" onclick="setEditGroupPriority('${mesoId}',${microIdx},${sessionIdx},${gi},'maintenance')">M</div></div><button class="edit-btn" style="color:var(--error);" onclick="removeGroupFromSession('${mesoId}',${microIdx},${sessionIdx},${gi})" title="Remove group">&times;</button></div></div>${exHtml}${available.length > 0 ? `<select onchange="addExerciseToSession('${mesoId}',${microIdx},${sessionIdx},${gi},this.value);this.value='';" style="font-size:12px;padding:6px 8px;margin-top:6px;"><option value="">+ Add exercise...</option>${available.map(e => `<option value="${e.id}">${esc(e.name)}</option>`).join('')}</select>` : ''}</div>`;
+  });
+  const unassignedGroups = allGroups.filter(g => !assignedGroups.includes(g));
+  showModal(`<div class="modal-title">Edit Session</div><div class="modal-scroll"><div class="form-group"><label>Session Name</label><input type="text" id="edit-session-name" value="${esc(session.dayLabel)}"></div><div class="form-group"><label>Muscle Groups</label>${mgHtml}${unassignedGroups.length > 0 ? `<div class="chip-group mt-8" style="flex-wrap:wrap;">${unassignedGroups.map(g => `<div class="chip chip-sm" onclick="addGroupToSession('${mesoId}',${microIdx},${sessionIdx},'${g.replace(/'/g, "\\\\'")}')">${esc(g)}</div>`).join('')}</div>` : ''}</div><div class="btn-row"><button class="btn btn-danger btn-small" onclick="deleteSession('${mesoId}',${microIdx},${sessionIdx})">Delete Session</button><button class="btn btn-secondary" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="saveSessionEdit('${mesoId}',${microIdx},${sessionIdx})" style="flex:2">Save</button></div></div>`);
+}
+async function saveSessionEdit(mesoId, microIdx, sessionIdx) {
+  const meso = mesocycles.find(m => m.id === mesoId); if (!meso) return;
+  const session = meso.microcycles[microIdx].sessions[sessionIdx];
+  const name = document.getElementById('edit-session-name').value.trim();
+  if (!name) { toast('Session name is required'); return; }
+  const oldLabel = session.dayLabel;
+  meso.microcycles.forEach(mc => { const s = mc.sessions[sessionIdx]; if (s && s.dayLabel === oldLabel) s.dayLabel = name; });
+  session.dayLabel = name;
+  await saveMesocycles(); closeModal(); toast('Session updated', 'success'); renderCurrentTab();
+}
+function setEditGroupPriority(mesoId, microIdx, sessionIdx, gi, priority) {
+  const meso = mesocycles.find(m => m.id === mesoId); if (!meso) return;
+  meso.microcycles[microIdx].sessions[sessionIdx].muscleGroups[gi].priority = priority;
+  saveMesocycles(); editSession(mesoId, microIdx, sessionIdx);
+}
+function addGroupToSession(mesoId, microIdx, sessionIdx, group) {
+  const meso = mesocycles.find(m => m.id === mesoId); if (!meso) return;
+  meso.microcycles[microIdx].sessions[sessionIdx].muscleGroups.push({ muscleGroup: group, priority: 'primary', soreness: null, exercises: [] });
+  saveMesocycles(); editSession(mesoId, microIdx, sessionIdx);
+}
+function removeGroupFromSession(mesoId, microIdx, sessionIdx, gi) {
+  const meso = mesocycles.find(m => m.id === mesoId); if (!meso) return;
+  meso.microcycles[microIdx].sessions[sessionIdx].muscleGroups.splice(gi, 1);
+  saveMesocycles(); editSession(mesoId, microIdx, sessionIdx);
+}
+function addExerciseToSession(mesoId, microIdx, sessionIdx, gi, exId) {
+  if (!exId) return; const meso = mesocycles.find(m => m.id === mesoId); if (!meso) return;
+  const ex = exerciseLib.exercises.find(e => e.id === exId); if (!ex) return;
+  const micro = meso.microcycles[microIdx];
+  meso.microcycles[microIdx].sessions[sessionIdx].muscleGroups[gi].exercises.push({ exerciseId: ex.id, name: ex.name, muscleGroup: ex.muscleGroup, supersetGroup: null, jointPainHistory: [], sets: [{ repRange: [8, 12], targetLoad: 0, targetReps: 8, targetRPE: micro.targetRPE, setType: 'straight' }] });
+  saveMesocycles(); editSession(mesoId, microIdx, sessionIdx);
+}
+function removeExerciseFromSession(mesoId, microIdx, sessionIdx, gi, ei) {
+  const meso = mesocycles.find(m => m.id === mesoId); if (!meso) return;
+  meso.microcycles[microIdx].sessions[sessionIdx].muscleGroups[gi].exercises.splice(ei, 1);
+  saveMesocycles(); editSession(mesoId, microIdx, sessionIdx);
+}
+async function deleteSession(mesoId, microIdx, sessionIdx) {
+  showModal(`<div class="modal-title">Delete Session?</div><div class="modal-subtitle">This will remove this session from the current week.</div><div class="btn-row"><button class="btn btn-secondary" onclick="editSession('${mesoId}',${microIdx},${sessionIdx})">Cancel</button><button class="btn btn-danger" onclick="confirmDeleteSession('${mesoId}',${microIdx},${sessionIdx})" style="flex:2">Delete</button></div>`);
+}
+async function confirmDeleteSession(mesoId, microIdx, sessionIdx) {
+  const meso = mesocycles.find(m => m.id === mesoId); if (!meso) return;
+  meso.microcycles[microIdx].sessions.splice(sessionIdx, 1);
+  if (activeWorkout && activeWorkout.mesoId === mesoId && activeWorkout.microIdx === microIdx && activeWorkout.sessionIdx === sessionIdx) { activeWorkout = null; }
+  await saveMesocycles(); closeModal(); toast('Session deleted', 'success'); renderCurrentTab();
+}
+function editExerciseInSession(mesoId, microIdx, sessionIdx, gi, ei) {
+  const meso = mesocycles.find(m => m.id === mesoId); if (!meso) return;
+  const mg = meso.microcycles[microIdx].sessions[sessionIdx].muscleGroups[gi]; const ex = mg.exercises[ei];
+  const available = getExercisesForGroup(mg.muscleGroup).filter(e => e.id !== ex.exerciseId && !mg.exercises.find(x => x.exerciseId === e.id));
+  let setsHtml = '';
+  ex.sets.forEach((set, setIdx) => {
+    const sType = set.setType || 'straight';
+    setsHtml += `<div class="set-row"><div class="set-num">${setIdx + 1}</div><div class="set-col"><div class="set-input-label">Type</div><select class="set-type-select" id="edit-set-type-${setIdx}"><option value="straight" ${sType === 'straight' ? 'selected' : ''}>Straight</option><option value="myorep" ${sType === 'myorep' ? 'selected' : ''}>Myorep</option><option value="myorep_match" ${sType === 'myorep_match' ? 'selected' : ''}>Myo Match</option><option value="giant" ${sType === 'giant' ? 'selected' : ''}>Giant</option></select></div><div class="set-col"><div class="set-input-label">Reps</div><div style="display:flex;gap:4px;align-items:center;"><input type="number" class="set-input" style="width:45px;" id="edit-set-rmin-${setIdx}" value="${set.repRange[0]}"><span style="color:var(--text-muted);">-</span><input type="number" class="set-input" style="width:45px;" id="edit-set-rmax-${setIdx}" value="${set.repRange[1]}"></div></div><div class="set-col"><div class="set-input-label">Load</div><input type="number" class="set-input" id="edit-set-load-${setIdx}" value="${set.targetLoad}"></div><button class="edit-btn" style="color:var(--error);" onclick="removeSetFromEdit('${mesoId}',${microIdx},${sessionIdx},${gi},${ei},${setIdx})">&times;</button></div>`;
+  });
+  showModal(`<div class="modal-title">Edit Exercise</div><div class="modal-scroll"><div class="form-group"><label>Exercise</label><select id="edit-ex-swap"><option value="${ex.exerciseId}">${esc(ex.name)}</option>${available.map(e => `<option value="${e.id}">${esc(e.name)}</option>`).join('')}</select></div><div class="form-group"><label>Sets</label>${setsHtml}<button class="btn btn-ghost mt-8" onclick="addSetToEdit('${mesoId}',${microIdx},${sessionIdx},${gi},${ei})">+ Add Set</button></div><div class="btn-row"><button class="btn btn-secondary" onclick="editSession('${mesoId}',${microIdx},${sessionIdx})">Back</button><button class="btn btn-primary" onclick="saveExerciseEdit('${mesoId}',${microIdx},${sessionIdx},${gi},${ei})" style="flex:2">Save</button></div></div>`);
+}
+function addSetToEdit(mesoId, microIdx, sessionIdx, gi, ei) {
+  const meso = mesocycles.find(m => m.id === mesoId); if (!meso) return;
+  const ex = meso.microcycles[microIdx].sessions[sessionIdx].muscleGroups[gi].exercises[ei];
+  const lastSet = ex.sets[ex.sets.length - 1] || { repRange: [8, 12], targetLoad: 0, targetReps: 8, targetRPE: meso.microcycles[microIdx].targetRPE, setType: 'straight' };
+  ex.sets.push({ repRange: [...lastSet.repRange], targetLoad: lastSet.targetLoad, targetReps: lastSet.targetReps, targetRPE: lastSet.targetRPE, setType: lastSet.setType || 'straight' });
+  saveMesocycles(); editExerciseInSession(mesoId, microIdx, sessionIdx, gi, ei);
+}
+function removeSetFromEdit(mesoId, microIdx, sessionIdx, gi, ei, setIdx) {
+  const meso = mesocycles.find(m => m.id === mesoId); if (!meso) return;
+  const ex = meso.microcycles[microIdx].sessions[sessionIdx].muscleGroups[gi].exercises[ei];
+  if (ex.sets.length <= 1) { toast('Need at least 1 set'); return; }
+  ex.sets.splice(setIdx, 1); saveMesocycles(); editExerciseInSession(mesoId, microIdx, sessionIdx, gi, ei);
+}
+async function saveExerciseEdit(mesoId, microIdx, sessionIdx, gi, ei) {
+  const meso = mesocycles.find(m => m.id === mesoId); if (!meso) return;
+  const mg = meso.microcycles[microIdx].sessions[sessionIdx].muscleGroups[gi]; const ex = mg.exercises[ei];
+  const newExId = document.getElementById('edit-ex-swap').value;
+  if (newExId !== ex.exerciseId) { const nd = exerciseLib.exercises.find(e => e.id === newExId); if (nd) { ex.exerciseId = nd.id; ex.name = nd.name; ex.muscleGroup = nd.muscleGroup; ex.jointPainHistory = []; } }
+  ex.sets.forEach((set, si) => {
+    const t = document.getElementById(`edit-set-type-${si}`), rn = document.getElementById(`edit-set-rmin-${si}`), rx = document.getElementById(`edit-set-rmax-${si}`), l = document.getElementById(`edit-set-load-${si}`);
+    if (t) set.setType = t.value; if (rn) set.repRange[0] = parseInt(rn.value) || set.repRange[0]; if (rx) set.repRange[1] = parseInt(rx.value) || set.repRange[1]; if (l) set.targetLoad = parseFloat(l.value) || set.targetLoad;
+    set.targetReps = set.repRange[0];
+  });
+  await saveMesocycles(); closeModal(); toast('Exercise updated', 'success'); renderCurrentTab();
+}
+function addSessionToMicrocycle(mesoId, microIdx) {
+  const meso = mesocycles.find(m => m.id === mesoId); if (!meso) return;
+  const n = meso.microcycles[microIdx].sessions.length + 1;
+  meso.microcycles[microIdx].sessions.push({ id: uid(), dayLabel: `Day ${n}`, muscleGroups: [], status: 'upcoming', completedAt: null });
+  saveMesocycles(); editSession(mesoId, microIdx, meso.microcycles[microIdx].sessions.length - 1); renderCurrentTab();
 }
 
 // ============================================================
@@ -2048,7 +2796,7 @@ function renderHistory() {
     html += `<div class="card mb-12"><div class="card-header mb-8">${esc(group)}</div>`;
     Object.entries(groupMap[group]).forEach(([exId, data]) => {
       html += `
-        <div class="card-clickable" style="padding:10px 0;border-bottom:1px solid #45475a;cursor:pointer;" onclick="viewExerciseHistory('${exId}')">
+        <div class="card-clickable" style="padding:10px 0;border-bottom:1px solid var(--border-color);cursor:pointer;" onclick="viewExerciseHistory('${exId}')">
           <div class="flex-between">
             <span style="font-size:14px;">${esc(data.name)}</span>
             <span class="text-sm text-muted">${data.sessions} sessions</span>
@@ -2148,25 +2896,25 @@ function renderExerciseHistory(area) {
   const matched = sessions.filter(s => s.perf === 'matched').length;
   const below = sessions.filter(s => s.perf === 'below').length;
   html += `
-    <div class="stat-badge"><div class="stat-value" style="color:#a6e3a1;">${exceeded}</div><div class="stat-label">Exceeded</div></div>
-    <div class="stat-badge"><div class="stat-value" style="color:#89b4fa;">${matched}</div><div class="stat-label">Matched</div></div>
-    <div class="stat-badge"><div class="stat-value" style="color:#f38ba8;">${below}</div><div class="stat-label">Below</div></div>
+    <div class="stat-badge"><div class="stat-value" style="color:var(--success);">${exceeded}</div><div class="stat-label">Exceeded</div></div>
+    <div class="stat-badge"><div class="stat-value" style="color:var(--accent-primary);">${matched}</div><div class="stat-label">Matched</div></div>
+    <div class="stat-badge"><div class="stat-value" style="color:var(--error);">${below}</div><div class="stat-label">Below</div></div>
   `;
   html += `</div>`;
 
   // Session list
   sessions.reverse().forEach(s => {
-    const perfColor = s.perf === 'exceeded' ? '#a6e3a1' : s.perf === 'matched' ? '#89b4fa' : '#f38ba8';
+    const perfBadge = s.perf === 'exceeded' ? 'badge-secondary' : s.perf === 'matched' ? 'badge-primary' : 'badge-danger';
     html += `
       <div class="card mb-8">
         <div class="flex-between mb-4">
           <div class="text-sm text-muted">${esc(s.mesoName)} &middot; Week ${s.week}</div>
-          <span class="badge" style="background:${perfColor}22;color:${perfColor};">${s.perf}</span>
+          <span class="badge ${perfBadge}">${s.perf}</span>
         </div>
         ${s.sets.map((st, i) => {
           const sType = st.setType || 'straight';
           const typeLabel = sType !== 'straight' ? `<span class="set-type-badge ${sType}">${({myorep:'Myo',myorep_match:'M.M',giant:'Giant',straight:''})[sType]}</span> ` : '';
-          return `<div class="text-sm" style="padding:2px 0;color:#a6adc8;">
+          return `<div class="text-sm" style="padding:2px 0;color:var(--text-secondary);">
             Set ${i+1}: ${typeLabel}${st.actualLoad || st.targetLoad}lbs &times; ${st.actualReps || st.targetReps} @ RPE ${Math.round(st.actualRPE || st.targetRPE)}
           </div>`;
         }).join('')}
@@ -2189,26 +2937,26 @@ function renderExerciseHistory(area) {
           {
             label: 'Avg Load (lbs)',
             data: avgLoads,
-            borderColor: '#89b4fa',
-            backgroundColor: 'rgba(137,180,250,0.1)',
+            borderColor: getComputedStyle(document.documentElement).getPropertyValue('--accent-primary').trim() || '#D97757',
+            backgroundColor: 'rgba(' + (getComputedStyle(document.documentElement).getPropertyValue('--accent-r').trim() || '217') + ',' + (getComputedStyle(document.documentElement).getPropertyValue('--accent-g').trim() || '119') + ',' + (getComputedStyle(document.documentElement).getPropertyValue('--accent-b').trim() || '87') + ',0.1)',
             tension: 0.3, fill: true, yAxisID: 'y'
           },
           {
             label: 'Volume (load×reps)',
             data: volume,
-            borderColor: '#a6e3a1',
-            backgroundColor: 'rgba(166,227,161,0.1)',
+            borderColor: '#10B981',
+            backgroundColor: 'rgba(16,185,129,0.1)',
             tension: 0.3, fill: true, yAxisID: 'y1'
           }
         ]
       },
       options: {
         responsive: true, maintainAspectRatio: false,
-        plugins: { legend: { labels: { color: '#6c7086', font: { size: 11 } } } },
+        plugins: { legend: { labels: { color: '#9CA3AF', font: { size: 11 } } } },
         scales: {
-          x: { ticks: { color: '#6c7086' }, grid: { color: '#313244' } },
-          y: { position: 'left', ticks: { color: '#89b4fa' }, grid: { color: '#313244' }, title: { display: true, text: 'Load', color: '#89b4fa' } },
-          y1: { position: 'right', ticks: { color: '#a6e3a1' }, grid: { display: false }, title: { display: true, text: 'Volume', color: '#a6e3a1' } }
+          x: { ticks: { color: '#9CA3AF' }, grid: { color: '#E8E6E3' } },
+          y: { position: 'left', ticks: { color: getComputedStyle(document.documentElement).getPropertyValue('--accent-primary').trim() || '#D97757' }, grid: { color: '#E8E6E3' }, title: { display: true, text: 'Load', color: getComputedStyle(document.documentElement).getPropertyValue('--accent-primary').trim() || '#D97757' } },
+          y1: { position: 'right', ticks: { color: '#10B981' }, grid: { display: false }, title: { display: true, text: 'Volume', color: '#10B981' } }
         }
       }
     });
@@ -2272,10 +3020,19 @@ function renderExercises() {
   Object.keys(grouped).sort().forEach(group => {
     html += `<div class="card mb-12"><div class="card-header mb-8">${esc(group)} <span class="text-sm text-muted">(${grouped[group].length})</span></div>`;
     grouped[group].forEach(e => {
+      const hasNotes = e.notes && e.notes.trim();
       html += `
-        <div class="flex-between" style="padding:6px 0;border-bottom:1px solid #45475a22;">
-          <span style="font-size:14px;">${esc(e.name)}</span>
-          <button class="btn-ghost" onclick="deleteExercise('${e.id}')" style="color:#f38ba8;font-size:12px;">&times;</button>
+        <div style="padding:6px 0;border-bottom:1px solid rgba(156,163,175,0.13);">
+          <div class="flex-between">
+            <span style="font-size:14px;">${esc(e.name)}</span>
+            <div style="display:flex;align-items:center;gap:4px;">
+              <button class="exercise-notes-toggle ${hasNotes ? 'has-notes' : ''}" onclick="toggleLibNotes('${e.id}')">&#128221; ${hasNotes ? 'Notes' : 'Add note'}</button>
+              <button class="btn-ghost" onclick="deleteExercise('${e.id}')" style="color:var(--error);font-size:12px;">&times;</button>
+            </div>
+          </div>
+          <div class="exercise-notes-area" id="lib-notes-${e.id}" style="display:none;">
+            <textarea placeholder="Cues, observations, reminders..." onblur="saveExerciseNotes('${e.id}', this.value)">${esc(e.notes || '')}</textarea>
+          </div>
         </div>
       `;
     });
@@ -2299,7 +3056,7 @@ async function addExerciseToLib() {
   }
   if (!name) { toast('Enter an exercise name'); return; }
 
-  exerciseLib.exercises.push({ id: uid(), name, muscleGroup: group });
+  exerciseLib.exercises.push({ id: uid(), name, muscleGroup: group, notes: '' });
   await saveExercises();
   toast(`Added ${name}`, 'success');
   renderExercises();
@@ -2312,6 +3069,30 @@ async function deleteExercise(id) {
   renderExercises();
 }
 
+function toggleLibNotes(exId) {
+  const el = document.getElementById('lib-notes-' + exId);
+  if (!el) return;
+  const show = el.style.display === 'none';
+  el.style.display = show ? 'block' : 'none';
+  if (show) { const ta = el.querySelector('textarea'); if (ta) ta.focus(); }
+}
+
+function toggleWorkoutNotes(exId) {
+  const el = document.getElementById('workout-notes-' + exId);
+  if (!el) return;
+  const show = el.style.display === 'none';
+  el.style.display = show ? 'block' : 'none';
+  if (show) { const ta = el.querySelector('textarea'); if (ta) ta.focus(); }
+}
+
+async function saveExerciseNotes(exId, value) {
+  const ex = exerciseLib.exercises.find(e => e.id === exId);
+  if (!ex) return;
+  if (ex.notes === value) return;
+  ex.notes = value;
+  await saveExercises();
+}
+
 // ============================================================
 // UTILITY
 // ============================================================
@@ -2321,14 +3102,144 @@ function esc(str) {
 }
 
 // ============================================================
+// DATA MIGRATION — recompute stale progression after logic fixes
+// ============================================================
+function migrateStaleProgression() {
+  let changed = false;
+  mesocycles.forEach(meso => {
+    // Skip if this meso was already migrated
+    if (meso._migrationVersion >= 1) return;
+    meso._migrationVersion = 1;
+    changed = true;
+
+    // Step 1: Deduplicate microcycles with same weekNumber
+    const seen = new Map();
+    const toRemove = [];
+
+    meso.microcycles.forEach((mc, i) => {
+      const key = mc.weekNumber;
+      if (seen.has(key)) {
+        const existingIdx = seen.get(key);
+        const existingMc = meso.microcycles[existingIdx];
+        const existingCompleted = existingMc.sessions.filter(s => s.status === 'completed').length;
+        const thisCompleted = mc.sessions.filter(s => s.status === 'completed').length;
+        if (thisCompleted > existingCompleted) {
+          toRemove.push(existingIdx);
+          seen.set(key, i);
+        } else {
+          toRemove.push(i);
+        }
+      } else {
+        seen.set(key, i);
+      }
+    });
+
+    if (toRemove.length > 0) {
+      toRemove.sort((a, b) => b - a).forEach(idx => meso.microcycles.splice(idx, 1));
+      changed = true;
+    }
+
+    // Step 2: Recompute _lastPerf/_deload for upcoming exercises in generated microcycles
+    meso.microcycles.forEach((micro, microIdx) => {
+      if (microIdx === 0) return;
+      const sourceMicro = meso.microcycles[microIdx - 1];
+      if (!sourceMicro || sourceMicro.status !== 'completed') return;
+
+      micro.sessions.forEach((session, sessionIdx) => {
+        if (session.status === 'completed') return;
+        const sourceSession = sourceMicro.sessions[sessionIdx];
+        if (!sourceSession) return;
+
+        session.muscleGroups.forEach(mg => {
+          mg.exercises.forEach(ex => {
+            let sourceEx = null;
+            sourceSession.muscleGroups.forEach(smg => {
+              smg.exercises.forEach(se => {
+                if (se.exerciseId === ex.exerciseId) sourceEx = se;
+              });
+            });
+            if (!sourceEx) return;
+
+            const prevPerfs = getPreviousPerformances(meso, ex.exerciseId, microIdx, 0);
+            prevPerfs.push(classifyPerformance(sourceEx));
+            const nextRPE = getRPEForPriority(mg.priority, meso.startingRPE, micro.weekNumber);
+            const result = progressExercise(sourceEx, mg.priority, nextRPE, prevPerfs);
+
+            ex._lastPerf = result.perf;
+            ex._deload = result.deload;
+            ex.sets = result.sets;
+          });
+        });
+      });
+    });
+  });
+  return changed;
+}
+
+// ============================================================
 // INIT
 // ============================================================
 async function init() {
   await loadAll();
+  if (migrateStaleProgression()) {
+    await saveMesocycles();
+  }
   renderDashboard();
 }
 
 init();
+</script>
+<script>
+// === CACHE-BUSTING SERVICE WORKER ===
+// Bump this version string whenever index.html is updated.
+// The SW will purge old caches and force a reload.
+const APP_VERSION = '2026-02-18f';
+
+if ('serviceWorker' in navigator) {
+  const swCode = `
+    const CACHE_NAME = 'hypertrophy-v${APP_VERSION}';
+    self.addEventListener('install', e => {
+      self.skipWaiting();
+    });
+    self.addEventListener('activate', e => {
+      e.waitUntil(
+        caches.keys().then(keys =>
+          Promise.all(keys.filter(k => k !== CACHE_NAME).map(k => caches.delete(k)))
+        ).then(() => self.clients.claim())
+      );
+    });
+    self.addEventListener('fetch', e => {
+      // Network-first: always try the network, only fall back to cache
+      e.respondWith(
+        fetch(e.request).then(resp => {
+          if (resp.ok) {
+            const clone = resp.clone();
+            caches.open(CACHE_NAME).then(c => c.put(e.request, clone));
+          }
+          return resp;
+        }).catch(() => caches.match(e.request))
+      );
+    });
+  `;
+  const swBlob = new Blob([swCode], { type: 'application/javascript' });
+  const swURL = URL.createObjectURL(swBlob);
+
+  navigator.serviceWorker.register(swURL, { scope: location.pathname })
+    .then(reg => {
+      // Check for updates periodically
+      setInterval(() => reg.update().catch(() => {}), 60 * 1000);
+    })
+    .catch(() => {
+      // blob: SW registration may fail on some browsers — that's fine,
+      // the meta tags above still help with caching.
+    });
+
+  // Reload when a new service worker takes over
+  let refreshing = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!refreshing) { refreshing = true; location.reload(); }
+  });
+}
 </script>
 </body>
 </html>

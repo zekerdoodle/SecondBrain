@@ -47,7 +47,7 @@ def _resolve_memory_path(args: Dict[str, Any]) -> str:
 @register_tool("journal")
 @tool(
     name="memory_append",
-    description="""Append a note to your persistent memory file. This file is loaded into your context at the start of every conversation, so anything you save here you'll remember next time.
+    description="""Append a note to your persistent memory file (memory.md). This is your self-journal — loaded into context every session for stable facts, preferences, and operating principles.
 
 Each agent has its own isolated memory — you only see yours.
 
@@ -55,13 +55,13 @@ SAVE things like:
 - Lessons learned ("Running build before lint catches more issues")
 - User preferences you've discovered ("the user prefers forms over chat Q&A")
 - Codebase conventions ("This project uses snake_case for Python, camelCase for TS")
-- Working theories and opinions ("I think the flaky test is a race condition in...")
 - Patterns you've noticed ("When the user says 'clean it up' he means extract helpers")
 - Anything you'd want to remember across sessions
 
 DON'T SAVE:
 - Temporary context for this session only (use working_memory_add)
 - Raw facts the user stated (LTM captures those from chat automatically)
+- Self-development reflections, threads, or patterns (write those to .claude/memory/self_development/ files directly)
 
 Keep entries concise — bullet points, not paragraphs. This goes into your context window every session.""",
     input_schema={

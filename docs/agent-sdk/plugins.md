@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/plugins
 title: Plugins in the SDK
-last_fetched: 2026-02-12T10:03:45.641381+00:00
+last_fetched: 2026-02-18T10:02:43.521882+00:00
 ---
 
 Copy page
@@ -46,8 +46,8 @@ for await (const message of query({
 
 Plugin paths can be:
 
-- **Relative paths**: Resolved relative to your current working directory (e.g., `"./plugins/my-plugin"`)
-- **Absolute paths**: Full file system paths (e.g., `"/home/user/plugins/my-plugin"`)
+- **Relative paths**: Resolved relative to your current working directory (for example, `"./plugins/my-plugin"`)
+- **Absolute paths**: Full file system paths (for example, `"/home/user/plugins/my-plugin"`)
 
 The path should point to the plugin's root directory (the directory containing `.claude-plugin/plugin.json`).
 
@@ -101,7 +101,7 @@ for await (const message of query({
 }
 ```
 
-If you installed a plugin via the CLI (e.g., `/plugin install my-plugin@marketplace`), you can still use it in the SDK by providing its installation path. Check `~/.claude/plugins/` for CLI-installed plugins.
+If you installed a plugin via the CLI (for example, `/plugin install my-plugin@marketplace`), you can still use it in the SDK by providing its installation path. Check `~/.claude/plugins/` for CLI-installed plugins.
 
 ## Complete example
 

@@ -64,7 +64,7 @@ To proceed, invoke coder again with one of:
 ## Key Codebase Patterns
 
 - **Server**: FastAPI + WebSocket at `interface/server/main.py`
-- **Agent runner**: `.claude/agents/runner.py` — SDK agents use `query()`, CLI agents use `--print`
+- **Agent runner**: `.claude/agents/runner.py` — all agents use SDK `query()`
 - **Agent configs**: `.claude/agents/{name}/config.yaml` + `prompt.md`
 - **MCP tools**: `interface/server/mcp_tools/` — registered via decorator
 - **Frontend**: React + TypeScript + Vite at `interface/client/src/`

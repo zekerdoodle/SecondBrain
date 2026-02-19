@@ -15,6 +15,8 @@ export const TOOL_DISPLAY_NAMES: Record<string, string> = {
   'WebSearch': 'Searching the web',
   'WebFetch': 'Fetching page',
   'Task': 'Running task',
+  'TaskOutput': 'Reading task output',
+  'TaskStop': 'Stopping task',
   'TodoWrite': 'Updating tasks',
 
   // MCP Brain tools - Agents

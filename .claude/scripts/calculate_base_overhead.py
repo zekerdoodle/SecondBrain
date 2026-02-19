@@ -4,7 +4,7 @@ Calculate the base token overhead for the context window indicator.
 
 This script measures the approximate token count of:
 - CLAUDE.md (system instructions)
-- Skills (from .claude/skills/)
+- Skills (from .claude/skill_defs/)
 - Memory budget (assumed 4k)
 - MCP tool definitions (estimated)
 

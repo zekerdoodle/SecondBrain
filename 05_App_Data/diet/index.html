@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Diet Tracker</title>
+<link rel="stylesheet" href="/file/05_App_Data/_shared/theme.css">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -265,15 +266,7 @@ textarea { resize: vertical; min-height: 60px; font-family: inherit; }
 .modal-actions { display: flex; gap: 8px; margin-top: 12px; }
 .modal-actions .btn { flex: 1; }
 
-/* === NOTIFICATION === */
-.notification {
-  position: fixed; top: 16px; left: 50%; transform: translateX(-50%);
-  background: #313244; border: 1px solid #45475a; border-radius: 10px;
-  padding: 10px 20px; font-size: 13px; z-index: 300;
-  opacity: 0; transition: opacity 0.3s; pointer-events: none;
-}
-.notification.show { opacity: 1; }
-.notification.success { border-color: #a6e3a1; }
+/* Notifications handled by BrainKit toast (theme.css) */
 
 /* === ESCALATION INDICATOR === */
 .escalation-note {
@@ -385,9 +378,9 @@ textarea { resize: vertical; min-height: 60px; font-family: inherit; }
   </div>
 </div>
 
-<!-- Notification -->
-<div id="notification" class="notification"></div>
+<!-- Toast notifications handled by BrainKit -->
 
+<script src="/file/05_App_Data/_shared/brain-kit.js"></script>
 <script>
 // ============================================================
 // STATE
@@ -397,7 +390,7 @@ let dailyLog = {};
 let todayKey = '';
 let weightChart = null;
 let currentCustomSlot = 0;
-let customMealPolling = null; // { slot, intervalId, startTime }
+let customMealLoading = null; // slot number while Claude is estimating
 
 // ============================================================
 // HELPERS
@@ -419,12 +412,7 @@ function getGreeting() {
   return 'Good evening';
 }
 
-function notify(msg, type = '') {
-  const el = document.getElementById('notification');
-  el.textContent = msg;
-  el.className = 'notification show' + (type ? ' ' + type : '');
-  setTimeout(() => el.className = 'notification', 2000);
-}
+// notify() removed — using BrainKit.toast() instead
 
 function getOptionById(id) {
   if (!mealPlan) return null;
@@ -537,30 +525,21 @@ function getYesterdayWeight() {
 }
 
 // ============================================================
-// PERSISTENCE
+// PERSISTENCE (BrainKit.store)
 // ============================================================
+const store = BrainKit.store('diet');
+
 async function loadData() {
-  try {
-    const mp = await window.brain.readFile('diet/meal_plan.json');
-    mealPlan = JSON.parse(mp);
-  } catch (e) {
-    console.error('Failed to load meal plan:', e);
-    mealPlan = null;
-  }
-  try {
-    const dl = await window.brain.readFile('diet/daily_log.json');
-    dailyLog = JSON.parse(dl);
-  } catch (e) {
-    dailyLog = {};
-  }
+  mealPlan = await store.read('meal_plan.json', null);
+  dailyLog = await store.read('daily_log.json', {});
 }
 
 async function saveLog() {
   try {
-    await window.brain.writeFile('diet/daily_log.json', JSON.stringify(dailyLog, null, 2));
+    await store.write('daily_log.json', dailyLog);
   } catch (e) {
     console.error('Failed to save log:', e);
-    notify('Failed to save', 'error');
+    BrainKit.toast('Failed to save', 'error');
   }
 }
 
@@ -647,7 +626,7 @@ function logWeight() {
   const input = document.getElementById('weight-input');
   const val = parseFloat(input.value);
   if (!val || val < 100 || val > 400) {
-    notify('Enter a valid weight');
+    BrainKit.toast('Enter a valid weight', 'warning');
     return;
   }
   if (!dailyLog[todayKey]) {
@@ -657,7 +636,7 @@ function logWeight() {
   const now = new Date();
   dailyLog[todayKey].weight_time = String(now.getHours()).padStart(2,'0') + ':' + String(now.getMinutes()).padStart(2,'0');
   saveLog();
-  notify('Weight logged', 'success');
+  BrainKit.toast('Weight logged', 'success');
   renderToday();
 }
 
@@ -726,11 +705,11 @@ function renderMealProgress(container, today, headerHtml) {
     }
   }
 
-  // Current slot — check if polling for custom meal
-  const isPolling = customMealPolling && customMealPolling.slot === nextSlot;
+  // Current slot — check if loading custom meal estimate
+  const isLoading = customMealLoading === nextSlot;
   const currentMeal = getMealBySlot(nextSlot);
 
-  if (isPolling && currentMeal) {
+  if (isLoading && currentMeal) {
     html += `
       <div class="meal-section animate-in">
         <div class="meal-section-header">
@@ -742,7 +721,7 @@ function renderMealProgress(container, today, headerHtml) {
         </div>
         <div class="meal-polling">
           <span class="meal-polling-dot"></span>
-          <span>Claude is logging...</span>
+          <span>Estimating macros...</span>
         </div>
       </div>
     `;
@@ -817,7 +796,7 @@ async function selectMeal(slot, optionId) {
   const time = String(now.getHours()).padStart(2,'0') + ':' + String(now.getMinutes()).padStart(2,'0');
   today.meals.push({ slot, option_id: optionId, time });
   await saveLog();
-  notify('Meal logged', 'success');
+  BrainKit.toast('Meal logged', 'success');
   renderToday();
 }
 
@@ -911,7 +890,7 @@ async function submitEndOfDay() {
     escalated_to_claude: false
   };
 
-  // Escalation logic
+  // Escalation logic — ask Claude for advice (background, no blocking)
   if (selectedFeel <= 2 || tweak) {
     today.end_of_day.escalated_to_claude = true;
     try {
@@ -923,7 +902,7 @@ async function submitEndOfDay() {
         return `${meal?.name || 'Slot ' + m.slot}: ${opt?.label || m.option_id}`;
       }).join(', ');
 
-      const message = `diet-tracker: End-of-day check-in.
+      const prompt = `Diet tracker end-of-day check-in:
 Date: ${todayKey}
 Weight: ${today.weight} lbs
 Feel: ${selectedFeel}/5
@@ -933,9 +912,16 @@ Tweak requested: ${tweak ? 'yes' : 'no'}
 Meals: ${mealLabels}
 Totals: ${totals.cal} cal / ${totals.protein}g protein (target: ${targets.calories} / ${targets.protein}g)
 ${selectedFeel <= 2 ? 'CONCERN: Low feel rating — please review and suggest adjustments.' : ''}
-${tweak ? 'CONCERN: Diet adjustment requested — please review the plan.' : ''}`;
+${tweak ? 'CONCERN: Diet adjustment requested — please review the plan.' : ''}
 
-      await window.brain.promptClaude(message);
+Review this data. If adjustments are warranted, write an updated meal_plan.json to 05_App_Data/diet/meal_plan.json. Otherwise, provide a brief encouraging note. Return JSON: { "advice": "string", "plan_updated": boolean }`;
+
+      // Fire-and-forget — don't block the UI
+      BrainKit.askClaude(prompt, { json: true }).then(result => {
+        if (result && result.advice) {
+          BrainKit.toast(result.advice, result.plan_updated ? 'warning' : 'success', 5000);
+        }
+      }).catch(e => console.error('Escalation failed:', e));
     } catch (e) {
       console.error('Escalation failed:', e);
     }
@@ -943,7 +929,7 @@ ${tweak ? 'CONCERN: Diet adjustment requested — please review the plan.' : ''}
 
   await saveLog();
   selectedFeel = 0;
-  notify('Day logged', 'success');
+  BrainKit.toast('Day logged', 'success');
   renderToday();
 }
 
@@ -1016,7 +1002,7 @@ async function confirmResetToday() {
   closeConfirmModal();
   delete dailyLog[todayKey];
   await saveLog();
-  notify('Today reset', 'success');
+  BrainKit.toast('Today reset', 'success');
   renderToday();
 }
 
@@ -1042,82 +1028,53 @@ async function submitCustomMeal() {
   const meal = getMealBySlot(slot);
   closeCustomModal();
 
-  // Show polling state immediately
-  startCustomMealPolling(slot);
+  // Show loading state
+  customMealLoading = slot;
   renderToday();
 
-  // Fire promptClaude — Claude will write directly to daily_log.json
   try {
-    const msg = `diet-tracker: Custom meal for slot ${slot} (${meal?.name || 'Meal ' + slot}).
-The user ate: "${text}"
-Today's date: ${todayKey}
+    const now = new Date();
+    const time = String(now.getHours()).padStart(2,'0') + ':' + String(now.getMinutes()).padStart(2,'0');
 
-Instructions: Estimate the calories and protein for this meal. Then write the entry directly to the daily log file at 05_App_Data/diet/daily_log.json.
+    const result = await BrainKit.askClaude(
+      `Estimate the calories and protein for this meal: "${text}"
 
-Use this exact JSON structure for the custom_meals array entry:
+Return JSON only, no explanation:
 {
-  "slot": ${slot},
-  "description": "${text.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}",
   "items": ["item 1 (portion)", "item 2 (portion)"],
   "estimated_cal": number,
-  "estimated_protein": number,
-  "time": "HH:MM"
-}
+  "estimated_protein": number
+}`,
+      { json: true }
+    );
 
-Add it to today's date entry (${todayKey}) in the daily log. If today's entry doesn't exist yet, create it. If custom_meals array doesn't exist, create it. Preserve all existing data in the file.
+    // Build the custom meal entry
+    const entry = {
+      slot,
+      description: text,
+      items: result.items || [text],
+      estimated_cal: result.estimated_cal || 0,
+      estimated_protein: result.estimated_protein || 0,
+      time
+    };
 
-After writing, just respond "Logged" to confirm.`;
+    // Add to today's log
+    const today = getTodayData();
+    if (today) {
+      if (!today.custom_meals) today.custom_meals = [];
+      today.custom_meals.push(entry);
+      await saveLog();
 
-    window.brain.promptClaude(msg).catch(e => console.error('Custom meal prompt failed:', e));
+      const macros = getCustomMealMacros(entry);
+      const label = getCustomMealItemsLabel(entry);
+      BrainKit.toast(`Logged: ~${macros.cal} cal, ${macros.protein}g protein`, 'success');
+    }
   } catch (e) {
-    console.error('Custom meal prompt failed:', e);
-  }
-}
-
-function startCustomMealPolling(slot) {
-  // Clear any existing poll
-  if (customMealPolling) {
-    clearInterval(customMealPolling.intervalId);
-  }
-
-  const startTime = Date.now();
-  const intervalId = setInterval(() => pollForCustomMeal(slot), 1500);
-  customMealPolling = { slot, intervalId, startTime };
-}
-
-async function pollForCustomMeal(slot) {
-  // Timeout after 30 seconds
-  if (Date.now() - customMealPolling.startTime > 30000) {
-    clearInterval(customMealPolling.intervalId);
-    customMealPolling = null;
-    notify("Claude didn't respond — try again?");
+    console.error('Custom meal failed:', e);
+    BrainKit.toast('Failed to estimate meal — try again?', 'error');
+  } finally {
+    customMealLoading = null;
     renderToday();
-    return;
-  }
-
-  try {
-    const raw = await window.brain.readFile('diet/daily_log.json');
-    const log = JSON.parse(raw);
-    const todayEntry = log[todayKey];
-    if (!todayEntry || !todayEntry.custom_meals) return;
-
-    const entry = todayEntry.custom_meals.find(cm => cm.slot === slot);
-    if (!entry) return;
-
-    // Found it — stop polling, update local state, show confirmation
-    clearInterval(customMealPolling.intervalId);
-    customMealPolling = null;
-
-    // Sync the full daily log from disk (Claude may have changed it)
-    dailyLog = log;
-
-    const macros = getCustomMealMacros(entry);
-    const label = getCustomMealItemsLabel(entry);
-    notify(`Logged: ~${macros.cal} cal, ${macros.protein}g protein — ${label}`, 'success');
-    renderToday();
-  } catch (e) {
-    // File read failed, just wait for next poll
-    console.error('Poll read failed:', e);
   }
 }
 
@@ -1528,6 +1485,7 @@ function renderSettings() {
 }
 
 async function requestPlanUpdate() {
+  BrainKit.toast('Reviewing your plan...', '', 10000);
   try {
     const dates = Object.keys(dailyLog).sort();
     const recentDates = dates.slice(-7);
@@ -1539,18 +1497,26 @@ async function requestPlanUpdate() {
       summary += `${d}: ${w}lbs, ${t.cal}cal, ${t.protein}g pro, feel ${f}/5\n`;
     }
 
-    const msg = `diet-tracker: Plan update requested.
+    const result = await BrainKit.askClaude(
+      `Diet plan review requested.
 Current phase: ${mealPlan.phase}
 Current targets: ${mealPlan.daily_targets.calories} cal / ${mealPlan.daily_targets.protein}g protein
 Recent 7 days:
 ${summary}
-the user wants to discuss potential adjustments to the plan.`;
 
-    await window.brain.promptClaude(msg);
-    notify('Claude will review your plan', 'success');
+Analyze the trend and provide a brief assessment. Should targets be adjusted?
+Return JSON: { "assessment": "1-2 sentence summary", "recommendation": "keep" | "adjust_down" | "adjust_up", "suggested_calories": number | null, "suggested_protein": number | null }`,
+      { json: true }
+    );
+
+    if (result && result.assessment) {
+      BrainKit.toast(result.assessment, result.recommendation === 'keep' ? 'success' : 'warning', 6000);
+    } else {
+      BrainKit.toast('Review complete', 'success');
+    }
   } catch (e) {
     console.error('Plan update request failed:', e);
-    notify('Failed to send request');
+    BrainKit.toast('Failed to get review', 'error');
   }
 }
 

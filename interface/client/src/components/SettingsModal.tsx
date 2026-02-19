@@ -159,6 +159,16 @@ function getEffectiveMode(mode: ThemeMode): 'light' | 'dark' {
   return mode;
 }
 
+// Parse hex color to RGB components
+function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
+  const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+  return result ? {
+    r: parseInt(result[1], 16),
+    g: parseInt(result[2], 16),
+    b: parseInt(result[3], 16),
+  } : null;
+}
+
 // Apply theme to document
 export function applyTheme(prefs: ThemePreferences): void {
   const root = document.documentElement;
@@ -174,6 +184,14 @@ export function applyTheme(prefs: ThemePreferences): void {
   // Generate a lighter variant for backgrounds
   const accentLight = prefs.accentColor + '15'; // 15 = ~9% opacity in hex
   root.style.setProperty('--accent-light', accentLight);
+
+  // Generate RGB components for use in rgba() expressions in CSS
+  const rgb = hexToRgb(prefs.accentColor);
+  if (rgb) {
+    root.style.setProperty('--accent-r', String(rgb.r));
+    root.style.setProperty('--accent-g', String(rgb.g));
+    root.style.setProperty('--accent-b', String(rgb.b));
+  }
 }
 
 interface SettingsModalProps {

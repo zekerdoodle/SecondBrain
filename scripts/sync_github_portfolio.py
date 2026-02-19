@@ -216,7 +216,7 @@ ALLOWLIST_SKILLS = [
 SANITIZE_FILES = {
     ".claude/CLAUDE.md": "sanitize_claude_md",
     "05_App_Data/apps.json": "sanitize_apps_json",
-    ".claude/skills/character-gen/SKILL.md": "sanitize_riley_gen",
+    ".claude/skill_defs/character-gen/SKILL.md": "sanitize_riley_gen",
 }
 
 # Files to generate from templates
@@ -782,7 +782,7 @@ def sync(dry_run: bool = True) -> dict:
 
         src = skill_dir / "SKILL.md"
         if src.exists():
-            rel = f".claude/skills/{skill_name}/SKILL.md"
+            rel = f".claude/skill_defs/{skill_name}/SKILL.md"
             dst = STAGING_DIR / rel
             if dry_run:
                 result['files_copied'].append(rel)

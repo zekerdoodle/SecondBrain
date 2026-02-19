@@ -164,6 +164,40 @@ class NotificationQueue:
             threshold_seconds=threshold_seconds
         )]
 
+    def claim_pending(self, chat_id: Optional[str] = None, threshold_seconds: Optional[int] = None) -> List[PendingNotification]:
+        """
+        Atomically claim pending notifications by transitioning them from "pending" to "injected".
+
+        This is the safe way to grab notifications — it reads AND marks under a single
+        file lock, preventing two paths (inline injection vs wake-up loop) from both
+        grabbing the same notification.
+
+        Args:
+            chat_id: If provided, only claim notifications for this chat
+            threshold_seconds: If provided, only claim notifications older than this (for stale/wake-up path)
+
+        Returns:
+            List of claimed notifications (status already set to "injected")
+        """
+        claimed: List[PendingNotification] = []
+
+        def _do_claim(notifications):
+            for n in notifications:
+                if n.status != "pending":
+                    continue
+                if chat_id and n.source_chat_id != chat_id:
+                    continue
+                if threshold_seconds is not None and not n.is_stale(threshold_seconds=threshold_seconds):
+                    continue
+                n.status = "injected"
+                claimed.append(n)
+            return notifications
+
+        self._locked_update(_do_claim)
+        if claimed:
+            logger.info(f"Claimed {len(claimed)} notifications (chat_id={chat_id}, threshold_seconds={threshold_seconds})")
+        return claimed
+
     def mark_injected(self, notification_ids: List[str]) -> int:
         """
         Mark notifications as injected.

@@ -4,7 +4,7 @@ model: sonnet
 description: "Flexible agent for general tasks. Can read/write files, run commands, and handle miscellaneous work that doesn't fit other specialists."
 chattable: true
 color: "#4A90D9"
-icon: zap
+icon: lightning
 tools:
   - Read
   - Write
@@ -13,7 +13,6 @@ tools:
   - Grep
   - Bash
   - WebFetch
-  - Skill
   - mcp__brain__memory_append
   - mcp__brain__memory_read
 timeout_seconds: 300

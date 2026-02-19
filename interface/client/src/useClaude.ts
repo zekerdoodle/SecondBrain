@@ -188,6 +188,9 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
   const streamingContent = useRef<string>('');
   // Track when the last event was a tool_end - next content starts a new message
   const lastEventWasToolEnd = useRef(false);
+  // Guard: set after tool_start finalizes streaming content. Prevents the late-arriving
+  // SDK 'content' event (complete text block) from creating a duplicate streaming message.
+  const segmentFinalizedByToolStart = useRef(false);
 
   // RAF batching for streaming updates - prevents re-rendering on every delta
   const rafId = useRef<number | null>(null);
@@ -618,6 +621,7 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
           {
             const text = data.text || '';
             if (text) {
+              segmentFinalizedByToolStart.current = false; // New segment content arriving
               // Check if this is after a tool completed
               if (lastEventWasToolEnd.current) {
                 lastEventWasToolEnd.current = false;
@@ -648,10 +652,19 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
           break;
 
         case 'content':
-          // Complete content block - may come after deltas or instead
+          // Complete content block - may come after deltas or instead.
+          // IMPORTANT: The SDK emits AssistantMessage (which yields 'content')
+          // AFTER tool_start. If tool_start already finalized this text from
+          // deltas, skip it to prevent creating a duplicate streaming message.
           {
             const text = data.text || '';
             if (!text) break;
+
+            // Guard: skip if tool_start already finalized this content from deltas
+            if (segmentFinalizedByToolStart.current) {
+              segmentFinalizedByToolStart.current = false;
+              break; // Already finalized - skip to prevent duplication
+            }
 
             // After tool_end, this is a NEW message - always start fresh
             if (lastEventWasToolEnd.current) {
@@ -718,6 +731,10 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
           });
           // IMPORTANT: Reset streaming content so post-tool content starts fresh
           streamingContent.current = '';
+          // Guard: the SDK 'content' event (complete text block) arrives AFTER tool_start
+          // because AssistantMessage is emitted after all streaming events. Without this
+          // guard, the content event would see empty streamingContent and create a duplicate.
+          segmentFinalizedByToolStart.current = true;
           setStatus('tool_use');
           // Add/merge this tool into active tools map
           const startToolId = data.id || `tool-${Date.now()}`;
@@ -745,6 +762,7 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
         case 'tool_end': {
           // Mark that the next content event should be a NEW message
           lastEventWasToolEnd.current = true;
+          segmentFinalizedByToolStart.current = false; // Tool done, clear guard
           // Build a completed tool chip from stashed args + tool_end data
           const endToolId = data.id;
           const stashed = endToolId ? pendingToolArgs.current.get(endToolId) : undefined;
@@ -825,9 +843,63 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
           setStatus('idle');
           setStatusText('');
           setActiveTools(new Map());
-          setStreamingToolMap(new Map()); lastFinalizedStreamingMsgId.current = null;
-          pendingToolArgs.current.clear();
           setTodos([]);
+
+          // Convert streaming tool pills into persistent tool_call messages
+          // BEFORE clearing the streaming tool map. This ensures tool pills
+          // survive the done transition even if the server's done payload
+          // is missing them (e.g., fast tool calls where events were lost).
+          // The server sync (applyServerMessages) will replace these with
+          // authoritative data if available.
+          setStreamingToolMap(prevToolMap => {
+            if (prevToolMap.size > 0) {
+              setMessages(prev => {
+                const newMessages: any[] = [...prev];
+                // For each anchored message, insert tool_call messages after it
+                for (const [anchorId, tools] of prevToolMap.entries()) {
+                  if (anchorId === '__pre__') {
+                    // Tools before any message — insert after the first assistant message
+                    const firstAssistantIdx = newMessages.findIndex((m: any) => m.role === 'assistant');
+                    if (firstAssistantIdx >= 0) {
+                      const toolMsgs = tools.map(tc => ({
+                        id: tc.id,
+                        role: 'tool_call',
+                        content: '',
+                        tool_name: tc.tool_name,
+                        tool_id: tc.tool_id,
+                        args: tc.args,
+                        output_summary: tc.output_summary,
+                        is_error: tc.is_error,
+                        hidden: true,
+                      }));
+                      newMessages.splice(firstAssistantIdx + 1, 0, ...toolMsgs);
+                    }
+                  } else {
+                    // Find the anchor message and insert tool_calls after it
+                    const anchorIdx = newMessages.findIndex((m: any) => m.id === anchorId);
+                    if (anchorIdx >= 0) {
+                      const toolMsgs = tools.map(tc => ({
+                        id: tc.id,
+                        role: 'tool_call',
+                        content: '',
+                        tool_name: tc.tool_name,
+                        tool_id: tc.tool_id,
+                        args: tc.args,
+                        output_summary: tc.output_summary,
+                        is_error: tc.is_error,
+                        hidden: true,
+                      }));
+                      newMessages.splice(anchorIdx + 1, 0, ...toolMsgs);
+                    }
+                  }
+                }
+                return newMessages;
+              });
+            }
+            return new Map();
+          });
+          lastFinalizedStreamingMsgId.current = null;
+          pendingToolArgs.current.clear();
 
           // Finalize any streaming messages and mark all messages as complete
           setMessages(prev => prev.map(m => {
@@ -839,6 +911,7 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
 
           streamingContent.current = '';
           lastEventWasToolEnd.current = false;
+          segmentFinalizedByToolStart.current = false;
 
           // Clear pending messages queue - conversation turn complete
           pendingMessages.current.clear();
@@ -866,53 +939,96 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
 
           // Sync with server's authoritative messages to recover any segments
           // that may have been lost during streaming (e.g., pre-tool text segments).
-          // The server saves each text segment as a separate assistant message,
-          // so if streaming dropped a segment, we restore it here.
-          // We merge to preserve client-only state (status indicators, formData).
+          // If the done event includes messages directly (e.g. wake-up handler),
+          // use them immediately to avoid a fetch round-trip and tool chip flicker.
           {
+            const syncMessages = data.messages;
             const syncId = data.sessionId || sessionId;
-            if (syncId && syncId !== 'new') {
+
+            const applyServerMessages = (serverMessages: ChatMessage[]) => {
+              setMessages(prev => {
+                // Build lookup of client messages by ID for merging
+                const clientById = new Map(prev.map(m => [m.id, m]));
+                // Also index client form messages by formId for cross-ID matching
+                const clientFormByFormId = new Map<string, ChatMessage>();
+                for (const m of prev) {
+                  if (m.formData?.formId) {
+                    clientFormByFormId.set(m.formData.formId, m);
+                  }
+                }
+
+                // Collect client-side tool_call messages that the server doesn't have.
+                // These were generated from streaming tool pills as a defensive fallback.
+                const serverIds = new Set(serverMessages.map((m: any) => m.id));
+                const serverHasToolCalls = serverMessages.some((m: any) => m.role === 'tool_call');
+                const clientToolCalls: any[] = [];
+                if (!serverHasToolCalls) {
+                  for (const m of prev) {
+                    if ((m as any).role === 'tool_call' && !serverIds.has(m.id)) {
+                      clientToolCalls.push(m);
+                    }
+                  }
+                }
+
+                // Use server messages as base, merging in client-only fields
+                const result = serverMessages.map((serverMsg: ChatMessage) => {
+                  const clientMsg = clientById.get(serverMsg.id);
+                  if (clientMsg) {
+                    // Merge: server content is authoritative, keep client UI state
+                    return {
+                      ...serverMsg,
+                      status: clientMsg.status || serverMsg.status,
+                      formData: clientMsg.formData || serverMsg.formData
+                    };
+                  }
+                  // For form messages: match by formId even if IDs differ
+                  if (serverMsg.formData?.formId) {
+                    const clientForm = clientFormByFormId.get(serverMsg.formData.formId);
+                    if (clientForm?.formData) {
+                      // Preserve client-side submission status
+                      return {
+                        ...serverMsg,
+                        formData: clientForm.formData.status === 'submitted'
+                          ? clientForm.formData
+                          : serverMsg.formData
+                      };
+                    }
+                  }
+                  return serverMsg;
+                });
+
+                // If server didn't include tool_calls but we captured them from streaming,
+                // splice them back in at the right positions (after last assistant message
+                // that precedes the user message they were anchored to, or at end)
+                if (clientToolCalls.length > 0) {
+                  // Find the last assistant message index for each tool_call
+                  // Simple heuristic: insert all client tool_calls before the final
+                  // assistant message (they likely belong between the two text segments)
+                  const lastAssistantIdx = result.reduce((acc: number, m: any, i: number) =>
+                    m.role === 'assistant' ? i : acc, -1);
+                  if (lastAssistantIdx > 0) {
+                    // Insert before the last assistant message
+                    result.splice(lastAssistantIdx, 0, ...clientToolCalls);
+                  } else {
+                    // Fallback: append at end
+                    result.push(...clientToolCalls);
+                  }
+                }
+
+                return result;
+              });
+            };
+
+            if (syncMessages) {
+              // Messages included in done event — apply immediately (no fetch needed)
+              applyServerMessages(syncMessages);
+            } else if (syncId && syncId !== 'new') {
+              // Fetch from server (standard streaming path)
               fetch(`${API_URL}/chat/history/${syncId}`)
                 .then(res => res.ok ? res.json() : null)
                 .then(chatData => {
                   if (chatData?.messages) {
-                    setMessages(prev => {
-                      // Build lookup of client messages by ID for merging
-                      const clientById = new Map(prev.map(m => [m.id, m]));
-                      // Also index client form messages by formId for cross-ID matching
-                      const clientFormByFormId = new Map<string, ChatMessage>();
-                      for (const m of prev) {
-                        if (m.formData?.formId) {
-                          clientFormByFormId.set(m.formData.formId, m);
-                        }
-                      }
-                      // Use server messages as base, merging in client-only fields
-                      return chatData.messages.map((serverMsg: ChatMessage) => {
-                        const clientMsg = clientById.get(serverMsg.id);
-                        if (clientMsg) {
-                          // Merge: server content is authoritative, keep client UI state
-                          return {
-                            ...serverMsg,
-                            status: clientMsg.status || serverMsg.status,
-                            formData: clientMsg.formData || serverMsg.formData
-                          };
-                        }
-                        // For form messages: match by formId even if IDs differ
-                        if (serverMsg.formData?.formId) {
-                          const clientForm = clientFormByFormId.get(serverMsg.formData.formId);
-                          if (clientForm?.formData) {
-                            // Preserve client-side submission status
-                            return {
-                              ...serverMsg,
-                              formData: clientForm.formData.status === 'submitted'
-                                ? clientForm.formData
-                                : serverMsg.formData
-                            };
-                          }
-                        }
-                        return serverMsg;
-                      });
-                    });
+                    applyServerMessages(chatData.messages);
                   }
                 })
                 .catch(() => {
@@ -1319,6 +1435,7 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
       ));
       streamingContent.current = '';
       lastEventWasToolEnd.current = false;
+      segmentFinalizedByToolStart.current = false;
     }, timeoutMs);
 
     return () => {
@@ -1375,6 +1492,7 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
     setStatusText('Sending...');
     streamingContent.current = '';
     lastEventWasToolEnd.current = false;
+    segmentFinalizedByToolStart.current = false;
 
     const wsPayload: Record<string, any> = {
       action: 'message',
@@ -1588,6 +1706,7 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
     setCurrentAgent(null);
     streamingContent.current = '';
     lastEventWasToolEnd.current = false;
+    segmentFinalizedByToolStart.current = false;
     // Clear any queued messages when starting a new chat
     setQueuedMessages([]);
     localStorage.removeItem(sessionKey);
@@ -1627,6 +1746,7 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
       setTodos([]);
       streamingContent.current = '';
       lastEventWasToolEnd.current = false;
+      segmentFinalizedByToolStart.current = false;
       // Clear messages immediately to prevent flash of stale content from previous tab
       setMessages([]);
 

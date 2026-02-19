@@ -26,6 +26,9 @@ GOOGLE_TOOLS = [
     "google_list",
     "google_delete_task",
     "google_update_task",
+    "google_get_event",
+    "google_update_event",
+    "google_delete_event",
     "google_auth",
 ]
 
@@ -62,6 +65,15 @@ SPOTIFY_TOOLS = [
     "spotify_add_to_playlist",
     "spotify_now_playing",
     "spotify_playback_control",
+]
+
+FINANCE_TOOLS = [
+    "finance_accounts",
+    "finance_transactions",
+    "finance_spending_analysis",
+    "finance_connect",
+    "finance_disconnect",
+    "finance_status",
 ]
 
 SCHEDULER_TOOLS = [
@@ -125,6 +137,7 @@ UTILITY_TOOLS = [
 AGENT_TOOLS = [
     "invoke_agent",
     "invoke_agent_chain",
+    "invoke_agent_parallel",
     "schedule_agent",
 ]
 
@@ -167,6 +180,10 @@ IMAGE_TOOLS = [
     "fal_list_models",
 ]
 
+SKILLS_TOOLS = [
+    "fetch_skill",
+]
+
 
 # =============================================================================
 # Category Mapping - Maps category names to tool lists
@@ -177,6 +194,7 @@ TOOL_CATEGORIES = {
     "gmail": GMAIL_TOOLS,
     "youtube": YOUTUBE_TOOLS,
     "spotify": SPOTIFY_TOOLS,
+    "finance": FINANCE_TOOLS,
     "scheduler": SCHEDULER_TOOLS,
     "memory": MEMORY_TOOLS,
     "journal": JOURNAL_TOOLS,           # Subcategory of memory
@@ -191,6 +209,7 @@ TOOL_CATEGORIES = {
     "llm": LLM_TOOLS,
     "chess": CHESS_TOOLS,
     "image": IMAGE_TOOLS,
+    "skills": SKILLS_TOOLS,
 }
 
 
@@ -203,6 +222,7 @@ ALL_TOOL_NAMES = (
     GMAIL_TOOLS +
     YOUTUBE_TOOLS +
     SPOTIFY_TOOLS +
+    FINANCE_TOOLS +
     SCHEDULER_TOOLS +
     MEMORY_TOOLS +
     GARDENER_TOOLS +
@@ -212,7 +232,8 @@ ALL_TOOL_NAMES = (
     FORMS_TOOLS +
     MOLTBOOK_TOOLS +
     CHESS_TOOLS +
-    IMAGE_TOOLS
+    IMAGE_TOOLS +
+    SKILLS_TOOLS
 )
 
 # Set for O(1) lookup

@@ -9,9 +9,8 @@ max_turns: 50
 chattable: false
 hidden: true
 color: "#E74C3C"
-icon: layers
+icon: crosshair
 tools:
-  - Skill
   - Read
   - Glob
   - Grep

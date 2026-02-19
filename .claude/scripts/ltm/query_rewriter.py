@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 class QueryItem(BaseModel):
-    """A single search query with its own weight and recency bias."""
+    """A single search query with its own weight."""
     text: str = Field(description="Semantic search query text")
     weight: float = Field(
         default=0.5,
@@ -23,32 +23,20 @@ class QueryItem(BaseModel):
         le=1.0,
         description="Relative importance weight for budget allocation"
     )
-    recency_bias: float = Field(
-        default=0.3,
-        ge=0.0,
-        le=1.0,
-        description="Per-query recency bias (0.0=pure semantic, 1.0=heavy recency)"
-    )
 
 
 class RewrittenQuery(BaseModel):
     """Structured output for query rewriting."""
     queries: list[QueryItem] = Field(
-        description="1-5 search queries, each with weight and recency bias",
+        description="1-5 search queries, each with weight",
         min_length=1,
         max_length=5
-    )
-    global_recency_weight: float = Field(
-        default=0.3,
-        ge=0.0,
-        le=1.0,
-        description="Overall recency weight (fallback when per-query bias not set)"
     )
 
 
 REWRITER_SYSTEM_PROMPT = """You are a query rewriter for a semantic memory system.
 
-Given a user message and recent conversation context, output structured search queries optimized for vector similarity search. Each query targets a distinct topic/concept and carries its own weight and recency bias.
+Given a user message and recent conversation context, output structured search queries optimized for vector similarity search. Each query targets a distinct topic/concept and carries its own weight.
 
 Rules:
 1. Identify distinct topics or concepts in the user message
@@ -61,35 +49,23 @@ Rules:
 Per-query fields:
 - text: The search query (concrete terms for vector search)
 - weight: Relative importance (0.0-1.0). Weights should reflect apparent importance. Start with equal weights if unsure. They don't need to sum to 1.0.
-- recency_bias: Per-query time sensitivity (0.0=pure semantic, 1.0=heavy recency)
-  - 0.0-0.2: Timeless facts ("what's X's favorite food", "how does Y work")
-  - 0.3: Default for general topics
-  - 0.4-0.6: Moderately time-sensitive ("project status", "what are we working on")
-  - 0.7-0.9: Highly time-sensitive ("what happened today", "latest update")
-
-Also set global_recency_weight as the overall recency tendency for the message.
 
 Examples:
 - User: "sync" →
-  queries: [{"text": "daily sync workflow", "weight": 0.5, "recency_bias": 0.5}, {"text": "inbox processing routine", "weight": 0.5, "recency_bias": 0.4}]
-  global_recency_weight: 0.5
+  queries: [{"text": "daily sync workflow", "weight": 0.5}, {"text": "inbox processing routine", "weight": 0.5}]
 
 - User: "Remember the austin move and cumming helpfulness" →
-  queries: [{"text": "austin move", "weight": 0.5, "recency_bias": 0.3}, {"text": "cumming helpfulness", "weight": 0.5, "recency_bias": 0.3}]
-  global_recency_weight: 0.3
+  queries: [{"text": "austin move", "weight": 0.5}, {"text": "cumming helpfulness", "weight": 0.5}]
   (Note: "cumming helpfulness" is a distinctive phrase — kept verbatim, NOT expanded to "helpfulness satisfaction pleasure")
 
 - User: "what's my favorite color" →
-  queries: [{"text": "favorite color preference", "weight": 1.0, "recency_bias": 0.1}]
-  global_recency_weight: 0.1
+  queries: [{"text": "favorite color preference", "weight": 1.0}]
 
 - User: "what happened today with the deploy" →
-  queries: [{"text": "today deployment release", "weight": 0.7, "recency_bias": 0.8}, {"text": "deployment pipeline CI/CD process", "weight": 0.3, "recency_bias": 0.3}]
-  global_recency_weight: 0.7
+  queries: [{"text": "today deployment release", "weight": 0.7}, {"text": "deployment pipeline CI/CD process", "weight": 0.3}]
 
 - User: "tell me about the vibe shift and how the project architecture evolved" →
-  queries: [{"text": "vibe shift", "weight": 0.5, "recency_bias": 0.5}, {"text": "project architecture evolution", "weight": 0.5, "recency_bias": 0.3}]
-  global_recency_weight: 0.4
+  queries: [{"text": "vibe shift", "weight": 0.5}, {"text": "project architecture evolution", "weight": 0.5}]
   (Note: "vibe shift" is distinctive — kept verbatim. "project architecture evolved" is generic — expanded for search)
 
 Always output valid JSON matching the schema."""
@@ -163,8 +139,8 @@ Output optimized search queries for semantic memory retrieval."""
                 data = message.structured_output or structured_data
                 if data:
                     result = RewrittenQuery.model_validate(data)
-                    query_summary = [(q.text, f"w={q.weight}", f"r={q.recency_bias}") for q in result.queries]
-                    logger.info(f"Query rewriter: '{user_message[:50]}' → {query_summary} (global_recency={result.global_recency_weight})")
+                    query_summary = [(q.text, f"w={q.weight}") for q in result.queries]
+                    logger.info(f"Query rewriter: '{user_message[:50]}' → {query_summary}")
                 elif message.is_error:
                     logger.warning(f"Query rewriter error: {message.result}")
 

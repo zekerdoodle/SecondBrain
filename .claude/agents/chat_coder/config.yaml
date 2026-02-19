@@ -7,8 +7,9 @@ type: sdk
 timeout_seconds: 1800
 max_turns: 200
 chattable: true
-color: '#94e2d5'
 icon: code
+skills:
+- project-task
 tools:
 - Read
 - Write
@@ -19,7 +20,7 @@ tools:
 - NotebookEdit
 - Task
 - TaskOutput
-- Skill
+- TaskStop
 - WebFetch
 - WebSearch
 - TodoWrite
@@ -36,3 +37,8 @@ tools:
 - mcp__brain__invoke_agent
 - mcp__brain__invoke_agent_chain
 - mcp__brain__schedule_agent
+- mcp__brain__fetch_skill
+- mcp__brain__schedule_self
+- mcp__brain__scheduler_remove
+- mcp__brain__scheduler_list
+- mcp__brain__scheduler_update

@@ -9,9 +9,8 @@ timeout_seconds: 1200
 max_turns: 50
 chattable: true
 color: '#e74c3c'
-icon: code
+icon: palette
 tools:
-- Skill
 - Read
 - Write
 - Edit

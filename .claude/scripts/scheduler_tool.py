@@ -308,16 +308,44 @@ def check_due_tasks():
             else:
                 # Try cron syntax: "minute hour day-of-month month day-of-week"
                 # e.g., "30 17 * * *" = daily at 5:30 PM
-                cron_match = re.match(r'^(\d+|\*)\s+(\d+|\*)\s+(\d+|\*)\s+(\d+|\*)\s+(\d+|\*)$', t['schedule'].strip())
+                # Extended cron regex: each field can be *, a number, or contain commas/dashes/slashes
+                cron_match = re.match(r'^([\d,\-\*/]+)\s+([\d,\-\*/]+)\s+([\d,\-\*/]+)\s+([\d,\-\*/]+)\s+([\d,\-\*/]+)$', t['schedule'].strip())
 
                 if cron_match:
                     cron_min, cron_hour, cron_dom, cron_month, cron_dow = cron_match.groups()
 
                     # Check if current time matches cron pattern
+                    # Supports: *, single values, comma-separated (1,3,5), ranges (1-5), steps (*/2, 1-5/2)
                     def cron_field_matches(field, current_val):
                         if field == '*':
                             return True
-                        return int(field) == current_val
+                        # Handle step on wildcard: */N
+                        if field.startswith('*/'):
+                            step = int(field[2:])
+                            return current_val % step == 0
+                        # Comma-separated: check each part
+                        for part in field.split(','):
+                            part = part.strip()
+                            if '/' in part:
+                                # range/step: e.g. 1-5/2
+                                range_part, step = part.split('/', 1)
+                                step = int(step)
+                                if '-' in range_part:
+                                    lo, hi = range_part.split('-', 1)
+                                    lo, hi = int(lo), int(hi)
+                                    if lo <= current_val <= hi and (current_val - lo) % step == 0:
+                                        return True
+                            elif '-' in part:
+                                # range: e.g. 1-5
+                                lo, hi = part.split('-', 1)
+                                lo, hi = int(lo), int(hi)
+                                if lo <= current_val <= hi:
+                                    return True
+                            else:
+                                # single value
+                                if int(part) == current_val:
+                                    return True
+                        return False
 
                     # Check all fields against current time
                     min_ok = cron_field_matches(cron_min, now.minute)
@@ -350,7 +378,7 @@ def check_due_tasks():
                             today_target = now.replace(hour=scheduled_hour, minute=scheduled_min, second=0, microsecond=0)
 
                             # Check day-of-week constraint if specified
-                            dow_matches_today = cron_dow == '*' or int(cron_dow) == python_dow
+                            dow_matches_today = cron_field_matches(cron_dow, python_dow)
 
                             # If we're past the scheduled time today, and haven't run since the target
                             if dow_matches_today and now > today_target:

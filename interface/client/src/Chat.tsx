@@ -13,6 +13,7 @@ import { useAgents } from './hooks/useAgents';
 import type { ChatMessage, ChatImageRef, FormField, ToolCallMessage } from './types';
 import { clsx } from 'clsx';
 import MDEditor from '@uiw/react-md-editor';
+import { escapeNonHtmlTags } from './utils/escapeNonHtmlTags';
 import { API_URL } from './config';
 import { InlineForm } from './components/InlineForm';
 import { ChessGame, useChessGame } from './components/ChessGame';
@@ -219,7 +220,7 @@ const ChatMessageItem = React.memo<ChatMessageProps>(({
             ) : (
               <div className="prose max-w-none chat-markdown font-chat" style={{ fontFamily: 'var(--font-chat)', fontSize: 'var(--font-size-base)' }}>
                 <MDEditor.Markdown
-                  source={msg.content}
+                  source={escapeNonHtmlTags(msg.content)}
                   style={{
                     backgroundColor: 'transparent',
                     color: 'inherit',
@@ -1332,7 +1333,7 @@ export const Chat: React.FC<ChatProps> = ({
                           );
                         })()}
                         {chat.is_system && (
-                          <span className="flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-medium bg-orange-100 text-orange-700 rounded-full shrink-0 dark:bg-orange-900/30 dark:text-orange-400">
+                          <span className="flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-medium rounded-full shrink-0" style={{ backgroundColor: 'var(--accent-light)', color: 'var(--accent-primary)' }}>
                             <Clock size={10} />
                             Scheduled
                           </span>

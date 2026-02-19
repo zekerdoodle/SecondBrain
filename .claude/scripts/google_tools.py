@@ -65,7 +65,7 @@ def create_tasks(service, tasks):
     print(f"--- Processing {len(tasks)} Tasks ---")
     for task in tasks:
         body = {'title': task.get('title'), 'notes': task.get('notes', '')}
-        if task.get('due'): body['due'] = task.get('due')
+        if task.get('due'): body['due'] = normalize_due_date(task.get('due'))
         try:
             res = service.tasks().insert(tasklist='@default', body=body).execute()
             print(f"Task Created: {res.get('title')}")
@@ -124,8 +124,8 @@ def create_events(service, events):
     for event in events:
         start_val = event.get('start')
         end_val = event.get('end')
-        
-        # Simple heuristic: ISO dates (YYYY-MM-DD) are 10 chars. 
+
+        # Simple heuristic: ISO dates (YYYY-MM-DD) are 10 chars.
         # Everything else (ISO timestamps) is treated as dateTime.
         start_type = 'date' if len(start_val) == 10 else 'dateTime'
         end_type = 'date' if len(end_val) == 10 else 'dateTime'
@@ -143,13 +143,97 @@ def create_events(service, events):
             'start': start_body,
             'end': end_body,
         }
+
+        # Optional fields
+        if event.get('location'):
+            body['location'] = event['location']
+        if event.get('recurrence'):
+            # recurrence is a list of RRULE strings, e.g. ["RRULE:FREQ=WEEKLY;COUNT=10"]
+            body['recurrence'] = event['recurrence']
+
         try:
             res = service.events().insert(calendarId='primary', body=body).execute()
-            print(f"Event Created: {res.get('summary')} ({start_val})")
+            print(f"Event Created: {res.get('summary')} ({start_val}) [ID: {res.get('id')}]")
             results.append(res)
         except Exception as e:
             print(f"Event Error ({event.get('summary')}): {e}")
     return results
+
+
+def get_event(service, event_id):
+    """Get a single calendar event by ID."""
+    try:
+        event = service.events().get(calendarId='primary', eventId=event_id).execute()
+        start = event['start'].get('dateTime', event['start'].get('date'))
+        end = event['end'].get('dateTime', event['end'].get('date'))
+        print(f"Event Retrieved: {event.get('summary')} ({start})")
+        return {
+            "success": True,
+            "event": {
+                "id": event['id'],
+                "summary": event.get('summary', ''),
+                "description": event.get('description', ''),
+                "start": start,
+                "end": end,
+                "location": event.get('location', ''),
+                "status": event.get('status', ''),
+                "htmlLink": event.get('htmlLink', ''),
+                "recurrence": event.get('recurrence', []),
+                "attendees": event.get('attendees', []),
+            }
+        }
+    except Exception as e:
+        print(f"Get Event Error ({event_id}): {e}")
+        return {"success": False, "error": str(e)}
+
+
+def update_event(service, event_id, summary=None, description=None, start=None, end=None, location=None, recurrence=None):
+    """Update a calendar event's fields. Only provided fields are updated."""
+    try:
+        # Get existing event
+        event = service.events().get(calendarId='primary', eventId=event_id).execute()
+
+        # Update only provided fields
+        if summary is not None:
+            event['summary'] = summary
+        if description is not None:
+            event['description'] = description
+        if location is not None:
+            event['location'] = location
+        if recurrence is not None:
+            event['recurrence'] = recurrence
+
+        if start is not None:
+            start_type = 'date' if len(start) == 10 else 'dateTime'
+            start_body = {start_type: start}
+            if start_type == 'dateTime':
+                start_body['timeZone'] = 'America/Chicago'
+            event['start'] = start_body
+
+        if end is not None:
+            end_type = 'date' if len(end) == 10 else 'dateTime'
+            end_body = {end_type: end}
+            if end_type == 'dateTime':
+                end_body['timeZone'] = 'America/Chicago'
+            event['end'] = end_body
+
+        result = service.events().update(calendarId='primary', eventId=event_id, body=event).execute()
+        print(f"Event Updated: {result.get('summary')} (ID: {event_id})")
+        return {"success": True, "event": result}
+    except Exception as e:
+        print(f"Update Event Error ({event_id}): {e}")
+        return {"success": False, "error": str(e)}
+
+
+def delete_event(service, event_id):
+    """Delete a calendar event by ID."""
+    try:
+        service.events().delete(calendarId='primary', eventId=event_id).execute()
+        print(f"Event Deleted: {event_id}")
+        return {"success": True, "event_id": event_id}
+    except Exception as e:
+        print(f"Delete Event Error ({event_id}): {e}")
+        return {"success": False, "error": str(e)}
 
 def test_connection(creds):
     print("\n--- TESTING CONNECTIVITY ---")
@@ -571,9 +655,17 @@ def list_items(creds, limit=10):
         events = events_result.get('items', [])
         for event in events:
             start = event['start'].get('dateTime', event['start'].get('date'))
-            e = {"summary": event['summary'], "start": start}
+            end = event['end'].get('dateTime', event['end'].get('date')) if 'end' in event else None
+            e = {
+                "id": event.get('id', ''),
+                "summary": event.get('summary', '(No title)'),
+                "start": start,
+                "end": end,
+                "location": event.get('location', ''),
+                "description": event.get('description', ''),
+            }
             data["events"].append(e)
-            print(f" [EVENT] {start}: {e['summary']}")
+            print(f" [EVENT] {start}: {e['summary']} (ID: {e['id']})")
             
     except Exception as e:
         print(f"Error listing items: {e}")

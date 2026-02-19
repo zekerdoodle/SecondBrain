@@ -7,17 +7,17 @@ type: sdk
 timeout_seconds: 300
 max_turns: 200
 chattable: true
-color: '#3498db'
-icon: globe
+icon: radar
 tools:
 - Read
 - Glob
 - Grep
 - Write
-- Skill
 - Task
 - TaskOutput
 - Edit
+- WebFetch
+- WebSearch
 - mcp__brain__web_search
 - mcp__brain__page_parser
 - mcp__brain__process_list

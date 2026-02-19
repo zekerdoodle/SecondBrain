@@ -4,9 +4,8 @@ model: sonnet
 description: "Computer Use Agent orchestrator. Takes instructions from Primary Claude, manages multi-step computer tasks via Gemini Flash CUA, logs receipts, reports back."
 chattable: true
 color: "#F39C12"
-icon: layers
+icon: eye
 tools:
-  - Skill
   - Bash  # For executing the CUA orchestrator Python script
   - Read  # For reading receipts and logs
   - Write # For saving outputs

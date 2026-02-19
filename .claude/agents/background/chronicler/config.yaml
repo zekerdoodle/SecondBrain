@@ -1,6 +1,7 @@
 name: chronicler
 model: haiku
 description: "Conversation thread summarizer - reviews conversation threads and writes natural-language descriptions for semantic search."
+icon: scroll
 timeout_seconds: 120
 max_turns: 200
 

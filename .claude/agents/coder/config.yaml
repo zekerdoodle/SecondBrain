@@ -8,7 +8,7 @@ timeout_seconds: 1800
 chattable: false
 system_prompt_preset: claude_code
 color: '#a6e3a1'
-icon: code
+icon: terminal
 tools:
 - Read
 - Write
@@ -19,7 +19,7 @@ tools:
 - NotebookEdit
 - Task
 - TaskOutput
-- Skill
+- TaskStop
 - WebFetch
 - WebSearch
 - mcp__brain__fal_text_to_image

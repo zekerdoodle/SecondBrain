@@ -1,5 +1,5 @@
 name: your_agent_name
-type: sdk                    # sdk | cli
+type: sdk
 model: sonnet               # sonnet | opus | haiku
 description: "Brief description of what this agent does."
 chattable: false             # true to show in chat dropdown

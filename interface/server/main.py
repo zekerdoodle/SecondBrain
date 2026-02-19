@@ -1107,7 +1107,8 @@ def list_agents(all: bool = False):
     agents_dir = Path(ROOT_DIR) / ".claude" / "agents"
     if str(agents_dir) not in sys.path:
         sys.path.insert(0, str(agents_dir))
-    from registry import get_registry, AgentType
+    from registry import get_registry
+    from models import AgentType
 
     registry = get_registry()
     if all:
@@ -1171,6 +1172,24 @@ def list_tool_categories():
         ]}
     except ImportError:
         return {"categories": []}
+
+
+@app.get("/api/skills")
+def list_skills():
+    """List all available skills for the Agent Builder skill selector."""
+    agents_dir = Path(ROOT_DIR) / ".claude" / "agents"
+    if str(agents_dir) not in sys.path:
+        sys.path.insert(0, str(agents_dir))
+    try:
+        from skill_injector import get_registry
+        registry = get_registry()
+        return {"skills": [
+            {"name": entry.name, "description": entry.description}
+            for entry in sorted(registry.values(), key=lambda e: e.name)
+        ]}
+    except Exception as e:
+        logger.error(f"Failed to list skills: {e}")
+        return {"skills": []}
 
 
 class AgentCreateRequest(BaseModel):
@@ -1890,6 +1909,12 @@ def _build_history_context(messages: List[Dict[str, Any]], current_message: str,
     return f"[Previous conversation for context - continue naturally]\n{history}\n\n[Current message]\n{current_message}"
 
 
+# Serialize prompt-type scheduled tasks so only one ClaudeWrapper runs at a time.
+# Agent-type tasks bypass this lock because they use the agent runner which manages
+# its own concurrency.  This prevents the "conversation not found" errors that
+# occur when two prompt tasks race to create SDK sessions simultaneously.
+scheduled_prompt_lock = asyncio.Lock()
+
 # Per-chat locks to serialize message processing and prevent race conditions
 # This ensures concurrent messages to the same chat are processed sequentially
 chat_processing_locks: Dict[str, asyncio.Lock] = {}
@@ -2554,6 +2579,10 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
     new_session_id = None
     current_tool_name = None
     had_error = False
+    # Guard: set True after finalize_segment() captures content from deltas.
+    # Prevents the late-arriving SDK 'content' event (AssistantMessage complete
+    # block) from re-adding text that was already finalized by tool_start.
+    segment_just_finalized = False
 
     # Tool call history tracking
     # pending_tool_calls: stash tool_use args until tool_end pairs them
@@ -2569,7 +2598,7 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
         """Save current segment if it has content.
         Also appends the finalized assistant message to the streaming state's
         in-memory messages list so tab-switch recovery has full context."""
-        nonlocal current_segment
+        nonlocal current_segment, segment_just_finalized
         if current_segment:
             text = "".join(current_segment).strip()
             if text:
@@ -2588,6 +2617,7 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
                     # Reset streaming_content — finalized text is now in messages
                     _ss.streaming_content = ""
             current_segment = []
+            segment_just_finalized = True
 
     # Inject pending agent notifications into the prompt (not system prompt)
     # This ensures notifications are visible even when resuming SDK sessions
@@ -2599,15 +2629,15 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
         from agent_notifications import get_notification_queue
 
         queue = get_notification_queue()
-        pending = queue.get_pending(chat_id=streaming_state_key)
+        # Atomically claim pending notifications — prevents wake-up loop from
+        # also grabbing the same notifications (read + mark in one lock)
+        claimed = queue.claim_pending(chat_id=streaming_state_key)
 
-        if pending:
-            notification_block = queue.format_for_injection(pending)
+        if claimed:
+            notification_block = queue.format_for_injection(claimed)
             # Prepend notifications to user's message so Claude sees them
             prompt = f"{notification_block}\n\n[User's message follows]\n{prompt}"
-            # Mark as injected
-            queue.mark_injected([n.id for n in pending])
-            logger.info(f"Injected {len(pending)} agent notifications into user prompt")
+            logger.info(f"Injected {len(claimed)} agent notifications into user prompt")
     except Exception as e:
         logger.debug(f"Could not inject agent notifications into prompt: {e}")
 
@@ -2724,6 +2754,7 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
                 # Streaming text delta - broadcast to ALL clients viewing this session
                 text = event.get("text", "")
                 if text:
+                    segment_just_finalized = False  # New segment content arriving
                     current_segment.append(text)
                     # Also track in conv for restart continuity
                     conv.pending_response = all_segments + ["".join(current_segment)]
@@ -2740,13 +2771,21 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
                     await broadcast_to_session(state_key, {"type": "content_delta", "text": text})
 
             elif event_type == "content":
-                # Complete text block - may come after deltas or instead of them
+                # Complete text block - may come after deltas or instead of them.
+                # IMPORTANT: The SDK emits AssistantMessage (which yields 'content')
+                # AFTER tool_start. If finalize_segment() already captured this text
+                # from deltas, skip it to prevent duplication (segment_just_finalized guard).
                 text = event.get("text", "")
-                if text and not current_segment:
-                    # Only use if we didn't already stream it
+                was_finalized = segment_just_finalized
+                segment_just_finalized = False  # Reset guard after content event
+                if text and not current_segment and not was_finalized:
+                    # Only use if we didn't already stream it via deltas
                     current_segment.append(text)
                 state_key = preserve_chat_id or new_session_id or streaming_state_key
-                await broadcast_to_session(state_key, {"type": "content", "text": text})
+                if not was_finalized:
+                    # Only broadcast if this is genuinely new content (not a late duplicate
+                    # of text already sent via content_delta events)
+                    await broadcast_to_session(state_key, {"type": "content", "text": text})
 
             elif event_type == "thinking_delta":
                 # Extended thinking - can show as subtle status
@@ -2762,6 +2801,11 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
                 finalize_segment()
                 current_tool_name = event.get("name", "tool")
                 tool_id = event.get("id")
+                # ========== Defensive stash from tool_start ==========
+                # In case tool_use doesn't fire (some SDK paths), stash early
+                # so tool_end can still find and record this tool call
+                if tool_id and tool_id not in pending_tool_calls:
+                    pending_tool_calls[tool_id] = {"name": current_tool_name, "args": "{}"}
                 # ========== WAL: Track tool in progress ==========
                 if not is_system_continuation:
                     wal.set_tool_in_progress(new_session_id or effective_session_id, current_tool_name)
@@ -3259,8 +3303,13 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
             del recently_completed_sessions[sid]
 
     # BROADCAST done event to ALL clients viewing this session
+    # Include messages in done event for instant sync (skip client fetch)
+    # For very long chats, omit messages and let the client fall back to API fetch
     logger.info(f"DONE: Broadcasting done event with sessionId={chat_id_for_storage}")
-    await broadcast_to_session(chat_id_for_storage, {"type": "done", "sessionId": chat_id_for_storage})
+    done_payload = {"type": "done", "sessionId": chat_id_for_storage}
+    if len(conv.messages) <= 500:
+        done_payload["messages"] = conv.messages
+    await broadcast_to_session(chat_id_for_storage, done_payload)
 
 
 async def handle_edit(websocket: WebSocket, data: dict):
@@ -3559,14 +3608,16 @@ async def _collect_structured_output(claude, prompt):
     pending_tool_calls = {}  # tool_id -> {name, args}
     completed_tool_calls = []  # [(segment_index, tool_call_dict), ...]
     actual_session_id = None
+    segment_just_finalized = False  # Guard against content event duplicating finalized segments
 
     def finalize_segment():
-        nonlocal current_segment
+        nonlocal current_segment, segment_just_finalized
         if current_segment:
             text = "".join(current_segment).strip()
             if text:
                 all_segments.append(text)
             current_segment = []
+            segment_just_finalized = True
 
     async for event in claude.run_prompt(prompt):
         event_type = event.get("type")
@@ -3575,16 +3626,24 @@ async def _collect_structured_output(claude, prompt):
             actual_session_id = event.get("id")
 
         elif event_type == "content_delta":
+            segment_just_finalized = False
             current_segment.append(event.get("text", ""))
 
         elif event_type == "content":
             # Full text block — use as fallback if deltas didn't fill segment
             text = event.get("text", "")
-            if text and not current_segment:
+            was_finalized = segment_just_finalized
+            segment_just_finalized = False
+            if text and not current_segment and not was_finalized:
                 current_segment.append(text)
 
         elif event_type == "tool_start":
             finalize_segment()
+            # Defensive stash from tool_start in case tool_use doesn't fire
+            ts_tool_id = event.get("id")
+            ts_tool_name = event.get("name", "tool")
+            if ts_tool_id and ts_tool_id not in pending_tool_calls:
+                pending_tool_calls[ts_tool_id] = {"name": ts_tool_name, "args": "{}"}
 
         elif event_type == "tool_use":
             finalize_segment()
@@ -3592,6 +3651,7 @@ async def _collect_structured_output(claude, prompt):
             tool_name = event.get("name", "tool")
             tool_args = event.get("args", "{}")
             if tool_id:
+                # Overwrite any partial stash from tool_start with full args
                 pending_tool_calls[tool_id] = {"name": tool_name, "args": tool_args}
 
         elif event_type == "tool_end":
@@ -3640,14 +3700,25 @@ def _build_interleaved_messages(all_segments, completed_tool_calls):
     """Build interleaved assistant + tool_call message list from segments and tool calls.
 
     Returns a list of message dicts ready to be appended to a chat's messages.
+
+    Tool calls are tagged with the segment count at the time they completed
+    (i.e., len(all_segments) when tool_end fired). A tool at segment_index=1
+    means segment 0 was already finalized, so the tool ran BETWEEN segment 0
+    and segment 1. We insert tool calls BEFORE the segment at their index,
+    matching the main handler's interleaving order.
     """
-    # Group tool calls by the segment index they follow
+    # Group tool calls by the segment index they precede
     tc_by_seg = {}
     for seg_idx, tc in completed_tool_calls:
         tc_by_seg.setdefault(seg_idx, []).append(tc)
 
     messages = []
     for i, segment in enumerate(all_segments):
+        # Tool calls at index i ran BEFORE this segment (between segment i-1 and i)
+        for tc in tc_by_seg.get(i, []):
+            if "id" not in tc:
+                tc["id"] = str(uuid.uuid4())
+            messages.append(tc)
         clean = strip_tool_markers(segment)
         if clean:
             messages.append({
@@ -3655,12 +3726,11 @@ def _build_interleaved_messages(all_segments, completed_tool_calls):
                 "role": "assistant",
                 "content": clean
             })
-        # Tool calls that follow this segment
-        for tc in tc_by_seg.get(i, []):
-            messages.append(tc)
 
-    # Tool calls after the last segment (tool ran but no text followed)
+    # Any tool calls after the last segment (e.g., tool ran but no text followed)
     for tc in tc_by_seg.get(len(all_segments), []):
+        if "id" not in tc:
+            tc["id"] = str(uuid.uuid4())
         messages.append(tc)
 
     return messages
@@ -3916,7 +3986,10 @@ You are running as a scheduled task. Your output will be shown to the user in a 
                 return
 
         # === Prompt task handling (skip for agent tasks — they're handled above) ===
+        # Prompt tasks use ClaudeWrapper which shares a single SDK session,
+        # so we serialize them to prevent "conversation not found" races.
         if task_type != "agent":
+          async with scheduled_prompt_lock:
             target_room_id = task_info.get("room_id") if isinstance(task_info, dict) else None
             logger.info(f"Executing Scheduled Task (silent={is_silent}, room={target_room_id}): {prompt[:80]}...")
 
@@ -4192,9 +4265,16 @@ async def restart_continuation_wakeup():
 async def agent_notification_wakeup_loop():
     """Background task to check for stale agent notifications and trigger wake-ups.
 
-    When a ping mode agent completes but the user hasn't sent a message within 30 seconds,
-    this loop automatically wakes Claude up with the notification as a hidden user message.
-    Claude receives the standard prompt with conversation context and the notification content.
+    When ping mode agents complete but the user hasn't sent a message within 30 seconds,
+    this loop automatically wakes Claude up with the notifications as a hidden user message.
+
+    Key design decisions for concurrency safety:
+    - Uses claim_pending() to atomically transition notifications from "pending" to "injected"
+      under a file lock, preventing double-delivery with the inline injection path (Path A).
+    - Batches all notifications for the same chat_id into a single Claude call, so if 3 agents
+      complete around the same time, Claude gets one combined prompt instead of 3 serial ones.
+    - Holds chat_lock for the entire batch processing of a given chat, preventing user messages
+      from interleaving with the wake-up save.
     """
     logger.info("Agent Notification Wake-up Loop Started")
 
@@ -4212,210 +4292,315 @@ async def agent_notification_wakeup_loop():
                 continue
 
             queue = get_notification_queue()
-            stale = queue.get_stale(threshold_seconds=30)
 
-            if not stale:
+            # Atomically claim all stale notifications — this prevents Path A (inline
+            # injection) and future loop iterations from grabbing the same ones.
+            claimed = queue.claim_pending(threshold_seconds=30)
+
+            if not claimed:
                 continue
 
-            logger.info(f"Found {len(stale)} stale agent notifications, triggering wake-ups")
+            logger.info(f"Claimed {len(claimed)} stale agent notifications for wake-up")
 
-            for notification in stale:
+            # Group claimed notifications by target chat_id for batched delivery
+            from collections import defaultdict
+            by_chat: dict[str, list] = defaultdict(list)
+            for notification in claimed:
                 chat_id = notification.source_chat_id
                 if not chat_id:
-                    # No chat to wake up - mark as expired
-                    queue.mark_expired([notification.id])
+                    # No chat to wake up — already marked injected, just skip
+                    logger.warning(f"Notification {notification.id} has no source_chat_id, skipping")
                     continue
+                by_chat[chat_id].append(notification)
 
-                # Load existing chat to get conversation history for context
-                existing_chat = chat_manager.load_chat(chat_id)
-                if not existing_chat:
-                    # Chat doesn't exist - mark notification as expired
-                    queue.mark_expired([notification.id])
-                    logger.warning(f"Chat {chat_id} not found for notification wake-up, marking expired")
-                    continue
-
-                # Acquire chat lock to prevent race conditions with concurrent user messages
-                chat_lock = get_chat_lock(chat_id)
-                async with chat_lock:
-                    # Re-load chat inside the lock (may have changed since we checked)
-                    existing_chat = chat_manager.load_chat(chat_id)
-                    if not existing_chat:
-                        queue.mark_expired([notification.id])
-                        continue
-
-                    # Build conversation history for context injection
-                    conversation_history = existing_chat.get("messages", [])
-
-                    # Create the notification user message (will be hidden from UI)
-                    notification_prompt_raw = f"""<agent-completion-notification>
-Agent "{notification.agent}" has completed its task.
-
-**Invoked at:** {notification.invoked_at.strftime('%Y-%m-%d %H:%M:%S')}
-**Completed at:** {notification.completed_at.strftime('%Y-%m-%d %H:%M:%S')}
-
-**Agent Response:**
-{notification.agent_response}
-</agent-completion-notification>
-
-Please review the agent's response and take any necessary follow-up action. If there are results to report, summarize them for the user. If there are errors, explain what went wrong and suggest next steps."""
-
-                    # Mark notification as injected BEFORE running Claude
-                    # (since it's now the user message, not a system prompt injection)
-                    queue.mark_injected([notification.id])
-
-                    # Track active session for wake-up processing
-                    active_processing_sessions[chat_id] = time.time()
-
-                    # Start fresh session with conversation history injected
-                    notification_prompt = _build_history_context(conversation_history, notification_prompt_raw)
-                    logger.info(f"Wake-up: fresh SDK session with {len(conversation_history)} messages of history (chat_id: {chat_id})")
-                    claude = ClaudeWrapper(session_id="new", cwd=ROOT_DIR, chat_id=chat_id, chat_messages=conversation_history)
-
-                    streaming_content = []  # Collect streaming deltas
-                    final_content = []      # Collect final complete blocks
-                    actual_session_id = chat_id
-                    error_content = []
-
-                    # Notify clients that wake-up is starting (so they see streaming)
-                    await broadcast_to_session(chat_id, {
-                        "type": "status",
-                        "text": f"Agent {notification.agent} completed - processing...",
-                        "isProcessing": True
-                    })
-
-                    try:
-                        event_count = 0
-                        async for event in claude.run_prompt(notification_prompt, conversation_history=conversation_history):
-                            event_count += 1
-                            event_type = event.get("type", "unknown")
-
-                            if event_type == "session_init":
-                                actual_session_id = event.get("id", chat_id)
-                                logger.info(f"Wake-up session initialized: {actual_session_id}")
-                            elif event_type == "content":
-                                # Final complete text block - use this if available
-                                text = event.get("text", "")
-                                final_content.append(text)
-                            elif event_type == "content_delta":
-                                # Streaming delta - accumulate AND broadcast to clients
-                                text = event.get("text", "")
-                                streaming_content.append(text)
-                                # Stream to clients viewing this chat
-                                await broadcast_to_session(chat_id, {
-                                    "type": "content_delta",
-                                    "text": text
-                                })
-                            elif event_type == "thinking_delta":
-                                # Broadcast thinking to clients
-                                await broadcast_to_session(chat_id, {
-                                    "type": "thinking_delta",
-                                    "text": event.get("text", "")
-                                })
-                            elif event_type == "error":
-                                error_text = event.get("text", "")
-                                error_content.append(error_text)
-                                logger.error(f"Wake-up error event: {error_text}")
-                                await broadcast_to_session(chat_id, {"type": "error", "text": error_text})
-                            elif event_type == "result_meta":
-                                # Check if there's error info in the result
-                                if event.get("is_error"):
-                                    err = event.get("error_text", "Unknown error")
-                                    error_content.append(err)
-                                    logger.error(f"Wake-up result error: {err}")
-
-                        logger.info(f"Wake-up completed: {event_count} events, {len(streaming_content)} deltas, {len(final_content)} final blocks, {len(error_content)} errors")
-                    except Exception as e:
-                        logger.error(f"Error running wake-up prompt for {notification.agent}: {e}", exc_info=True)
-                        error_content.append(f"Error processing agent notification: {e}")
-                    finally:
-                        # Clean up active session tracking for wake-up
-                        active_processing_sessions.pop(chat_id, None)
-
-                    # Use final content if available, otherwise use streaming content
-                    # (final blocks are the authoritative complete content)
-                    if final_content:
-                        assistant_content = final_content
-                    else:
-                        assistant_content = streaming_content
-
-                    # Append any errors
-                    if error_content:
-                        assistant_content.append(f"\n\n**Errors:**\n" + "\n".join(error_content))
-
-                    # Build the final assistant response
-                    assistant_response = "".join(assistant_content).strip()
-
-                    # Only save messages if there's actual content
-                    if assistant_response:
-                        # Add hidden user message (notification trigger - not shown in UI)
-                        # Store the raw prompt (without history prefix) for clean chat storage
-                        existing_chat["messages"].append({
-                            "id": str(uuid.uuid4()),
-                            "role": "user",
-                            "content": notification_prompt_raw,
-                            "hidden": True,  # Hidden from UI but preserved for context
-                            "timestamp": int(notification.completed_at.timestamp() * 1000)
-                        })
-
-                        # Add Claude's response
-                        existing_chat["messages"].append({
-                            "id": str(uuid.uuid4()),
-                            "role": "assistant",
-                            "content": assistant_response,
-                            "timestamp": int(time.time() * 1000)
-                        })
-
-                        chat_manager.save_chat(chat_id, existing_chat)
-
-                        # Sync in-memory state so the next user message doesn't
-                        # overwrite disk with stale ConversationState (the root
-                        # cause of wake-up responses not persisting to history).
-                        if chat_id in active_conversations:
-                            active_conversations[chat_id].messages = existing_chat["messages"].copy()
-
-                        logger.info(f"Triggered wake-up for agent notification: {notification.agent} -> chat {chat_id}")
-
-                        # Send done event with updated messages
-                        await broadcast_to_session(chat_id, {
-                            "type": "done",
-                            "sessionId": chat_id,
-                            "messages": existing_chat["messages"]
-                        })
-                    else:
-                        logger.warning(f"Wake-up produced no content for {notification.agent} -> chat {chat_id}")
-                        # Still send done to clear processing state
-                        await broadcast_to_session(chat_id, {
-                            "type": "done",
-                            "sessionId": chat_id
-                        })
-
-                    # Send user-facing notifications (toast/push) so user knows there's a new message
-                    decision = should_notify(
-                        chat_id=chat_id,
-                        is_silent=False,
-                        client_sessions=client_sessions
-                    )
-                    if decision.notify:
-                        preview = assistant_response[:200] if assistant_response else f"Agent {notification.agent} completed"
-                        if decision.use_toast:
-                            await send_notification(
-                                client_sessions=client_sessions,
-                                chat_id=chat_id,
-                                preview=preview,
-                                critical=False,
-                                play_sound=decision.play_sound
-                            )
-                        if decision.use_push:
-                            await send_push_notification(
-                                title=f"Agent {notification.agent} completed",
-                                body=preview[:100],
-                                chat_id=chat_id,
-                                critical=False
-                            )
-                        logger.info(f"Wake-up notification: {decision.reason} (toast={decision.use_toast}, push={decision.use_push})")
+            # Process each chat's batch of notifications
+            for chat_id, notifications in by_chat.items():
+                try:
+                    await _process_notification_batch(chat_id, notifications, queue)
+                except Exception as e:
+                    logger.error(f"Error processing notification batch for chat {chat_id}: {e}", exc_info=True)
 
         except Exception as e:
             logger.error(f"Agent Notification Wake-up Error: {e}", exc_info=True)
+
+
+async def _process_notification_batch(chat_id: str, notifications: list, queue) -> None:
+    """Process a batch of notifications for a single chat_id in one Claude call.
+
+    Holds the chat lock for the entire operation to prevent interleaving with
+    user messages or other wake-up batches for the same chat.
+    """
+    agent_names = [n.agent for n in notifications]
+    agent_names_str = ", ".join(agent_names)
+
+    # Load existing chat to verify it exists before acquiring lock
+    existing_chat = chat_manager.load_chat(chat_id)
+    if not existing_chat:
+        logger.warning(f"Chat {chat_id} not found for notification wake-up batch ({agent_names_str}), skipping")
+        return
+
+    # Acquire chat lock to prevent race conditions with concurrent user messages
+    chat_lock = get_chat_lock(chat_id)
+    async with chat_lock:
+        # Re-load chat inside the lock (may have changed since we checked)
+        existing_chat = chat_manager.load_chat(chat_id)
+        if not existing_chat:
+            return
+
+        # Build conversation history for context injection
+        conversation_history = existing_chat.get("messages", [])
+
+        # Build a combined notification prompt for all agents in this batch
+        notification_parts = []
+        for n in notifications:
+            notification_parts.append(f"""<agent-completion agent="{n.agent}">
+**Invoked at:** {n.invoked_at.strftime('%Y-%m-%d %H:%M:%S')}
+**Completed at:** {n.completed_at.strftime('%Y-%m-%d %H:%M:%S')}
+
+**Agent Response:**
+{n.agent_response}
+</agent-completion>""")
+
+        count_str = f"{len(notifications)} agent(s)" if len(notifications) > 1 else f'Agent "{notifications[0].agent}"'
+        notification_prompt_raw = f"""<agent-completion-notification count="{len(notifications)}">
+{count_str} completed their task(s).
+
+{chr(10).join(notification_parts)}
+</agent-completion-notification>
+
+Please review the agent response(s) and take any necessary follow-up action. If there are results to report, summarize them for the user. If there are errors, explain what went wrong and suggest next steps."""
+
+        # Track active session for wake-up processing
+        active_processing_sessions[chat_id] = time.time()
+
+        # Start fresh session with conversation history injected
+        notification_prompt = _build_history_context(conversation_history, notification_prompt_raw)
+        logger.info(f"Wake-up: fresh SDK session with {len(conversation_history)} messages of history, {len(notifications)} notifications (chat_id: {chat_id}, agents: {agent_names_str})")
+        claude = ClaudeWrapper(session_id="new", cwd=ROOT_DIR, chat_id=chat_id, chat_messages=conversation_history)
+
+        # --- Segment/tool tracking (same approach as _collect_structured_output) ---
+        all_segments = []
+        current_segment = []
+        pending_tool_calls_wakeup = {}  # tool_id -> {name, args}
+        completed_tool_calls_wakeup = []  # [(segment_index, tool_call_dict), ...]
+        actual_session_id = chat_id
+        error_content = []
+        segment_just_finalized = False  # Guard against content event duplicating finalized segments
+
+        def finalize_wakeup_segment():
+            nonlocal current_segment, segment_just_finalized
+            if current_segment:
+                text = "".join(current_segment).strip()
+                if text:
+                    all_segments.append(text)
+                current_segment = []
+                segment_just_finalized = True
+
+        # Notify clients that wake-up is starting (so they see streaming)
+        await broadcast_to_session(chat_id, {
+            "type": "status",
+            "text": f"{count_str} completed - processing..." if len(notifications) == 1 else f"{len(notifications)} agents completed - processing...",
+            "isProcessing": True
+        })
+
+        try:
+            event_count = 0
+            async for event in claude.run_prompt(notification_prompt, conversation_history=conversation_history):
+                event_count += 1
+                event_type = event.get("type", "unknown")
+
+                if event_type == "session_init":
+                    actual_session_id = event.get("id", chat_id)
+                    logger.info(f"Wake-up session initialized: {actual_session_id}")
+
+                elif event_type == "content_delta":
+                    text = event.get("text", "")
+                    if text:
+                        segment_just_finalized = False
+                        current_segment.append(text)
+                        await broadcast_to_session(chat_id, {
+                            "type": "content_delta",
+                            "text": text
+                        })
+
+                elif event_type == "content":
+                    # Full text block — use as fallback if deltas didn't fill segment
+                    text = event.get("text", "")
+                    was_finalized = segment_just_finalized
+                    segment_just_finalized = False
+                    if text and not current_segment and not was_finalized:
+                        current_segment.append(text)
+
+                elif event_type == "tool_start":
+                    logger.info(f"WAKEUP_TOOL: tool_start name={event.get('name')} id={event.get('id')} segments_so_far={len(all_segments)} current_seg_len={len(current_segment)}")
+                    finalize_wakeup_segment()
+                    # Also stash from tool_start in case tool_use doesn't fire
+                    # (defensive: some SDK paths may only emit tool_start)
+                    ts_tool_id = event.get("id")
+                    ts_tool_name = event.get("name", "tool")
+                    if ts_tool_id and ts_tool_id not in pending_tool_calls_wakeup:
+                        pending_tool_calls_wakeup[ts_tool_id] = {"name": ts_tool_name, "args": "{}"}
+                    await broadcast_to_session(chat_id, event)
+
+                elif event_type == "tool_use":
+                    logger.info(f"WAKEUP_TOOL: tool_use name={event.get('name')} id={event.get('id')} segments_so_far={len(all_segments)} current_seg_len={len(current_segment)}")
+                    finalize_wakeup_segment()
+                    tool_id = event.get("id")
+                    tool_name = event.get("name", "tool")
+                    tool_args = event.get("args", "{}")
+                    if tool_id:
+                        # Overwrite any partial stash from tool_start with full args
+                        pending_tool_calls_wakeup[tool_id] = {"name": tool_name, "args": tool_args}
+                    # Broadcast as tool_start for client
+                    await broadcast_to_session(chat_id, {
+                        "type": "tool_start",
+                        "name": tool_name,
+                        "id": tool_id,
+                        "args": tool_args
+                    })
+
+                elif event_type == "tool_end":
+                    tool_end_id = event.get("id")
+                    tool_end_name = event.get("name", "")
+                    tool_end_output = event.get("output", "")
+                    tool_end_error = event.get("is_error", False)
+                    logger.info(f"WAKEUP_TOOL: tool_end name={tool_end_name} id={tool_end_id} segments_so_far={len(all_segments)} pending_keys={list(pending_tool_calls_wakeup.keys())}")
+                    stashed = pending_tool_calls_wakeup.pop(tool_end_id, None) if tool_end_id else None
+                    if stashed:
+                        try:
+                            tc = serialize_tool_call(
+                                tool_name=stashed["name"],
+                                args_raw=stashed["args"],
+                                output=tool_end_output,
+                                is_error=tool_end_error,
+                                tool_id=tool_end_id,
+                            )
+                            tc["timestamp"] = int(time.time())
+                            completed_tool_calls_wakeup.append((len(all_segments), tc))
+                            logger.info(f"WAKEUP_TOOL: Recorded tool_call '{stashed['name']}' at segment_idx={len(all_segments)}")
+                        except Exception as ser_err:
+                            logger.warning(f"Wake-up tool serialization error: {ser_err}")
+                    elif tool_end_name:
+                        try:
+                            tc = serialize_tool_call(
+                                tool_name=tool_end_name,
+                                args_raw={},
+                                output=tool_end_output,
+                                is_error=tool_end_error,
+                                tool_id=tool_end_id,
+                            )
+                            tc["timestamp"] = int(time.time())
+                            completed_tool_calls_wakeup.append((len(all_segments), tc))
+                            logger.info(f"WAKEUP_TOOL: Recorded tool_call (fallback) '{tool_end_name}' at segment_idx={len(all_segments)}")
+                        except Exception:
+                            pass
+                    else:
+                        logger.warning(f"WAKEUP_TOOL: tool_end with no stash and no name! id={tool_end_id}")
+                    # Broadcast tool_end to client
+                    await broadcast_to_session(chat_id, event)
+
+                elif event_type == "thinking_delta":
+                    await broadcast_to_session(chat_id, {
+                        "type": "thinking_delta",
+                        "text": event.get("text", "")
+                    })
+
+                elif event_type == "error":
+                    error_text = event.get("text", "")
+                    error_content.append(error_text)
+                    logger.error(f"Wake-up error event: {error_text}")
+                    await broadcast_to_session(chat_id, {"type": "error", "text": error_text})
+
+                elif event_type == "result_meta":
+                    if event.get("is_error"):
+                        err = event.get("error_text", "Unknown error")
+                        error_content.append(err)
+                        logger.error(f"Wake-up result error: {err}")
+
+            # Finalize any trailing content
+            finalize_wakeup_segment()
+            logger.info(f"Wake-up completed: {event_count} events, {len(all_segments)} segments, {len(completed_tool_calls_wakeup)} tool calls, {len(error_content)} errors")
+
+        except Exception as e:
+            logger.error(f"Error running wake-up prompt for {agent_names_str}: {e}", exc_info=True)
+            error_content.append(f"Error processing agent notification: {e}")
+            # Finalize any partial content on error
+            finalize_wakeup_segment()
+        finally:
+            active_processing_sessions.pop(chat_id, None)
+
+        # Append error content to last segment if any
+        if error_content:
+            all_segments.append(f"\n\n**Errors:**\n" + "\n".join(error_content))
+
+        # Build interleaved messages (same as scheduler)
+        interleaved = _build_interleaved_messages(all_segments, completed_tool_calls_wakeup)
+
+        # Build flat text for notification preview
+        assistant_response = " ".join(strip_tool_markers(s) for s in all_segments).strip()
+
+        if interleaved:
+            # Add hidden user message (notification trigger)
+            latest_completed = max(n.completed_at for n in notifications)
+            existing_chat["messages"].append({
+                "id": str(uuid.uuid4()),
+                "role": "user",
+                "content": notification_prompt_raw,
+                "hidden": True,
+                "timestamp": int(latest_completed.timestamp() * 1000)
+            })
+
+            # Add interleaved assistant messages + tool calls
+            existing_chat["messages"].extend(interleaved)
+
+            chat_manager.save_chat(chat_id, existing_chat)
+
+            # Sync in-memory state so the next user message doesn't
+            # overwrite disk with stale ConversationState (the root
+            # cause of wake-up responses not persisting to history).
+            if chat_id in active_conversations:
+                active_conversations[chat_id].messages = existing_chat["messages"].copy()
+
+            logger.info(f"Triggered wake-up for {len(notifications)} notification(s): {agent_names_str} -> chat {chat_id}")
+
+            # Send done event with updated messages
+            await broadcast_to_session(chat_id, {
+                "type": "done",
+                "sessionId": chat_id,
+                "messages": existing_chat["messages"]
+            })
+        else:
+            logger.warning(f"Wake-up produced no content for {agent_names_str} -> chat {chat_id}")
+            # Still send done to clear processing state
+            await broadcast_to_session(chat_id, {
+                "type": "done",
+                "sessionId": chat_id
+            })
+
+        # Send user-facing notifications (toast/push) so user knows there's a new message
+        decision = should_notify(
+            chat_id=chat_id,
+            is_silent=False,
+            client_sessions=client_sessions
+        )
+        if decision.notify:
+            preview = assistant_response[:200] if assistant_response else f"{count_str} completed"
+            if decision.use_toast:
+                await send_notification(
+                    client_sessions=client_sessions,
+                    chat_id=chat_id,
+                    preview=preview,
+                    critical=False,
+                    play_sound=decision.play_sound
+                )
+            if decision.use_push:
+                await send_push_notification(
+                    title=f"{count_str} completed" if len(notifications) == 1 else f"{len(notifications)} agents completed",
+                    body=preview[:100],
+                    chat_id=chat_id,
+                    critical=False
+                )
+            logger.info(f"Wake-up notification: {decision.reason} (toast={decision.use_toast}, push={decision.use_push})")
 
 
 @app.on_event("startup")
