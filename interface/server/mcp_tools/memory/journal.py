@@ -5,8 +5,7 @@ Agent-aware: each agent gets its own memory file. The path is resolved at
 runtime based on the ``_agent_name`` key injected by ``_inject_agent_context``
 in ``mcp_tools/__init__.py``.
 
-- Primary agent (ren / no _agent_name): ``.claude/memory.md``
-- Other agents: ``.claude/agents/{name}/memory.md``
+All agents (including Ren) use ``.claude/agents/{name}/memory.md``.
 """
 
 import logging
@@ -29,19 +28,16 @@ if SCRIPTS_DIR not in sys.path:
 
 # Base paths
 _CLAUDE_DIR = os.path.dirname(SCRIPTS_DIR)  # .claude/
-_PRIMARY_MEMORY = os.path.join(_CLAUDE_DIR, "memory.md")
 
 
 def _resolve_memory_path(args: Dict[str, Any]) -> str:
     """Return the memory.md path for the calling agent.
 
-    If ``_agent_name`` was injected (non-primary agent), use the per-agent
-    file.  Otherwise fall back to the primary agent's memory.md.
+    All agents (including Ren) use .claude/agents/{name}/memory.md.
+    If no agent name is provided, defaults to 'ren'.
     """
-    agent_name = args.get("_agent_name")
-    if agent_name:
-        return os.path.join(_CLAUDE_DIR, "agents", agent_name, "memory.md")
-    return _PRIMARY_MEMORY
+    agent_name = args.get("_agent_name") or "ren"
+    return os.path.join(_CLAUDE_DIR, "agents", agent_name, "memory.md")
 
 
 @register_tool("journal")
@@ -60,8 +56,8 @@ SAVE things like:
 
 DON'T SAVE:
 - Temporary context for this session only (use working_memory_add)
-- Raw facts the user stated (LTM captures those from chat automatically)
-- Self-development reflections, threads, or patterns (write those to .claude/memory/self_development/ files directly)
+- Facts that only matter in specific contexts (use memory_save for contextual memories with triggers)
+- Self-development reflections, threads, or patterns (use memory_save for contextual memories)
 
 Keep entries concise — bullet points, not paragraphs. This goes into your context window every session.""",
     input_schema={
@@ -89,7 +85,7 @@ async def memory_append(args: Dict[str, Any]) -> Dict[str, Any]:
             return {"content": [{"type": "text", "text": "content is required"}], "is_error": True}
 
         memory_path = _resolve_memory_path(args)
-        agent_label = args.get("_agent_name", "primary")
+        agent_label = args.get("_agent_name", "ren")
 
         # Auto-create if the file doesn't exist yet (agent memory files start empty)
         if not os.path.exists(memory_path):
@@ -158,7 +154,7 @@ async def memory_read(args: Dict[str, Any]) -> Dict[str, Any]:
     """Read the calling agent's memory.md."""
     try:
         memory_path = _resolve_memory_path(args)
-        agent_label = args.get("_agent_name", "primary")
+        agent_label = args.get("_agent_name", "ren")
 
         if not os.path.exists(memory_path):
             return {"content": [{"type": "text", "text": f"No memory file found for '{agent_label}'. Use memory_append to create one."}]}

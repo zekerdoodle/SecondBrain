@@ -1,14 +1,19 @@
 name: cua_orchestrator
-type: sdk
+description: Computer Use Agent orchestrator. Takes instructions from Primary Claude,
+  manages multi-step computer tasks via Gemini Flash CUA, logs receipts, reports back.
 model: sonnet
-description: "Computer Use Agent orchestrator. Takes instructions from Primary Claude, manages multi-step computer tasks via Gemini Flash CUA, logs receipts, reports back."
+type: sdk
+timeout_seconds: 1800
+max_turns: 200
 chattable: true
-color: "#F39C12"
 icon: eye
 tools:
-  - Bash  # For executing the CUA orchestrator Python script
-  - Read  # For reading receipts and logs
-  - Write # For saving outputs
-  - mcp__brain__memory_append
-  - mcp__brain__memory_read
-timeout_seconds: 1800
+- Bash
+- Read
+- Write
+- mcp__brain__memory_append
+- mcp__brain__memory_read
+- mcp__brain__memory_save
+- mcp__brain__memory_search
+- mcp__brain__memory_search_agent
+- mcp__brain__search_conversation_history

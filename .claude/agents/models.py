@@ -26,7 +26,6 @@ class InvocationMode(str, Enum):
 class AgentType(str, Enum):
     """Type of agent implementation."""
     SDK = "sdk"        # Uses Claude Agent SDK (query())
-    PRIMARY = "primary"  # Configuration-only, not invocable
 
 
 @dataclass
@@ -36,7 +35,7 @@ class AgentConfig:
 
     Attributes:
         name: Unique identifier for the agent
-        type: Implementation type (sdk or primary)
+        type: Implementation type (sdk)
         model: Model to use (sonnet, opus, haiku)
         description: Human-readable description for Claude <3
         tools: List of allowed tools
@@ -59,6 +58,9 @@ class AgentConfig:
     hidden: bool = False
     color: Optional[str] = None
     icon: Optional[str] = None
+    default: bool = False  # The default agent for chat (replaces PRIMARY concept)
+    effort: Optional[str] = None  # Override thinking effort: 'low', 'medium', 'high'
+    thinking_budget: Optional[int] = None  # Override: explicit budget_tokens for ThinkingConfigEnabled
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any], prompt: Optional[str] = None) -> "AgentConfig":
@@ -79,6 +81,9 @@ class AgentConfig:
             hidden=data.get("hidden", False),
             color=data.get("color"),
             icon=data.get("icon"),
+            default=data.get("default", False),
+            effort=data.get("effort"),
+            thinking_budget=data.get("thinking_budget"),
         )
 
 

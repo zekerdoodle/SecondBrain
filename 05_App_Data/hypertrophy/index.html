@@ -469,6 +469,49 @@ label { font-size: var(--font-size-base); color: var(--text-secondary); font-wei
 .set-type-badge.straight { background: rgba(156,163,175,0.27); color: var(--text-muted); }
 .set-row.set-completed .set-input { background: var(--bg-primary); color: var(--text-muted); }
 
+/* === PRESCRIPTION EXPLAINER === */
+.rx-why-btn {
+  display: inline-flex; align-items: center; gap: 3px;
+  font-size: var(--font-size-xs); color: var(--text-muted);
+  cursor: pointer; border: none; background: none; padding: 2px 4px;
+  font-family: inherit; border-radius: var(--radius-sm);
+  transition: color var(--ease-fast), background var(--ease-fast);
+}
+.rx-why-btn:hover { color: var(--accent-primary); background: rgba(var(--accent-r),var(--accent-g),var(--accent-b),0.08); }
+.rx-why-detail {
+  background: var(--bg-primary); border: 1px solid var(--border-color);
+  border-radius: var(--radius-md); padding: var(--sp-sm) var(--sp-md);
+  margin-top: var(--sp-xs); margin-bottom: var(--sp-sm);
+  font-size: var(--font-size-xs); color: var(--text-secondary);
+  line-height: 1.6;
+}
+.rx-why-detail .rx-label {
+  color: var(--text-muted); font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.3px;
+  font-size: 10px; margin-bottom: 2px; white-space: nowrap;
+}
+.rx-why-detail .rx-row {
+  display: flex; align-items: baseline; gap: var(--sp-sm);
+  padding: 3px 0;
+}
+.rx-why-detail .rx-value { color: var(--text-primary); }
+.rx-perf-badge {
+  display: inline-block; padding: 1px 6px; border-radius: 3px;
+  font-size: 10px; font-weight: 600; text-transform: uppercase;
+}
+.rx-perf-badge.exceeded { background: rgba(16,185,129,0.15); color: var(--success); }
+.rx-perf-badge.matched { background: rgba(var(--accent-r),var(--accent-g),var(--accent-b),0.15); color: var(--accent-primary); }
+.rx-perf-badge.below { background: rgba(239,68,68,0.15); color: var(--error); }
+
+/* === FATIGUE FLAG (inline) === */
+.fatigue-flag {
+  display: inline-flex; align-items: center; gap: 3px;
+  font-size: 10px; font-weight: 600; color: var(--warning);
+  padding: 1px 6px; border-radius: 3px;
+  background: rgba(245,158,11,0.12);
+  margin-left: var(--sp-sm);
+}
+
 /* === MODAL OVERRIDES === */
 .modal-subtitle { margin-bottom: 20px; }
 .modal-options { display: flex; flex-direction: column; gap: var(--sp-sm); }
@@ -515,7 +558,7 @@ label { font-size: var(--font-size-base); color: var(--text-secondary); font-wei
 }
 
 /* === HISTORY CHART === */
-.chart-container { position: relative; height: 250px; margin: var(--sp-lg) 0; }
+.chart-container { position: relative; height: 300px; margin: var(--sp-lg) 0; }
 
 /* === DELOAD BANNER === */
 .deload-banner {
@@ -525,6 +568,16 @@ label { font-size: var(--font-size-base); color: var(--text-secondary); font-wei
 .deload-banner .deload-icon { font-size: 32px; margin-bottom: var(--sp-sm); }
 .deload-banner .deload-title { font-size: var(--font-size-lg); font-weight: 700; color: var(--error); }
 .deload-banner .deload-text { font-size: var(--font-size-base); color: var(--text-secondary); margin-top: 4px; }
+
+/* === FATIGUE BANNER === */
+.fatigue-banner {
+  background: color-mix(in srgb, var(--warning) 10%, var(--bg-primary));
+  border: 1px solid color-mix(in srgb, var(--warning) 30%, transparent);
+  border-radius: var(--radius-lg);
+  padding: var(--sp-md);
+  margin-bottom: var(--sp-md);
+  text-align: center;
+}
 
 /* === MISC === */
 .divider { height: 1px; background: var(--border-color); margin: var(--sp-lg) 0; }
@@ -831,7 +884,7 @@ function renderDashboard() {
           <div>
             <div class="workout-title">${esc(meso.name)}</div>
             <div class="workout-subtitle">
-              ${micro ? `Week ${micro.weekNumber}` : 'Starting'} &middot; RPE ${micro ? micro.targetRPE : meso.startingRPE}
+              ${micro ? `Week ${micro.weekNumber}` : 'Starting'} &middot; ${micro ? getMicroRPEDisplay(meso, micro) : 'RPE ' + meso.startingRPE}
             </div>
           </div>
           <span class="badge badge-active">Active</span>
@@ -1481,7 +1534,7 @@ function renderMicrocycleView(area, meso) {
       <button class="week-nav-btn" onclick="navWeek(-1)" ${weekIdx <= 0 ? 'disabled' : ''}>&laquo;</button>
       <div>
         <div class="week-nav-label">Week ${micro.weekNumber}</div>
-        <div class="text-sm text-muted text-center">RPE ${micro.targetRPE}</div>
+        <div class="text-sm text-muted text-center">${getMicroRPEDisplay(meso, micro)}</div>
       </div>
       <button class="week-nav-btn" onclick="navWeek(1)" ${weekIdx >= maxViewable ? 'disabled' : ''}>&raquo;</button>
     </div>
@@ -1498,9 +1551,19 @@ function renderMicrocycleView(area, meso) {
               <div class="deload-title">Deload Suggested</div>
               <div class="deload-text">${esc(ex.name)} has been below expectations 2 weeks in a row. Consider reducing load.</div>
               <div class="btn-row" style="justify-content:center;margin-top:12px;">
-                <button class="btn btn-secondary btn-small" onclick="dismissDeload('${ex.exerciseId}')">Dismiss</button>
+                <button class="btn btn-secondary btn-small" onclick="dismissDeload('${meso.id}',${weekIdx},'${ex.exerciseId}')">Dismiss</button>
                 <button class="btn btn-warning btn-small" onclick="applyDeload('${meso.id}',${weekIdx},'${ex.exerciseId}')">Apply Deload</button>
               </div>
+            </div>
+          `;
+        }
+        if (ex._fatigueFlag && !ex._deload) {
+          html += `
+            <div class="fatigue-banner" id="fatigue-banner-${ex.exerciseId}">
+              <div style="font-size:20px;margin-bottom:4px;">&#x1F4A7;</div>
+              <div style="font-size:var(--font-size-base);font-weight:600;color:var(--warning);">Effort Increasing</div>
+              <div style="font-size:var(--font-size-sm);color:var(--text-secondary);margin-top:2px;">${esc(ex.name)} matched targets but required more effort. Watch for fatigue.</div>
+              <button class="btn btn-ghost btn-small" style="margin-top:8px;" onclick="document.getElementById('fatigue-banner-${ex.exerciseId}').remove()">Dismiss</button>
             </div>
           `;
         }
@@ -1552,7 +1615,21 @@ function navWeek(delta) {
   renderWorkout();
 }
 
-function dismissDeload(exId) {
+async function dismissDeload(mesoId, microIdx, exId) {
+  const meso = mesocycles.find(m => m.id === mesoId);
+  if (meso) {
+    const micro = meso.microcycles[microIdx];
+    micro.sessions.forEach(s => {
+      s.muscleGroups.forEach(mg => {
+        mg.exercises.forEach(ex => {
+          if (ex.exerciseId === exId) {
+            delete ex._deload;
+          }
+        });
+      });
+    });
+    await saveMesocycles();
+  }
   const el = document.getElementById('deload-banner-' + exId);
   if (el) el.remove();
 }
@@ -1567,7 +1644,7 @@ async function applyDeload(mesoId, microIdx, exId) {
           ex.sets.forEach(s => {
             const st = s.setType || 'straight';
             if (st === 'myorep_match') return;
-            if (st !== 'giant') s.targetLoad = roundTo5(s.targetLoad * 0.9);
+            if (st !== 'giant') s.targetLoad = roundTo5(s.targetLoad * 0.6);
             s.targetReps = s.repRange[0];
           });
           // Sync myorep_match with resolved parent
@@ -1583,8 +1660,8 @@ async function applyDeload(mesoId, microIdx, exId) {
     });
   });
   await saveMesocycles();
-  dismissDeload(exId);
-  toast('Deload applied — load reduced 10%', 'warning');
+  dismissDeload(mesoId, microIdx, exId);
+  toast('Deload applied — load reduced 40%', 'warning');
   renderWorkout();
 }
 
@@ -1748,7 +1825,7 @@ function renderSessionView(area, meso) {
       <div class="flex-between">
         <div>
           <div class="workout-title">${esc(session.dayLabel)}</div>
-          <div class="workout-subtitle">Week ${micro.weekNumber} &middot; Target RPE ${micro.targetRPE}</div>
+          <div class="workout-subtitle">Week ${micro.weekNumber} &middot; ${getMicroRPEDisplay(meso, micro)}</div>
         </div>
         <div style="display:flex;gap:6px;">
           <button class="btn btn-secondary btn-small" onclick="editSession('${meso.id}',${microIdx},${sessionIdx})">Edit</button>
@@ -1809,7 +1886,11 @@ function renderSessionView(area, meso) {
           <div class="exercise-header">
             <div>
               <div class="exercise-name">${esc(ex.name)}</div>
-              <div class="exercise-meta">${ex.sets[0]?.repRange[0]}-${ex.sets[0]?.repRange[1]} reps &middot; Target RPE ${Math.round(ex.sets[0]?.targetRPE || micro.targetRPE)}</div>
+              <div class="exercise-meta">
+                ${ex.sets[0]?.repRange[0]}-${ex.sets[0]?.repRange[1]} reps &middot; Target RPE ${Math.round(ex.sets[0]?.targetRPE || micro.targetRPE)}
+                ${ex._fatigueFlag ? '<span class="fatigue-flag">&#9650; effort rising</span>' : ''}
+                <button class="rx-why-btn" onclick="event.stopPropagation();toggleRxWhy('rx-${mgIdx}-${exIdx}')">&#9432; Why?</button>
+              </div>
               ${exNotes ? `<button class="exercise-notes-toggle has-notes" onclick="toggleWorkoutNotes('${ex.exerciseId}')">&#128221; Notes</button>` : ''}
             </div>
             <div style="display:flex;gap:4px;align-items:center;">
@@ -1826,6 +1907,14 @@ function renderSessionView(area, meso) {
           </div>
           ${exNotes ? `<div class="exercise-notes-area" id="workout-notes-${ex.exerciseId}" style="display:none;"><textarea placeholder="Exercise notes..." onblur="saveExerciseNotes('${ex.exerciseId}', this.value)">${esc(exNotes)}</textarea></div>` : ''}
       `;
+
+      // Prescription explainer (collapsible)
+      const rxLines = buildPrescriptionExplainer(ex, mg, meso, micro);
+      block += `<div class="rx-why-detail" id="rx-${mgIdx}-${exIdx}" style="display:none;">`;
+      rxLines.forEach(l => {
+        block += `<div class="rx-row"><div class="rx-label">${l.label}</div><div class="rx-value">${l.value}</div></div>`;
+      });
+      block += `</div>`;
 
       if (swapSuggestion) {
         block += `
@@ -2236,7 +2325,7 @@ function swapExercise(mgIdx, exIdx, newExId) {
 function classifyPerformance(exercise) {
   // Average across sets
   const sets = exercise.sets.filter(s => s.actualLoad != null);
-  if (sets.length === 0) return 'matched';
+  if (sets.length === 0) return { classification: 'matched', fatigueFlag: false };
 
   let totalLoadDiff = 0, totalRepsDiff = 0, totalRIRDiff = 0;
   sets.forEach(s => {
@@ -2259,18 +2348,39 @@ function classifyPerformance(exercise) {
   const repsCat = Math.abs(avgRepsDiff) <= 0.4 ? 0 : (avgRepsDiff > 0 ? 1 : -1);
   const rirCat = Math.abs(avgRIRDiff) <= 0.4 ? 0 : (avgRIRDiff > 0 ? 1 : -1);
 
-  // Exceeded: E/E/H, E/H/H, H/H/H (§2.1)
-  if ((loadCat === 0 && repsCat === 0 && rirCat === 1) ||
-      (loadCat === 0 && repsCat === 1 && rirCat === 1) ||
-      (loadCat === 1 && repsCat === 1 && rirCat === 1)) return 'exceeded';
+  // Complete 27-combo classification
+  // Key: [loadCat, repsCat, rirCat] where 1=Higher, 0=Equal, -1=Lower
 
-  // Below: L/E/E, L/L/E, L/L/L (§2.3)
-  if ((loadCat === -1 && repsCat === 0 && rirCat === 0) ||
-      (loadCat === -1 && repsCat === -1 && rirCat === 0) ||
-      (loadCat === -1 && repsCat === -1 && rirCat === -1)) return 'below';
+  // Exceeded (4 combos)
+  if ((loadCat === 0 && repsCat === 0 && rirCat === 1) ||   // E/E/H
+      (loadCat === 0 && repsCat === 1 && rirCat === 1) ||   // E/H/H
+      (loadCat === 1 && repsCat === 1 && rirCat === 1) ||   // H/H/H
+      (loadCat === 1 && repsCat === 0 && rirCat === 1)) {   // H/E/H (NEW)
+    return { classification: 'exceeded', fatigueFlag: false };
+  }
 
-  // Matched: E/E/E and all unclassified combos (§2.4)
-  return 'matched';
+  // Below (13 combos)
+  if ((loadCat === -1 && repsCat === 0  && rirCat === 0)  || // L/E/E
+      (loadCat === -1 && repsCat === -1 && rirCat === 0)  || // L/L/E
+      (loadCat === -1 && repsCat === -1 && rirCat === -1) || // L/L/L
+      (loadCat === 1  && repsCat === -1 && rirCat === -1) || // H/L/L
+      (loadCat === 0  && repsCat === 0  && rirCat === -1) || // E/E/L
+      (loadCat === 0  && repsCat === -1 && rirCat === 1)  || // E/L/H
+      (loadCat === 0  && repsCat === -1 && rirCat === 0)  || // E/L/E
+      (loadCat === 0  && repsCat === -1 && rirCat === -1) || // E/L/L
+      (loadCat === -1 && repsCat === 1  && rirCat === 0)  || // L/H/E
+      (loadCat === -1 && repsCat === 1  && rirCat === -1) || // L/H/L
+      (loadCat === -1 && repsCat === 0  && rirCat === 1)  || // L/E/H
+      (loadCat === -1 && repsCat === 0  && rirCat === -1) || // L/E/L
+      (loadCat === -1 && repsCat === -1 && rirCat === 1)) {  // L/L/H
+    return { classification: 'below', fatigueFlag: false };
+  }
+
+  // Matched (10 combos) — everything else
+  // Includes: E/E/E, H/H/E, H/H/L, H/E/E, H/E/L, H/L/H, H/L/E, E/H/E, E/H/L, L/H/H
+  // Fatigue flag: rising RPE (rirCat === -1) while otherwise progressing
+  const fatigueFlag = (rirCat === -1); // H/H/L, H/E/L, E/H/L
+  return { classification: 'matched', fatigueFlag };
 }
 
 function progressExercise(exercise, priority, microTargetRPE, prevPerformances) {
@@ -2295,7 +2405,8 @@ function progressExercise(exercise, priority, microTargetRPE, prevPerformances) 
     return base;
   });
 
-  const perf = classifyPerformance(exercise);
+  const perfResult = classifyPerformance(exercise);
+  const perf = perfResult.classification;
 
   if (perf === 'below') {
     // Below: targets are already carried forward from previous targets (not actuals)
@@ -2309,11 +2420,11 @@ function progressExercise(exercise, priority, microTargetRPE, prevPerformances) 
 
     const belowCount = countConsecutiveBelow(prevPerformances);
     if (belowCount >= 3) {
-      // FORCED deload (§3.1.1): reduce load by 10%, reset reps
+      // FORCED deload (§3.1.1): reduce load by 40%, reset reps
       newSets.forEach(s => {
         const st = s.setType || 'straight';
         if (st === 'myorep_match') return;
-        if (st !== 'giant') s.targetLoad = roundTo5(s.targetLoad * 0.9);
+        if (st !== 'giant') s.targetLoad = roundTo5(s.targetLoad * 0.6);
         s.targetReps = s.repRange[0];
       });
       newSets.forEach((s, i) => {
@@ -2322,13 +2433,13 @@ function progressExercise(exercise, priority, microTargetRPE, prevPerformances) 
           if (parent) { s.targetLoad = parent.targetLoad; s.targetReps = parent.targetReps; }
         }
       });
-      return { sets: newSets, perf, deload: 'forced' };
+      return { sets: newSets, perf, fatigueFlag: perfResult.fatigueFlag, deload: 'forced' };
     }
     if (belowCount >= 2) {
       // SUGGESTED deload (§3.1.1): keep targets, flag for dismissable UI
-      return { sets: newSets, perf, deload: 'suggested' };
+      return { sets: newSets, perf, fatigueFlag: perfResult.fatigueFlag, deload: 'suggested' };
     }
-    return { sets: newSets, perf, deload: null };
+    return { sets: newSets, perf, fatigueFlag: perfResult.fatigueFlag, deload: null };
   }
 
   // Helper: progress a single set with load increase (or cap for giant sets)
@@ -2373,7 +2484,7 @@ function progressExercise(exercise, priority, microTargetRPE, prevPerformances) 
     }
   });
 
-  return { sets: newSets, perf, deload: null };
+  return { sets: newSets, perf, fatigueFlag: perfResult.fatigueFlag, deload: null };
 }
 
 function countConsecutiveBelow(prevPerformances) {
@@ -2414,6 +2525,90 @@ function getRPEForPriority(priority, startingRPE, weekNumber) {
   return 7; // Maintenance holds at 7
 }
 
+function formatRPE(rpe) {
+  return rpe % 1 === 0 ? rpe.toString() : rpe.toFixed(1);
+}
+
+function getMicroRPEDisplay(meso, micro) {
+  // Collect all unique priorities across all sessions in this microcycle
+  const priorities = new Set();
+  micro.sessions.forEach(s => {
+    s.muscleGroups.forEach(mg => {
+      priorities.add(mg.priority);
+    });
+  });
+
+  if (priorities.size === 0) return `RPE ${meso.startingRPE}`;
+
+  const rpes = [...priorities].map(p => getRPEForPriority(p, meso.startingRPE, micro.weekNumber));
+  const min = Math.min(...rpes);
+  const max = Math.max(...rpes);
+
+  if (min === max) return `RPE ${formatRPE(min)}`;
+  return `RPE ${formatRPE(min)}\u2013${formatRPE(max)}`;
+}
+
+function buildPrescriptionExplainer(ex, mg, meso, micro) {
+  const priority = mg.priority;
+  const weekNum = micro.weekNumber;
+  const startRPE = meso.startingRPE;
+  const targetRPE = getRPEForPriority(priority, startRPE, weekNum);
+
+  let lines = [];
+
+  // RPE explanation
+  if (priority === 'maintenance') {
+    lines.push({ label: 'Target RPE', value: `${formatRPE(targetRPE)} (maintenance: fixed at 7)` });
+  } else {
+    const increment = priority === 'primary' ? 0.75 : 0.25;
+    const weeksElapsed = weekNum - 1;
+    if (weeksElapsed === 0) {
+      lines.push({ label: 'Target RPE', value: `${formatRPE(targetRPE)} (${priority}, Week 1: starting RPE)` });
+    } else {
+      lines.push({ label: 'Target RPE', value: `${formatRPE(targetRPE)} (${priority}: ${formatRPE(startRPE)} + ${weeksElapsed} \u00d7 ${increment})` });
+    }
+  }
+
+  // Last performance + progression rule
+  if (ex._lastPerf) {
+    lines.push({ label: 'Last week', value: `<span class="rx-perf-badge ${ex._lastPerf}">${ex._lastPerf}</span>` });
+
+    // Explain the rule applied
+    let rule = '';
+    if (ex._lastPerf === 'exceeded' && priority === 'primary') {
+      rule = '+2 reps first set, +1 rest \u2192 if over rep range, bump load +3%';
+    } else if (ex._lastPerf === 'exceeded') {
+      rule = '+1 rep all sets \u2192 if over rep range, bump load +2.5%';
+    } else if (ex._lastPerf === 'matched') {
+      rule = '+1 rep all sets \u2192 if over rep range, bump load +2.5%';
+    } else if (ex._lastPerf === 'below') {
+      rule = 'Repeat previous targets (no progression)';
+    }
+    if (rule) lines.push({ label: 'Rule applied', value: rule });
+  } else if (weekNum === 1) {
+    lines.push({ label: 'Week 1', value: 'Baseline targets \u2014 no progression yet' });
+  }
+
+  // Deload info
+  if (ex._deload === 'forced') {
+    lines.push({ label: 'Deload', value: '<span style="color:var(--error);">Forced \u2014 load reduced 40%, reps reset</span>' });
+  } else if (ex._deload === 'suggested') {
+    lines.push({ label: 'Deload', value: '<span style="color:var(--warning);">Suggested \u2014 below expectations 2 weeks in a row</span>' });
+  }
+
+  // Fatigue flag note
+  if (ex._fatigueFlag) {
+    lines.push({ label: 'Note', value: '<span style="color:var(--warning);">&#9650; Effort rising \u2014 you matched targets but RPE was above target. Watch for accumulated fatigue.</span>' });
+  }
+
+  return lines;
+}
+
+function toggleRxWhy(id) {
+  const el = document.getElementById(id);
+  if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
+}
+
 function getPreviousPerformances(meso, exerciseId, upToMicroIdx, upToSessionIdx) {
   const perfs = [];
   for (let mi = 0; mi <= upToMicroIdx; mi++) {
@@ -2426,7 +2621,7 @@ function getPreviousPerformances(meso, exerciseId, upToMicroIdx, upToSessionIdx)
       session.muscleGroups.forEach(mg => {
         mg.exercises.forEach(ex => {
           if (ex.exerciseId === exerciseId) {
-            perfs.push(classifyPerformance(ex));
+            perfs.push(classifyPerformance(ex).classification);
           }
         });
       });
@@ -2437,6 +2632,13 @@ function getPreviousPerformances(meso, exerciseId, upToMicroIdx, upToSessionIdx)
 
 function generateNextMicrocycle(meso, completedMicroIdx) {
   const completedMicro = meso.microcycles[completedMicroIdx];
+
+  // Defensive guard: only generate from a fully completed microcycle
+  if (!completedMicro || completedMicro.status !== 'completed') {
+    console.warn('generateNextMicrocycle: skipped — source microcycle not completed', { completedMicroIdx, status: completedMicro?.status });
+    return null;
+  }
+
   const nextWeekNum = completedMicro.weekNumber + 1;
 
   // Build new sessions based on completed ones
@@ -2449,7 +2651,7 @@ function generateNextMicrocycle(meso, completedMicroIdx) {
 
       const newExercises = mg.exercises.map(ex => {
         const prevPerfs = getPreviousPerformances(meso, ex.exerciseId, completedMicroIdx + 1, 0);
-        prevPerfs.push(classifyPerformance(ex));
+        prevPerfs.push(classifyPerformance(ex).classification);
         const result = progressExercise(ex, mg.priority, nextRPE, prevPerfs);
 
         return {
@@ -2460,6 +2662,7 @@ function generateNextMicrocycle(meso, completedMicroIdx) {
           jointPainHistory: [...ex.jointPainHistory],
           sets: result.sets,
           _lastPerf: result.perf,
+          _fatigueFlag: result.fatigueFlag,
           _deload: result.deload
         };
       });
@@ -2574,6 +2777,7 @@ async function doCompleteSession() {
 
     // Generate next microcycle (guard against duplicates)
     const nextMicro = generateNextMicrocycle(meso, microIdx);
+    if (!nextMicro) return;
     const existingNext = meso.microcycles.find(mc => mc.weekNumber === nextMicro.weekNumber);
     if (!existingNext) {
       meso.microcycles.push(nextMicro);
@@ -2591,7 +2795,7 @@ async function doCompleteSession() {
       });
 
       if (hasForcedDeload) {
-        toast('Deload forced for some exercises next week — load reduced 10%', 'error');
+        toast('Deload forced for some exercises next week — load reduced 40%', 'error');
       } else if (hasSuggestedDeload) {
         toast(`Week ${micro.weekNumber} complete! Deload suggested for some exercises.`, 'warning');
       } else {
@@ -2748,6 +2952,7 @@ async function saveExerciseEdit(mesoId, microIdx, sessionIdx, gi, ei) {
 }
 function addSessionToMicrocycle(mesoId, microIdx) {
   const meso = mesocycles.find(m => m.id === mesoId); if (!meso) return;
+  if (meso.microcycles[microIdx].sessions.length >= 12) { toast('Maximum 12 sessions per week', 'warning'); return; }
   const n = meso.microcycles[microIdx].sessions.length + 1;
   meso.microcycles[microIdx].sessions.push({ id: uid(), dayLabel: `Day ${n}`, muscleGroups: [], status: 'upcoming', completedAt: null });
   saveMesocycles(); editSession(mesoId, microIdx, meso.microcycles[microIdx].sessions.length - 1); renderCurrentTab();
@@ -2849,7 +3054,7 @@ function renderExerciseHistory(area) {
             week: h.weekNumber,
             mesoName: h.mesoName,
             sets: ex.sets,
-            perf: classifyPerformance(ex)
+            perf: classifyPerformance(ex).classification
           });
         }
       });
@@ -2886,6 +3091,23 @@ function renderExerciseHistory(area) {
   });
   const volume = sessions.map(s => {
     return s.sets.reduce((sum, st) => sum + ((st.actualLoad || 0) * (st.actualReps || 0)), 0);
+  });
+  const avgRPE = sessions.map(s => {
+    const loggedSets = s.sets.filter(st => st.actualRPE != null);
+    if (loggedSets.length === 0) return null;
+    return loggedSets.reduce((sum, st) => sum + st.actualRPE, 0) / loggedSets.length;
+  });
+  const e1RM = sessions.map(s => {
+    let best = 0;
+    s.sets.forEach(st => {
+      const load = st.actualLoad || 0;
+      const reps = st.actualReps || 0;
+      if (load > 0 && reps > 0) {
+        const est = load * (1 + reps / 30);
+        if (est > best) best = est;
+      }
+    });
+    return best > 0 ? Math.round(best * 10) / 10 : null;
   });
 
   html += `<div class="chart-container"><canvas id="history-chart"></canvas></div>`;
@@ -2935,28 +3157,115 @@ function renderExerciseHistory(area) {
         labels,
         datasets: [
           {
+            label: 'Est. 1RM (lbs)',
+            data: e1RM,
+            borderColor: '#F59E0B',
+            backgroundColor: 'rgba(245,158,11,0.08)',
+            borderWidth: 2.5,
+            tension: 0.3,
+            fill: false,
+            yAxisID: 'y',
+            pointRadius: 4,
+            pointBackgroundColor: '#F59E0B',
+            order: 0
+          },
+          {
             label: 'Avg Load (lbs)',
             data: avgLoads,
             borderColor: getComputedStyle(document.documentElement).getPropertyValue('--accent-primary').trim() || '#D97757',
             backgroundColor: 'rgba(' + (getComputedStyle(document.documentElement).getPropertyValue('--accent-r').trim() || '217') + ',' + (getComputedStyle(document.documentElement).getPropertyValue('--accent-g').trim() || '119') + ',' + (getComputedStyle(document.documentElement).getPropertyValue('--accent-b').trim() || '87') + ',0.1)',
-            tension: 0.3, fill: true, yAxisID: 'y'
+            tension: 0.3,
+            fill: true,
+            yAxisID: 'y',
+            order: 1
+          },
+          {
+            label: 'Avg Reps',
+            data: avgReps,
+            borderColor: '#8B5CF6',
+            backgroundColor: 'rgba(139,92,246,0.08)',
+            borderDash: [6, 3],
+            borderWidth: 1.5,
+            tension: 0.3,
+            fill: false,
+            yAxisID: 'y',
+            pointRadius: 2,
+            order: 3
           },
           {
             label: 'Volume (load×reps)',
             data: volume,
             borderColor: '#10B981',
             backgroundColor: 'rgba(16,185,129,0.1)',
-            tension: 0.3, fill: true, yAxisID: 'y1'
+            tension: 0.3,
+            fill: true,
+            yAxisID: 'y1',
+            order: 2
+          },
+          {
+            label: 'Avg RPE',
+            data: avgRPE,
+            borderColor: '#EF4444',
+            backgroundColor: 'rgba(239,68,68,0.08)',
+            borderDash: [4, 4],
+            borderWidth: 1.5,
+            tension: 0.3,
+            fill: false,
+            yAxisID: 'y2',
+            pointRadius: 2,
+            order: 4
           }
         ]
       },
       options: {
-        responsive: true, maintainAspectRatio: false,
-        plugins: { legend: { labels: { color: '#9CA3AF', font: { size: 11 } } } },
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: {
+            labels: {
+              color: '#9CA3AF',
+              font: { size: 11 },
+              usePointStyle: true,
+              pointStyleWidth: 16,
+              padding: 12
+            }
+          },
+          tooltip: {
+            callbacks: {
+              label: function(ctx) {
+                let val = ctx.parsed.y;
+                if (val == null) return null;
+                if (ctx.dataset.label.includes('RPE')) return ctx.dataset.label + ': ' + val.toFixed(1);
+                if (ctx.dataset.label.includes('1RM')) return ctx.dataset.label + ': ' + val.toFixed(1);
+                if (ctx.dataset.label.includes('Reps')) return ctx.dataset.label + ': ' + val.toFixed(1);
+                return ctx.dataset.label + ': ' + Math.round(val);
+              }
+            }
+          }
+        },
         scales: {
-          x: { ticks: { color: '#9CA3AF' }, grid: { color: '#E8E6E3' } },
-          y: { position: 'left', ticks: { color: getComputedStyle(document.documentElement).getPropertyValue('--accent-primary').trim() || '#D97757' }, grid: { color: '#E8E6E3' }, title: { display: true, text: 'Load', color: getComputedStyle(document.documentElement).getPropertyValue('--accent-primary').trim() || '#D97757' } },
-          y1: { position: 'right', ticks: { color: '#10B981' }, grid: { display: false }, title: { display: true, text: 'Volume', color: '#10B981' } }
+          x: { ticks: { color: '#9CA3AF' }, grid: { color: 'rgba(232,230,227,0.3)' } },
+          y: {
+            position: 'left',
+            ticks: { color: getComputedStyle(document.documentElement).getPropertyValue('--accent-primary').trim() || '#D97757' },
+            grid: { color: 'rgba(232,230,227,0.3)' },
+            title: { display: true, text: 'Load / 1RM / Reps', color: getComputedStyle(document.documentElement).getPropertyValue('--accent-primary').trim() || '#D97757', font: { size: 11 } }
+          },
+          y1: {
+            position: 'right',
+            ticks: { color: '#10B981' },
+            grid: { display: false },
+            title: { display: true, text: 'Volume', color: '#10B981', font: { size: 11 } }
+          },
+          y2: {
+            position: 'right',
+            min: 5,
+            max: 10,
+            ticks: { color: '#EF4444', stepSize: 1 },
+            grid: { display: false },
+            title: { display: true, text: 'RPE', color: '#EF4444', font: { size: 11 } }
+          }
         }
       }
     });
@@ -3062,9 +3371,61 @@ async function addExerciseToLib() {
   renderExercises();
 }
 
+function findMesocyclesUsingExercise(exerciseId) {
+  const found = [];
+  mesocycles.forEach(meso => {
+    let used = false;
+    (meso.microcycles || []).forEach(micro => {
+      (micro.sessions || []).forEach(session => {
+        (session.muscleGroups || []).forEach(mg => {
+          (mg.exercises || []).forEach(ex => {
+            if (ex.exerciseId === exerciseId) used = true;
+          });
+        });
+      });
+    });
+    if (used) found.push(meso.name);
+  });
+  return found;
+}
+
 async function deleteExercise(id) {
+  const ex = exerciseLib.exercises.find(e => e.id === id);
+  if (!ex) return;
+
+  // Check if any mesocycle references this exercise
+  const usingMesos = findMesocyclesUsingExercise(id);
+  if (usingMesos.length > 0) {
+    const mesoList = usingMesos.map(n => '• ' + esc(n)).join('<br>');
+    showModal(`
+      <div style="padding:20px;">
+        <div style="font-size:16px;font-weight:600;margin-bottom:12px;color:var(--error);">Cannot Delete Exercise</div>
+        <div style="margin-bottom:12px;">"${esc(ex.name)}" is used in the following mesocycle(s):</div>
+        <div style="margin-bottom:16px;padding:8px 12px;background:var(--bg-primary);border-radius:var(--radius-md);font-size:13px;">${mesoList}</div>
+        <div style="margin-bottom:16px;font-size:13px;color:var(--text-secondary);">Remove the exercise from these mesocycles first, then delete it from the library.</div>
+        <button class="btn btn-secondary" style="width:100%;" onclick="closeModal()">OK</button>
+      </div>
+    `);
+    return;
+  }
+
+  // Confirmation dialog
+  showModal(`
+    <div style="padding:20px;">
+      <div style="font-size:16px;font-weight:600;margin-bottom:12px;">Delete Exercise?</div>
+      <div style="margin-bottom:16px;">Delete <strong>${esc(ex.name)}</strong>? This cannot be undone.</div>
+      <div style="display:flex;gap:8px;">
+        <button class="btn btn-secondary" style="flex:1;" onclick="closeModal()">Cancel</button>
+        <button class="btn btn-primary" style="flex:1;background:var(--error);" onclick="confirmDeleteExercise('${id}')">Delete</button>
+      </div>
+    </div>
+  `);
+}
+
+async function confirmDeleteExercise(id) {
   exerciseLib.exercises = exerciseLib.exercises.filter(e => e.id !== id);
   await saveExercises();
+  closeModal();
   toast('Exercise removed', 'success');
   renderExercises();
 }
@@ -3161,11 +3522,12 @@ function migrateStaleProgression() {
             if (!sourceEx) return;
 
             const prevPerfs = getPreviousPerformances(meso, ex.exerciseId, microIdx, 0);
-            prevPerfs.push(classifyPerformance(sourceEx));
+            prevPerfs.push(classifyPerformance(sourceEx).classification);
             const nextRPE = getRPEForPriority(mg.priority, meso.startingRPE, micro.weekNumber);
             const result = progressExercise(sourceEx, mg.priority, nextRPE, prevPerfs);
 
             ex._lastPerf = result.perf;
+            ex._fatigueFlag = result.fatigueFlag;
             ex._deload = result.deload;
             ex.sets = result.sets;
           });

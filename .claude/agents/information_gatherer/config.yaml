@@ -8,6 +8,9 @@ timeout_seconds: 300
 max_turns: 200
 chattable: true
 icon: radar
+skills:
+- new-skill
+- research-assistant
 tools:
 - Read
 - Glob
@@ -24,7 +27,12 @@ tools:
 - mcp__brain__bash
 - mcp__brain__memory_read
 - mcp__brain__memory_append
+- mcp__brain__memory_save
+- mcp__brain__memory_search
+- mcp__brain__memory_search_agent
+- mcp__brain__search_conversation_history
 - mcp__brain__schedule_self
 - mcp__brain__scheduler_list
 - mcp__brain__forms_define
 - mcp__brain__forms_show
+- mcp__brain__fetch_skill

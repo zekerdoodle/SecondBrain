@@ -1,17 +1,20 @@
-description: "Pure logical reasoning engine. No research \u2014 just deep, iterative\
-  \ thinking on well-scoped problems with complete context provided. Use for architecture\
-  \ decisions, strategic analysis, synthesis, and multi-angle investigation."
-max_turns: 200
-model: opus
 name: deep_think
-chattable: true
-color: "#9B59B6"
-icon: brain
+description: Pure logical reasoning engine. No research — just deep, iterative thinking
+  on well-scoped problems with complete context provided. Use for architecture decisions,
+  strategic analysis, synthesis, and multi-angle investigation.
+model: opus
+type: sdk
 timeout_seconds: 600
+max_turns: 200
+chattable: true
+icon: brain
 tools:
 - Read
 - Write
 - mcp__brain__consult_llm
 - mcp__brain__memory_append
 - mcp__brain__memory_read
-type: sdk
+- mcp__brain__memory_save
+- mcp__brain__memory_search
+- mcp__brain__memory_search_agent
+- mcp__brain__search_conversation_history

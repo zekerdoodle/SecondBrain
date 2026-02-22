@@ -1,6 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import type { ChatMessage, ChatImageRef, MessageStatus } from './types';
-import type { ToolCallData } from './components/ToolCallChips';
 import { WS_URL, API_URL } from './config';
 import { useVisibility, type VisibilityState } from './hooks/useVisibility';
 import { extractToolSummary } from './utils/toolDisplay';
@@ -23,11 +22,13 @@ interface QueuedMessage {
 }
 
 // User message being injected mid-stream (while Claude is responding)
+export type QueuedMessageStatus = 'pending' | 'confirmed' | 'not_delivered';
+
 export interface UserQueuedMessage {
   id: string;
   content: string;
   timestamp: number;
-  failed?: boolean;  // True if injection failed
+  status: QueuedMessageStatus;
 }
 
 export type ConnectionStatus = 'connected' | 'connecting' | 'disconnected';
@@ -68,11 +69,10 @@ export interface ClaudeHook {
   // Message queue for sending while Claude is responding
   queuedMessages: UserQueuedMessage[];
   clearQueuedMessages: () => void;
+  dismissQueuedMessage: (id: string) => void;
   // Multi-agent support
   currentAgent: string | null;
   sendMessageWithAgent: (text: string, agent?: string, images?: ChatImageRef[]) => boolean;
-  // Tool calls completed during streaming, keyed by the preceding message ID for correct ordering
-  streamingToolMap: Map<string, ToolCallData[]>;
   // Todo list from agents using TodoWrite
   todos: TodoItem[];
 }
@@ -155,13 +155,6 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
   const [status, setStatus] = useState<ChatStatus>('idle');
   const [statusText, setStatusText] = useState<string>('');
   const [activeTools, setActiveTools] = useState<Map<string, ActiveTool>>(new Map());
-  // Streaming segments: ordered list of tool-call batches keyed to the message ID they follow.
-  // This keeps tool chips interleaved correctly between text segments during streaming.
-  const [streamingToolMap, setStreamingToolMap] = useState<Map<string, ToolCallData[]>>(new Map());
-  // Stash tool args from tool_start so they're available at tool_end for chip rendering
-  const pendingToolArgs = useRef<Map<string, { name: string; args?: string }>>(new Map());
-  // Track the ID of the most recently finalized streaming message (set on tool_start)
-  const lastFinalizedStreamingMsgId = useRef<string | null>(null);
   const [currentAgent, setCurrentAgent] = useState<string | null>(null);
   const [todos, setTodos] = useState<TodoItem[]>([]);
   // Derived: first active tool name for backward compat
@@ -184,47 +177,46 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
   const sessionIdRef = useRef(sessionId);
   useEffect(() => { sessionIdRef.current = sessionId; }, [sessionId]);
 
-  // Track streaming content separately from final messages
-  const streamingContent = useRef<string>('');
-  // Track when the last event was a tool_end - next content starts a new message
-  const lastEventWasToolEnd = useRef(false);
-  // Guard: set after tool_start finalizes streaming content. Prevents the late-arriving
-  // SDK 'content' event (complete text block) from creating a duplicate streaming message.
-  const segmentFinalizedByToolStart = useRef(false);
-
-  // RAF batching for streaming updates - prevents re-rendering on every delta
+  // Block-based delta batching: accumulate deltas per block and flush once per frame
+  const pendingDeltas = useRef(new Map<string, string>());
   const rafId = useRef<number | null>(null);
-  const pendingStreamUpdate = useRef(false);
 
   // Guard flag: when true, streaming events are ignored until the 'state' response arrives.
   // This prevents the race condition where stale/early events corrupt state during chat switching.
   const awaitingStateResponse = useRef(false);
 
-  const flushStreamingUpdate = useCallback(() => {
+  const flushDeltas = useCallback(() => {
     rafId.current = null;
-    pendingStreamUpdate.current = false;
-    const content = streamingContent.current;
+    const deltas = pendingDeltas.current;
+    if (deltas.size === 0) return;
+
     setMessages(prev => {
-      const last = prev[prev.length - 1];
-      if (last && last.role === 'assistant' && last.isStreaming) {
-        return [...prev.slice(0, -1), { ...last, content }];
-      } else {
-        return [...prev, {
-          id: 'streaming-' + Date.now(),
-          role: 'assistant' as const,
-          content,
-          isStreaming: true
-        }];
+      let updated = prev;
+      for (const [key, delta] of deltas) {
+        const [msgId, blockId] = key.split(':');
+        updated = updated.map(msg => {
+          if (msg.id !== msgId || !msg.blocks) return msg;
+          return {
+            ...msg,
+            blocks: msg.blocks.map(block =>
+              block.id === blockId
+                ? { ...block, content: block.content + delta }
+                : block
+            )
+          };
+        });
       }
+      return updated;
     });
+
+    pendingDeltas.current = new Map();
   }, []);
 
-  const scheduleStreamingUpdate = useCallback(() => {
-    if (!pendingStreamUpdate.current) {
-      pendingStreamUpdate.current = true;
-      rafId.current = requestAnimationFrame(flushStreamingUpdate);
+  const scheduleFlush = useCallback(() => {
+    if (rafId.current === null) {
+      rafId.current = requestAnimationFrame(flushDeltas);
     }
-  }, [flushStreamingUpdate]);
+  }, [flushDeltas]);
 
   // Message queue for reliability - track pending messages awaiting ACK
   const pendingMessages = useRef<Map<string, QueuedMessage>>(new Map());
@@ -235,6 +227,13 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
   const [queuedMessages, setQueuedMessages] = useState<UserQueuedMessage[]>([]);
   // Flag to trigger queue processing after turn completion
   const shouldProcessQueue = useRef(false);
+  // Store injected messages confirmed by server, with their injection position
+  interface InjectedMessageInfo {
+    message: ChatMessage;
+    injectionBlockIndex: number; // How many blocks the streaming assistant message had at injection time
+    injectionMessageId: string;  // ID of the assistant message being streamed
+  }
+  const injectedMessagesRef = useRef<InjectedMessageInfo[]>([]);
 
   // Only persist sessionId
   useEffect(() => {
@@ -345,9 +344,10 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
             })
             .then(data => {
               // Only apply if we're STILL waiting (state could have arrived in the meantime)
-              if (awaitingStateResponse.current && data.messages && Array.isArray(data.messages)) {
+              const msgs = data.display_messages || data.messages;
+              if (awaitingStateResponse.current && msgs && Array.isArray(msgs)) {
                 awaitingStateResponse.current = false;
-                setMessages(data.messages);
+                setMessages(msgs);
               }
               isUserInitiatedLoad.current = false;
             })
@@ -436,9 +436,14 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
 
       // Multi-chat concurrent streaming: filter out events for other sessions.
       // Server accumulates state per-session; we'll get it via subscribe when switching back.
+      // IMPORTANT: message_accepted and session_init must be included here to prevent
+      // stale events from corrupting state during chat switches (they set sessionId/messages).
       const streamingEventTypes = new Set([
-        'content_delta', 'content', 'tool_start', 'tool_end',
-        'status', 'thinking_delta', 'done', 'todo_update'
+        'message_start', 'block_start', 'block_delta', 'block_end', 'block_update',
+        'message_end', 'session_status',
+        'content_delta', 'tool_start', 'tool_end',
+        'status', 'done', 'todo_update',
+        'message_accepted', 'session_init', 'message_received'
       ]);
       if (streamingEventTypes.has(data.type) && data.sessionId &&
           sessionIdRef.current !== 'new' && data.sessionId !== sessionIdRef.current) {
@@ -456,74 +461,55 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
       switch (data.type) {
         case 'state':
           // SERVER IS THE SOURCE OF TRUTH - just render what it sends
-          // This handles reconnect, refresh, everything - no sync logic needed
           // Clear the guard flag — state has arrived, streaming events can now be processed
-          // Guard cleared — state snapshot received
           awaitingStateResponse.current = false;
           try {
-            // CRITICAL: Update session ID to match server
-            // Server may redirect us to the active streaming session
             if (data.sessionId && data.sessionId !== 'new') {
               setSessionId(data.sessionId);
             }
-            // Capture agent from server state
             if (data.agent !== undefined) {
               setCurrentAgent(data.agent || null);
             }
 
-            // Set messages (server's authoritative copy)
-            if (data.messages) {
-              // Apply server's authoritative messages
-              // If server is processing and has streaming content, append it as streaming message
-              if (data.isProcessing && data.streamingContent) {
-                const lastMessage = data.messages[data.messages.length - 1];
-
-                // Check for overlap to prevent duplication on reconnect
-                // If the last message is an assistant message that overlaps with streaming content,
-                // update the last message instead of appending a new streaming message
-                const hasOverlap = lastMessage &&
-                  lastMessage.role === 'assistant' &&
-                  data.streamingContent.length > 0 &&
-                  (data.streamingContent.startsWith(lastMessage.content.slice(0, 100)) ||
-                   lastMessage.content.startsWith(data.streamingContent.slice(0, 100)));
-
-                if (hasOverlap) {
-                  // Update the last message with the full streaming content
-                  const updatedMessages = [
-                    ...data.messages.slice(0, -1),
-                    {
-                      ...lastMessage,
-                      content: data.streamingContent,
-                      isStreaming: true
-                    }
-                  ];
-                  setMessages(updatedMessages);
-                } else {
-                  // Append as new streaming message
-                  const messagesWithStreaming = [
-                    ...data.messages,
-                    {
-                      id: 'streaming-reconnect',
-                      role: 'assistant' as const,
-                      content: data.streamingContent,
-                      isStreaming: true
-                    }
-                  ];
-                  setMessages(messagesWithStreaming);
-                }
-                streamingContent.current = data.streamingContent;
-              } else {
-                // No active streaming — set messages as-is
-                setMessages(data.messages);
-                streamingContent.current = '';
-              }
+            // During streaming: filter out injected messages from state data BEFORE
+            // setting messages. The server appends injected messages at the end of its
+            // streaming state, but the client needs the done/interrupted handler to place
+            // them at the correct split position using injectedMessagesRef.
+            if (data.isProcessing && data.messages && injectedMessagesRef.current.length > 0) {
+              const injectedIds = new Set(injectedMessagesRef.current.map(info => info.message.id));
+              data.messages = data.messages.filter((m: ChatMessage) => !injectedIds.has(m.id));
+            }
+            // Also filter any server-flagged injected messages we don't have position info for
+            if (data.isProcessing && data.messages) {
+              data.messages = data.messages.filter((m: ChatMessage) => !m.injected);
             }
 
-            // Set status from server
+            // Dedup by ID — safety net against duplicate messages from any source
+            if (data.messages) {
+              const seen = new Set<string>();
+              data.messages = data.messages.filter((m: ChatMessage) => {
+                if (seen.has(m.id)) return false;
+                seen.add(m.id);
+                return true;
+              });
+              setMessages(data.messages);
+            }
+            // Clear queued messages on reconnect/state sync (only when NOT streaming)
+            if (!data.isProcessing) {
+              setQueuedMessages([]);
+              injectedMessagesRef.current = [];
+            }
+            // During streaming: keep injectedMessagesRef and queuedMessages intact
+            // for the done/interrupted handlers to use
+
+            // Set status
             if (data.isProcessing) {
-              setStatus(data.status === 'tool_use' ? 'tool_use' : 'thinking');
+              setStatus(data.status === 'idle' ? 'thinking' : (data.status || 'thinking'));
               setStatusText(data.statusText || 'Processing...');
-              // Restore active tools from server state
+              setActiveTools(new Map()); // Will be populated by subsequent block_start events
+              setTodos(Array.isArray(data.todos) ? data.todos : []);
+
+              // Restore active tools from server state (legacy format)
               if (data.activeTools && Object.keys(data.activeTools).length > 0) {
                 const restored = new Map<string, ActiveTool>();
                 for (const [tid, info] of Object.entries(data.activeTools)) {
@@ -538,14 +524,35 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
                 }
                 setActiveTools(restored);
               }
-              // Restore todo list from server state (always set, even to empty,
-              // so stale todos from a previous chat don't bleed through)
-              setTodos(Array.isArray(data.todos) ? data.todos : []);
+
+              // Reconstruct activeTools from blocks in streaming messages
+              if (data.messages) {
+                const tools = new Map<string, ActiveTool>();
+                for (const msg of data.messages) {
+                  if (msg.blocks) {
+                    for (const block of msg.blocks) {
+                      if (block.type === 'tool_use' && block.status === 'in_progress') {
+                        tools.set(block.id, {
+                          id: block.id,
+                          name: block.tool_name || 'tool',
+                          startedAt: Date.now(),
+                        });
+                      }
+                    }
+                  }
+                }
+                if (tools.size > 0) {
+                  setActiveTools(tools);
+                  setStatus('tool_use');
+                  const firstName = tools.values().next().value?.name;
+                  setStatusText(`Running ${firstName}...`);
+                }
+              }
             } else {
               setStatus('idle');
               setStatusText('');
               setActiveTools(new Map());
-              setTodos([]);
+              setTodos(Array.isArray(data.todos) ? data.todos : []);
             }
 
           } catch (err) {
@@ -609,208 +616,159 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
             setSessionId(data.id);
             // Note: setSessionId triggers useEffect that saves to localStorage
           }
-          // Capture agent from session_init
+          // Capture agent from session_init (default to "ren" for backward compatibility)
           if (data.agent !== undefined) {
-            setCurrentAgent(data.agent);
+            setCurrentAgent(data.agent || "ren");
           }
           break;
 
-        case 'content_delta':
-          // Real-time streaming delta - append to current message
-          // Uses requestAnimationFrame batching to avoid re-rendering on every delta
-          {
-            const text = data.text || '';
-            if (text) {
-              segmentFinalizedByToolStart.current = false; // New segment content arriving
-              // Check if this is after a tool completed
-              if (lastEventWasToolEnd.current) {
-                lastEventWasToolEnd.current = false;
-                streamingContent.current = text;
-                // First delta after tool_end needs immediate render to finalize previous messages
-                if (rafId.current) cancelAnimationFrame(rafId.current);
-                pendingStreamUpdate.current = false;
-                setMessages(prev => {
-                  const finalized = prev.map(m =>
-                    m.isStreaming ? { ...m, isStreaming: false } : m
-                  );
-                  return [...finalized, {
-                    id: 'streaming-' + Date.now(),
-                    role: 'assistant',
-                    content: text,
-                    isStreaming: true
-                  }];
-                });
-              } else {
-                streamingContent.current += text;
-                // Batch updates - only render once per animation frame
-                scheduleStreamingUpdate();
-              }
-              setStatus('thinking');
-              setStatusText('');
-            }
+        // --- New block-based streaming events ---
+
+        case 'message_start': {
+          const { message_id, role } = data;
+          if (role === 'assistant') {
+            setMessages(prev => [...prev, {
+              id: message_id,
+              role: 'assistant' as const,
+              content: '',
+              blocks: [],
+              isStreaming: true,
+            }]);
           }
+          setStatus('thinking');
           break;
+        }
 
-        case 'content':
-          // Complete content block - may come after deltas or instead.
-          // IMPORTANT: The SDK emits AssistantMessage (which yields 'content')
-          // AFTER tool_start. If tool_start already finalized this text from
-          // deltas, skip it to prevent creating a duplicate streaming message.
-          {
-            const text = data.text || '';
-            if (!text) break;
+        case 'block_start': {
+          const { message_id, block } = data;
+          setMessages(prev => prev.map(msg => {
+            if (msg.id !== message_id || !msg.blocks) return msg;
+            return {
+              ...msg,
+              blocks: [...msg.blocks, block],
+            };
+          }));
 
-            // Guard: skip if tool_start already finalized this content from deltas
-            if (segmentFinalizedByToolStart.current) {
-              segmentFinalizedByToolStart.current = false;
-              break; // Already finalized - skip to prevent duplication
-            }
-
-            // After tool_end, this is a NEW message - always start fresh
-            if (lastEventWasToolEnd.current) {
-              lastEventWasToolEnd.current = false;
-              streamingContent.current = text;
-              setMessages(prev => {
-                const finalized = prev.map(m =>
-                  m.isStreaming ? { ...m, isStreaming: false } : m
-                );
-                return [...finalized, {
-                  id: 'streaming-' + Date.now(),
-                  role: 'assistant',
-                  content: text,
-                  isStreaming: true
-                }];
-              });
-            } else if (!streamingContent.current) {
-              // No streaming content yet - start a new message
-              streamingContent.current = text;
-              setMessages(prev => {
-                const last = prev[prev.length - 1];
-                if (last && last.role === 'assistant' && last.isStreaming) {
-                  return [...prev.slice(0, -1), { ...last, content: text }];
-                } else {
-                  return [...prev, {
-                    id: 'streaming-' + Date.now(),
-                    role: 'assistant',
-                    content: text,
-                    isStreaming: true
-                  }];
-                }
-              });
-            }
-            // If streamingContent already has content, this is just a confirmation
-            // of what we already have from deltas - no action needed
-
+          // Update status based on block type
+          if (block.type === 'thinking') {
+            setStatus('thinking');
+            setStatusText('Thinking...');
+          } else if (block.type === 'text') {
             setStatus('thinking');
             setStatusText('');
+          } else if (block.type === 'tool_use') {
+            setStatus('tool_use');
+            setStatusText(`Running ${block.tool_name}...`);
+            setActiveTools(prev => {
+              const next = new Map(prev);
+              next.set(block.id, {
+                id: block.id,
+                name: block.tool_name || 'tool',
+                startedAt: Date.now(),
+              });
+              return next;
+            });
           }
           break;
+        }
 
-        case 'tool_start': {
-          // Flush any pending streaming update before tool starts
+        case 'block_delta': {
+          const { message_id, block_id, delta } = data;
+          if (delta) {
+            const key = `${message_id}:${block_id}`;
+            const existing = pendingDeltas.current.get(key) || '';
+            pendingDeltas.current.set(key, existing + delta);
+            scheduleFlush();
+          }
+          break;
+        }
+
+        case 'block_end': {
+          const { message_id, block_id, metadata } = data;
+          // Flush any pending deltas for this block first
           if (rafId.current) {
             cancelAnimationFrame(rafId.current);
             rafId.current = null;
+            flushDeltas();
           }
-          if (pendingStreamUpdate.current) {
-            pendingStreamUpdate.current = false;
-            flushStreamingUpdate();
-          }
-          // Finalize any current streaming content before tool starts
-          // Capture the ID of the message being finalized so tool chips attach to it
-          setMessages(prev => {
-            for (const m of prev) {
-              if (m.isStreaming) {
-                lastFinalizedStreamingMsgId.current = m.id;
-                break;
-              }
-            }
-            return prev.map(m =>
-              m.isStreaming ? { ...m, isStreaming: false } : m
-            );
-          });
-          // IMPORTANT: Reset streaming content so post-tool content starts fresh
-          streamingContent.current = '';
-          // Guard: the SDK 'content' event (complete text block) arrives AFTER tool_start
-          // because AssistantMessage is emitted after all streaming events. Without this
-          // guard, the content event would see empty streamingContent and create a duplicate.
-          segmentFinalizedByToolStart.current = true;
-          setStatus('tool_use');
-          // Add/merge this tool into active tools map
-          const startToolId = data.id || `tool-${Date.now()}`;
-          const startToolName = data.name === 'system_log' ? 'System' : data.name;
-          const startToolArgs = data.args;
-          // Stash args for chip rendering when tool_end fires
-          pendingToolArgs.current.set(startToolId, { name: startToolName, args: startToolArgs });
+
+          setMessages(prev => prev.map(msg => {
+            if (msg.id !== message_id || !msg.blocks) return msg;
+            return {
+              ...msg,
+              blocks: msg.blocks.map(block => {
+                if (block.id !== block_id) return block;
+                return {
+                  ...block,
+                  status: 'complete' as const,
+                  ...(metadata?.duration_ms ? { duration_ms: metadata.duration_ms } : {}),
+                };
+              }),
+            };
+          }));
+
+          // Remove from activeTools if it was a tool
           setActiveTools(prev => {
             const next = new Map(prev);
-            const existing = next.get(startToolId);
-            next.set(startToolId, {
-              id: startToolId,
-              name: startToolName,
-              args: startToolArgs || existing?.args,
-              summary: startToolArgs ? extractToolSummary(startToolName, startToolArgs) : existing?.summary,
-              startedAt: existing?.startedAt || Date.now()
-            });
+            next.delete(block_id);
+            if (next.size === 0) {
+              setStatus('thinking');
+              setStatusText('');
+            }
             return next;
           });
-          // Don't set statusText here - let Chat.tsx use getToolDisplayName() for friendly names
-          setStatusText('');
           break;
         }
 
-        case 'tool_end': {
-          // Mark that the next content event should be a NEW message
-          lastEventWasToolEnd.current = true;
-          segmentFinalizedByToolStart.current = false; // Tool done, clear guard
-          // Build a completed tool chip from stashed args + tool_end data
-          const endToolId = data.id;
-          const stashed = endToolId ? pendingToolArgs.current.get(endToolId) : undefined;
-          if (stashed && endToolId) {
-            let parsedArgs: Record<string, any> = {};
-            if (stashed.args) {
-              try { parsedArgs = JSON.parse(stashed.args); } catch { /* leave empty */ }
-            }
-            const toolData: ToolCallData = {
-              id: `streaming-tc-${endToolId}`,
-              tool_name: stashed.name,
-              tool_id: endToolId,
-              args: parsedArgs,
-              output_summary: data.output ? String(data.output).slice(0, 200) : undefined,
-              is_error: data.is_error,
+        case 'block_update': {
+          const { message_id, block_id, block: updatedBlock } = data;
+          setMessages(prev => prev.map(msg => {
+            if (msg.id !== message_id || !msg.blocks) return msg;
+            return {
+              ...msg,
+              blocks: msg.blocks.map(b =>
+                b.id === block_id ? { ...b, ...updatedBlock } : b
+              ),
             };
-            // Attach to the message that was finalized when tool_start fired
-            const anchorId = lastFinalizedStreamingMsgId.current || '__pre__';
-            setStreamingToolMap(prev => {
-              const next = new Map(prev);
-              const existing = next.get(anchorId) || [];
-              next.set(anchorId, [...existing, toolData]);
-              return next;
-            });
-            pendingToolArgs.current.delete(endToolId);
-          }
-          // Remove this specific tool from active tools
-          setActiveTools(prev => {
-            const next = new Map(prev);
-            if (endToolId) {
-              next.delete(endToolId);
-            }
-            if (next.size === 0) {
-              // No more tools running - transition to processing
-              setStatus('processing');
-              setStatusText('Processing...');
-            }
-            return next;
-          });
+          }));
           break;
         }
+
+        case 'message_end': {
+          const { message_id } = data;
+          setMessages(prev => prev.map(msg => {
+            if (msg.id !== message_id) return msg;
+            return { ...msg, isStreaming: false };
+          }));
+          break;
+        }
+
+        case 'session_status': {
+          if (data.status === 'idle') {
+            setStatus('idle');
+            setStatusText('');
+            setActiveTools(new Map());
+          }
+          break;
+        }
+
+        // --- Legacy streaming events (kept for backward compatibility) ---
+
+        case 'content_delta':
+          // Legacy: fall through to block_delta-style handling
+          // Server should be sending block events instead, but keep this as fallback
+          break;
+
+        case 'tool_start':
+          // Legacy: handled by block_start now
+          break;
+
+        case 'tool_end':
+          // Legacy: handled by block_end now
+          break;
 
         case 'status':
           setStatusText(data.text || '');
-          // Heartbeats may send identical text; React skips re-render for
-          // same-value setState, so the useEffect tracking lastActivityTime
-          // never fires. Update the ref directly to prevent the 5-min timeout
-          // from resetting state during long-running tools.
           lastActivityTime.current = Date.now();
           break;
 
@@ -824,105 +782,137 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
           if (data.sessionId && data.sessionId !== 'new') {
             setSessionId(data.sessionId);
           }
-          // Reset streaming for the new response
-          streamingContent.current = '';
+          // Reset delta batching
+          pendingDeltas.current.clear();
           break;
 
         case 'done':
-          // Flush any pending streaming update before finalizing
+          // Flush any pending deltas
           if (rafId.current) {
             cancelAnimationFrame(rafId.current);
             rafId.current = null;
-          }
-          if (pendingStreamUpdate.current) {
-            pendingStreamUpdate.current = false;
-            flushStreamingUpdate();
+            flushDeltas();
           }
 
-          // Finalize the conversation turn
           setStatus('idle');
           setStatusText('');
           setActiveTools(new Map());
           setTodos([]);
 
-          // Convert streaming tool pills into persistent tool_call messages
-          // BEFORE clearing the streaming tool map. This ensures tool pills
-          // survive the done transition even if the server's done payload
-          // is missing them (e.g., fast tool calls where events were lost).
-          // The server sync (applyServerMessages) will replace these with
-          // authoritative data if available.
-          setStreamingToolMap(prevToolMap => {
-            if (prevToolMap.size > 0) {
-              setMessages(prev => {
-                const newMessages: any[] = [...prev];
-                // For each anchored message, insert tool_call messages after it
-                for (const [anchorId, tools] of prevToolMap.entries()) {
-                  if (anchorId === '__pre__') {
-                    // Tools before any message — insert after the first assistant message
-                    const firstAssistantIdx = newMessages.findIndex((m: any) => m.role === 'assistant');
-                    if (firstAssistantIdx >= 0) {
-                      const toolMsgs = tools.map(tc => ({
-                        id: tc.id,
-                        role: 'tool_call',
-                        content: '',
-                        tool_name: tc.tool_name,
-                        tool_id: tc.tool_id,
-                        args: tc.args,
-                        output_summary: tc.output_summary,
-                        is_error: tc.is_error,
-                        hidden: true,
-                      }));
-                      newMessages.splice(firstAssistantIdx + 1, 0, ...toolMsgs);
-                    }
+          // Mark all messages and blocks as complete, and insert any deferred injected messages
+          setMessages(prev => {
+            console.log(`[DONE] marking ${prev.length} messages complete, roles: ${prev.map(m => m.role).join(',')}`);
+            let updated = prev.map(m => ({
+              ...m,
+              isStreaming: false,
+              ...(m.blocks ? {
+                blocks: m.blocks.map(b => ({ ...b, status: 'complete' as const })),
+              } : {}),
+              ...(m.status && m.status !== 'complete' ? { status: 'complete' as const } : {}),
+            }));
+
+            // Insert injected messages at their exact injection positions by splitting assistant messages
+            const injectedInfos = injectedMessagesRef.current;
+            if (injectedInfos.length > 0) {
+              console.log(`[DONE] inserting ${injectedInfos.length} injected messages with position info`);
+              // Deduplicate: skip any injected messages that are already in the messages array
+              // (can happen if a state event arrived after injection and included the message)
+              const existingIds = new Set(updated.map(m => m.id));
+              const dedupedInfos = injectedInfos.filter(info => !existingIds.has(info.message.id));
+              if (dedupedInfos.length < injectedInfos.length) {
+                console.log(`[DONE] skipping ${injectedInfos.length - dedupedInfos.length} already-present injected messages`);
+              }
+              // Process in reverse order so earlier split indices remain valid
+              for (let i = dedupedInfos.length - 1; i >= 0; i--) {
+                const { message: injMsg, injectionBlockIndex, injectionMessageId } = dedupedInfos[i];
+                const targetIdx = updated.findIndex(m => m.id === injectionMessageId);
+
+                if (targetIdx >= 0 && updated[targetIdx].blocks && updated[targetIdx].blocks!.length > 0) {
+                  const targetMsg = updated[targetIdx];
+                  const blocks = targetMsg.blocks!;
+                  console.log(`[DONE] splitting message ${injectionMessageId} at block ${injectionBlockIndex}/${blocks.length}`);
+
+                  if (injectionBlockIndex <= 0) {
+                    // Injection before any blocks — insert before the assistant message
+                    updated = [
+                      ...updated.slice(0, targetIdx),
+                      injMsg,
+                      ...updated.slice(targetIdx),
+                    ];
+                  } else if (injectionBlockIndex >= blocks.length) {
+                    // Injection after all blocks — insert after the assistant message
+                    updated = [
+                      ...updated.slice(0, targetIdx + 1),
+                      injMsg,
+                      ...updated.slice(targetIdx + 1),
+                    ];
                   } else {
-                    // Find the anchor message and insert tool_calls after it
-                    const anchorIdx = newMessages.findIndex((m: any) => m.id === anchorId);
-                    if (anchorIdx >= 0) {
-                      const toolMsgs = tools.map(tc => ({
-                        id: tc.id,
-                        role: 'tool_call',
-                        content: '',
-                        tool_name: tc.tool_name,
-                        tool_id: tc.tool_id,
-                        args: tc.args,
-                        output_summary: tc.output_summary,
-                        is_error: tc.is_error,
-                        hidden: true,
-                      }));
-                      newMessages.splice(anchorIdx + 1, 0, ...toolMsgs);
-                    }
+                    // Split the assistant message at the injection point.
+                    // IMPORTANT: Use unique IDs for both halves to prevent ID collisions
+                    // when multiple injections target the same message. Clear `content`
+                    // since block-based messages render via blocks, not content.
+                    const firstHalf: ChatMessage = {
+                      id: `${targetMsg.id}-pre-${i}`,
+                      role: targetMsg.role,
+                      blocks: blocks.slice(0, injectionBlockIndex),
+                      isStreaming: false,
+                      content: '',
+                    };
+                    const secondHalf: ChatMessage = {
+                      id: `${targetMsg.id}-cont-${i}`,
+                      role: targetMsg.role,
+                      blocks: blocks.slice(injectionBlockIndex),
+                      isStreaming: false,
+                      content: '',
+                    };
+                    updated = [
+                      ...updated.slice(0, targetIdx),
+                      firstHalf,
+                      injMsg,
+                      secondHalf,
+                      ...updated.slice(targetIdx + 1),
+                    ];
+                  }
+                } else {
+                  // Fallback: insert before last assistant message
+                  const lastAssistantIdx = updated.findLastIndex(m => m.role === 'assistant');
+                  if (lastAssistantIdx > 0) {
+                    updated = [
+                      ...updated.slice(0, lastAssistantIdx),
+                      injMsg,
+                      ...updated.slice(lastAssistantIdx),
+                    ];
+                  } else {
+                    updated.push(injMsg);
                   }
                 }
-                return newMessages;
-              });
+              }
+              injectedMessagesRef.current = [];
             }
-            return new Map();
+
+            return updated;
           });
-          lastFinalizedStreamingMsgId.current = null;
-          pendingToolArgs.current.clear();
-
-          // Finalize any streaming messages and mark all messages as complete
-          setMessages(prev => prev.map(m => {
-            const updates: Partial<ChatMessage> = {};
-            if (m.isStreaming) updates.isStreaming = false;
-            if (m.status && m.status !== 'complete') updates.status = 'complete';
-            return Object.keys(updates).length > 0 ? { ...m, ...updates } : m;
-          }));
-
-          streamingContent.current = '';
-          lastEventWasToolEnd.current = false;
-          segmentFinalizedByToolStart.current = false;
 
           // Clear pending messages queue - conversation turn complete
           pendingMessages.current.clear();
+          pendingDeltas.current.clear();
 
           // Signal that we should process any queued user messages
           shouldProcessQueue.current = true;
 
+          // Mark remaining queued messages: confirmed ones are cleared (already inserted),
+          // pending ones are marked as not_delivered (server didn't process them before turn ended)
+          setQueuedMessages(prev => {
+            console.log(`[DONE] queuedMessages remaining: ${prev.length}, statuses: ${prev.map(m => m.status).join(',')}`);
+            if (prev.length === 0) return prev;
+            const remaining = prev.filter(m => m.status !== 'confirmed');
+            if (remaining.length === 0) return [];
+            return remaining.map(m => m.status !== 'not_delivered' ? { ...m, status: 'not_delivered' as QueuedMessageStatus } : m);
+          });
+
           // Clear pending message - it's now saved on server
           try {
             sessionStorage.removeItem(pendingMsgKey);
-            // Save last sync point for recovery
             if (data.sessionId) {
               sessionStorage.setItem(lastSyncKey, JSON.stringify({
                 sessionId: data.sessionId,
@@ -937,105 +927,11 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
             setSessionId(data.sessionId);
           }
 
-          // Sync with server's authoritative messages to recover any segments
-          // that may have been lost during streaming (e.g., pre-tool text segments).
-          // If the done event includes messages directly (e.g. wake-up handler),
-          // use them immediately to avoid a fetch round-trip and tool chip flicker.
-          {
-            const syncMessages = data.messages;
-            const syncId = data.sessionId || sessionId;
-
-            const applyServerMessages = (serverMessages: ChatMessage[]) => {
-              setMessages(prev => {
-                // Build lookup of client messages by ID for merging
-                const clientById = new Map(prev.map(m => [m.id, m]));
-                // Also index client form messages by formId for cross-ID matching
-                const clientFormByFormId = new Map<string, ChatMessage>();
-                for (const m of prev) {
-                  if (m.formData?.formId) {
-                    clientFormByFormId.set(m.formData.formId, m);
-                  }
-                }
-
-                // Collect client-side tool_call messages that the server doesn't have.
-                // These were generated from streaming tool pills as a defensive fallback.
-                const serverIds = new Set(serverMessages.map((m: any) => m.id));
-                const serverHasToolCalls = serverMessages.some((m: any) => m.role === 'tool_call');
-                const clientToolCalls: any[] = [];
-                if (!serverHasToolCalls) {
-                  for (const m of prev) {
-                    if ((m as any).role === 'tool_call' && !serverIds.has(m.id)) {
-                      clientToolCalls.push(m);
-                    }
-                  }
-                }
-
-                // Use server messages as base, merging in client-only fields
-                const result = serverMessages.map((serverMsg: ChatMessage) => {
-                  const clientMsg = clientById.get(serverMsg.id);
-                  if (clientMsg) {
-                    // Merge: server content is authoritative, keep client UI state
-                    return {
-                      ...serverMsg,
-                      status: clientMsg.status || serverMsg.status,
-                      formData: clientMsg.formData || serverMsg.formData
-                    };
-                  }
-                  // For form messages: match by formId even if IDs differ
-                  if (serverMsg.formData?.formId) {
-                    const clientForm = clientFormByFormId.get(serverMsg.formData.formId);
-                    if (clientForm?.formData) {
-                      // Preserve client-side submission status
-                      return {
-                        ...serverMsg,
-                        formData: clientForm.formData.status === 'submitted'
-                          ? clientForm.formData
-                          : serverMsg.formData
-                      };
-                    }
-                  }
-                  return serverMsg;
-                });
-
-                // If server didn't include tool_calls but we captured them from streaming,
-                // splice them back in at the right positions (after last assistant message
-                // that precedes the user message they were anchored to, or at end)
-                if (clientToolCalls.length > 0) {
-                  // Find the last assistant message index for each tool_call
-                  // Simple heuristic: insert all client tool_calls before the final
-                  // assistant message (they likely belong between the two text segments)
-                  const lastAssistantIdx = result.reduce((acc: number, m: any, i: number) =>
-                    m.role === 'assistant' ? i : acc, -1);
-                  if (lastAssistantIdx > 0) {
-                    // Insert before the last assistant message
-                    result.splice(lastAssistantIdx, 0, ...clientToolCalls);
-                  } else {
-                    // Fallback: append at end
-                    result.push(...clientToolCalls);
-                  }
-                }
-
-                return result;
-              });
-            };
-
-            if (syncMessages) {
-              // Messages included in done event — apply immediately (no fetch needed)
-              applyServerMessages(syncMessages);
-            } else if (syncId && syncId !== 'new') {
-              // Fetch from server (standard streaming path)
-              fetch(`${API_URL}/chat/history/${syncId}`)
-                .then(res => res.ok ? res.json() : null)
-                .then(chatData => {
-                  if (chatData?.messages) {
-                    applyServerMessages(chatData.messages);
-                  }
-                })
-                .catch(() => {
-                  // Ignore - client state is the fallback
-                });
-            }
-          }
+          // Keep streaming blocks intact — don't sync with server's disk format.
+          // The streaming state captured everything (text, thinking, tools) with proper
+          // block-based rendering. Server's conv.messages use different IDs and don't
+          // include blocks, so syncing destroys thinking blocks and per-block separation.
+          // Server already saved to disk for future reloads; current session keeps blocks.
           break;
 
         case 'error':
@@ -1048,9 +944,7 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
           }]);
           setStatus('idle');
           setStatusText('');
-          setStreamingToolMap(new Map()); lastFinalizedStreamingMsgId.current = null;
-          pendingToolArgs.current.clear();
-          streamingContent.current = '';
+          pendingDeltas.current.clear();
           break;
 
         case 'result_meta':
@@ -1143,16 +1037,11 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
           console.log('Previous active sessions:', data.active_sessions);
 
           // FIX BUG 3: CRITICAL - Reset ALL processing state on server restart
-          // Any pending work was lost when server restarted. The server will have
-          // cleared stale WAL entries, so we must reset client state to match.
           setStatus('idle');
           setStatusText('');
           setActiveTools(new Map());
-          setStreamingToolMap(new Map()); lastFinalizedStreamingMsgId.current = null;
-          pendingToolArgs.current.clear();
           setTodos([]);
-          streamingContent.current = '';
-          lastEventWasToolEnd.current = false;
+          pendingDeltas.current.clear();
           pendingMessages.current.clear();
 
           // Clear any pending message in sessionStorage too
@@ -1187,8 +1076,7 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
           console.log(`Restart continuation: session=${data.session_id}, agent=${data.agent}, role=${data.role}, source=${data.source}, reason=${data.reason}`);
 
           // Reset any stale state first
-          streamingContent.current = '';
-          lastEventWasToolEnd.current = false;
+          pendingDeltas.current.clear();
           pendingMessages.current.clear();
 
           // Load the session and prepare for continuation
@@ -1197,19 +1085,22 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
             fetch(`${API_URL}/chat/history/${data.session_id}`)
               .then(res => res.ok ? res.json() : null)
               .then(chatData => {
-                if (chatData?.messages) {
-                  // FIX BUG 2: Replace messages entirely to prevent duplicates
-                  setMessages(chatData.messages);
-                  console.log(`Loaded ${chatData.messages.length} messages for continuation`);
+                if (chatData) {
+                  // Prefer display_messages (has blocks/thinking) over flat messages
+                  const msgs = chatData.display_messages || chatData.messages;
+                  if (msgs) {
+                    setMessages(msgs);
+                    console.log(`Loaded ${msgs.length} messages for continuation (display_messages=${'display_messages' in chatData})`);
+                  }
                 }
               })
               .catch(err => console.warn('Could not load session for continuation:', err));
 
-            // Show that we're processing the continuation
-            // This is legitimate because Claude IS actively working
-            setStatus('thinking');
-            const sourceLabel = data.source === 'settings_ui' ? 'Settings UI' : data.source;
-            setStatusText(`Resuming after restart (by ${sourceLabel})...`);
+            // DON'T set status here — let actual streaming events (message_start,
+            // block_start, etc.) set the status naturally. If the model already
+            // completed before restart, no streaming events will arrive and
+            // status correctly stays idle. Setting it here caused a stuck
+            // "Processing..." indicator when models were re-invoked unnecessarily.
           }
           break;
 
@@ -1219,51 +1110,116 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
           setStatus('idle');
           setStatusText('');
           setActiveTools(new Map());
-          setStreamingToolMap(new Map()); lastFinalizedStreamingMsgId.current = null;
-          pendingToolArgs.current.clear();
           setTodos([]);
-          // Finalize any streaming messages
-          setMessages(prev => prev.map(m =>
-            m.isStreaming ? { ...m, isStreaming: false } : m
-          ));
-          streamingContent.current = '';
-          lastEventWasToolEnd.current = false;
-          // Clear queued/injected messages on interrupt
-          setQueuedMessages([]);
+          // Finalize any streaming messages and insert confirmed injected messages at their positions
+          setMessages(prev => {
+            let updated = prev.map(m =>
+              m.isStreaming ? { ...m, isStreaming: false } : m
+            );
+            // Same position-based insertion logic as the done handler
+            const injectedInfos = injectedMessagesRef.current;
+            if (injectedInfos.length > 0) {
+              const existingIds = new Set(updated.map(m => m.id));
+              const dedupedInfos = injectedInfos.filter(info => !existingIds.has(info.message.id));
+              for (let i = dedupedInfos.length - 1; i >= 0; i--) {
+                const { message: injMsg, injectionBlockIndex, injectionMessageId } = dedupedInfos[i];
+                const targetIdx = updated.findIndex(m => m.id === injectionMessageId);
+                if (targetIdx >= 0 && updated[targetIdx].blocks && updated[targetIdx].blocks!.length > 0) {
+                  const targetMsg = updated[targetIdx];
+                  const blocks = targetMsg.blocks!;
+                  if (injectionBlockIndex <= 0) {
+                    updated = [...updated.slice(0, targetIdx), injMsg, ...updated.slice(targetIdx)];
+                  } else if (injectionBlockIndex >= blocks.length) {
+                    updated = [...updated.slice(0, targetIdx + 1), injMsg, ...updated.slice(targetIdx + 1)];
+                  } else {
+                    const firstHalf: ChatMessage = { id: `${targetMsg.id}-pre-${i}`, role: targetMsg.role, blocks: blocks.slice(0, injectionBlockIndex), isStreaming: false, content: '' };
+                    const secondHalf: ChatMessage = { id: `${targetMsg.id}-cont-${i}`, role: targetMsg.role, blocks: blocks.slice(injectionBlockIndex), isStreaming: false, content: '' };
+                    updated = [...updated.slice(0, targetIdx), firstHalf, injMsg, secondHalf, ...updated.slice(targetIdx + 1)];
+                  }
+                } else {
+                  const lastAssistantIdx = updated.findLastIndex(m => m.role === 'assistant');
+                  if (lastAssistantIdx > 0) {
+                    updated = [...updated.slice(0, lastAssistantIdx), injMsg, ...updated.slice(lastAssistantIdx)];
+                  } else {
+                    updated.push(injMsg);
+                  }
+                }
+              }
+              injectedMessagesRef.current = [];
+            }
+            return updated;
+          });
+          pendingDeltas.current.clear();
+          // Mark remaining queued messages: confirmed ones are cleared, pending ones are not_delivered
+          setQueuedMessages(prev => {
+            if (prev.length === 0) return prev;
+            const remaining = prev.filter(m => m.status !== 'confirmed');
+            if (remaining.length === 0) return [];
+            return remaining.map(m => m.status !== 'not_delivered' ? { ...m, status: 'not_delivered' as QueuedMessageStatus } : m);
+          });
           break;
 
         case 'message_injected':
           // Server confirmed message was injected mid-stream
-          // Add it to the message list (server already saved it)
-          console.log(`Message injected: ${data.message?.content?.slice(0, 50)}`);
+          // DON'T insert into messages yet — keep the queued message visible at the bottom
+          // during streaming. We'll insert at the exact injection position when the turn completes.
+          console.log(`[INJECT] message_injected received:`, JSON.stringify(data.message));
           if (data.message) {
+            const injectedMsg: ChatMessage = {
+              ...data.message,
+              status: 'injected' as MessageStatus,
+              injected: true,
+            };
+            // Capture injection position: find the streaming assistant message and record its current block count
+            // Using setMessages callback to read current state without stale closure issues
             setMessages(prev => {
-              // Check if already exists
-              if (prev.some(m => m.id === data.message.id)) {
+              const streamingMsg = [...prev].reverse().find(m => m.isStreaming && m.role === 'assistant');
+              if (!streamingMsg) {
+                console.warn(`[INJECT] No streaming assistant message found — cannot determine injection position`);
+                // Still store for deferred insertion, will use fallback placement
+                if (!injectedMessagesRef.current.some(info => info.message.id === injectedMsg.id)) {
+                  injectedMessagesRef.current.push({
+                    message: injectedMsg,
+                    injectionBlockIndex: -1,
+                    injectionMessageId: '',
+                  });
+                }
                 return prev;
               }
-              return [...prev, {
-                ...data.message,
-                status: 'injected' as MessageStatus
-              }];
+              const blockIndex = streamingMsg.blocks?.length ?? 0;
+              const messageId = streamingMsg.id;
+              console.log(`[INJECT] captured position: block ${blockIndex} of message ${messageId}`);
+              // Avoid duplicates
+              if (!injectedMessagesRef.current.some(info => info.message.id === injectedMsg.id)) {
+                injectedMessagesRef.current.push({
+                  message: injectedMsg,
+                  injectionBlockIndex: blockIndex,
+                  injectionMessageId: messageId,
+                });
+                console.log(`[INJECT] stored for deferred insertion, count: ${injectedMessagesRef.current.length}`);
+              }
+              return prev; // Don't modify messages
             });
-            // Remove from queued messages (UI display)
-            setQueuedMessages(prev => prev.filter(m => m.id !== data.message.id));
+            // Update queued message status to 'confirmed' (keeps it visible at the bottom)
+            setQueuedMessages(prev => prev.map(m =>
+              m.id === data.message.id ? { ...m, status: 'confirmed' as QueuedMessageStatus } : m
+            ));
           }
           break;
 
         case 'inject_success':
-          // Our injection was successful - remove from queue display
+          // Injection acknowledged by server - mark as confirmed (will be removed when message_injected arrives)
           console.log(`Injection confirmed: ${data.msgId}`);
-          setQueuedMessages(prev => prev.filter(m => m.id !== data.msgId));
+          setQueuedMessages(prev => prev.map(m =>
+            m.id === data.msgId ? { ...m, status: 'confirmed' as QueuedMessageStatus } : m
+          ));
           break;
 
         case 'inject_failed':
-          // Injection failed - show error and keep in queue for retry or manual action
+          // Injection failed - mark as not delivered so user can copy/dismiss
           console.error(`Injection failed: ${data.error}`);
-          // Mark the queued message as failed
           setQueuedMessages(prev => prev.map(m =>
-            m.id === data.msgId ? { ...m, failed: true } : m
+            m.id === data.msgId ? { ...m, status: 'not_delivered' as QueuedMessageStatus } : m
           ));
           break;
 
@@ -1276,9 +1232,12 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
             fetch(`${API_URL}/chat/history/${sessionId}`)
               .then(res => res.ok ? res.json() : null)
               .then(chatData => {
-                if (chatData?.messages) {
-                  setMessages(chatData.messages);
-                  console.log(`Updated chat with ${chatData.messages.length} messages after agent wake-up`);
+                if (chatData) {
+                  const msgs = chatData.display_messages || chatData.messages;
+                  if (msgs) {
+                    setMessages(msgs);
+                    console.log(`Updated chat with ${msgs.length} messages after agent wake-up`);
+                  }
                 }
               })
               .catch(err => console.warn('Could not reload chat after agent notification:', err));
@@ -1339,7 +1298,7 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
 
     return () => {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
-      // Cancel any pending streaming RAF
+      // Cancel any pending delta flush RAF
       if (rafId.current) {
         cancelAnimationFrame(rafId.current);
         rafId.current = null;
@@ -1433,9 +1392,7 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
       setMessages(prev => prev.map(m =>
         m.isStreaming ? { ...m, isStreaming: false } : m
       ));
-      streamingContent.current = '';
-      lastEventWasToolEnd.current = false;
-      segmentFinalizedByToolStart.current = false;
+      pendingDeltas.current.clear();
     }, timeoutMs);
 
     return () => {
@@ -1490,9 +1447,7 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
     }]);
     setStatus('thinking');
     setStatusText('Sending...');
-    streamingContent.current = '';
-    lastEventWasToolEnd.current = false;
-    segmentFinalizedByToolStart.current = false;
+    pendingDeltas.current.clear();
 
     const wsPayload: Record<string, any> = {
       action: 'message',
@@ -1544,7 +1499,8 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
     const queuedMsg: UserQueuedMessage = {
       id: msgId,
       content: text,
-      timestamp: Date.now()
+      timestamp: Date.now(),
+      status: 'pending'
     };
     setQueuedMessages(prev => [...prev, queuedMsg]);
 
@@ -1634,7 +1590,7 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
 
     setStatus('thinking');
     setStatusText('Re-processing...');
-    streamingContent.current = '';
+    pendingDeltas.current.clear();
 
     ws.current.send(JSON.stringify({
       action: 'edit',
@@ -1662,7 +1618,7 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
 
     setStatus('thinking');
     setStatusText('Regenerating...');
-    streamingContent.current = '';
+    pendingDeltas.current.clear();
 
     ws.current.send(JSON.stringify({
       action: 'regenerate',
@@ -1700,15 +1656,14 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
     setStatus('idle');
     setStatusText('');
     setActiveTools(new Map());
-    setStreamingToolMap(new Map()); lastFinalizedStreamingMsgId.current = null;
-    pendingToolArgs.current.clear();
     setTodos([]);
     setCurrentAgent(null);
-    streamingContent.current = '';
-    lastEventWasToolEnd.current = false;
-    segmentFinalizedByToolStart.current = false;
-    // Clear any queued messages when starting a new chat
+    pendingDeltas.current.clear();
+    // Clear any queued/injected messages when starting a new chat
     setQueuedMessages([]);
+    injectedMessagesRef.current = [];
+    // Guard against stale events from old session arriving before state response
+    awaitingStateResponse.current = true;
     localStorage.removeItem(sessionKey);
     // Notify server: unregister from old session, don't redirect to active streams
     if (ws.current && ws.current.readyState === WebSocket.OPEN) {
@@ -1728,27 +1683,23 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
       // (useEffect runs after render, leaving a gap where stale events could leak through)
       sessionIdRef.current = id;
 
-      // Bug fix: Cancel any pending RAF from the previous session's streaming
-      // Without this, a scheduled RAF flush could fire after the session switch
-      // and corrupt the new session's messages with stale streaming content
+      // Cancel any pending RAF from the previous session
       if (rafId.current) {
         cancelAnimationFrame(rafId.current);
         rafId.current = null;
       }
-      pendingStreamUpdate.current = false;
+      pendingDeltas.current.clear();
+      // Clear injected messages from previous chat to prevent leaking across chats
+      injectedMessagesRef.current = [];
 
-      // Reset streaming state before loading
+      // Reset all state
       setStatus('idle');
       setStatusText('');
       setActiveTools(new Map());
-      setStreamingToolMap(new Map()); lastFinalizedStreamingMsgId.current = null;
-      pendingToolArgs.current.clear();
       setTodos([]);
-      streamingContent.current = '';
-      lastEventWasToolEnd.current = false;
-      segmentFinalizedByToolStart.current = false;
       // Clear messages immediately to prevent flash of stale content from previous tab
       setMessages([]);
+      setQueuedMessages([]);
 
       // Bug fix: Immediately set agent from caller-provided hint (e.g. from tab data)
       // This prevents the brief flash of wrong agent name while waiting for the
@@ -1774,8 +1725,8 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
         const res = await fetch(`${API_URL}/chat/history/${id}`);
         if (!res.ok) throw new Error("Failed to load");
         const data = await res.json();
-        setMessages(data.messages || []);
-        setCurrentAgent(data.agent || null);
+        setMessages(data.display_messages || data.messages || []);
+        setCurrentAgent(data.agent || "ren");
       }
     } catch (e) {
       console.error(e);
@@ -1805,6 +1756,12 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
   // Clear all queued messages (user can cancel them)
   const clearQueuedMessages = useCallback(() => {
     setQueuedMessages([]);
+    injectedMessagesRef.current = [];
+  }, []);
+
+  // Dismiss a single queued message (e.g. after copy or not-delivered)
+  const dismissQueuedMessage = useCallback((id: string) => {
+    setQueuedMessages(prev => prev.filter(m => m.id !== id));
   }, []);
 
   return {
@@ -1825,9 +1782,9 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
     connectionStatus,
     queuedMessages,
     clearQueuedMessages,
+    dismissQueuedMessage,
     currentAgent,
     sendMessageWithAgent,
-    streamingToolMap,
     todos,
   };
 };

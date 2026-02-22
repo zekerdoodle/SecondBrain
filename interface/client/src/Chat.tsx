@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   Send, Loader2, Plus, History, ChevronLeft, Pencil, RotateCcw, X,
-  File as FileIcon, Trash2, MessageCircle, Sparkles, Clock, Square, Search,
+  File as FileIcon, Trash2, MessageCircle, Clock, Square, Search,
   Check, CheckCheck, AlertCircle, Crown, ImagePlus, Circle, Copy
 } from 'lucide-react';
 import { ChatSearch } from './ChatSearch';
@@ -20,8 +20,9 @@ import { ChessGame, useChessGame } from './components/ChessGame';
 import { AgentSelector } from './components/AgentSelector';
 import { ChatTabBar } from './components/ChatTabBar';
 import { getAgentIcon } from './utils/agentIcons';
-import { getToolDisplayName } from './utils/toolDisplay';
+
 import { ToolCallChips, type ToolCallData } from './components/ToolCallChips';
+import { BlockRenderer } from './components/BlockView';
 import type { ChatTab } from './types';
 
 // Accent color is now managed via CSS variables (--accent-primary)
@@ -160,7 +161,8 @@ const ChatMessageItem = React.memo<ChatMessageProps>(({
           <div className={clsx("flex flex-col", isUser ? "items-end max-w-[75%]" : "w-full")}>
             <div
               className={clsx(
-                "rounded-2xl px-4 py-3 text-[15px] leading-relaxed animate-in",
+                "rounded-2xl px-4 py-3 text-[15px] leading-relaxed",
+                !msg.isStreaming && "animate-in",
                 isUser
                   ? "bg-[var(--user-bg)] text-white rounded-br-md"
                   : "w-full bg-[var(--bg-secondary)] border border-[var(--border-color)] text-[var(--text-primary)] rounded-bl-md shadow-warm",
@@ -256,13 +258,8 @@ const ChatMessageItem = React.memo<ChatMessageProps>(({
               </div>
             )}
             </div>
-            {isUser && (msg.status || msg.injected) && (
+            {isUser && msg.status && (
               <div className="flex items-center gap-1 mt-1 mr-1">
-                {msg.injected && (
-                  <span title="Injected mid-stream" className="text-xs text-amber-500 mr-1">
-                    ⚡
-                  </span>
-                )}
                 {msg.status === 'pending' && (
                   <span title="Sending...">
                     <Clock size={12} className="text-[var(--text-muted)]" />
@@ -278,14 +275,15 @@ const ChatMessageItem = React.memo<ChatMessageProps>(({
                     <CheckCheck size={12} className="text-emerald-500" />
                   </span>
                 )}
-                {(msg.status === 'injected' || (!msg.status && msg.injected)) && (
-                  <span title="Injected to active stream">
-                    <Sparkles size={12} className="text-amber-500" />
-                  </span>
-                )}
                 {msg.status === 'failed' && (
                   <span title="Failed to send">
                     <AlertCircle size={12} className="text-red-500" />
+                  </span>
+                )}
+                {msg.status === 'injected' && (
+                  <span title="Sent mid-stream" className="flex items-center gap-1">
+                    <Check size={12} className="text-amber-500" />
+                    <span className="text-[10px] text-amber-500">mid-stream</span>
                   </span>
                 )}
               </div>
@@ -327,6 +325,7 @@ const ChatMessageItem = React.memo<ChatMessageProps>(({
     prev.msg.isStreaming === next.msg.isStreaming &&
     prev.msg.isError === next.msg.isError &&
     prev.msg.formData?.status === next.msg.formData?.status &&
+    prev.msg.blocks === next.msg.blocks &&
     prev.isLastAssistant === next.isLastAssistant &&
     prev.isContinuation === next.isContinuation &&
     prev.isEditing === next.isEditing &&
@@ -570,9 +569,9 @@ export const Chat: React.FC<ChatProps> = ({
     connectionStatus,
     queuedMessages,
     clearQueuedMessages,
+    dismissQueuedMessage,
     currentAgent,
     sendMessageWithAgent,
-    streamingToolMap,
     todos,
   } = claude;
 
@@ -1202,25 +1201,32 @@ export const Chat: React.FC<ChatProps> = ({
     return '';
   };
 
-  // Group messages: attach tool_call messages to the preceding assistant message
-  // Tool calls are stored as { role: 'tool_call', hidden: true, ... } in the message array
-  interface MessageGroup {
+  // Process messages: for block-based messages render blocks directly,
+  // for legacy messages group tool_call messages with preceding assistant
+  interface ProcessedMessage {
     message: ChatMessage;
-    trailingToolCalls: ToolCallData[];
+    legacyToolCalls: ToolCallData[];
   }
 
-  const messageGroups = useMemo<MessageGroup[]>(() => {
-    const groups: MessageGroup[] = [];
+  const processedMessages = useMemo<ProcessedMessage[]>(() => {
+    const result: ProcessedMessage[] = [];
 
-    for (const msg of messages) {
+    for (let i = 0; i < messages.length; i++) {
+      const msg = messages[i];
       if (msg.role === 'system') continue;
 
-      // Tool call messages — attach to preceding assistant message
+      // New format: has blocks — render directly, no grouping needed
+      if (msg.blocks && msg.blocks.length > 0) {
+        result.push({ message: msg, legacyToolCalls: [] });
+        continue;
+      }
+
+      // Old format: group tool_call messages with preceding assistant
       if ((msg as any).role === 'tool_call') {
         const tc = msg as unknown as ToolCallMessage;
-        const lastGroup = groups[groups.length - 1];
-        if (lastGroup && lastGroup.message.role === 'assistant') {
-          lastGroup.trailingToolCalls.push({
+        const last = result[result.length - 1];
+        if (last && last.message.role === 'assistant') {
+          last.legacyToolCalls.push({
             id: tc.id,
             tool_name: tc.tool_name,
             tool_id: tc.tool_id,
@@ -1235,10 +1241,10 @@ export const Chat: React.FC<ChatProps> = ({
       // Skip hidden non-tool messages (ping mode wake-up triggers)
       if (msg.hidden) continue;
 
-      groups.push({ message: msg, trailingToolCalls: [] });
+      result.push({ message: msg, legacyToolCalls: [] });
     }
 
-    return groups;
+    return result;
   }, [messages]);
 
 
@@ -1413,7 +1419,7 @@ export const Chat: React.FC<ChatProps> = ({
       </div>
 
       {/* Chat Tabs */}
-      {chatTabs.length > 0 && (
+      {(chatTabs.length > 0 || isSecondary) && (
         <ChatTabBar
           tabs={chatTabs}
           activeSessionId={sessionId}
@@ -1438,7 +1444,7 @@ export const Chat: React.FC<ChatProps> = ({
       {/* Messages */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto">
         <div className="max-w-5xl mx-auto px-4 py-6 space-y-6">
-          {messageGroups.length === 0 && (() => {
+          {processedMessages.length === 0 && (() => {
             const EmptyIcon = getAgentIcon(selectedAgentObj?.icon);
             return (
               <div className="flex flex-col items-center justify-center h-[60vh] text-[var(--text-muted)]">
@@ -1456,9 +1462,9 @@ export const Chat: React.FC<ChatProps> = ({
             );
           })()}
 
-          {messageGroups.map((group, idx) => {
-            const { message: msg, trailingToolCalls } = group;
+          {processedMessages.map(({ message: msg, legacyToolCalls }, idx) => {
             const isUser = msg.role === 'user';
+            const hasBlocks = msg.blocks && msg.blocks.length > 0;
 
             // Skip form submission messages - the InlineForm already shows the summary
             if (isUser && msg.content.startsWith('[FORM_SUBMISSION:')) {
@@ -1470,119 +1476,77 @@ export const Chat: React.FC<ChatProps> = ({
               return null;
             }
 
-            const prevGroup = idx > 0 ? messageGroups[idx - 1] : null;
+            // Skip empty assistant messages (no blocks and no content)
+            if (!isUser && !hasBlocks && msg.isStreaming && !msg.content.trim()) {
+              return null;
+            }
+
+            // For block-based messages, skip if all blocks are empty in-progress
+            if (!isUser && hasBlocks) {
+              const hasVisibleContent = msg.blocks!.some(b =>
+                b.content.trim() || b.type === 'tool_use' || b.type === 'tool_result' || b.type === 'thinking'
+              );
+              if (!hasVisibleContent && msg.isStreaming) {
+                return null;
+              }
+            }
+
+            const prevMsg = idx > 0 ? processedMessages[idx - 1] : null;
 
             return (
               <React.Fragment key={msg.id}>
-                <ChatMessageItem
-                  msg={msg}
-                  isUser={isUser}
-                  isLastAssistant={msg.role === 'assistant' && idx === messageGroups.length - 1}
-                  isContinuation={!isUser && prevGroup?.message.role === 'assistant'}
-                  isEditing={editingId === msg.id}
-                  editText={editText}
-                  onEditTextChange={setEditText}
-                  status={status}
-                  agentDisplayName={agentDisplayName}
-                  onStartEdit={startEdit}
-                  onCancelEdit={cancelEdit}
-                  onSaveEdit={saveEdit}
-                  onRegenerate={handleRegenerate}
-                  onFormSubmit={handleFormSubmit}
-                  onOpenFile={onOpenFile}
-                />
-                {trailingToolCalls.length > 0 && !msg.isStreaming && (
-                  <ToolCallChips toolCalls={trailingToolCalls} />
+                {hasBlocks ? (
+                  // Block-based rendering (new format)
+                  <div className={clsx("flex flex-col gap-1", isUser ? "items-end" : "items-start w-full")}>
+                    {/* Header — agent name, only if not continuation */}
+                    {!(!isUser && prevMsg?.message.role === 'assistant') && (
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="text-xs font-medium text-[var(--text-muted)]">
+                          {isUser ? 'You' : agentDisplayName}
+                        </span>
+                      </div>
+                    )}
+
+                    {/* Render blocks individually with appropriate wrappers */}
+                    <BlockRenderer blocks={msg.blocks!} onOpenFile={onOpenFile} />
+                  </div>
+                ) : (
+                  // Legacy rendering
+                  <ChatMessageItem
+                    msg={msg}
+                    isUser={isUser}
+                    isLastAssistant={msg.role === 'assistant' && idx === processedMessages.length - 1}
+                    isContinuation={!isUser && prevMsg?.message.role === 'assistant'}
+                    isEditing={editingId === msg.id}
+                    editText={editText}
+                    onEditTextChange={setEditText}
+                    status={status}
+                    agentDisplayName={agentDisplayName}
+                    onStartEdit={startEdit}
+                    onCancelEdit={cancelEdit}
+                    onSaveEdit={saveEdit}
+                    onRegenerate={handleRegenerate}
+                    onFormSubmit={handleFormSubmit}
+                    onOpenFile={onOpenFile}
+                  />
                 )}
-                {/* Streaming tool chips: show tools that completed after this message was finalized */}
-                {status !== 'idle' && streamingToolMap.get(msg.id) && (
-                  <ToolCallChips toolCalls={streamingToolMap.get(msg.id)!} />
+
+                {/* Legacy tool chips (old format) */}
+                {legacyToolCalls.length > 0 && !msg.isStreaming && (
+                  <ToolCallChips toolCalls={legacyToolCalls} />
                 )}
               </React.Fragment>
             );
           })}
 
-          {/* Streaming tool chips for tools that fired before any text (rare, but handles edge case) */}
-          {status !== 'idle' && streamingToolMap.get('__pre__') && (
-            <ToolCallChips toolCalls={streamingToolMap.get('__pre__')!} />
-          )}
+          {/* Queued messages are now rendered in fixed strip above input area — see below */}
 
-          {/* Status indicator */}
-          {status !== 'idle' && (
-            <div className="flex flex-col gap-2 animate-in">
-              {activeTools.size > 0 ? (
-                Array.from(activeTools.values())
-                  .sort((a, b) => a.startedAt - b.startedAt)
-                  .map(tool => (
-                    <div key={tool.id} className="flex items-start gap-3 animate-in">
-                      <div
-                        className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
-                        style={{ backgroundColor: 'var(--accent-light)' }}
-                      >
-                        <Loader2 size={18} className="animate-spin" style={{ color: 'var(--accent-primary)' }} />
-                      </div>
-                      <div className="bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-2xl rounded-bl-md px-4 py-3 shadow-warm">
-                        <span className="text-sm text-[var(--text-muted)]">
-                          {getToolDisplayName(tool.name)}
-                          {tool.summary && (
-                            <span className="opacity-60 ml-1.5">
-                              {tool.summary}
-                            </span>
-                          )}
-                        </span>
-                      </div>
-                    </div>
-                  ))
-              ) : (
-                <div className="flex items-start gap-3">
-                  <div
-                    className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
-                    style={{ backgroundColor: 'var(--accent-light)' }}
-                  >
-                    <Loader2 size={18} className="animate-spin" style={{ color: 'var(--accent-primary)' }} />
-                  </div>
-                  <div className="bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-2xl rounded-bl-md px-4 py-3 shadow-warm">
-                    <span className="text-sm text-[var(--text-muted)]">{getStatusDisplay()}</span>
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Injected messages - being sent mid-stream */}
-          {queuedMessages.length > 0 && (
-            <div className="space-y-3 mt-3">
-              {queuedMessages.map((qMsg, idx) => (
-                <div key={qMsg.id} className="flex flex-col items-end animate-in">
-                  <div className="flex items-center gap-2 mb-2">
-                    <span className={`text-xs font-medium flex items-center gap-1 ${
-                      qMsg.failed ? 'text-red-500' : 'text-amber-600 dark:text-amber-400'
-                    }`}>
-                      {qMsg.failed ? (
-                        <>
-                          <AlertCircle size={12} />
-                          Failed to inject
-                        </>
-                      ) : (
-                        <>
-                          <Sparkles size={12} />
-                          Injecting {queuedMessages.length > 1 ? `(${idx + 1}/${queuedMessages.length})` : ''}
-                        </>
-                      )}
-                    </span>
-                    <span className="text-xs text-[var(--text-muted)]">You</span>
-                  </div>
-                  <div className={`max-w-[75%] rounded-2xl px-4 py-3 text-[15px] leading-relaxed rounded-br-md border-2 border-dashed ${
-                    qMsg.failed
-                      ? 'border-red-400/50 bg-red-50/50 dark:bg-red-900/20'
-                      : 'border-amber-400/50 bg-amber-50/50 dark:bg-amber-900/20'
-                  } text-[var(--text-secondary)]`}>
-                    <div className="whitespace-pre-wrap font-chat" style={{ fontFamily: 'var(--font-chat)', fontSize: 'var(--font-size-base)' }}>
-                      {qMsg.content}
-                    </div>
-                  </div>
-                </div>
-              ))}
+          {/* Status indicator — only for legacy (non-block) streaming */}
+          {status !== 'idle' && activeTools.size === 0 &&
+           !messages.some(m => m.isStreaming && m.blocks && m.blocks.length > 0) && (
+            <div className="flex items-center gap-2 pl-11 animate-in">
+              <Loader2 size={14} className="animate-spin" style={{ color: 'var(--accent-primary)' }} />
+              <span className="text-xs text-[var(--text-muted)]">{getStatusDisplay()}</span>
             </div>
           )}
         </div>
@@ -1626,6 +1590,75 @@ export const Chat: React.FC<ChatProps> = ({
                 );
               })}
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Queued messages strip — fixed above input, visually distinct */}
+      {queuedMessages.length > 0 && (
+        <div className="border-t-2 border-amber-500/40 bg-amber-50/10 dark:bg-amber-900/10 px-4 py-2">
+          <div className="max-w-5xl mx-auto space-y-2">
+            {queuedMessages.map((qMsg) => (
+              <div key={qMsg.id} className="flex items-center gap-3 animate-in">
+                {/* Status icon */}
+                <div className="flex-shrink-0">
+                  {qMsg.status === 'pending' && (
+                    <Clock size={16} className="text-amber-500 animate-pulse" />
+                  )}
+                  {qMsg.status === 'confirmed' && (
+                    <Check size={16} className="text-emerald-500" />
+                  )}
+                  {qMsg.status === 'not_delivered' && (
+                    <AlertCircle size={16} className="text-red-500" />
+                  )}
+                </div>
+
+                {/* Message preview — compact inline */}
+                <div className="flex-1 min-w-0 flex items-center gap-2">
+                  <span className={clsx(
+                    "text-sm truncate",
+                    qMsg.status === 'not_delivered'
+                      ? "text-red-400"
+                      : "text-[var(--text-primary)]"
+                  )} style={{ fontFamily: 'var(--font-chat)' }}>
+                    {qMsg.content}
+                  </span>
+                  <span className={clsx(
+                    "text-[11px] flex-shrink-0",
+                    qMsg.status === 'pending' && "text-amber-500",
+                    qMsg.status === 'confirmed' && "text-emerald-500",
+                    qMsg.status === 'not_delivered' && "text-red-400"
+                  )}>
+                    {qMsg.status === 'pending' && 'queued'}
+                    {qMsg.status === 'confirmed' && 'injected'}
+                    {qMsg.status === 'not_delivered' && 'failed'}
+                  </span>
+                </div>
+
+                {/* Actions */}
+                <div className="flex items-center gap-1 flex-shrink-0">
+                  {qMsg.status === 'not_delivered' && (
+                    <button
+                      onClick={() => {
+                        navigator.clipboard.writeText(qMsg.content);
+                        showToast({ type: 'notification', title: 'Copied to clipboard', duration: 2000 });
+                      }}
+                      className="p-1 hover:bg-[var(--bg-tertiary)] rounded text-[var(--text-muted)] hover:text-[var(--text-secondary)] transition-colors"
+                      title="Copy message"
+                    >
+                      <Copy size={12} />
+                    </button>
+                  )}
+                  <button
+                    onClick={() => dismissQueuedMessage(qMsg.id)}
+                    className="p-1 hover:bg-[var(--bg-tertiary)] rounded text-[var(--text-muted)] hover:text-[var(--text-secondary)] transition-colors"
+                    title={qMsg.status === 'not_delivered' ? 'Dismiss' : 'Cancel'}
+                  >
+                    <X size={12} />
+                  </button>
+                </div>
+              </div>
+            ))}
           </div>
         </div>
       )}
@@ -1678,26 +1711,7 @@ export const Chat: React.FC<ChatProps> = ({
             </div>
           )}
 
-          {/* Injected messages indicator */}
-          {queuedMessages.length > 0 && (
-            <div className="flex items-center justify-between mb-2 px-1">
-              <div className="flex items-center gap-2 text-sm text-amber-600 dark:text-amber-400">
-                <Sparkles size={14} />
-                <span>
-                  {queuedMessages.length} message{queuedMessages.length > 1 ? 's' : ''} being injected
-                  <span className="text-[var(--text-muted)] ml-1">
-                    — Claude will see {queuedMessages.length > 1 ? 'them' : 'it'} mid-stream
-                  </span>
-                </span>
-              </div>
-              <button
-                onClick={clearQueuedMessages}
-                className="text-xs text-[var(--text-muted)] hover:text-red-500 transition-colors"
-              >
-                Cancel
-              </button>
-            </div>
-          )}
+          {/* Queued messages are now shown in the fixed strip above */}
 
           {/* Hidden file input for image upload */}
           <input

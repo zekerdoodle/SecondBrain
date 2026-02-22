@@ -1,13 +1,14 @@
 name: chat_coder
-description: "Interactive coder agent for direct conversation. Identical to coder\
-  \ but conversational \u2014 asks clarifying questions via forms instead of returning\
-  \ early. For the user's direct use only."
+description: Interactive coder agent for direct conversation. Identical to coder but
+  conversational — asks clarifying questions via forms instead of returning early.
+  For the user's direct use only.
 model: opus
 type: sdk
 timeout_seconds: 1800
 max_turns: 200
 chattable: true
 icon: code
+system_prompt_preset: claude_code
 skills:
 - project-task
 tools:
@@ -32,13 +33,15 @@ tools:
 - mcp__brain__forms_show
 - mcp__brain__memory_append
 - mcp__brain__memory_read
+- mcp__brain__memory_save
+- mcp__brain__memory_search
+- mcp__brain__memory_search_agent
+- mcp__brain__search_conversation_history
 - mcp__brain__restart_server
 - mcp__brain__compact_conversation
-- mcp__brain__invoke_agent
-- mcp__brain__invoke_agent_chain
-- mcp__brain__schedule_agent
 - mcp__brain__fetch_skill
 - mcp__brain__schedule_self
 - mcp__brain__scheduler_remove
 - mcp__brain__scheduler_list
 - mcp__brain__scheduler_update
+- mcp__brain__schedule_agent

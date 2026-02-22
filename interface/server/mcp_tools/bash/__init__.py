@@ -1,4 +1,4 @@
-"""Bash execution tool for primary Claude agent."""
+"""Bash execution tool for Claude agents."""
 
 from .bash import bash
 

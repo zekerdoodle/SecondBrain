@@ -144,3 +144,7 @@ Structure your critique exactly as follows:
 - Stay focused on the original question. Don't critique the research for failing to address tangential topics.
 - Be specific. Reference exact sections, quotes, or claims. "The third paragraph claims X, but..." is useful. "Could be better" is not.
 - Your critique will be read by an orchestrator agent that must make decisions based on it. Ambiguity in your recommendation wastes cycles.
+
+## Memory
+
+- **Cross-agent search** — Use `memory_search_agent` to search other agents' memories for context.

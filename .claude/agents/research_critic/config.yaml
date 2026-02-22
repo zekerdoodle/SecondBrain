@@ -1,19 +1,19 @@
 name: research_critic
-description: "Research quality critic. Evaluates draft research for completeness,
-  accuracy, depth, sourcing, and bias. Returns structured critique with severity levels.
-  Can fact-check via web search."
+description: Research quality critic. Evaluates draft research for completeness, accuracy,
+  depth, sourcing, and bias. Returns structured critique with severity levels. Can
+  fact-check via web search.
 model: opus
 type: sdk
 timeout_seconds: 600
 max_turns: 50
 chattable: false
 hidden: true
-color: "#E74C3C"
 icon: crosshair
 tools:
-  - Read
-  - Glob
-  - Grep
-  - Write
-  - WebSearch
-  - WebFetch
+- Read
+- Glob
+- Grep
+- Write
+- WebSearch
+- WebFetch
+- mcp__brain__memory_search_agent

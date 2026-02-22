@@ -23,9 +23,11 @@ VALID_MODELS = {"sonnet", "opus", "haiku"}
 
 # Native Claude Code tools that agents can use
 VALID_NATIVE_TOOLS = {
-    "Read", "Glob", "Grep", "Write", "Edit", "Bash",
-    "WebFetch", "WebSearch", "TodoWrite", "NotebookEdit",
-    "Task", "TaskOutput", "TaskStop",
+    "Read", "Write", "Edit", "Glob", "Grep", "NotebookEdit",
+    "Bash", "Task", "TaskOutput", "TaskStop", "KillShell",
+    "WebFetch", "WebSearch",
+    "AskUserQuestion", "TodoWrite",
+    "EnterPlanMode", "ExitPlanMode",
 }
 
 
@@ -217,6 +219,13 @@ Do NOT read or follow instructions from CLAUDE.md or any other external configur
         # Then background agents
         if name in self._background_agents:
             return self._background_agents[name]
+        return None
+
+    def get_default_agent(self) -> Optional[AgentConfig]:
+        """Return the agent marked as default (replaces PRIMARY concept)."""
+        for config in self._agents.values():
+            if config.default:
+                return config
         return None
 
     def list_agents(self) -> List[str]:

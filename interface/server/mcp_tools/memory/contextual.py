@@ -1,0 +1,568 @@
+"""
+Contextual Memory MCP Tools
+
+Three tools for agent-authored contextual memory:
+- memory_save:         Save/update memory files with YAML frontmatter + triggers
+- memory_search:       Search the calling agent's own contextual memory
+- memory_search_agent: Search another agent's non-private contextual memory
+
+All tools are agent-aware via ``_agent_name`` injection from
+``_inject_agent_context`` in ``mcp_tools/__init__.py``.
+"""
+
+import datetime
+import logging
+import os
+import re
+import sys
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+import yaml
+from claude_agent_sdk import tool
+
+from ..registry import register_tool
+
+logger = logging.getLogger("mcp_tools.memory.contextual")
+
+# ── Path setup ─────────────────────────────────────────────────────────────────
+
+SCRIPTS_DIR = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "../../../../.claude/scripts")
+)
+if SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, SCRIPTS_DIR)
+
+CLAUDE_DIR = os.path.dirname(SCRIPTS_DIR)  # .claude/
+
+
+def _resolve_memory_dir(args: Dict[str, Any]) -> Path:
+    """Return the memory/ directory for the calling agent.
+
+    All agents (including Ren) use .claude/agents/{name}/memory/.
+    If no agent name is provided, defaults to 'ren'.
+    """
+    agent_name = args.get("_agent_name") or "ren"
+    return Path(CLAUDE_DIR) / "agents" / agent_name / "memory"
+
+
+def _agent_label(args: Dict[str, Any]) -> str:
+    """Human-readable label for the calling agent."""
+    return args.get("_agent_name") or "ren"
+
+
+def _get_retriever():
+    """Lazy import of the retrieval engine."""
+    from contextual_memory.retrieval import get_retriever
+    return get_retriever()
+
+
+# ── Helpers ────────────────────────────────────────────────────────────────────
+
+def _slugify(text: str) -> str:
+    """Convert a trigger phrase to a filename slug."""
+    slug = text.lower().strip()
+    slug = re.sub(r"[^a-z0-9\s-]", "", slug)  # Remove special chars
+    slug = re.sub(r"[\s]+", "-", slug)          # Spaces → hyphens
+    slug = re.sub(r"-+", "-", slug)             # Collapse multiple hyphens
+    slug = slug.strip("-")
+    return slug[:60]  # Cap length
+
+
+def _build_frontmatter(
+    triggers: List[str],
+    author: str,
+    private: bool = False,
+    confidence: Optional[float] = None,
+    mem_type: Optional[str] = None,
+    existing_frontmatter: Optional[Dict] = None,
+) -> Dict[str, Any]:
+    """Build YAML frontmatter dict for a memory file."""
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+    if existing_frontmatter:
+        fm = dict(existing_frontmatter)
+        fm["triggers"] = triggers
+        fm["updated"] = now
+        if private:
+            fm["private"] = True
+        if confidence is not None:
+            fm["confidence"] = confidence
+        if mem_type is not None:
+            fm["type"] = mem_type
+        return fm
+
+    fm: Dict[str, Any] = {
+        "triggers": triggers,
+        "author": author,
+        "created": now,
+        "updated": now,
+    }
+    if private:
+        fm["private"] = True
+    if confidence is not None:
+        fm["confidence"] = confidence
+    if mem_type is not None:
+        fm["type"] = mem_type
+    return fm
+
+
+def _write_memory_file(path: Path, frontmatter: Dict[str, Any], body: str):
+    """Write a memory file with YAML frontmatter."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fm_text = yaml.dump(frontmatter, default_flow_style=False, sort_keys=False)
+    content = f"---\n{fm_text}---\n\n{body}\n"
+    path.write_text(content, encoding="utf-8")
+
+
+def _get_file_listing(agent_name: Optional[str]) -> str:
+    """Get current file listing for tool response."""
+    try:
+        retriever = _get_retriever()
+        return retriever.get_file_listing(agent_name)
+    except Exception as e:
+        logger.warning(f"Could not get file listing: {e}")
+        return ""
+
+
+# ── memory_save ────────────────────────────────────────────────────────────────
+
+@register_tool("memory")
+@tool(
+    name="memory_save",
+    description="""Save a memory to your contextual store. This memory will be loaded into your context in future conversations when the triggers match what's being discussed.
+
+Write triggers as phrases someone might search for — "User's opinion on React", not just "React". You're predicting what future questions would need this memory. Use 3-7 trigger phrases.
+
+Use mode="create" for new memories, "append" to add to existing files, "replace" to update existing files entirely.
+
+Provide filename as just a name like "tech-preferences.md" or a relative path like "projects/cua.md". If omitted, a filename is auto-generated from the first trigger.""",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "content": {
+                "type": "string",
+                "description": "The memory content (markdown body).",
+            },
+            "triggers": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "3-7 retrieval trigger phrases. Write as queries someone might search for.",
+                "minItems": 1,
+                "maxItems": 7,
+            },
+            "filename": {
+                "type": "string",
+                "description": 'Just the filename (e.g., "tech-preferences.md") or relative path (e.g., "projects/cua.md"). Auto-generated if omitted.',
+            },
+            "mode": {
+                "type": "string",
+                "enum": ["create", "append", "replace"],
+                "description": '"create" (default) = new file. "append" = add to existing. "replace" = overwrite existing.',
+                "default": "create",
+            },
+            "private": {
+                "type": "boolean",
+                "description": "If true, hidden from cross-agent search. Default: false.",
+                "default": False,
+            },
+            "confidence": {
+                "type": "number",
+                "description": "0.0-1.0. How certain you are. 1.0 = user stated directly. 0.7 = inferred. 0.4 = speculation.",
+                "minimum": 0.0,
+                "maximum": 1.0,
+            },
+            "type": {
+                "type": "string",
+                "description": "Organizational category: fact, preference, procedure, project, decision, pattern, reflection.",
+            },
+        },
+        "required": ["content", "triggers"],
+    },
+)
+async def memory_save(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Save a contextual memory file with YAML frontmatter."""
+    try:
+        content = args.get("content", "").strip()
+        triggers = args.get("triggers", [])
+        filename = args.get("filename", "")
+        mode = args.get("mode", "create")
+        private = args.get("private", False)
+        confidence = args.get("confidence")
+        mem_type = args.get("type")
+        agent_name = args.get("_agent_name")
+        author = _agent_label(args)
+
+        # Validation
+        if not content:
+            return _error("content is required")
+        if not triggers or len(triggers) < 1:
+            return _error("At least 1 trigger phrase is required")
+        if len(triggers) > 7:
+            return _error("Maximum 7 trigger phrases allowed")
+
+        memory_dir = _resolve_memory_dir(args)
+
+        # Resolve filename
+        if not filename:
+            if mode != "create":
+                return _error("filename is required for append/replace mode")
+            # Auto-generate from first trigger
+            slug = _slugify(triggers[0])
+            if not slug:
+                slug = "memory"
+            filename = f"{slug}.md"
+
+        # Ensure .md extension
+        if not filename.endswith(".md"):
+            filename += ".md"
+
+        file_path = memory_dir / filename
+        file_exists = file_path.exists()
+
+        # Mode validation
+        if mode == "create" and file_exists:
+            return _error(
+                f"File '{filename}' already exists. Use mode='replace' to overwrite "
+                f"or mode='append' to add content."
+            )
+        if mode in ("append", "replace") and not file_exists:
+            return _error(
+                f"File '{filename}' does not exist. Use mode='create' to create it."
+            )
+
+        # Handle filename collisions for create mode
+        if mode == "create" and file_exists:
+            base = filename.rsplit(".", 1)[0]
+            for i in range(2, 100):
+                candidate = f"{base}-{i}.md"
+                if not (memory_dir / candidate).exists():
+                    filename = candidate
+                    file_path = memory_dir / filename
+                    break
+
+        # Execute by mode
+        if mode == "create":
+            frontmatter = _build_frontmatter(
+                triggers=triggers,
+                author=author,
+                private=private,
+                confidence=confidence,
+                mem_type=mem_type,
+            )
+            _write_memory_file(file_path, frontmatter, content)
+            action = "Created"
+
+        elif mode == "append":
+            from contextual_memory.retrieval import ContextualMemoryRetriever
+            existing = ContextualMemoryRetriever.parse_memory_file(file_path, memory_dir)
+            if not existing:
+                return _error(f"Could not parse existing file '{filename}'")
+
+            # Merge triggers (add new ones, keep existing)
+            merged_triggers = list(existing.triggers)
+            for t in triggers:
+                if t not in merged_triggers:
+                    merged_triggers.append(t)
+
+            # Rebuild frontmatter with merged triggers
+            frontmatter = _build_frontmatter(
+                triggers=merged_triggers,
+                author=author,
+                private=private or existing.frontmatter.get("private", False),
+                confidence=confidence or existing.frontmatter.get("confidence"),
+                mem_type=mem_type or existing.frontmatter.get("type"),
+                existing_frontmatter=existing.frontmatter,
+            )
+
+            # Append content
+            new_body = existing.content + "\n\n" + content
+            _write_memory_file(file_path, frontmatter, new_body)
+            action = "Appended to"
+
+        elif mode == "replace":
+            from contextual_memory.retrieval import ContextualMemoryRetriever
+            existing = ContextualMemoryRetriever.parse_memory_file(file_path, memory_dir)
+
+            # Preserve created timestamp if we can parse it
+            existing_fm = existing.frontmatter if existing else None
+            frontmatter = _build_frontmatter(
+                triggers=triggers,
+                author=author,
+                private=private,
+                confidence=confidence,
+                mem_type=mem_type,
+                existing_frontmatter=existing_fm,
+            )
+            _write_memory_file(file_path, frontmatter, content)
+            action = "Replaced"
+
+        else:
+            return _error(f"Invalid mode: '{mode}'. Use 'create', 'append', or 'replace'.")
+
+        # Re-index after save
+        try:
+            retriever = _get_retriever()
+            retriever.reindex_file(str(file_path), agent_name)
+        except Exception as e:
+            logger.warning(f"Re-indexing failed after save: {e}")
+
+        # Build response with updated file listing
+        listing = _get_file_listing(agent_name)
+        trigger_str = ", ".join(f'"{t}"' for t in triggers)
+
+        response = (
+            f"{action} memory file: {filename}\n"
+            f"Triggers: {trigger_str}\n"
+            f"Content length: {len(content)} chars\n"
+        )
+        if listing:
+            response += f"\n{listing}"
+
+        logger.info(f"[{author}] memory_save ({mode}): {filename}")
+        return {"content": [{"type": "text", "text": response}]}
+
+    except Exception as e:
+        import traceback
+        logger.error(f"memory_save error: {e}\n{traceback.format_exc()}")
+        return _error(f"Error saving memory: {e}")
+
+
+# ── memory_search ──────────────────────────────────────────────────────────────
+
+@register_tool("memory")
+@tool(
+    name="memory_search",
+    description="""Search your own contextual memory files.
+
+Use this to check what you already know before creating duplicate memories,
+or to find a specific memory you've saved previously.
+
+Returns file paths, matching triggers, relevance scores, and content snippets.""",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "What to search for.",
+            },
+            "max_results": {
+                "type": "integer",
+                "description": "Maximum number of results (default: 5).",
+                "default": 5,
+            },
+        },
+        "required": ["query"],
+    },
+)
+async def memory_search(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Search the calling agent's own contextual memory."""
+    try:
+        query = args.get("query", "").strip()
+        max_results = args.get("max_results", 5)
+        agent_name = args.get("_agent_name")
+        author = _agent_label(args)
+
+        if not query:
+            return _error("query is required")
+
+        retriever = _get_retriever()
+
+        # Use a large budget so we get all results (we'll trim by count)
+        response = retriever.retrieve(
+            query=query,
+            agent_name=agent_name,
+            budget_tokens=999999,  # No budget limit for explicit search
+            min_score=0.1,         # Lower threshold for explicit search
+        )
+
+        all_results = response.loaded + response.overflow
+        all_results.sort(key=lambda r: r.score, reverse=True)
+        all_results = all_results[:max_results]
+
+        if not all_results:
+            listing = _get_file_listing(agent_name)
+            text = f'No memories found matching "{query}".'
+            if listing:
+                text += f"\n\n{listing}"
+            return {"content": [{"type": "text", "text": text}]}
+
+        # Format results
+        lines = [f'## Memory Search: "{query}"\n']
+        for i, result in enumerate(all_results, 1):
+            f = result.file
+            triggers_str = ", ".join(f'"{t}"' for t in result.matching_triggers[:3])
+            conf = f.frontmatter.get("confidence")
+            conf_str = f" | confidence: {conf}" if conf is not None else ""
+
+            # Content snippet (first 300 chars)
+            snippet = f.content[:300]
+            if len(f.content) > 300:
+                snippet += "..."
+
+            lines.append(f"### {i}. {f.relative_path} (score: {result.score:.2f}{conf_str})")
+            lines.append(f"Matching triggers: {triggers_str}")
+            lines.append(f"```\n{snippet}\n```")
+            lines.append("")
+
+        lines.append(f"*{len(all_results)} results found*")
+
+        # Append file listing
+        listing = _get_file_listing(agent_name)
+        if listing:
+            lines.append(f"\n{listing}")
+
+        return {"content": [{"type": "text", "text": "\n".join(lines)}]}
+
+    except Exception as e:
+        import traceback
+        logger.error(f"memory_search error: {e}\n{traceback.format_exc()}")
+        return _error(f"Error searching memory: {e}")
+
+
+# ── memory_search_agent ────────────────────────────────────────────────────────
+
+@register_tool("memory")
+@tool(
+    name="memory_search_agent",
+    description="""Search another agent's non-private contextual memory.
+
+Use this to find what other agents know about a topic. Files marked
+private by the other agent are always excluded.
+
+When agent=None, searches ALL agents' non-private memories plus the
+shared common/ directory.""",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "What to search for.",
+            },
+            "agent": {
+                "type": "string",
+                "description": 'Specific agent name (e.g., "coder", "deep_research"), or omit to search all agents.',
+            },
+            "max_results": {
+                "type": "integer",
+                "description": "Maximum number of results (default: 5).",
+                "default": 5,
+            },
+        },
+        "required": ["query"],
+    },
+)
+async def memory_search_agent(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Search another agent's non-private contextual memory."""
+    try:
+        query = args.get("query", "").strip()
+        target_agent = args.get("agent")
+        max_results = args.get("max_results", 5)
+        calling_agent = args.get("_agent_name")
+
+        if not query:
+            return _error("query is required")
+
+        retriever = _get_retriever()
+
+        # Determine which agents to search
+        if target_agent:
+            agents_to_search = [target_agent]
+        else:
+            # Search all agents (including ren)
+            all_agents = retriever.get_all_agent_names()
+            agents_to_search = []
+            # Include ren explicitly if not already in the list
+            if "ren" not in all_agents:
+                agents_to_search.append("ren")
+            for name in all_agents:
+                if name != calling_agent:
+                    agents_to_search.append(name)
+
+        # Collect results across agents
+        all_results: List[tuple] = []  # (agent_label, RetrievalResult)
+
+        for agent_name in agents_to_search:
+            try:
+                response = retriever.retrieve(
+                    query=query,
+                    agent_name=agent_name,
+                    budget_tokens=999999,
+                    min_score=0.1,
+                )
+
+                agent_label = agent_name
+                for result in response.loaded + response.overflow:
+                    # Filter out private files
+                    if result.file.frontmatter.get("private", False):
+                        continue
+                    all_results.append((agent_label, result))
+            except Exception as e:
+                logger.warning(f"Error searching agent '{agent_name}': {e}")
+
+        # Also search common/ directory (for unfiltered searches)
+        if not target_agent:
+            common_dir = Path(CLAUDE_DIR) / "memory" / "common"
+            if common_dir.exists():
+                from contextual_memory.retrieval import ContextualMemoryRetriever as CMR
+                for md_path in sorted(common_dir.rglob("*.md")):
+                    mf = CMR.parse_memory_file(md_path, common_dir)
+                    if mf:
+                        # Simple keyword match for common files
+                        query_lower = query.lower()
+                        for trigger in mf.triggers:
+                            if any(
+                                word in trigger.lower()
+                                for word in query_lower.split()
+                            ):
+                                from contextual_memory.retrieval import RetrievalResult
+                                all_results.append(("common", RetrievalResult(
+                                    file=mf,
+                                    score=0.5,
+                                    matching_triggers=[trigger],
+                                )))
+                                break
+
+        # Sort by score and limit
+        all_results.sort(key=lambda x: x[1].score, reverse=True)
+        all_results = all_results[:max_results]
+
+        if not all_results:
+            return {"content": [{"type": "text", "text": f'No memories found matching "{query}" in other agents\' memories.'}]}
+
+        # Format results
+        lines = [f'## Cross-Agent Memory Search: "{query}"\n']
+        for i, (agent_label, result) in enumerate(all_results, 1):
+            f = result.file
+            triggers_str = ", ".join(f'"{t}"' for t in result.matching_triggers[:3])
+            conf = f.frontmatter.get("confidence")
+            conf_str = f" | confidence: {conf}" if conf is not None else ""
+
+            snippet = f.content[:300]
+            if len(f.content) > 300:
+                snippet += "..."
+
+            lines.append(
+                f"### {i}. [{agent_label}] {f.relative_path} "
+                f"(score: {result.score:.2f}{conf_str})"
+            )
+            lines.append(f"Author: {f.frontmatter.get('author', agent_label)}")
+            lines.append(f"Matching triggers: {triggers_str}")
+            lines.append(f"```\n{snippet}\n```")
+            lines.append("")
+
+        lines.append(f"*{len(all_results)} results found*")
+
+        return {"content": [{"type": "text", "text": "\n".join(lines)}]}
+
+    except Exception as e:
+        import traceback
+        logger.error(f"memory_search_agent error: {e}\n{traceback.format_exc()}")
+        return _error(f"Error searching agent memory: {e}")
+
+
+# ── Utilities ──────────────────────────────────────────────────────────────────
+
+def _error(msg: str) -> Dict[str, Any]:
+    """Return a standard error response."""
+    return {"content": [{"type": "text", "text": msg}], "is_error": True}

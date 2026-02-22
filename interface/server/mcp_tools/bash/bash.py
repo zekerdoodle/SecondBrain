@@ -1,5 +1,5 @@
 """
-Bash execution tool for primary Claude agent.
+Bash execution tool for Claude agents.
 
 Provides controlled shell access with:
 - Blocklist-based security (permissive by default)

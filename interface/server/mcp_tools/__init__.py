@@ -83,15 +83,19 @@ def _inject_chat_context(tools, chat_id: str):
 def _inject_agent_context(tools, agent_name: str):
     """Wrap agent-context-sensitive tool handlers to inject the calling agent's name.
 
-    For non-primary agents, injects ``_agent_name`` into the args dict so that:
-    - ``memory_append`` and ``memory_read`` target ``.claude/agents/{name}/memory.md``
-      instead of the primary agent's ``.claude/memory.md``.
-    - ``schedule_self`` creates an agent-type scheduled task (dispatched via the agent
-      runner) instead of a prompt-type task (dispatched via ClaudeWrapper).
+    Injects ``_agent_name`` into the args dict so that:
+    - ``memory_append`` and ``memory_read`` target ``.claude/agents/{name}/memory.md``.
+    - ``schedule_self`` creates an agent-type scheduled task dispatched via the agent runner.
     """
     from claude_agent_sdk import SdkMcpTool
 
-    AGENT_CONTEXT_TOOLS = {"memory_append", "memory_read", "schedule_self"}
+    AGENT_CONTEXT_TOOLS = {
+        "memory_append", "memory_read", "schedule_self",
+        "memory_save", "memory_search", "memory_search_agent",
+        "working_memory_add", "working_memory_update",
+        "working_memory_remove", "working_memory_list",
+        "working_memory_snapshot",
+    }
 
     wrapped = []
     for t in tools:
@@ -182,8 +186,7 @@ def create_mcp_server(
                 get wrapped with closures that inject this ID, eliminating the need
                 for the global CURRENT_CHAT_ID env var.
         agent_name: Agent name for memory isolation. When provided, memory_append
-                   and memory_read target .claude/agents/{name}/memory.md instead
-                   of the primary agent's .claude/memory.md.
+                   and memory_read target .claude/agents/{name}/memory.md.
         allowed_skills: Per-agent skill filter for fetch_skill tool.
                        None = all skills, list = only these skills.
                        Sentinel "NO_SKILLS" string skips skill context injection entirely.

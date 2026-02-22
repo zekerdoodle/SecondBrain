@@ -1,7 +1,7 @@
 name: deep_research
-description: "Multi-phase research orchestrator. Decomposes questions, fans out parallel\
-  \ information gatherers, iteratively replans, then synthesizes via Deep Think. Use\
-  \ for questions requiring thorough investigation \u2014 the 5-15 minute deep dive."
+description: Multi-phase research orchestrator. Decomposes questions, fans out parallel
+  information gatherers, iteratively replans, then synthesizes via Deep Think. Use
+  for questions requiring thorough investigation — the 5-15 minute deep dive.
 model: opus
 type: sdk
 timeout_seconds: 1800
@@ -13,12 +13,23 @@ tools:
 - TodoWrite
 - Write
 - Edit
-- mcp__brain__web_search
-- mcp__brain__page_parser
 - mcp__brain__invoke_agent
 - mcp__brain__invoke_agent_chain
 - mcp__brain__invoke_agent_parallel
-- mcp__brain__consult_llm
 - mcp__brain__memory_append
 - mcp__brain__memory_read
+- mcp__brain__memory_save
+- mcp__brain__memory_search
+- mcp__brain__memory_search_agent
+- mcp__brain__search_conversation_history
 - mcp__brain__bash
+- mcp__brain__consult_llm
+- mcp__brain__schedule_self
+- mcp__brain__scheduler_update
+- mcp__brain__scheduler_remove
+- mcp__brain__working_memory_add
+- mcp__brain__working_memory_update
+- mcp__brain__working_memory_remove
+- mcp__brain__working_memory_list
+- mcp__brain__working_memory_snapshot
+- mcp__brain__schedule_agent

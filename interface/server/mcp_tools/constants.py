@@ -97,32 +97,14 @@ WORKING_MEMORY_TOOLS = [
     "working_memory_snapshot",
 ]
 
-LTM_TOOLS = [
-    "ltm_search",
-    "ltm_get_context",
-    "ltm_add_memory",
-    "ltm_create_thread",
-    "ltm_stats",
-    "ltm_process_now",
-    "ltm_run_gardener",
-    "ltm_buffer_exchange",
-    "ltm_backfill",
-    "ltm_backfill_threads",
+CONTEXTUAL_MEMORY_TOOLS = [
+    "memory_save",
+    "memory_search",
+    "memory_search_agent",
+    "search_conversation_history",
 ]
 
-# Gardener-only tools (NOT available to Primary Claude)
-GARDENER_TOOLS = [
-    "gardener_search_threads",
-    "gardener_get_thread_detail",
-    "gardener_assign_atom",
-    "gardener_update_atom",
-    "gardener_create_thread",
-    "gardener_split_thread",
-    "gardener_merge_threads",
-]
-
-# Combined memory category (excludes gardener tools — those are agent-only)
-MEMORY_TOOLS = JOURNAL_TOOLS + WORKING_MEMORY_TOOLS + LTM_TOOLS
+MEMORY_TOOLS = JOURNAL_TOOLS + WORKING_MEMORY_TOOLS + CONTEXTUAL_MEMORY_TOOLS
 
 UTILITY_TOOLS = [
     "page_parser",
@@ -199,8 +181,7 @@ TOOL_CATEGORIES = {
     "memory": MEMORY_TOOLS,
     "journal": JOURNAL_TOOLS,           # Subcategory of memory
     "working_memory": WORKING_MEMORY_TOOLS,  # Subcategory of memory
-    "ltm": LTM_TOOLS,                   # Subcategory of memory
-    "gardener": GARDENER_TOOLS,          # Gardener-only (NOT in primary agent config)
+    "contextual_memory": CONTEXTUAL_MEMORY_TOOLS,  # Subcategory of memory
     "utilities": UTILITY_TOOLS,
     "agents": AGENT_TOOLS,
     "bash": BASH_TOOLS,
@@ -225,7 +206,6 @@ ALL_TOOL_NAMES = (
     FINANCE_TOOLS +
     SCHEDULER_TOOLS +
     MEMORY_TOOLS +
-    GARDENER_TOOLS +
     UTILITY_TOOLS +
     AGENT_TOOLS +
     BASH_TOOLS +
@@ -290,7 +270,7 @@ def get_category_for_tool(tool_name: str) -> str | None:
     for category, tools in TOOL_CATEGORIES.items():
         if tool_name in tools:
             # Return the primary category (not subcategories)
-            if category in ("journal", "working_memory", "ltm"):
+            if category in ("journal", "working_memory", "contextual_memory"):
                 return "memory"
             return category
     return None

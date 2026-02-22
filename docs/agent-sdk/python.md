@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/python
 title: Agent SDK reference - Python
-last_fetched: 2026-02-12T10:03:54.258077+00:00
+last_fetched: 2026-02-21T10:01:57.358469+00:00
 ---
 
 Copy page
@@ -935,7 +935,7 @@ Stream event for partial message updates during streaming. Only received when `i
 class StreamEvent:
  uuid: str
  session_id: str
- event: dict[str, Any] # The raw Anthropic API stream event
+ event: dict[str, Any] # The raw Claude API stream event
  parent_tool_use_id: str | None = None
 ```
 
@@ -943,7 +943,7 @@ class StreamEvent:
 | --- | --- | --- |
 | `uuid` | `str` | Unique identifier for this event |
 | `session_id` | `str` | Session identifier |
-| `event` | `dict[str, Any]` | The raw Anthropic API stream event data |
+| `event` | `dict[str, Any]` | The raw Claude API stream event data |
 | `parent_tool_use_id` | `str | None` | Parent tool use ID if this event is from a subagent |
 
 ## Content Block Types

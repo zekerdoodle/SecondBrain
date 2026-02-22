@@ -1,11 +1,10 @@
-"""Memory tools - journal, working memory, and long-term memory."""
+"""Memory tools - journal, working memory, and contextual memory."""
 
 # Import to trigger registration
 from . import journal
 from . import working
-from . import ltm
-from . import search
-from . import gardener_tools
+from . import contextual
+from . import chat_search
 
 # Re-export for direct access
 from .journal import (
@@ -19,19 +18,14 @@ from .working import (
     working_memory_list,
     working_memory_snapshot,
 )
-from .ltm import (
-    ltm_search,
-    ltm_get_context,
-    ltm_add_memory,
-    ltm_create_thread,
-    ltm_stats,
-    ltm_process_now,
-    ltm_run_gardener,
-    ltm_buffer_exchange,
-    ltm_backfill,
-    ltm_backfill_threads,
+from .contextual import (
+    memory_save,
+    memory_search,
+    memory_search_agent,
 )
-from .search import memory_search
+from .chat_search import (
+    search_conversation_history,
+)
 
 __all__ = [
     # Journal
@@ -43,17 +37,10 @@ __all__ = [
     "working_memory_remove",
     "working_memory_list",
     "working_memory_snapshot",
-    # Long-Term Memory
-    "ltm_search",
-    "ltm_get_context",
-    "ltm_add_memory",
-    "ltm_create_thread",
-    "ltm_stats",
-    "ltm_process_now",
-    "ltm_run_gardener",
-    "ltm_buffer_exchange",
-    "ltm_backfill",
-    "ltm_backfill_threads",
-    # Active Memory Search
+    # Contextual Memory
+    "memory_save",
     "memory_search",
+    "memory_search_agent",
+    # Chat History Search
+    "search_conversation_history",
 ]

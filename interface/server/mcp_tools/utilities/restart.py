@@ -6,7 +6,6 @@ Restarts the Second Brain server with conversation continuity.
 
 import os
 import sys
-import uuid
 import asyncio
 from typing import Any, Dict
 
@@ -56,7 +55,6 @@ async def restart_server(args: Dict[str, Any]) -> Dict[str, Any]:
 
         # Import tools
         import restart_tool as rt
-        import subprocess
         import sys
 
         # Access the active conversations from the main server module
@@ -70,11 +68,7 @@ async def restart_server(args: Dict[str, Any]) -> Dict[str, Any]:
             active_processing = getattr(main_module, 'active_processing_sessions', {})
 
         # Auto-detect which session is calling this tool
-        # The tool runs in the context of handle_message, which sets the session
-        # We detect via active_processing_sessions — the most recently added entry
-        # that matches an active conversation is likely ours
         if not session_id:
-            # Find the session we're running in by checking active processing sessions
             for sid in active_processing:
                 if sid in active_convs:
                     session_id = sid
@@ -111,38 +105,11 @@ async def restart_server(args: Dict[str, Any]) -> Dict[str, Any]:
                 pass
             all_active[sid] = agent
 
-        # Save the current conversation state from memory BEFORE scheduling restart
-        # Do this for ALL active sessions, not just the triggering one
-        for sid in list(active_processing.keys()):
-            try:
-                if sid in active_convs and chat_manager:
-                    conv = active_convs[sid]
-                    messages_to_save = conv.messages.copy()
-
-                    # Include any pending (in-progress) assistant response
-                    if hasattr(conv, 'pending_response') and conv.pending_response:
-                        for segment in conv.pending_response:
-                            if segment and segment.strip():
-                                messages_to_save.append({
-                                    "id": str(uuid.uuid4()),
-                                    "role": "assistant",
-                                    "content": segment.strip()
-                                })
-
-                    if messages_to_save:
-                        existing = chat_manager.load_chat(sid)
-                        title = existing.get("title", "Untitled") if existing else "Untitled"
-                        save_data = {
-                            "title": title,
-                            "sessionId": sid,
-                            "messages": messages_to_save
-                        }
-                        # Preserve agent field
-                        if existing and existing.get("agent"):
-                            save_data["agent"] = existing["agent"]
-                        chat_manager.save_chat(sid, save_data)
-            except Exception as e:
-                print(f"[restart_server] Warning: Could not save state for session {sid}: {e}")
+        # NOTE: We do NOT save conv.messages here or spawn the restart subprocess.
+        # The streaming loop in main.py detects that restart_server completed,
+        # halts the model stream, does a clean finalization/save (with proper
+        # display_messages including block model), and THEN spawns the restart.
+        # This prevents duplicate content from WAL recovery.
 
         # Save the multi-session continuation marker
         continuation = rt.save_continuation_state(
@@ -166,14 +133,19 @@ async def restart_server(args: Dict[str, Any]) -> Dict[str, Any]:
 
         log_file = rt.CLAUDE_DIR / "server_restart.log"
 
-        # Schedule the restart using a DETACHED subprocess
-        subprocess.Popen(
-            f"sleep 3 && bash {restart_script} > {log_file} 2>&1",
-            shell=True,
-            start_new_session=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        # Write restart config to a file — the streaming loop reads this
+        # after doing a clean save, then spawns the restart subprocess.
+        # Using a file avoids any module-reference issues between the MCP
+        # tool execution context and the streaming loop.
+        import json
+        pending_restart_file = rt.CLAUDE_DIR / "pending_restart.json"
+        pending_restart_file.write_text(json.dumps({
+            "rebuild": rebuild,
+            "restart_script": str(restart_script),
+            "log_file": str(log_file),
+            "restart_type": restart_type,
+            "wait_time": wait_time,
+        }))
 
         bystander_note = ""
         if bystander_count > 0:

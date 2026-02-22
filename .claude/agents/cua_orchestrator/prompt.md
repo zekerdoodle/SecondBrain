@@ -120,3 +120,14 @@ Common issues:
 - API errors -> Retry (these are usually transient)
 - Content filtering -> Retry (probabilistic, often passes on second attempt)
 - xdotool errors -> Verify RDP session is active
+
+## Memory
+
+You have a tiered memory system:
+
+- **memory.md** — Always loaded. Your persistent notes across all sessions. Use `memory_append` to add to it. Keep entries concise.
+- **Contextual memory** — Files in your `memory/` directory. Automatically loaded when their triggers match what's being discussed. Use `memory_save` to create new memories with retrieval triggers. Use `memory_search` to check what you already have before saving duplicates.
+- **Cross-agent search** — Use `memory_search_agent` to search other agents' memories. They can search yours too (except files marked private).
+- **Conversation history** — Use `search_conversation_history` to look up what was actually said in past conversations.
+
+When you learn something worth remembering across sessions, save it with `memory_save`. Write triggers as phrases someone might search for — "User's opinion on React", not just "React".

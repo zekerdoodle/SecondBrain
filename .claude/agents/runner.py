@@ -29,7 +29,28 @@ if _server_dir not in sys.path:
 
 from process_registry import register_process, deregister_process
 
+from claude_agent_sdk.types import (
+    ThinkingConfigAdaptive,
+    ThinkingConfigEnabled,
+)
+
 logger = logging.getLogger("agents.runner")
+
+# Model-aware thinking defaults — maximize thinking for every model tier
+# Keys match the short model aliases used in agent config.yaml files
+THINKING_DEFAULTS = {
+    "opus": {
+        "thinking": ThinkingConfigAdaptive(type="adaptive"),
+        "effort": "high",
+    },
+    "sonnet": {
+        "thinking": ThinkingConfigAdaptive(type="adaptive"),
+        "effort": "high",
+    },
+    "haiku": {
+        "thinking": ThinkingConfigEnabled(type="enabled", budget_tokens=16384),
+    },
+}
 
 # Execution log file
 EXECUTIONS_LOG = Path(__file__).parent / "executions.json"
@@ -252,6 +273,189 @@ async def _run_ping_agent(config: AgentConfig, invocation: AgentInvocation) -> N
         logger.error(f"Background ping task for agent '{config.name}' failed: {e}", exc_info=True)
 
 
+async def invoke_agent_chain(
+    chain: List[Dict[str, str]],
+    on_failure: str = "alert_and_stop",
+    summarize: bool = False,
+    source_chat_id: Optional[str] = None,
+) -> Dict[str, str]:
+    """
+    Start an agent chain in the background with ping-style notification.
+
+    Runs agents sequentially. When the chain completes (or stops on failure),
+    adds a single notification to the queue targeting source_chat_id —
+    identical to how ping mode works for single agents.
+
+    Args:
+        chain: List of {"agent": name, "prompt": task} dicts
+        on_failure: "alert_and_stop" or "skip_and_continue"
+        summarize: Whether to summarize outputs in the notification
+        source_chat_id: Chat ID for notification delivery
+
+    Returns:
+        Acknowledgment dict (chain runs in background)
+    """
+    if not source_chat_id:
+        return {"error": "source_chat_id required for chain notifications"}
+
+    invoked_at = datetime.utcnow()
+    asyncio.create_task(_run_chain_agent(
+        chain=chain,
+        on_failure=on_failure,
+        summarize=summarize,
+        source_chat_id=source_chat_id,
+        invoked_at=invoked_at,
+    ))
+
+    agent_names = [step["agent"] for step in chain]
+    chain_str = " \u2192 ".join(agent_names)
+    return {
+        "status": "accepted",
+        "mode": "chain",
+        "message": f"Agent chain started: {chain_str}\n\nYou'll be notified when the chain completes."
+    }
+
+
+async def _run_chain_agent(
+    chain: List[Dict[str, str]],
+    on_failure: str,
+    summarize: bool,
+    source_chat_id: str,
+    invoked_at: datetime,
+) -> None:
+    """Execute an agent chain sequentially and send notification on completion.
+
+    Follows the same pattern as _run_ping_agent: run work, add notification,
+    log execution. Top-level try/except ensures errors are always logged.
+    """
+    from registry import get_registry
+
+    try:
+        registry = get_registry()
+        results = []  # List of (agent_name, status, response/error)
+        chain_failed = False
+        failed_agent = None
+
+        for i, step in enumerate(chain):
+            agent_name = step["agent"]
+            prompt = step["prompt"]
+
+            logger.info(f"Chain step {i+1}/{len(chain)}: Running agent '{agent_name}'")
+
+            config = registry.get(agent_name)
+            if not config:
+                results.append((agent_name, "error", f"Unknown agent: {agent_name}"))
+                if on_failure == "alert_and_stop":
+                    chain_failed = True
+                    failed_agent = agent_name
+                    break
+                continue
+
+            invocation = AgentInvocation(
+                agent=agent_name,
+                prompt=prompt,
+                mode=InvocationMode.FOREGROUND,
+                source_chat_id=source_chat_id,
+            )
+
+            try:
+                result = await _run_agent(config, invocation)
+                _log_execution(invocation, result)
+
+                if result.status == "success":
+                    results.append((agent_name, "success", result.response))
+                    logger.info(f"Chain step {i+1}: Agent '{agent_name}' succeeded")
+                else:
+                    error_msg = result.error or result.status
+                    results.append((agent_name, "error", error_msg))
+                    logger.warning(f"Chain step {i+1}: Agent '{agent_name}' failed: {error_msg}")
+
+                    if on_failure == "alert_and_stop":
+                        chain_failed = True
+                        failed_agent = agent_name
+                        break
+
+            except Exception as e:
+                logger.error(f"Chain step {i+1}: Agent '{agent_name}' exception: {e}")
+                results.append((agent_name, "exception", str(e)))
+
+                if on_failure == "alert_and_stop":
+                    chain_failed = True
+                    failed_agent = agent_name
+                    break
+
+        # Build notification response
+        response = _format_chain_results(
+            results=results,
+            chain_failed=chain_failed,
+            failed_agent=failed_agent,
+            total_steps=len(chain),
+            summarize=summarize,
+        )
+
+        # Add to notification queue (same as _run_ping_agent)
+        queue = get_notification_queue()
+        queue.add(
+            agent="agent_chain",
+            agent_response=response,
+            source_chat_id=source_chat_id,
+            invoked_at=invoked_at,
+            completed_at=datetime.utcnow(),
+        )
+
+        logger.info(f"Agent chain completed: {len(results)}/{len(chain)} agents ran, notification queued for chat {source_chat_id}")
+
+    except Exception as e:
+        logger.error(f"Background chain task failed: {e}", exc_info=True)
+
+
+def _format_chain_results(
+    results: List[tuple],
+    chain_failed: bool,
+    failed_agent: Optional[str],
+    total_steps: int,
+    summarize: bool,
+) -> str:
+    """Format chain results for notification."""
+    parts = []
+
+    completed = len(results)
+    successful = sum(1 for _, status, _ in results if status == "success")
+
+    if chain_failed:
+        parts.append(f"**Agent Chain Stopped** ({completed}/{total_steps} steps completed, {successful} successful)")
+        parts.append(f"Chain stopped at agent '{failed_agent}' due to failure.")
+    else:
+        if successful == completed:
+            parts.append(f"**Agent Chain Completed** ({completed}/{total_steps} steps, all successful)")
+        else:
+            parts.append(f"**Agent Chain Completed with Errors** ({completed}/{total_steps} steps, {successful} successful)")
+
+    parts.append("")
+
+    if summarize:
+        parts.append("**Summary:**")
+        for agent_name, status, response in results:
+            if status == "success":
+                summary = response[:500] + "..." if len(response) > 500 else response
+                parts.append(f"- **{agent_name}**: {summary}")
+            else:
+                parts.append(f"- **{agent_name}**: Failed - {response}")
+    else:
+        for agent_name, status, response in results:
+            parts.append("---")
+            parts.append(f"**Agent: {agent_name}**")
+            if status == "success":
+                parts.append(f"Status: Success")
+                parts.append(f"\n{response}")
+            else:
+                parts.append(f"Status: Failed ({status})")
+                parts.append(f"Error: {response}")
+            parts.append("")
+
+    return "\n".join(parts)
+
+
 async def _run_background_agent(config: AgentConfig, invocation: AgentInvocation) -> None:
     """Run agent and log (no notification)."""
     try:
@@ -278,6 +482,24 @@ async def _run_sdk_agent(config: AgentConfig, invocation: AgentInvocation) -> st
         logger.warning(f"Failed to register agent '{config.name}' in process registry: {e}")
 
     # Build system_prompt: either a SystemPromptPreset dict or a string
+    #
+    # Helper: load per-agent working memory prompt block
+    def _load_working_memory_block(agent_name: str) -> str:
+        """Load the agent's working memory and format as a prompt block."""
+        try:
+            scripts_dir = str(Path(__file__).parent.parent / "scripts")
+            if scripts_dir not in sys.path:
+                sys.path.insert(0, scripts_dir)
+            from working_memory import get_store
+            store = get_store(agent_name=agent_name)
+            wm_block = store.format_prompt_block()
+            if wm_block:
+                logger.info(f"Agent '{agent_name}': loaded working memory ({len(store.list_items())} items)")
+                return f"\n\n<working-memory>\n{wm_block}\n</working-memory>"
+        except Exception as e:
+            logger.debug(f"Agent '{agent_name}': could not load working memory: {e}")
+        return ""
+
     if config.system_prompt_preset:
         append_parts = []
         if config.prompt:
@@ -295,6 +517,10 @@ async def _run_sdk_agent(config: AgentConfig, invocation: AgentInvocation) -> st
                     )
             except Exception as e:
                 logger.warning(f"Agent '{config.name}': could not read memory.md for preset: {e}")
+        # Include per-agent working memory
+        wm_block = _load_working_memory_block(config.name)
+        if wm_block:
+            append_parts.append(wm_block)
         system_prompt = {
             "type": "preset",
             "preset": config.system_prompt_preset,
@@ -321,6 +547,10 @@ async def _run_sdk_agent(config: AgentConfig, invocation: AgentInvocation) -> st
                     logger.info(f"Agent '{config.name}': loaded memory.md for replace-mode system prompt")
             except Exception as e:
                 logger.warning(f"Agent '{config.name}': could not read memory.md for replace: {e}")
+        # Include per-agent working memory
+        wm_block = _load_working_memory_block(config.name)
+        if wm_block:
+            parts.append(wm_block)
         system_prompt = "\n".join(parts) if parts else ""
 
     # Build MCP server if the agent uses any mcp__brain__ tools.
@@ -328,19 +558,22 @@ async def _run_sdk_agent(config: AgentConfig, invocation: AgentInvocation) -> st
     MCP_PREFIX = "mcp__brain__"
     mcp_servers = {}
 
-    # Determine if this agent has skill access (for auto-including fetch_skill)
-    agent_has_skills = config.skills is None or (isinstance(config.skills, list) and len(config.skills) > 0)
+    # Config is the sole source of truth — no auto-injection.
+    # What's in config.tools is exactly what the agent gets.
+    effective_tools = list(config.tools) if config.tools else []
+
+    # Compute disallowed native tools: block any native tool NOT in the agent's config.
+    # The SDK provides all native tools by default; disallowed_tools is the only way
+    # to restrict them. Without this, every agent gets ALL native tools regardless
+    # of what's in config.yaml.
+    from registry import VALID_NATIVE_TOOLS
+    native_tool_names = [t for t in effective_tools if not t.startswith(MCP_PREFIX)]
+    disallowed_native = [t for t in VALID_NATIVE_TOOLS if t not in native_tool_names]
 
     if config.tools:
         mcp_tool_names = [t for t in config.tools if t.startswith(MCP_PREFIX)]
 
-        # Auto-include fetch_skill if agent has skill access and it's not already listed
-        fetch_skill_mcp = f"{MCP_PREFIX}fetch_skill"
-        if agent_has_skills and fetch_skill_mcp not in mcp_tool_names:
-            mcp_tool_names.append(fetch_skill_mcp)
-
         if mcp_tool_names:
-            # Strip prefix to get internal tool names for the MCP registry
             internal_names = [t[len(MCP_PREFIX):] for t in mcp_tool_names]
             try:
                 from mcp_tools import create_mcp_server
@@ -349,6 +582,7 @@ async def _run_sdk_agent(config: AgentConfig, invocation: AgentInvocation) -> st
                     include_tools=internal_names,
                     agent_name=config.name,
                     allowed_skills=config.skills,
+                    chat_id=invocation.source_chat_id,
                 )
                 mcp_servers["brain"] = mcp_server
                 logger.info(
@@ -357,29 +591,6 @@ async def _run_sdk_agent(config: AgentConfig, invocation: AgentInvocation) -> st
                 )
             except Exception as e:
                 logger.error(f"Failed to create MCP server for agent '{config.name}': {e}")
-    elif agent_has_skills:
-        # Agent has no tools configured but has skill access — create MCP server
-        # with just fetch_skill so the agent can load skills on demand
-        try:
-            from mcp_tools import create_mcp_server
-            mcp_server = create_mcp_server(
-                name="brain",
-                include_tools=["fetch_skill"],
-                agent_name=config.name,
-                allowed_skills=config.skills,
-            )
-            mcp_servers["brain"] = mcp_server
-            mcp_tool_names = [f"{MCP_PREFIX}fetch_skill"]
-            logger.info(f"Created MCP server for agent '{config.name}' with fetch_skill only")
-        except Exception as e:
-            logger.error(f"Failed to create fetch_skill MCP server for agent '{config.name}': {e}")
-
-    # Build the effective allowed_tools list (config.tools + any auto-added tools)
-    effective_tools = list(config.tools) if config.tools else []
-    if agent_has_skills:
-        fetch_skill_mcp = f"{MCP_PREFIX}fetch_skill"
-        if fetch_skill_mcp not in effective_tools:
-            effective_tools.append(fetch_skill_mcp)
 
     # Inject the shared "Available agents" block into the system prompt — but only
     # if this agent has access to any agent-calling tools (invoke_agent, etc.).
@@ -399,15 +610,51 @@ async def _run_sdk_agent(config: AgentConfig, invocation: AgentInvocation) -> st
     except Exception as e:
         logger.warning(f"Agent '{config.name}': failed to inject agent list: {e}")
 
-    options = ClaudeAgentOptions(
-        model=config.model,
-        system_prompt=system_prompt,
-        allowed_tools=effective_tools if effective_tools else None,
-        permission_mode="bypassPermissions",
-        setting_sources=[],  # Never load project settings for subagents
-        max_turns=config.max_turns,
-        mcp_servers=mcp_servers if mcp_servers else None,
-    )
+    options_kwargs = {
+        "model": config.model,
+        "system_prompt": system_prompt,
+        "allowed_tools": effective_tools if effective_tools else None,
+        "permission_mode": "bypassPermissions",
+        "setting_sources": [],  # Never load project settings for subagents
+        "max_turns": config.max_turns,
+        "mcp_servers": mcp_servers if mcp_servers else None,
+    }
+
+    # Preset agents need the tools preset so Claude Code's native tool suite is used
+    if config.system_prompt_preset:
+        options_kwargs["tools"] = {"type": "preset", "preset": config.system_prompt_preset}
+
+    # Block native tools not in the agent's config — applies to ALL agents
+    if disallowed_native:
+        options_kwargs["disallowed_tools"] = disallowed_native
+
+    # Apply model-aware thinking configuration
+    model = config.model or "sonnet"
+    if config.thinking_budget:
+        # Agent-level override: explicit budget_tokens
+        options_kwargs["thinking"] = ThinkingConfigEnabled(type="enabled", budget_tokens=config.thinking_budget)
+        logger.info(f"Agent '{config.name}': thinking config override — enabled with budget_tokens={config.thinking_budget}")
+    elif config.effort:
+        # Agent-level override: explicit effort (with adaptive thinking)
+        options_kwargs["thinking"] = ThinkingConfigAdaptive(type="adaptive")
+        options_kwargs["effort"] = config.effort
+        logger.info(f"Agent '{config.name}': thinking config override — adaptive, effort={config.effort}")
+    else:
+        # Model-level defaults from THINKING_DEFAULTS
+        thinking_cfg = THINKING_DEFAULTS.get(model)
+        if thinking_cfg:
+            options_kwargs["thinking"] = thinking_cfg["thinking"]
+            if "effort" in thinking_cfg:
+                options_kwargs["effort"] = thinking_cfg["effort"]
+            logger.info(
+                f"Agent '{config.name}': applying thinking config for model '{model}': "
+                f"thinking={type(thinking_cfg['thinking']).__name__}, "
+                f"effort={thinking_cfg.get('effort', 'N/A')}"
+            )
+        else:
+            logger.info(f"Agent '{config.name}': no thinking defaults for model '{model}'")
+
+    options = ClaudeAgentOptions(**options_kwargs)
 
     # Add output format if specified
     if config.output_format:
@@ -416,6 +663,7 @@ async def _run_sdk_agent(config: AgentConfig, invocation: AgentInvocation) -> st
     # Inject skill menu (lightweight list of available skills) into the prompt.
     # Full skill bodies are loaded on demand via the fetch_skill MCP tool.
     effective_prompt = invocation.prompt
+    agent_has_skills = config.skills is None or (isinstance(config.skills, list) and len(config.skills) > 0)
     if agent_has_skills:
         try:
             from skill_injector import get_skill_reminder

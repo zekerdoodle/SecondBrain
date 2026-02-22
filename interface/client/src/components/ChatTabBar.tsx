@@ -85,10 +85,11 @@ export const ChatTabBar: React.FC<ChatTabBarProps> = ({
       {isSecondary && onCloseSplit && (
         <button
           onClick={onCloseSplit}
-          className="flex-shrink-0 p-1.5 ml-1 hover:bg-[var(--bg-tertiary)] rounded text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
-          title="Close split view"
+          className="flex-shrink-0 flex items-center gap-1 px-2 py-1 ml-1 hover:bg-[var(--bg-tertiary)] rounded text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors text-xs"
+          title="Close split view (Ctrl+\)"
         >
           <X size={14} />
+          <span>Close</span>
         </button>
       )}
 

@@ -27,7 +27,7 @@ import hashlib
 from datetime import datetime
 from pathlib import Path
 from dataclasses import dataclass, field
-from typing import Optional, Dict, Any, List, Set
+from typing import Optional, Dict, Any, List, Set, Tuple
 from contextlib import asynccontextmanager
 from collections import defaultdict
 
@@ -347,97 +347,6 @@ def strip_tool_markers(content: str) -> str:
     return content.strip()
 
 
-# =============================================================================
-# Long-Term Memory Pipeline (Librarian → Gardener + Chronicler)
-#
-# The full LTM pipeline runs every ~20 minutes when the exchange buffer flushes.
-# The chain works as follows:
-#
-#   Exchange Buffer flushes
-#       ↓
-#   Librarian (extracts atoms from conversation exchanges)
-#       ↓
-#   ┌───┴────┐
-#   │        │
-#   ▼        ▼
-#   Gardener    Chronicler
-#   (assigns    (summarizes conversation threads —
-#    ALL atoms   ONLY runs when conversation threads
-#    to topical  were created/updated by this Librarian run)
-#    threads)
-#
-# The Gardener runs INSIDE run_librarian_cycle() (see librarian_runner.py).
-# The Chronicler is chained HERE via asyncio.create_task after the Librarian
-# returns, so it runs as a separate background task.
-#
-# HOW TO VERIFY THE CHRONICLER IS RUNNING:
-#   grep "Starting background Chronicler" server.log
-#   grep "Chronicler completed" server.log
-#   You should see entries like:
-#     LTM: Starting background Chronicler run (threads=['thread_...'])
-#     LTM: Chronicler completed - completed, summarized 1 threads
-#
-# The Chronicler does NOT have its own scheduled task — it runs exclusively
-# via this chain. The scheduled task "ltm_chronicler" is intentionally disabled.
-# =============================================================================
-async def _run_librarian_background():
-    """Run the Librarian agent in the background.
-
-    This kicks off the full LTM pipeline:
-    1. Librarian extracts atoms and groups them into conversation threads
-    2. Gardener assigns atoms to topical threads (runs inside Librarian)
-    3. Chronicler summarizes affected conversation threads (chained below)
-    """
-    try:
-        ltm_scripts = os.path.join(ROOT_DIR, ".claude", "scripts", "ltm")
-        if ltm_scripts not in sys.path:
-            sys.path.insert(0, ltm_scripts)
-        from librarian_agent import run_librarian_cycle
-
-        logger.info("LTM: Starting background Librarian run")
-        result = await run_librarian_cycle()
-        logger.info(f"LTM: Librarian completed - {result.get('status')}, "
-                   f"created {result.get('memories_created', 0)} memories")
-
-        # Chain to Chronicler: only fires when conversation threads were
-        # created or updated by THIS Librarian run. The Chronicler receives
-        # the specific affected thread IDs so it doesn't re-scan everything.
-        # See chronicler_runner.py for the summarization logic.
-        conv_stats = result.get("conversation_threads", {})
-        affected_ids = conv_stats.get("affected_thread_ids", [])
-        if affected_ids:
-            asyncio.create_task(_run_chronicler_background(thread_ids=affected_ids))
-        # NOTE: If no conversation threads were affected (e.g. atoms came from
-        # non-chat sources), the Chronicler simply doesn't run. This is expected.
-    except Exception as e:
-        logger.error(f"LTM: Background Librarian failed: {e}")
-
-
-async def _run_chronicler_background(thread_ids=None):
-    """Run the Chronicler to summarize conversation threads.
-
-    This is NOT called on a schedule — it's chained from _run_librarian_background()
-    above, triggered only when the Librarian creates/updates conversation threads.
-
-    Args:
-        thread_ids: Specific thread IDs to summarize (passed from Librarian chain).
-                    If None, falls back to scanning all threads needing summarization
-                    (but this path is rarely used — the targeted mode is preferred).
-    """
-    try:
-        ltm_scripts = os.path.join(ROOT_DIR, ".claude", "scripts", "ltm")
-        if ltm_scripts not in sys.path:
-            sys.path.insert(0, ltm_scripts)
-        from chronicler_agent import run_chronicler_cycle
-
-        logger.info(f"LTM: Starting background Chronicler run (threads={thread_ids})")
-        result = await run_chronicler_cycle(thread_ids=thread_ids)
-        logger.info(f"LTM: Chronicler completed - {result.get('status')}, "
-                   f"summarized {result.get('threads_summarized', 0)} threads")
-    except Exception as e:
-        logger.error(f"LTM: Background Chronicler failed: {e}")
-
-
 # Chat Titler background task
 async def _run_titler_background(
     chat_id: str,
@@ -470,7 +379,7 @@ async def _run_titler_background(
             logger.info(f"Titler: Updated title to '{new_title}' for {chat_id}")
 
         # Push title update to all connected clients
-        for ws in client_sessions:
+        for ws in list(client_sessions):
             try:
                 await ws.send_json({
                     "type": "chat_title_update",
@@ -478,7 +387,7 @@ async def _run_titler_background(
                     "title": new_title,
                     "confidence": result.get("confidence", 0.5)
                 })
-            except:
+            except Exception:
                 pass
 
     except Exception as e:
@@ -702,6 +611,8 @@ def list_files(path: str = ""):
 @app.get("/api/file/{file_path:path}")
 def read_file(file_path: str):
     target_path = os.path.join(ROOT_DIR, file_path)
+    if not os.path.abspath(target_path).startswith(ROOT_DIR):
+        raise HTTPException(status_code=403, detail="Access denied")
     if not os.path.exists(target_path):
         raise HTTPException(status_code=404)
     with open(target_path, 'r', encoding='utf-8') as f:
@@ -723,6 +634,8 @@ def raw_file(file_path: str):
 @app.post("/api/file/{file_path:path}")
 def save_file(file_path: str, req: FileRequest):
     target_path = os.path.join(ROOT_DIR, file_path)
+    if not os.path.abspath(target_path).startswith(ROOT_DIR):
+        raise HTTPException(status_code=403, detail="Access denied")
     os.makedirs(os.path.dirname(target_path), exist_ok=True)
     with open(target_path, 'w', encoding='utf-8') as f:
         f.write(req.content or "")
@@ -1085,22 +998,6 @@ def get_app_icon(path: str):
 
 # --- Agent API ---
 
-# Names that map to the primary agent (backward compat: "claudey" was the previous name)
-PRIMARY_AGENT_NAMES = {"ren", "claudey"}
-
-
-def _is_primary_agent(name: str) -> bool:
-    """Check if an agent name refers to the primary agent (including legacy aliases)."""
-    return name in PRIMARY_AGENT_NAMES
-
-
-def _format_display_name(name: str) -> str:
-    """Format an agent name for display."""
-    if name in PRIMARY_AGENT_NAMES:
-        return "Ren"
-    return " ".join(w.capitalize() for w in name.split("_"))
-
-
 @app.get("/api/agents")
 def list_agents(all: bool = False):
     """List agents available for chat. Pass all=true to include non-chattable agents."""
@@ -1108,7 +1005,6 @@ def list_agents(all: bool = False):
     if str(agents_dir) not in sys.path:
         sys.path.insert(0, str(agents_dir))
     from registry import get_registry
-    from models import AgentType
 
     registry = get_registry()
     if all:
@@ -1118,10 +1014,10 @@ def list_agents(all: bool = False):
     return {"agents": [
         {
             "name": a.name,
-            "display_name": _format_display_name(a.name),
+            "display_name": " ".join(w.capitalize() for w in a.name.split("_")),
             "description": a.description,
             "model": a.model,
-            "is_default": a.type == AgentType.PRIMARY,
+            "is_default": a.default,
             "color": a.color,
             "icon": a.icon,
             "chattable": a.chattable,
@@ -1208,7 +1104,7 @@ def create_agent(req: AgentCreateRequest):
     name = req.name.strip().lower()
     if not _re.match(r'^[a-z][a-z0-9_]*$', name):
         raise HTTPException(status_code=400, detail="Name must be lowercase letters, numbers, and underscores, starting with a letter")
-    reserved = {"ren", "claudey", "claude_primary", "background", "_template", "notifications", "__pycache__"}
+    reserved = {"ren", "background", "_template", "notifications", "__pycache__"}
     if name in reserved:
         raise HTTPException(status_code=400, detail=f"Name '{name}' is reserved")
 
@@ -1621,13 +1517,13 @@ async def make_chess_move(request: ChessMoveRequest):
     game_state = result.get("game_state", {})
 
     # Broadcast to all connected clients
-    for ws in client_sessions:
+    for ws in list(client_sessions):
         try:
             await ws.send_json({
                 "type": "chess_update",
                 "game": game_state
             })
-        except:
+        except Exception:
             pass
 
     # Return context for Claude if it's now Claude's turn
@@ -1776,31 +1672,176 @@ def register_client(ws: WebSocket, session_id: str):
 # Track active ClaudeWrapper instances for interrupt capability
 active_claude_wrappers: Dict[str, ClaudeWrapper] = {}
 
-# --- Session Streaming State (for reconnect recovery) ---
-# This is the SINGLE SOURCE OF TRUTH for what the client should display
+# Path to pending restart config file — written by the restart_server MCP tool,
+# read by the streaming loop after a clean save.
+_PENDING_RESTART_FILE = os.path.join(ROOT_DIR, ".claude", "pending_restart.json")
+
+# --- Session Streaming State (Block Model) ---
+# This is the SINGLE SOURCE OF TRUTH for what the client should display during streaming.
+# Uses a block-based model where each assistant message contains ordered content blocks.
+
+def _gen_block_id() -> str:
+    return f"blk_{uuid.uuid4().hex[:12]}"
+
+@dataclass
+class ContentBlock:
+    """A single content block within an assistant message."""
+    id: str = field(default_factory=_gen_block_id)
+    type: str = "text"  # "thinking", "text", "tool_use", "tool_result"
+    content: str = ""
+    status: str = "in_progress"  # "in_progress", "complete"
+    # Tool fields
+    tool_name: Optional[str] = None
+    tool_call_id: Optional[str] = None
+    tool_input: Optional[Dict[str, Any]] = None
+    is_error: bool = False
+    # Thinking fields
+    started_at: Optional[float] = None
+    duration_ms: Optional[int] = None
+
+    def to_dict(self) -> dict:
+        d = {"id": self.id, "type": self.type, "content": self.content, "status": self.status}
+        if self.type == "tool_use":
+            d["tool_name"] = self.tool_name
+            d["tool_call_id"] = self.tool_call_id
+            if self.tool_input is not None:
+                d["tool_input"] = self.tool_input
+        elif self.type == "tool_result":
+            d["tool_call_id"] = self.tool_call_id
+            d["is_error"] = self.is_error
+        elif self.type == "thinking":
+            if self.started_at is not None:
+                d["started_at"] = self.started_at
+            if self.duration_ms is not None:
+                d["duration_ms"] = self.duration_ms
+        return d
+
+
 @dataclass
 class SessionStreamingState:
-    """Tracks the current streaming state for a session - sent to clients on subscribe."""
-    status: str = "idle"  # idle, thinking, tool_use
-    status_text: str = ""
-    active_tools: Dict[str, Dict[str, Any]] = field(default_factory=dict)  # tool_id -> {name, args}
-    streaming_content: str = ""  # Accumulated content being streamed
-    last_updated: float = field(default_factory=time.time)
-    # Pending form request - sent to reconnecting clients who missed the broadcast
-    pending_form: Optional[Dict[str, Any]] = None
-    # Todo list state - broadcast when agents call TodoWrite
-    todos: Optional[list] = None
-    # In-memory message list accumulated during streaming (UI-visible messages only).
-    # This is the authoritative list while processing is active, since disk state
-    # is only saved at the end.  Includes user + assistant text messages + forms.
-    messages: Optional[List[Dict[str, Any]]] = None
+    """Server-authoritative streaming state for a session.
 
-    @property
-    def tool_name(self) -> Optional[str]:
-        """First active tool name (backward compat)."""
-        if self.active_tools:
-            return next(iter(self.active_tools.values())).get("name")
-        return None
+    The `messages` list contains TurnMessage dicts with a `blocks` array.
+    This is the SINGLE SOURCE OF TRUTH for what the client should display.
+    """
+    status: str = "idle"  # "idle", "streaming"
+    messages: List[Dict[str, Any]] = field(default_factory=list)
+    pending_form: Optional[Dict[str, Any]] = None
+    todos: Optional[list] = None
+    seq: int = 0
+    last_updated: float = field(default_factory=time.time)
+
+    # Internal tracking (not sent to clients)
+    _current_blocks: List[ContentBlock] = field(default_factory=list)
+    _current_msg_id: Optional[str] = None
+
+    def _next_seq(self) -> int:
+        self.seq += 1
+        self.last_updated = time.time()
+        return self.seq
+
+    def get_or_create_assistant_message(self) -> Tuple[str, bool]:
+        """Get the current streaming assistant message ID, or create one.
+        Returns (message_id, is_new)."""
+        if self._current_msg_id:
+            return self._current_msg_id, False
+        msg_id = f"msg-{int(time.time()*1000)}-{uuid.uuid4().hex[:8]}"
+        self._current_msg_id = msg_id
+        self._current_blocks = []
+        msg = {
+            "id": msg_id,
+            "role": "assistant",
+            "blocks": self._current_blocks,
+            "status": "streaming",
+            "created_at": time.time()
+        }
+        self.messages.append(msg)
+        return msg_id, True
+
+    def get_or_create_block(self, block_type: str) -> Tuple[ContentBlock, bool]:
+        """Get the trailing in_progress block of the given type, or create a new one.
+        Returns (block, is_new)."""
+        if self._current_blocks:
+            last = self._current_blocks[-1]
+            if last.type == block_type and last.status == "in_progress":
+                return last, False
+        block = ContentBlock(type=block_type)
+        if block_type == "thinking":
+            block.started_at = time.time()
+        self._current_blocks.append(block)
+        return block, True
+
+    def complete_trailing_blocks(self) -> List[dict]:
+        """Complete any in_progress text/thinking blocks. Returns events to broadcast."""
+        events = []
+        for block in self._current_blocks:
+            if block.status == "in_progress" and block.type in ("text", "thinking"):
+                block.status = "complete"
+                meta = {}
+                if block.type == "thinking" and block.started_at:
+                    block.duration_ms = int((time.time() - block.started_at) * 1000)
+                    meta["duration_ms"] = block.duration_ms
+                events.append({
+                    "type": "block_end",
+                    "seq": self._next_seq(),
+                    "message_id": self._current_msg_id,
+                    "block_id": block.id,
+                    "metadata": meta if meta else None
+                })
+        return events
+
+    def finalize_turn(self) -> List[dict]:
+        """Complete all blocks, mark message complete, go idle. Returns events."""
+        events = self.complete_trailing_blocks()
+        if self._current_msg_id:
+            # Find the message and mark it complete
+            for msg in self.messages:
+                if msg.get("id") == self._current_msg_id:
+                    msg["status"] = "complete"
+                    break
+            events.append({
+                "type": "message_end",
+                "seq": self._next_seq(),
+                "message_id": self._current_msg_id
+            })
+        self.status = "idle"
+        events.append({
+            "type": "session_status",
+            "seq": self._next_seq(),
+            "status": "idle"
+        })
+        self._current_msg_id = None
+        self._current_blocks = []
+        return events
+
+    def snapshot(self) -> dict:
+        """Build a full state snapshot for client reconnect/subscribe."""
+        serialized_messages = []
+        for msg in self.messages:
+            if msg.get("blocks") is not None:
+                # Assistant message with blocks
+                serialized = {
+                    "id": msg["id"],
+                    "role": msg["role"],
+                    "status": msg.get("status", "complete"),
+                    "blocks": [b.to_dict() if isinstance(b, ContentBlock) else b for b in msg["blocks"]],
+                }
+                if "created_at" in msg:
+                    serialized["created_at"] = msg["created_at"]
+            else:
+                # User message or legacy message (pass through as-is)
+                serialized = msg
+            serialized_messages.append(serialized)
+
+        return {
+            "type": "state",
+            "seq": self.seq,
+            "status": self.status,
+            "messages": serialized_messages,
+            "isProcessing": self.status != "idle",
+            "pending_form": self.pending_form,
+            "todos": self.todos,
+        }
 
 # Map of session_id -> streaming state
 session_streaming_states: Dict[str, SessionStreamingState] = {}
@@ -1820,13 +1861,23 @@ async def send_tool_heartbeat(session_id: str, tool_name: str):
     try:
         while True:
             await asyncio.sleep(heartbeat_interval)
-            # Check if session is still in tool_use state
+            # Check if session is still streaming (tool in progress)
             state = session_streaming_states.get(session_id)
-            if not state or state.status != "tool_use":
+            if not state or state.status != "streaming":
                 break
-            # Send heartbeat to keep UI alive - report all active tools
-            tool_names = [t.get("name", "tool") for t in state.active_tools.values()] if state.active_tools else [tool_name]
-            heartbeat_text = f"Running {', '.join(tool_names)}..."
+            # Check if there are any in-progress tool_use blocks
+            has_active_tool = any(
+                b.type == "tool_use" and b.status == "in_progress"
+                for b in state._current_blocks
+            )
+            if not has_active_tool:
+                break
+            # Send heartbeat to keep UI alive
+            active_tool_names = [
+                b.tool_name or "tool" for b in state._current_blocks
+                if b.type == "tool_use" and b.status == "in_progress"
+            ]
+            heartbeat_text = f"Running {', '.join(active_tool_names or [tool_name])}..."
             await broadcast_to_session(session_id, {
                 "type": "status",
                 "text": heartbeat_text,
@@ -1896,7 +1947,16 @@ def _build_history_context(messages: List[Dict[str, Any]], current_message: str,
         if not content:
             continue
         if role == "user":
-            parts.append(f"User: {content}")
+            # Add timestamp to user messages so agents see when each message was sent
+            created_at = m.get("created_at")
+            if created_at:
+                try:
+                    ts = datetime.fromtimestamp(created_at).strftime("%A, %-m/%-d/%Y at %-I:%M%p")
+                    parts.append(f"User: [{ts}] {content}")
+                except (OSError, ValueError):
+                    parts.append(f"User: {content}")
+            else:
+                parts.append(f"User: {content}")
         elif role == "assistant":
             parts.append(f"Assistant: {content}")
         elif role == "system":
@@ -2032,15 +2092,14 @@ async def websocket_endpoint(websocket: WebSocket):
                     # Load from disk using the resolved state_key
                     _existing_chat_data = chat_manager.load_chat(state_key)
                 if _existing_chat_data:
-                    _init_messages = list(_existing_chat_data.get("messages", []))
+                    # Prefer display_messages (preserves blocks/thinking) over flat messages
+                    _init_messages = list(_existing_chat_data.get("display_messages") or _existing_chat_data.get("messages", []))
 
                 # Register streaming state IMMEDIATELY (before task runs)
                 active_processing_sessions[state_key] = time.time()
                 session_streaming_states[state_key] = SessionStreamingState(
-                    status="thinking",
-                    status_text="Starting...",
-                    streaming_content="",
-                    messages=_init_messages
+                    status="streaming",
+                    messages=_init_messages,
                 )
                 register_client(websocket, state_key)
                 logger.info(f"PRE-TASK: Registered streaming state for {state_key}")
@@ -2073,9 +2132,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 if chat_id:
                     active_processing_sessions[chat_id] = time.time()
                     session_streaming_states[chat_id] = SessionStreamingState(
-                        status="thinking",
-                        status_text="Re-processing...",
-                        streaming_content=""
+                        status="streaming",
                     )
                     register_client(websocket, chat_id)
                 asyncio.create_task(handle_edit(websocket, data))
@@ -2085,9 +2142,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 if session_id:
                     active_processing_sessions[session_id] = time.time()
                     session_streaming_states[session_id] = SessionStreamingState(
-                        status="thinking",
-                        status_text="Regenerating...",
-                        streaming_content=""
+                        status="streaming",
                     )
                     register_client(websocket, session_id)
                 asyncio.create_task(handle_regenerate(websocket, data))
@@ -2121,7 +2176,7 @@ async def websocket_endpoint(websocket: WebSocket):
         logger.error(f"WebSocket Error: {e}")
         try:
             await websocket.send_json({"type": "error", "text": str(e)})
-        except:
+        except Exception:
             pass
     finally:
         client_sessions.pop(websocket, None)
@@ -2153,16 +2208,15 @@ async def handle_subscribe(websocket: WebSocket, data: dict):
         logger.info(f"SUBSCRIBE: New chat requested (intent=new_chat), unregistered from all sessions")
         await websocket.send_json({
             "type": "state",
+            "seq": 0,
             "sessionId": "new",
             "messages": [],
             "cumulative_usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
             "isProcessing": False,
             "status": "idle",
-            "statusText": "",
-            "toolName": None,
-            "activeTools": {},
-            "streamingContent": "",
-            "agent": None
+            "agent": None,
+            "pending_form": None,
+            "todos": None,
         })
         return
 
@@ -2178,9 +2232,18 @@ async def handle_subscribe(websocket: WebSocket, data: dict):
 
     # First: check if the requested session itself is actively streaming
     if requested_session_id and requested_session_id in session_streaming_states:
-        active_session_id = requested_session_id
-        streaming_state = session_streaming_states[requested_session_id]
-        logger.info(f"SUBSCRIBE: Requested session {requested_session_id} is actively streaming")
+        # Safety check: if streaming state exists but no active wrapper, it's orphaned/stale.
+        # The wrapper is deleted when the streaming loop ends, so if it's gone,
+        # processing is definitely done (completed or crashed). Clean up stale state.
+        if requested_session_id not in active_claude_wrappers:
+            logger.warning(f"SUBSCRIBE: Cleaning up orphaned streaming state for {requested_session_id} (no active wrapper)")
+            del session_streaming_states[requested_session_id]
+            active_processing_sessions.pop(requested_session_id, None)
+            stop_tool_heartbeat(requested_session_id)
+        else:
+            active_session_id = requested_session_id
+            streaming_state = session_streaming_states[requested_session_id]
+            logger.info(f"SUBSCRIBE: Requested session {requested_session_id} is actively streaming")
     elif requested_session_id == "new" or not requested_session_id:
         # Client doesn't know its session - check if there's exactly ONE active stream
         # (If multiple concurrent streams, we can't guess which one the client wants)
@@ -2222,48 +2285,55 @@ async def handle_subscribe(websocket: WebSocket, data: dict):
     messages = []
     cumulative_usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
 
-    # Load messages — prefer in-memory streaming state when actively processing
-    # (disk is stale during streaming; only saved at turn end)
+    # Load state — prefer block model snapshot when actively streaming
     chat_agent = None
     if effective_session_id and effective_session_id != "new":
-        # Try in-memory messages first (authoritative during active streaming)
-        if streaming_state and streaming_state.messages is not None:
-            messages = list(streaming_state.messages)  # shallow copy
-            tool_call_count = sum(1 for m in messages if m.get("role") == "tool_call")
-            logger.info(f"SUBSCRIBE: Using {len(messages)} in-memory streaming messages ({tool_call_count} tool_calls) for {effective_session_id}")
-            # Still load chat_data for metadata (agent, cumulative_usage)
+        if streaming_state:
+            # Active streaming: use block model snapshot (authoritative)
+            state_response = streaming_state.snapshot()
+            state_response["sessionId"] = effective_session_id
+            # Load metadata from disk (agent, cumulative_usage)
             chat_data = chat_manager.load_chat(effective_session_id)
             if chat_data:
                 cumulative_usage = chat_data.get("cumulative_usage", cumulative_usage)
                 chat_agent = chat_data.get("agent")
+            state_response["cumulative_usage"] = cumulative_usage
+            state_response["agent"] = chat_agent
+            logger.info(f"SUBSCRIBE: Using block model snapshot for {effective_session_id} - {len(state_response['messages'])} messages, status={state_response['status']}")
         else:
             # No active streaming — load from disk (source of truth)
             chat_data = chat_manager.load_chat(effective_session_id)
             if chat_data:
-                messages = chat_data.get("messages", [])
+                # Prefer display_messages (has blocks, thinking) over flat messages
+                messages = chat_data.get("display_messages") or chat_data.get("messages", [])
                 cumulative_usage = chat_data.get("cumulative_usage", cumulative_usage)
                 chat_agent = chat_data.get("agent")
-                logger.info(f"SUBSCRIBE: Loaded {len(messages)} messages from disk for {effective_session_id}")
-
-    is_processing = streaming_state is not None
-
-    # Build the state response
-    state_response = {
-        "type": "state",
-        "sessionId": effective_session_id,  # Tell client the CORRECT session ID
-        "messages": messages,
-        "cumulative_usage": cumulative_usage,
-        "isProcessing": is_processing,
-        "status": streaming_state.status if streaming_state else "idle",
-        "statusText": streaming_state.status_text if streaming_state else "",
-        "toolName": streaming_state.tool_name if streaming_state else None,
-        "activeTools": dict(streaming_state.active_tools) if streaming_state else {},
-        "streamingContent": streaming_state.streaming_content if streaming_state else "",
-        "agent": chat_agent,
-        "todos": streaming_state.todos if streaming_state and streaming_state.todos else None
-    }
-
-    logger.info(f"SUBSCRIBE: Sending state for {effective_session_id} - isProcessing={is_processing}, status={state_response['status']}, streamingContent={len(state_response['streamingContent'])} chars, messages={len(messages)}")
+                logger.info(f"SUBSCRIBE: Loaded {len(messages)} messages from disk for {effective_session_id} (display_messages={'display_messages' in chat_data})")
+            state_response = {
+                "type": "state",
+                "seq": 0,
+                "sessionId": effective_session_id,
+                "messages": messages,
+                "isProcessing": False,
+                "status": "idle",
+                "agent": chat_agent,
+                "cumulative_usage": cumulative_usage,
+                "pending_form": None,
+                "todos": None,
+            }
+    else:
+        state_response = {
+            "type": "state",
+            "seq": 0,
+            "sessionId": effective_session_id,
+            "messages": messages,
+            "isProcessing": False,
+            "status": "idle",
+            "agent": None,
+            "cumulative_usage": cumulative_usage,
+            "pending_form": None,
+            "todos": None,
+        }
 
     await websocket.send_json(state_response)
 
@@ -2359,9 +2429,7 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
     # Just update it if needed (in case of any ID changes)
     if streaming_state_key not in session_streaming_states:
         session_streaming_states[streaming_state_key] = SessionStreamingState(
-            status="thinking",
-            status_text="Thinking...",
-            streaming_content=""
+            status="streaming",
         )
         logger.info(f"STREAMING_STATE: Late initialization for {streaming_state_key}")
 
@@ -2456,6 +2524,12 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
                 msg_images = data.get("images")
                 conv.add_message("user", data.get("message", ""), user_msg_id, images=msg_images)  # Store original, not context-wrapped
 
+                # Also add user message to streaming state for display_messages persistence
+                # This ensures display_messages has the complete conversation (user + assistant w/ blocks)
+                _ss_for_user_msg = session_streaming_states.get(streaming_state_key)
+                if _ss_for_user_msg:
+                    _ss_for_user_msg.messages.append(conv.messages[-1])
+
             # If this is a form submission, mark the corresponding form message as submitted
             user_msg_text = data.get("message", "")
             if user_msg_text.startswith("[FORM_SUBMISSION:"):
@@ -2476,7 +2550,7 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
                 "messages": conv.messages,
                 "cumulative_usage": conv.cumulative_usage
             }
-            if agent_name and not _is_primary_agent(agent_name):
+            if agent_name:
                 early_save_data["agent"] = agent_name
             chat_manager.save_chat(early_save_id, early_save_data)
             logger.info(f"EARLY_SAVE: Saved user message to {early_save_id}, agent={agent_name}")
@@ -2519,7 +2593,7 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
 
             # Track the user message in streaming state for tab-switch recovery
             _ss = session_streaming_states.get(early_save_id) or session_streaming_states.get(streaming_state_key)
-            if _ss and _ss.messages is not None:
+            if _ss:
                 _ss.messages.append(accepted_msg)
 
             # BROADCAST: chat_created to ALL clients so history list updates in real-time
@@ -2546,28 +2620,39 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
             if stored:
                 agent_name = stored.get("agent")
 
-    # Look up agent config for non-primary agents
-    if agent_name and not _is_primary_agent(agent_name):
-        try:
-            agents_dir = Path(ROOT_DIR) / ".claude" / "agents"
-            if str(agents_dir) not in sys.path:
-                sys.path.insert(0, str(agents_dir))
-            from registry import get_registry
-            registry = get_registry()
+    # Look up agent config from registry — ALL agents go through this path
+    try:
+        agents_dir = Path(ROOT_DIR) / ".claude" / "agents"
+        if str(agents_dir) not in sys.path:
+            sys.path.insert(0, str(agents_dir))
+        from registry import get_registry
+        registry = get_registry()
+
+        if not agent_name:
+            # No agent specified — use the default agent
+            default_config = registry.get_default_agent()
+            if default_config:
+                agent_config = default_config
+                agent_name = default_config.name
+        else:
             agent_config = registry.get(agent_name)
             if agent_config and not agent_config.chattable:
-                logger.warning(f"Agent '{agent_name}' is not chattable, falling back to primary")
-                agent_config = None
-                agent_name = None
-        except Exception as e:
-            logger.warning(f"Failed to load agent config for '{agent_name}': {e}")
-            agent_config = None
-            agent_name = None
+                logger.warning(f"Agent '{agent_name}' is not chattable, falling back to default")
+                default_config = registry.get_default_agent()
+                if default_config:
+                    agent_config = default_config
+                    agent_name = default_config.name
+                else:
+                    agent_config = None
+                    agent_name = None
+    except Exception as e:
+        logger.warning(f"Failed to load agent config for '{agent_name}': {e}")
+        agent_config = None
+        agent_name = None
 
     # Create wrapper and run
-    # Pass chat_id for same-session LTM deduplication and chat messages for compaction detection
-    chat_id_for_ltm = early_chat_id or preserve_chat_id or (session_id if session_id != "new" else None)
-    claude = ClaudeWrapper(session_id=effective_session_id, cwd=ROOT_DIR, chat_id=chat_id_for_ltm, chat_messages=conv.messages)
+    chat_id_for_wrapper = early_chat_id or preserve_chat_id or (session_id if session_id != "new" else None)
+    claude = ClaudeWrapper(session_id=effective_session_id, cwd=ROOT_DIR, chat_id=chat_id_for_wrapper, chat_messages=conv.messages)
 
     # Track the active wrapper for interrupt capability
     wrapper_key = streaming_state_key or effective_session_id
@@ -2579,11 +2664,7 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
     new_session_id = None
     current_tool_name = None
     had_error = False
-    # Guard: set True after finalize_segment() captures content from deltas.
-    # Prevents the late-arriving SDK 'content' event (AssistantMessage complete
-    # block) from re-adding text that was already finalized by tool_start.
-    segment_just_finalized = False
-
+    restart_after_save = False  # Set when restart_server tool completes — halts stream
     # Tool call history tracking
     # pending_tool_calls: stash tool_use args until tool_end pairs them
     # completed_tool_calls: list of (segment_index, serialized_tool_call) for interleaving
@@ -2595,29 +2676,14 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
     completed_form_messages: list = []
 
     def finalize_segment():
-        """Save current segment if it has content.
-        Also appends the finalized assistant message to the streaming state's
-        in-memory messages list so tab-switch recovery has full context."""
-        nonlocal current_segment, segment_just_finalized
+        """Save current segment if it has content (for disk persistence path).
+        Live streaming state is managed by the block model, not here."""
+        nonlocal current_segment
         if current_segment:
             text = "".join(current_segment).strip()
             if text:
                 all_segments.append(text)
-                # Append finalized assistant text to streaming state messages
-                # and reset streaming_content so it only tracks the *current* segment
-                _sk = preserve_chat_id or new_session_id or streaming_state_key
-                _ss = session_streaming_states.get(_sk)
-                if _ss and _ss.messages is not None:
-                    _ss.messages.append({
-                        "id": f"seg-{len(all_segments)}-{int(time.time()*1000)}",
-                        "role": "assistant",
-                        "content": text,
-                        "timestamp": time.time()
-                    })
-                    # Reset streaming_content — finalized text is now in messages
-                    _ss.streaming_content = ""
             current_segment = []
-            segment_just_finalized = True
 
     # Inject pending agent notifications into the prompt (not system prompt)
     # This ensures notifications are visible even when resuming SDK sessions
@@ -2679,11 +2745,20 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
         prompt_for_sdk = prompt
 
     try:
-        # Route to agent chat or primary prompt based on agent_config
+        # All agents route through run_chat()
+        if not agent_config:
+            logger.error("No agent config available — this should not happen after Phase 3")
+            # Emergency fallback: try to get default from registry
+            try:
+                from registry import get_registry
+                agent_config = get_registry().get_default_agent()
+            except Exception:
+                pass
+
         if agent_config:
-            prompt_gen = claude.run_agent_chat(prompt_for_sdk, agent_config=agent_config, conversation_history=conv.messages)
+            prompt_gen = claude.run_chat(prompt_for_sdk, agent_config=agent_config, conversation_history=conv.messages)
         else:
-            prompt_gen = claude.run_prompt(prompt_for_sdk, conversation_history=conv.messages)
+            raise RuntimeError("No agent config available and no default agent found")
 
         async for event in prompt_gen:
             event_type = event.get("type")
@@ -2704,7 +2779,7 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
                         await broadcast_to_session(preserve_chat_id, {
                             "type": "session_init",
                             "id": preserve_chat_id,
-                            "agent": agent_name if agent_name and not _is_primary_agent(agent_name) else None
+                            "agent": agent_name
                         })
                     else:
                         # CRITICAL: Use preserve_chat_id if available (from EARLY_SAVE)
@@ -2717,7 +2792,7 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
                         await broadcast_to_session(effective_chat_id, {
                             "type": "session_init",
                             "id": effective_chat_id,
-                            "agent": agent_name if agent_name and not _is_primary_agent(agent_name) else None
+                            "agent": agent_name
                         })
 
                     # ========== WAL: Start tracking streaming response ==========
@@ -2738,11 +2813,10 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
                             _fallback_msgs = []
                             _fb_chat = chat_manager.load_chat(actual_state_key)
                             if _fb_chat:
-                                _fallback_msgs = list(_fb_chat.get("messages", []))
+                                _fallback_msgs = list(_fb_chat.get("display_messages") or _fb_chat.get("messages", []))
                             session_streaming_states[actual_state_key] = SessionStreamingState(
-                                status="thinking",
-                                status_text="Processing...",
-                                messages=_fallback_msgs
+                                status="streaming",
+                                messages=_fallback_msgs,
                             )
                             logger.info(f"STREAMING_STATE: Created for {actual_state_key}")
                     # Update active session tracking to the actual ID
@@ -2754,81 +2828,138 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
                 # Streaming text delta - broadcast to ALL clients viewing this session
                 text = event.get("text", "")
                 if text:
-                    segment_just_finalized = False  # New segment content arriving
                     current_segment.append(text)
                     # Also track in conv for restart continuity
                     conv.pending_response = all_segments + ["".join(current_segment)]
                     # ========== WAL: Checkpoint streaming content ==========
                     if not is_system_continuation:
                         wal.append_content(new_session_id or effective_session_id, text)
-                    # ========== Update streaming state for reconnect recovery ==========
+                    # ========== Block model: create/append to text block ==========
                     state_key = preserve_chat_id or new_session_id or streaming_state_key
-                    if state_key in session_streaming_states:
-                        session_streaming_states[state_key].streaming_content += text
-                        session_streaming_states[state_key].status = "thinking"
-                        session_streaming_states[state_key].status_text = ""
-                    # BROADCAST to all clients viewing this session
-                    await broadcast_to_session(state_key, {"type": "content_delta", "text": text})
-
-            elif event_type == "content":
-                # Complete text block - may come after deltas or instead of them.
-                # IMPORTANT: The SDK emits AssistantMessage (which yields 'content')
-                # AFTER tool_start. If finalize_segment() already captured this text
-                # from deltas, skip it to prevent duplication (segment_just_finalized guard).
-                text = event.get("text", "")
-                was_finalized = segment_just_finalized
-                segment_just_finalized = False  # Reset guard after content event
-                if text and not current_segment and not was_finalized:
-                    # Only use if we didn't already stream it via deltas
-                    current_segment.append(text)
-                state_key = preserve_chat_id or new_session_id or streaming_state_key
-                if not was_finalized:
-                    # Only broadcast if this is genuinely new content (not a late duplicate
-                    # of text already sent via content_delta events)
-                    await broadcast_to_session(state_key, {"type": "content", "text": text})
+                    ss = session_streaming_states.get(state_key)
+                    if ss:
+                        msg_id_blk, msg_is_new = ss.get_or_create_assistant_message()
+                        events_to_broadcast = []
+                        if msg_is_new:
+                            events_to_broadcast.append({
+                                "type": "message_start",
+                                "seq": ss._next_seq(),
+                                "sessionId": state_key,
+                                "message_id": msg_id_blk,
+                                "role": "assistant"
+                            })
+                        block, block_is_new = ss.get_or_create_block("text")
+                        if block_is_new:
+                            events_to_broadcast.append({
+                                "type": "block_start",
+                                "seq": ss._next_seq(),
+                                "sessionId": state_key,
+                                "message_id": msg_id_blk,
+                                "block": block.to_dict()
+                            })
+                        block.content += text
+                        events_to_broadcast.append({
+                            "type": "block_delta",
+                            "seq": ss._next_seq(),
+                            "sessionId": state_key,
+                            "message_id": msg_id_blk,
+                            "block_id": block.id,
+                            "delta": text
+                        })
+                        for evt in events_to_broadcast:
+                            await broadcast_to_session(state_key, evt)
 
             elif event_type == "thinking_delta":
-                # Extended thinking - can show as subtle status
-                state_key = preserve_chat_id or new_session_id or streaming_state_key
-                await broadcast_to_session(state_key, {"type": "status", "text": "Thinking deeply..."})
-
-            elif event_type == "thinking":
-                # Complete thinking block
-                pass  # Don't expose full thinking to UI
+                text = event.get("text", "")
+                if text:
+                    state_key = preserve_chat_id or new_session_id or streaming_state_key
+                    ss = session_streaming_states.get(state_key)
+                    if ss:
+                        msg_id_blk, msg_is_new = ss.get_or_create_assistant_message()
+                        events_to_broadcast = []
+                        if msg_is_new:
+                            events_to_broadcast.append({
+                                "type": "message_start",
+                                "seq": ss._next_seq(),
+                                "sessionId": state_key,
+                                "message_id": msg_id_blk,
+                                "role": "assistant"
+                            })
+                        block, block_is_new = ss.get_or_create_block("thinking")
+                        if block_is_new:
+                            events_to_broadcast.append({
+                                "type": "block_start",
+                                "seq": ss._next_seq(),
+                                "sessionId": state_key,
+                                "message_id": msg_id_blk,
+                                "block": block.to_dict()
+                            })
+                        block.content += text
+                        events_to_broadcast.append({
+                            "type": "block_delta",
+                            "seq": ss._next_seq(),
+                            "sessionId": state_key,
+                            "message_id": msg_id_blk,
+                            "block_id": block.id,
+                            "delta": text
+                        })
+                        for evt in events_to_broadcast:
+                            await broadcast_to_session(state_key, evt)
 
             elif event_type == "tool_start":
-                # Finalize any content before tool starts
+                # Finalize any content segment before tool starts (for disk persistence)
                 finalize_segment()
                 current_tool_name = event.get("name", "tool")
                 tool_id = event.get("id")
                 # ========== Defensive stash from tool_start ==========
-                # In case tool_use doesn't fire (some SDK paths), stash early
-                # so tool_end can still find and record this tool call
                 if tool_id and tool_id not in pending_tool_calls:
                     pending_tool_calls[tool_id] = {"name": current_tool_name, "args": "{}"}
                 # ========== WAL: Track tool in progress ==========
                 if not is_system_continuation:
                     wal.set_tool_in_progress(new_session_id or effective_session_id, current_tool_name)
-                    wal.new_segment(new_session_id or effective_session_id)  # New segment after tool
-                # ========== Update streaming state for reconnect recovery ==========
+                    wal.new_segment(new_session_id or effective_session_id)
+                # ========== Block model: complete text blocks, create tool_use block ==========
                 state_key = preserve_chat_id or new_session_id or streaming_state_key
-                if state_key in session_streaming_states:
-                    session_streaming_states[state_key].status = "tool_use"
-                    if tool_id:
-                        session_streaming_states[state_key].active_tools[tool_id] = {"name": current_tool_name}
-                    session_streaming_states[state_key].status_text = f"Running {current_tool_name}..."
+                ss = session_streaming_states.get(state_key)
+                if ss:
+                    msg_id_blk, msg_is_new = ss.get_or_create_assistant_message()
+                    events_to_broadcast = []
+                    if msg_is_new:
+                        events_to_broadcast.append({
+                            "type": "message_start",
+                            "seq": ss._next_seq(),
+                            "sessionId": state_key,
+                            "message_id": msg_id_blk,
+                            "role": "assistant"
+                        })
+                    # Complete any open text/thinking blocks
+                    events_to_broadcast.extend(ss.complete_trailing_blocks())
+                    # Note: do NOT complete other in_progress tool_use blocks here —
+                    # multiple tools can run in parallel. Each tool_end event will
+                    # complete its own block by matching tool_call_id.
+                    # Create tool_use block
+                    block = ContentBlock(
+                        type="tool_use",
+                        tool_name=current_tool_name,
+                        tool_call_id=tool_id,
+                        status="in_progress",
+                        started_at=time.time()
+                    )
+                    ss._current_blocks.append(block)
+                    events_to_broadcast.append({
+                        "type": "block_start",
+                        "seq": ss._next_seq(),
+                        "sessionId": state_key,
+                        "message_id": msg_id_blk,
+                        "block": block.to_dict()
+                    })
+                    for evt in events_to_broadcast:
+                        await broadcast_to_session(state_key, evt)
                 # ========== START HEARTBEAT for long-running tools ==========
-                # This prevents client-side timeout during long tool executions
                 start_tool_heartbeat(state_key, current_tool_name)
-                # BROADCAST to all clients viewing this session
-                await broadcast_to_session(state_key, {
-                    "type": "status",
-                    "text": f"Running {current_tool_name}..."
-                })
-                await broadcast_to_session(state_key, event)
 
             elif event_type == "tool_use":
-                # Finalize any content before tool starts
+                # tool_use gives us full args — update existing block or create if tool_start missed
                 finalize_segment()
                 current_tool_name = event.get("name", "tool")
                 tool_id = event.get("id")
@@ -2836,19 +2967,10 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
                 # ========== WAL: Track tool in progress ==========
                 if not is_system_continuation:
                     wal.set_tool_in_progress(new_session_id or effective_session_id, current_tool_name)
-                    wal.new_segment(new_session_id or effective_session_id)  # New segment after tool
-                # ========== Update streaming state for reconnect recovery ==========
+                    wal.new_segment(new_session_id or effective_session_id)
                 state_key = preserve_chat_id or new_session_id or streaming_state_key
-                if state_key in session_streaming_states:
-                    session_streaming_states[state_key].status = "tool_use"
-                    if tool_id:
-                        session_streaming_states[state_key].active_tools[tool_id] = {
-                            "name": current_tool_name, "args": tool_args
-                        }
-                    session_streaming_states[state_key].status_text = f"Running {current_tool_name}..."
 
                 # ========== Track forms_show args for later broadcast ==========
-                # Tool name may be prefixed with mcp__brain__
                 if current_tool_name and current_tool_name.endswith("forms_show"):
                     logger.info(f"FORMS_SHOW detected in tool_use, tracking args for state_key={state_key}")
                     try:
@@ -2861,7 +2983,7 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
                     except Exception:
                         pass
 
-                # ========== Stash tool call for history serialization ==========
+                # ========== Stash tool call for history serialization (disk save path) ==========
                 if tool_id:
                     pending_tool_calls[tool_id] = {"name": current_tool_name, "args": tool_args}
 
@@ -2880,52 +3002,124 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
                     except Exception as e:
                         logger.warning(f"TODO_UPDATE: Failed to parse TodoWrite args: {e}")
 
+                # ========== Block model: update existing tool_use block with args ==========
+                ss = session_streaming_states.get(state_key)
+                if ss and tool_id:
+                    # Find existing tool_use block (created by tool_start) and update with args
+                    found = False
+                    for block in reversed(ss._current_blocks):
+                        if block.type == "tool_use" and block.tool_call_id == tool_id:
+                            try:
+                                block.tool_input = json.loads(tool_args) if isinstance(tool_args, str) else tool_args
+                            except Exception:
+                                block.tool_input = {"raw": tool_args}
+                            await broadcast_to_session(state_key, {
+                                "type": "block_update",
+                                "seq": ss._next_seq(),
+                                "sessionId": state_key,
+                                "message_id": ss._current_msg_id,
+                                "block_id": block.id,
+                                "block": block.to_dict()
+                            })
+                            found = True
+                            break
+                    if not found:
+                        # Fallback: tool_start didn't fire — create the block now
+                        msg_id_blk, msg_is_new = ss.get_or_create_assistant_message()
+                        events_to_broadcast = []
+                        if msg_is_new:
+                            events_to_broadcast.append({
+                                "type": "message_start",
+                                "seq": ss._next_seq(),
+                                "sessionId": state_key,
+                                "message_id": msg_id_blk,
+                                "role": "assistant"
+                            })
+                        events_to_broadcast.extend(ss.complete_trailing_blocks())
+                        try:
+                            parsed_input = json.loads(tool_args) if isinstance(tool_args, str) else tool_args
+                        except Exception:
+                            parsed_input = {"raw": tool_args}
+                        block = ContentBlock(
+                            type="tool_use",
+                            tool_name=current_tool_name,
+                            tool_call_id=tool_id,
+                            tool_input=parsed_input,
+                            status="in_progress",
+                            started_at=time.time()
+                        )
+                        ss._current_blocks.append(block)
+                        events_to_broadcast.append({
+                            "type": "block_start",
+                            "seq": ss._next_seq(),
+                            "sessionId": state_key,
+                            "message_id": msg_id_blk,
+                            "block": block.to_dict()
+                        })
+                        for evt in events_to_broadcast:
+                            await broadcast_to_session(state_key, evt)
+
                 # ========== START HEARTBEAT for long-running tools ==========
-                # This prevents client-side timeout during long tool executions
                 start_tool_heartbeat(state_key, current_tool_name)
-                # BROADCAST to all clients viewing this session
-                await broadcast_to_session(state_key, {
-                    "type": "status",
-                    "text": f"Running {current_tool_name}..."
-                })
-                await broadcast_to_session(state_key, {
-                    "type": "tool_start",
-                    "name": current_tool_name,
-                    "id": tool_id,
-                    "args": tool_args
-                })
 
             elif event_type == "tool_end":
                 logger.info(f"TOOL_END event received: name={event.get('name')}, id={event.get('id')}, is_error={event.get('is_error')}")
                 state_key = preserve_chat_id or new_session_id or streaming_state_key
                 tool_end_id = event.get("id")
-                # ========== Update streaming state for reconnect recovery ==========
-                if state_key in session_streaming_states:
-                    state = session_streaming_states[state_key]
-                    # Remove this specific tool from active_tools
-                    if tool_end_id:
-                        state.active_tools.pop(tool_end_id, None)
-                    if not state.active_tools:
-                        # No more tools running - transition to thinking
-                        state.status = "thinking"
-                        state.status_text = "Processing..."
-                        # ========== STOP HEARTBEAT - all tools complete ==========
+                tool_name = event.get("name", "")
+                tool_end_output = event.get("output", "")
+                is_error = event.get("is_error", False)
+
+                # ========== Block model: complete tool_use block, add tool_result ==========
+                ss = session_streaming_states.get(state_key)
+                if ss:
+                    events_to_broadcast = []
+                    # Complete the tool_use block
+                    for block in ss._current_blocks:
+                        if block.type == "tool_use" and block.tool_call_id == tool_end_id:
+                            block.status = "complete"
+                            if block.started_at:
+                                block.duration_ms = int((time.time() - block.started_at) * 1000)
+                            events_to_broadcast.append({
+                                "type": "block_end",
+                                "seq": ss._next_seq(),
+                                "sessionId": state_key,
+                                "message_id": ss._current_msg_id,
+                                "block_id": block.id,
+                                "metadata": {"duration_ms": block.duration_ms} if block.duration_ms else None
+                            })
+                            break
+                    # Add tool_result block (created already complete)
+                    result_block = ContentBlock(
+                        type="tool_result",
+                        tool_call_id=tool_end_id,
+                        content=str(tool_end_output)[:2000] if tool_end_output else "",
+                        is_error=is_error,
+                        status="complete"
+                    )
+                    ss._current_blocks.append(result_block)
+                    events_to_broadcast.append({
+                        "type": "block_start",
+                        "seq": ss._next_seq(),
+                        "sessionId": state_key,
+                        "message_id": ss._current_msg_id,
+                        "block": result_block.to_dict()
+                    })
+                    for evt in events_to_broadcast:
+                        await broadcast_to_session(state_key, evt)
+                    # Check if all tool_use blocks are complete — stop heartbeat if so
+                    has_active = any(
+                        b.type == "tool_use" and b.status == "in_progress"
+                        for b in ss._current_blocks
+                    )
+                    if not has_active:
                         stop_tool_heartbeat(state_key)
-                    # else: keep status as tool_use, other tools still running
                 else:
                     stop_tool_heartbeat(state_key)
-                # BROADCAST to all clients viewing this session
-                await broadcast_to_session(state_key, {"type": "status", "text": "Processing..."})
-                await broadcast_to_session(state_key, event)
 
                 # ========== Check for forms_show tool completion ==========
-                # Broadcast form_request to UI when forms_show completes successfully
-                # Tool name may be prefixed with mcp__brain__
-                tool_name = event.get("name", "")
-                is_error = event.get("is_error", False)
                 if tool_name.endswith("forms_show") and not is_error and state_key in pending_form_requests:
                     try:
-                        # Import forms_store to fetch form data
                         scripts_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.claude/scripts"))
                         if scripts_dir not in sys.path:
                             sys.path.insert(0, scripts_dir)
@@ -2949,10 +3143,9 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
                                 }
                                 logger.info(f"Broadcasting form_request for '{form_id}' to session {state_key}")
 
-                                # Store in streaming state for reconnecting clients (e.g., mobile)
+                                # Store in streaming state for reconnecting clients
                                 if state_key in session_streaming_states:
                                     session_streaming_states[state_key].pending_form = form_payload
-                                    logger.info(f"Stored pending_form in streaming state for {state_key}")
 
                                 await broadcast_to_session(state_key, form_payload)
 
@@ -2971,10 +3164,6 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
                                     }
                                 }
                                 completed_form_messages.append((len(all_segments), form_msg))
-                                # Also add to streaming state messages for tab-switch recovery
-                                _ss = session_streaming_states.get(state_key)
-                                if _ss and _ss.messages is not None:
-                                    _ss.messages.append(form_msg)
                                 logger.info(f"Stashed form message for persistence: {form_id}")
                     except Exception as form_err:
                         logger.warning(f"Error broadcasting form_request: {form_err}")
@@ -2982,30 +3171,26 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
                 # ========== Check for chess tool completion ==========
                 if tool_name.endswith("chess") and not is_error:
                     try:
-                        # Check for pending chess board update
                         chess_update_file = os.path.join(ROOT_DIR, ".claude", "chess", "pending_update.json")
                         if os.path.exists(chess_update_file):
                             with open(chess_update_file, 'r') as f:
                                 chess_game = json.load(f)
                             os.remove(chess_update_file)
                             logger.info(f"Broadcasting chess_update to all clients")
-
-                            # Broadcast to ALL connected clients (not just session)
-                            for ws in client_sessions:
+                            for ws in list(client_sessions):
                                 try:
                                     await ws.send_json({
                                         "type": "chess_update",
                                         "game": chess_game
                                     })
-                                except:
+                                except Exception:
                                     pass
                     except Exception as chess_err:
                         logger.warning(f"Error broadcasting chess_update: {chess_err}")
 
-                # ========== Serialize tool call for history ==========
-                tool_end_name = event.get("name", "")
-                tool_end_output = event.get("output", "")
-                tool_end_error = event.get("is_error", False)
+                # ========== Serialize tool call for disk persistence history ==========
+                tool_end_name = tool_name
+                tool_end_error = is_error
                 stashed = pending_tool_calls.pop(tool_end_id, None) if tool_end_id else None
                 if stashed:
                     try:
@@ -3017,22 +3202,10 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
                             tool_id=tool_end_id,
                         )
                         tc["timestamp"] = int(time.time())
-                        # Tag with current segment index so we interleave correctly
                         completed_tool_calls.append((len(all_segments), tc))
-                        # LIVE RECOVERY: Also append to streaming state so tab-switch
-                        # reconnects see completed tool calls, not just text segments
-                        _sk = preserve_chat_id or new_session_id or streaming_state_key
-                        _ss = session_streaming_states.get(_sk)
-                        if _ss and _ss.messages is not None:
-                            _ss.messages.append(tc)
-                            logger.info(f"LIVE_RECOVERY: Appended tool_call '{stashed['name']}' to _ss.messages (key={_sk}, total={len(_ss.messages)})")
-                        else:
-                            logger.warning(f"LIVE_RECOVERY: Could NOT append tool_call - _sk={_sk}, _ss={_ss is not None}, messages={'not None' if _ss and _ss.messages is not None else 'None'}")
                     except Exception as ser_err:
                         logger.warning(f"Tool serialization error: {ser_err}")
                 elif tool_end_name:
-                    # Fallback: tool_use event was not received (streaming-only path),
-                    # so we have no args. Still record the tool call with output only.
                     try:
                         tc = serialize_tool_call(
                             tool_name=tool_end_name,
@@ -3043,11 +3216,6 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
                         )
                         tc["timestamp"] = int(time.time())
                         completed_tool_calls.append((len(all_segments), tc))
-                        # LIVE RECOVERY: Same as above for fallback path
-                        _sk = preserve_chat_id or new_session_id or streaming_state_key
-                        _ss = session_streaming_states.get(_sk)
-                        if _ss and _ss.messages is not None:
-                            _ss.messages.append(tc)
                         logger.info(f"Tool call recorded without args (streaming-only): {tool_end_name}")
                     except Exception as ser_err:
                         logger.warning(f"Tool serialization fallback error: {ser_err}")
@@ -3056,6 +3224,20 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
                 # ========== WAL: Clear tool in progress ==========
                 if not is_system_continuation:
                     wal.set_tool_in_progress(new_session_id or effective_session_id, None)
+
+                # ========== RESTART: Halt streaming after restart_server tool ==========
+                # When the restart_server tool completes, we break out of the streaming
+                # loop immediately. This prevents the model from generating more text
+                # (which would be lost when the server dies). The normal finalization
+                # code below will do a clean save of display_messages + conv.messages,
+                # and THEN spawn the restart subprocess.
+                _restart_tool_name = tool_name or ""
+                if _restart_tool_name.startswith("mcp__brain__"):
+                    _restart_tool_name = _restart_tool_name[len("mcp__brain__"):]
+                if _restart_tool_name == "restart_server" and not is_error:
+                    logger.info("RESTART: restart_server tool completed — halting stream for clean save")
+                    restart_after_save = True
+                    break
 
             elif event_type == "error":
                 had_error = True
@@ -3125,9 +3307,21 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
             del active_claude_wrappers[wrapper_key]
             logger.info(f"Cleaned up wrapper for {wrapper_key}")
 
-    # Finalize any remaining content
+    # Finalize any remaining content (for disk persistence)
     finalize_segment()
     logger.info(f"COMPLETE: {len(all_segments)} segments, had_error={had_error}")
+
+    # ========== Block model: finalize turn — complete blocks, mark message done ==========
+    _final_state_key = preserve_chat_id or new_session_id or streaming_state_key
+    ss = session_streaming_states.get(_final_state_key)
+    if ss:
+        try:
+            finalize_events = ss.finalize_turn()
+            for evt in finalize_events:
+                evt["sessionId"] = _final_state_key
+                await broadcast_to_session(_final_state_key, evt)
+        except Exception as e:
+            logger.error(f"finalize_turn() failed (will still clean up streaming state): {e}", exc_info=True)
 
     # Add message segments interleaved with tool calls and form messages to conv.messages
     # Tool calls and forms are tagged with the segment index they occurred AFTER,
@@ -3195,8 +3389,56 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
         "messages": conv.messages,
         "cumulative_usage": conv.cumulative_usage
     }
-    if agent_name and not _is_primary_agent(agent_name):
+    if agent_name:
         final_save_data["agent"] = agent_name
+
+    # Save display_messages (block-structured) for UI persistence.
+    # This preserves thinking blocks, tool call metadata, and per-block rendering
+    # across page reloads and server restarts.
+    #
+    # Strategy: SS messages have block-level detail (thinking, tool_use, etc.) but may
+    # only cover the current turn (e.g. after restart). conv.messages has the complete
+    # history but as flat text. Combine them: use SS where available, conv.messages for
+    # older history that SS doesn't cover.
+    _save_ss_key = preserve_chat_id or new_session_id or streaming_state_key
+    _save_ss = session_streaming_states.get(_save_ss_key)
+    if _save_ss and _save_ss.messages:
+        # Serialize SS messages (they have block data for thinking, tool_use, etc.)
+        serialized_ss = []
+        for _dm in _save_ss.messages:
+            if _dm.get("blocks") is not None:
+                _ser_blocks = [
+                    b.to_dict() if isinstance(b, ContentBlock) else b
+                    for b in _dm["blocks"]
+                ]
+                serialized_ss.append({
+                    "id": _dm["id"],
+                    "role": _dm["role"],
+                    "content": "",
+                    "status": "complete",
+                    "blocks": _ser_blocks,
+                })
+            else:
+                # User messages and other non-block messages pass through as-is
+                serialized_ss.append(_dm)
+
+        n_ss = len(serialized_ss)
+        # Count only user/assistant messages in conv.messages — tool_call and form
+        # entries are blocks *within* SS assistant messages, not separate entries.
+        # Comparing against len(conv.messages) directly causes n_conv > n_ss even
+        # when SS has the full history, incorrectly triggering the merge branch.
+        n_conv_meaningful = sum(1 for m in conv.messages if m.get("role") in ("user", "assistant"))
+
+        if n_ss >= n_conv_meaningful:
+            # SS has full history (normal flow with disk-init) - use it directly
+            display_msgs = serialized_ss
+        else:
+            # SS is partial (e.g. restart continuation) - prepend older conv history
+            conv_meaningful = [m for m in conv.messages if m.get("role") in ("user", "assistant")]
+            display_msgs = conv_meaningful[:n_conv_meaningful - n_ss] + serialized_ss
+
+        final_save_data["display_messages"] = display_msgs
+
     chat_manager.save_chat(chat_id_for_storage, final_save_data)
 
     # ========== WAL: Clean up - message fully processed ==========
@@ -3220,34 +3462,6 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
             logger.info("Working memory: advanced exchange, some items may have expired")
     except Exception as e:
         logger.debug(f"Working memory advance_exchange failed: {e}")
-
-    # Buffer exchange for long-term memory processing (Librarian)
-    # Skip system continuations (restart messages), error-only exchanges,
-    # and non-primary agent chats (LTM is reserved exclusively for Ren)
-    if not is_system_continuation and all_segments and not had_error and not agent_config:
-        try:
-            ltm_scripts = os.path.join(ROOT_DIR, ".claude", "scripts", "ltm")
-            if ltm_scripts not in sys.path:
-                sys.path.insert(0, ltm_scripts)
-            from memory_throttle import add_exchange_to_buffer
-
-            user_msg = data.get("message", "")
-            assistant_msg = "\n\n".join(all_segments)
-
-            exchange = {
-                "user_message": user_msg,
-                "assistant_message": assistant_msg,
-                "session_id": chat_id_for_storage,
-                "timestamp": datetime.now().isoformat()
-            }
-            should_run = add_exchange_to_buffer(exchange)
-            logger.info(f"LTM: Buffered exchange, should_run_librarian={should_run}")
-
-            # Optionally trigger Librarian if ready (async background task)
-            if should_run:
-                asyncio.create_task(_run_librarian_background())
-        except Exception as e:
-            logger.debug(f"LTM exchange buffering failed: {e}")
 
     # Trigger Chat Titler for ALL chats (not just Ren)
     # Skip system continuations, error-only exchanges, and empty responses
@@ -3310,6 +3524,35 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
     if len(conv.messages) <= 500:
         done_payload["messages"] = conv.messages
     await broadcast_to_session(chat_id_for_storage, done_payload)
+
+    # ========== RESTART: Spawn restart subprocess AFTER clean save ==========
+    # The restart_server tool wrote config to .claude/pending_restart.json. Now that
+    # all state is cleanly saved to disk (display_messages with block model,
+    # conv.messages with interleaved segments/tool calls, WAL cleaned up),
+    # we can safely kill the server.
+    if restart_after_save:
+        try:
+            import subprocess as _restart_sp
+            restart_config = {}
+            if os.path.exists(_PENDING_RESTART_FILE):
+                with open(_PENDING_RESTART_FILE, 'r') as f:
+                    restart_config = json.load(f)
+                os.remove(_PENDING_RESTART_FILE)
+            restart_script = restart_config.get("restart_script", "")
+            log_file = restart_config.get("log_file", "/tmp/restart.log")
+            if restart_script:
+                logger.info(f"RESTART: Spawning restart subprocess (script={restart_script})")
+                _restart_sp.Popen(
+                    f"sleep 1 && bash {restart_script} > {log_file} 2>&1",
+                    shell=True,
+                    start_new_session=True,
+                    stdout=_restart_sp.DEVNULL,
+                    stderr=_restart_sp.DEVNULL,
+                )
+            else:
+                logger.error("RESTART: No restart_script in pending_restart.json — cannot spawn subprocess")
+        except Exception as e:
+            logger.error(f"RESTART: Failed to spawn restart subprocess: {e}")
 
 
 async def handle_edit(websocket: WebSocket, data: dict):
@@ -3464,6 +3707,21 @@ async def handle_interrupt(websocket: WebSocket, data: dict):
             logger.info(f"INTERRUPT: Successfully interrupted Claude session")
         except Exception as e:
             logger.error(f"INTERRUPT: Error interrupting: {e}")
+    elif session_id:
+        # No active wrapper but streaming state exists — orphaned/stale state.
+        # Clean it up so the client stops showing "processing" on refresh.
+        cleaned = False
+        if session_id in session_streaming_states:
+            del session_streaming_states[session_id]
+            cleaned = True
+        if session_id in active_processing_sessions:
+            active_processing_sessions.pop(session_id, None)
+            recently_completed_sessions[session_id] = time.time()
+            cleaned = True
+        stop_tool_heartbeat(session_id)
+        if cleaned:
+            logger.info(f"INTERRUPT: Cleaned up orphaned streaming state for {session_id}")
+            interrupted = True  # Tell client the interrupt "worked"
 
     # BROADCAST interrupted status to ALL clients viewing this session
     effective_session_id = session_id
@@ -3549,21 +3807,33 @@ async def handle_inject(websocket: WebSocket, data: dict):
     if success:
         logger.info(f"INJECT: Successfully injected message into session {effective_session_id}")
 
-        # Save the injected message to the conversation history
-        if effective_session_id:
-            try:
-                existing_chat = chat_manager.load_chat(effective_session_id)
-                if existing_chat:
-                    existing_chat.setdefault("messages", []).append({
-                        "id": msg_id,
-                        "role": "user",
-                        "content": content,  # Store original (non-timestamped) for display
-                        "injected": True,
-                        "timestamp": time.time()
-                    })
-                    chat_manager.save_chat(effective_session_id, existing_chat)
-            except Exception as e:
-                logger.warning(f"INJECT: Failed to save injected message: {e}")
+        # NOTE: Don't save to disk here — the SDK's conv.messages already includes
+        # the injected message at the correct position. The final save at turn completion
+        # (final_save_data["messages"] = conv.messages) will persist it. Saving here
+        # could cause duplicates if the disk's messages array already has it from conv.messages.
+
+        # Add injected user message to streaming state so reconnects/re-subscribes
+        # show a consistent state (without this, the streaming snapshot was missing
+        # injected messages, causing state drift on visibility changes / reconnects)
+        _inject_ss = session_streaming_states.get(effective_session_id)
+        if _inject_ss:
+            injected_msg = {
+                "id": msg_id,
+                "role": "user",
+                "content": content,
+                "injected": True,
+                "timestamp": time.time()
+            }
+            # Insert AFTER the last assistant message (the one currently streaming),
+            # not at the end of the array. This ensures display_messages on disk
+            # has the correct conversation order when saved at turn completion.
+            insert_idx = len(_inject_ss.messages)
+            for i in range(len(_inject_ss.messages) - 1, -1, -1):
+                if _inject_ss.messages[i].get("role") == "assistant":
+                    insert_idx = i + 1
+                    break
+            _inject_ss.messages.insert(insert_idx, injected_msg)
+            logger.info(f"INJECT: Inserted injected message at position {insert_idx}/{len(_inject_ss.messages)} in streaming state for {effective_session_id}")
 
         # BROADCAST the injection to all clients
         await broadcast_to_session(effective_session_id, {
@@ -3595,7 +3865,7 @@ async def handle_inject(websocket: WebSocket, data: dict):
 
 # --- Scheduler helpers ---
 
-async def _collect_structured_output(claude, prompt):
+async def _collect_structured_output(claude, prompt, agent_config=None):
     """Run a prompt and collect structured output with segment/tool tracking.
 
     Returns (all_segments, completed_tool_calls, actual_session_id) where:
@@ -3608,34 +3878,38 @@ async def _collect_structured_output(claude, prompt):
     pending_tool_calls = {}  # tool_id -> {name, args}
     completed_tool_calls = []  # [(segment_index, tool_call_dict), ...]
     actual_session_id = None
-    segment_just_finalized = False  # Guard against content event duplicating finalized segments
 
     def finalize_segment():
-        nonlocal current_segment, segment_just_finalized
+        nonlocal current_segment
         if current_segment:
             text = "".join(current_segment).strip()
             if text:
                 all_segments.append(text)
             current_segment = []
-            segment_just_finalized = True
 
-    async for event in claude.run_prompt(prompt):
+    # Resolve default agent config if not provided
+    if not agent_config:
+        try:
+            agents_dir = Path(ROOT_DIR) / ".claude" / "agents"
+            if str(agents_dir) not in sys.path:
+                sys.path.insert(0, str(agents_dir))
+            from registry import get_registry
+            agent_config = get_registry().get_default_agent()
+        except Exception:
+            pass
+
+    if not agent_config:
+        logger.error("No agent config available for _collect_structured_output")
+        return [], [], None
+
+    async for event in claude.run_chat(prompt, agent_config=agent_config):
         event_type = event.get("type")
 
         if event_type == "session_init":
             actual_session_id = event.get("id")
 
         elif event_type == "content_delta":
-            segment_just_finalized = False
             current_segment.append(event.get("text", ""))
-
-        elif event_type == "content":
-            # Full text block — use as fallback if deltas didn't fill segment
-            text = event.get("text", "")
-            was_finalized = segment_just_finalized
-            segment_just_finalized = False
-            if text and not current_segment and not was_finalized:
-                current_segment.append(text)
 
         elif event_type == "tool_start":
             finalize_segment()
@@ -3788,7 +4062,7 @@ async def _execute_scheduled_task(task_info):
                                     elif role == "assistant":
                                         history_parts.append(f"Assistant: {content}")
                                 if history_parts:
-                                    history_context = f"[ROOM CONTEXT - Previous conversation]\n{''.join(history_parts)}\n\n"
+                                    history_context = f"[ROOM CONTEXT - Previous conversation]\n{chr(10).join(history_parts)}\n\n"
 
                             routing_instructions = f"""
 
@@ -3888,7 +4162,7 @@ You are running as a scheduled task, not a live invocation. Your output will be 
                                     elif role == "assistant":
                                         history_parts.append(f"Assistant: {content}")
                                 if history_parts:
-                                    history_context = f"[ROOM CONTEXT - Previous conversation]\n{''.join(history_parts)}\n\n"
+                                    history_context = f"[ROOM CONTEXT - Previous conversation]\n{chr(10).join(history_parts)}\n\n"
 
                             routing_instructions = f"""
 
@@ -4092,14 +4366,14 @@ You are running as a scheduled task. Your output will be shown to the user in a 
                 )
 
                 # Also send legacy scheduled_task_complete for backward compatibility
-                for ws in client_sessions:
+                for ws in list(client_sessions):
                     try:
                         await ws.send_json({
                             "type": "scheduled_task_complete",
                             "session_id": actual_session_id,
                             "title": title
                         })
-                    except:
+                    except Exception:
                         pass
 
             # Send push notification to mobile/offline clients
@@ -4385,16 +4659,14 @@ Please review the agent response(s) and take any necessary follow-up action. If 
         completed_tool_calls_wakeup = []  # [(segment_index, tool_call_dict), ...]
         actual_session_id = chat_id
         error_content = []
-        segment_just_finalized = False  # Guard against content event duplicating finalized segments
 
         def finalize_wakeup_segment():
-            nonlocal current_segment, segment_just_finalized
+            nonlocal current_segment
             if current_segment:
                 text = "".join(current_segment).strip()
                 if text:
                     all_segments.append(text)
                 current_segment = []
-                segment_just_finalized = True
 
         # Notify clients that wake-up is starting (so they see streaming)
         await broadcast_to_session(chat_id, {
@@ -4403,9 +4675,34 @@ Please review the agent response(s) and take any necessary follow-up action. If 
             "isProcessing": True
         })
 
+        # Resolve agent config for wake-up handling — use the chat's agent
+        try:
+            agents_dir = Path(ROOT_DIR) / ".claude" / "agents"
+            if str(agents_dir) not in sys.path:
+                sys.path.insert(0, str(agents_dir))
+            from registry import get_registry
+            registry = get_registry()
+
+            # Prefer the agent associated with this chat
+            chat_agent_name = existing_chat.get("agent")
+            wakeup_agent_config = registry.get(chat_agent_name) if chat_agent_name else None
+
+            # Fall back to default agent, then first available
+            if not wakeup_agent_config:
+                wakeup_agent_config = registry.get_default_agent()
+            if not wakeup_agent_config:
+                all_configs = registry.get_all_configs()
+                wakeup_agent_config = next(iter(all_configs.values()), None) if all_configs else None
+        except Exception:
+            wakeup_agent_config = None
+
+        if not wakeup_agent_config:
+            logger.error("No agent config available for wake-up handler")
+            return
+
         try:
             event_count = 0
-            async for event in claude.run_prompt(notification_prompt, conversation_history=conversation_history):
+            async for event in claude.run_chat(notification_prompt, agent_config=wakeup_agent_config, conversation_history=conversation_history):
                 event_count += 1
                 event_type = event.get("type", "unknown")
 
@@ -4416,20 +4713,11 @@ Please review the agent response(s) and take any necessary follow-up action. If 
                 elif event_type == "content_delta":
                     text = event.get("text", "")
                     if text:
-                        segment_just_finalized = False
                         current_segment.append(text)
                         await broadcast_to_session(chat_id, {
                             "type": "content_delta",
                             "text": text
                         })
-
-                elif event_type == "content":
-                    # Full text block — use as fallback if deltas didn't fill segment
-                    text = event.get("text", "")
-                    was_finalized = segment_just_finalized
-                    segment_just_finalized = False
-                    if text and not current_segment and not was_finalized:
-                        current_segment.append(text)
 
                 elif event_type == "tool_start":
                     logger.info(f"WAKEUP_TOOL: tool_start name={event.get('name')} id={event.get('id')} segments_so_far={len(all_segments)} current_seg_len={len(current_segment)}")
@@ -4542,16 +4830,22 @@ Please review the agent response(s) and take any necessary follow-up action. If 
         if interleaved:
             # Add hidden user message (notification trigger)
             latest_completed = max(n.completed_at for n in notifications)
-            existing_chat["messages"].append({
+            hidden_user_msg = {
                 "id": str(uuid.uuid4()),
                 "role": "user",
                 "content": notification_prompt_raw,
                 "hidden": True,
                 "timestamp": int(latest_completed.timestamp() * 1000)
-            })
-
-            # Add interleaved assistant messages + tool calls
+            }
+            existing_chat["messages"].append(hidden_user_msg)
             existing_chat["messages"].extend(interleaved)
+
+            # Also update display_messages (used by subscribe and state broadcasts).
+            # Without this, wake-up responses are invisible — subscribe returns the
+            # stale display_messages which doesn't include the new messages.
+            if "display_messages" in existing_chat:
+                existing_chat["display_messages"].append(hidden_user_msg)
+                existing_chat["display_messages"].extend(interleaved)
 
             chat_manager.save_chat(chat_id, existing_chat)
 
@@ -4563,18 +4857,37 @@ Please review the agent response(s) and take any necessary follow-up action. If 
 
             logger.info(f"Triggered wake-up for {len(notifications)} notification(s): {agent_names_str} -> chat {chat_id}")
 
-            # Send done event with updated messages
+            # Broadcast state event so the client syncs the new messages.
+            # The old 'done' event didn't work because the client's done handler
+            # explicitly does NOT sync data.messages (to preserve streaming blocks).
+            # The 'state' handler properly replaces messages with server's state.
+            chat_agent = existing_chat.get("agent")
             await broadcast_to_session(chat_id, {
-                "type": "done",
+                "type": "state",
+                "seq": 0,
                 "sessionId": chat_id,
-                "messages": existing_chat["messages"]
+                "messages": existing_chat.get("display_messages") or existing_chat["messages"],
+                "isProcessing": False,
+                "status": "idle",
+                "agent": chat_agent,
+                "cumulative_usage": existing_chat.get("cumulative_usage", {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}),
+                "pending_form": None,
+                "todos": None,
             })
         else:
             logger.warning(f"Wake-up produced no content for {agent_names_str} -> chat {chat_id}")
-            # Still send done to clear processing state
+            # Still send state to clear processing state
             await broadcast_to_session(chat_id, {
-                "type": "done",
-                "sessionId": chat_id
+                "type": "state",
+                "seq": 0,
+                "sessionId": chat_id,
+                "messages": existing_chat.get("display_messages") or existing_chat.get("messages", []),
+                "isProcessing": False,
+                "status": "idle",
+                "agent": existing_chat.get("agent"),
+                "cumulative_usage": existing_chat.get("cumulative_usage", {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}),
+                "pending_form": None,
+                "todos": None,
             })
 
         # Send user-facing notifications (toast/push) so user knows there's a new message

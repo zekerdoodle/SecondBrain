@@ -4,316 +4,447 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Diet Tracker</title>
-<link rel="stylesheet" href="/file/05_App_Data/_shared/theme.css">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 <style>
-* { box-sizing: border-box; margin: 0; padding: 0; }
-body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  background: #1e1e2e; color: #cdd6f4;
-  min-height: 100vh; overflow-x: hidden;
-  padding-bottom: 70px;
+/* === Second Brain Theme Variables === */
+:root, [data-theme="light"] {
+  --bg-primary: #FAF9F7;
+  --bg-secondary: #FFFFFF;
+  --bg-tertiary: #F5F4F2;
+  --text-primary: #1a1a1a;
+  --text-secondary: #6B6B6B;
+  --text-muted: #9CA3AF;
+  --border-color: #E8E6E3;
+  --border-hover: #D4D2CF;
+  --accent-primary: #D97757;
+  --accent-hover: #C4684A;
+  --accent-light: #FDF4F1;
+  --accent-r: 217;
+  --accent-g: 119;
+  --accent-b: 87;
+  --success: #10B981;
+  --warning: #F59E0B;
+  --error: #EF4444;
+  --sp-xs: 4px; --sp-sm: 8px; --sp-md: 12px; --sp-lg: 16px; --sp-xl: 20px; --sp-2xl: 24px;
+  --radius-sm: 4px; --radius-md: 8px; --radius-lg: 10px; --radius-xl: 12px; --radius-2xl: 16px; --radius-full: 9999px;
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'SF Mono', 'Fira Code', monospace;
+  --font-size-xs: 11px; --font-size-sm: 12px; --font-size-base: 13px; --font-size-md: 14px;
+  --font-size-lg: 16px; --font-size-xl: 18px; --font-size-2xl: 22px;
+  --ease-fast: 0.15s ease; --ease-normal: 0.2s ease; --ease-slow: 0.3s ease;
+  --z-base: 1; --z-sticky: 50; --z-modal: 200; --z-toast: 300;
 }
+
+[data-theme="dark"] {
+  --bg-primary: #1a1a1a;
+  --bg-secondary: #242424;
+  --bg-tertiary: #2d2d2d;
+  --text-primary: #f5f5f5;
+  --text-secondary: #a0a0a0;
+  --text-muted: #6b6b6b;
+  --border-color: #3d3d3d;
+  --border-hover: #4d4d4d;
+  --success: #34D399;
+  --warning: #FBBF24;
+  --error: #F87171;
+}
+
+/* === Base Reset === */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: var(--font-sans);
+  font-size: var(--font-size-md);
+  line-height: 1.5;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  min-height: 100vh;
+  overflow-x: hidden;
+  padding-bottom: 70px;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
 ::-webkit-scrollbar { width: 6px; }
-::-webkit-scrollbar-track { background: #1e1e2e; }
-::-webkit-scrollbar-thumb { background: #45475a; border-radius: 3px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: var(--radius-full); }
+::-webkit-scrollbar-thumb:hover { background: var(--border-hover); }
 
 /* === TAB NAV (bottom) === */
 .tab-bar {
-  display: flex; background: #181825; border-top: 1px solid #313244;
-  position: fixed; bottom: 0; left: 0; right: 0; z-index: 100;
+  display: flex; background: var(--bg-secondary); border-top: 1px solid var(--border-color);
+  position: fixed; bottom: 0; left: 0; right: 0; z-index: var(--z-sticky);
 }
 .tab-btn {
   flex: 1; padding: 10px 4px 8px; text-align: center; cursor: pointer;
-  color: #6c7086; font-size: 10px; font-weight: 600; letter-spacing: 0.3px;
+  color: var(--text-muted); font-size: 10px; font-weight: 600; letter-spacing: 0.3px;
   border: none; background: none; border-top: 2px solid transparent;
-  transition: color 0.2s, border-color 0.2s;
+  transition: color var(--ease-normal), border-color var(--ease-normal);
   display: flex; flex-direction: column; align-items: center; gap: 3px;
+  font-family: inherit;
 }
-.tab-btn:hover { color: #a6adc8; }
-.tab-btn.active { color: #89b4fa; border-top-color: #89b4fa; }
+.tab-btn:hover { color: var(--text-secondary); }
+.tab-btn.active { color: var(--accent-primary); border-top-color: var(--accent-primary); }
 .tab-icon { font-size: 18px; }
 
 /* === MAIN CONTENT === */
-main { padding: 16px; max-width: 600px; margin: 0 auto; }
+main { padding: var(--sp-lg); max-width: 600px; margin: 0 auto; }
 .tab-content { display: none; }
 .tab-content.active { display: block; }
 
 /* === CARDS === */
 .card {
-  background: #313244; border-radius: 12px; padding: 16px; margin-bottom: 12px;
-  border: 1px solid #45475a;
+  background: var(--bg-secondary); border-radius: var(--radius-xl);
+  padding: var(--sp-lg); margin-bottom: var(--sp-md);
+  border: 1px solid var(--border-color);
 }
-.card-header { font-size: 15px; font-weight: 600; margin-bottom: 8px; color: #cdd6f4; }
-.card-sub { font-size: 12px; color: #6c7086; }
+.card-header { font-size: var(--font-size-md); font-weight: 600; margin-bottom: var(--sp-sm); color: var(--text-primary); }
+.card-sub { font-size: var(--font-size-sm); color: var(--text-muted); }
 
 /* === BUTTONS === */
 .btn {
-  border: none; border-radius: 10px; padding: 12px 20px; cursor: pointer;
-  font-weight: 600; font-size: 14px; transition: all 0.15s;
-  -webkit-tap-highlight-color: transparent;
+  display: inline-flex; align-items: center; justify-content: center; gap: var(--sp-sm);
+  border: none; border-radius: var(--radius-lg); padding: 12px 20px; cursor: pointer;
+  font-weight: 600; font-size: var(--font-size-md); font-family: inherit;
+  transition: background var(--ease-normal), opacity var(--ease-normal);
+  -webkit-tap-highlight-color: transparent; user-select: none;
 }
-.btn-primary { background: #89b4fa; color: #1e1e2e; }
-.btn-primary:hover { background: #b4befe; }
-.btn-secondary { background: #45475a; color: #cdd6f4; }
-.btn-secondary:hover { background: #585b70; }
-.btn-success { background: #a6e3a1; color: #1e1e2e; }
-.btn-success:hover { background: #94e2d5; }
-.btn-large { padding: 16px 28px; font-size: 16px; width: 100%; }
+.btn-primary { background: var(--accent-primary); color: var(--bg-secondary); }
+.btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
+.btn-secondary { background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); }
+.btn-secondary:hover:not(:disabled) { background: var(--border-color); }
+.btn-success { background: var(--success); color: var(--bg-secondary); }
+.btn-success:hover:not(:disabled) { opacity: 0.9; }
+.btn-danger { background: var(--error); color: var(--bg-secondary); }
+.btn-danger:hover:not(:disabled) { opacity: 0.9; }
+.btn-large { padding: 14px 28px; font-size: var(--font-size-lg); width: 100%; border-radius: var(--radius-xl); }
 .btn:disabled { opacity: 0.4; cursor: not-allowed; }
-.btn-ghost { background: none; color: #6c7086; padding: 8px 12px; font-size: 12px; }
-.btn-ghost:hover { color: #cdd6f4; }
+.btn-ghost { background: none; color: var(--text-muted); padding: var(--sp-sm) var(--sp-md); font-size: var(--font-size-sm); }
+.btn-ghost:hover { color: var(--text-primary); }
 
 /* === INPUTS === */
 input, textarea, select {
-  background: #1e1e2e; border: 1px solid #45475a; color: #cdd6f4;
-  padding: 12px 16px; border-radius: 10px; font-size: 15px; width: 100%;
+  background: var(--bg-primary); border: 1px solid var(--border-color); color: var(--text-primary);
+  padding: var(--sp-md) var(--sp-lg); border-radius: var(--radius-lg); font-size: var(--font-size-md);
+  width: 100%; font-family: inherit; outline: none;
   -webkit-appearance: none;
+  transition: border-color var(--ease-normal);
 }
-input:focus, textarea:focus, select:focus { outline: none; border-color: #89b4fa; }
-input[type="number"] { font-size: 28px; font-weight: 700; text-align: center; padding: 16px; }
+input:focus, textarea:focus, select:focus { outline: none; border-color: var(--accent-primary); }
+input[type="number"] { font-size: 28px; font-weight: 700; text-align: center; padding: var(--sp-lg); }
 textarea { resize: vertical; min-height: 60px; font-family: inherit; }
 
 /* === STAT BADGES === */
-.stat-row { display: flex; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+.stat-row { display: flex; gap: var(--sp-md); margin-bottom: var(--sp-md); flex-wrap: wrap; }
 .stat-badge {
-  flex: 1; min-width: 80px; background: #1e1e2e; border-radius: 10px; padding: 12px;
-  text-align: center; border: 1px solid #45475a;
+  flex: 1; min-width: 80px; background: var(--bg-secondary); border-radius: var(--radius-lg);
+  padding: var(--sp-md); text-align: center; border: 1px solid var(--border-color);
 }
-.stat-value { font-size: 22px; font-weight: 700; color: #89b4fa; }
-.stat-label { font-size: 11px; color: #6c7086; margin-top: 2px; }
+.stat-value { font-size: var(--font-size-2xl); font-weight: 700; color: var(--accent-primary); }
+.stat-label { font-size: var(--font-size-xs); color: var(--text-muted); margin-top: 2px; }
 
 /* === MACRO BAR === */
 .macro-bar {
-  display: flex; gap: 16px; padding: 12px 16px; background: #181825;
-  border-radius: 10px; margin-bottom: 16px; align-items: center;
+  display: flex; gap: var(--sp-lg); padding: var(--sp-md) var(--sp-lg); background: var(--bg-tertiary);
+  border-radius: var(--radius-lg); margin-bottom: var(--sp-lg); align-items: center;
+  border: 1px solid var(--border-color);
 }
 .macro-item { text-align: center; flex: 1; }
-.macro-current { font-size: 18px; font-weight: 700; }
-.macro-target { font-size: 11px; color: #6c7086; }
-.macro-label { font-size: 10px; color: #585b70; margin-top: 2px; }
+.macro-current { font-size: var(--font-size-xl); font-weight: 700; }
+.macro-target { font-size: var(--font-size-xs); color: var(--text-muted); }
+.macro-label { font-size: 10px; color: var(--text-muted); margin-top: 2px; }
 .macro-progress {
-  height: 3px; background: #45475a; border-radius: 2px; margin-top: 4px; overflow: hidden;
+  height: 3px; background: var(--border-color); border-radius: 2px; margin-top: 4px; overflow: hidden;
 }
 .macro-progress-fill { height: 100%; border-radius: 2px; transition: width 0.3s; }
 
 /* === MEAL CARDS === */
-.meal-section { margin-bottom: 16px; }
+.meal-section { margin-bottom: var(--sp-lg); }
 .meal-section-header {
   display: flex; justify-content: space-between; align-items: center;
-  margin-bottom: 8px; padding: 0 4px;
+  margin-bottom: var(--sp-sm); padding: 0 4px;
 }
-.meal-section-title { font-size: 14px; font-weight: 600; color: #cdd6f4; }
-.meal-section-time { font-size: 12px; color: #6c7086; }
-.meal-section-target { font-size: 11px; color: #585b70; }
+.meal-section-title { font-size: var(--font-size-md); font-weight: 600; color: var(--text-primary); }
+.meal-section-time { font-size: var(--font-size-sm); color: var(--text-muted); }
+.meal-section-target { font-size: var(--font-size-xs); color: var(--text-muted); }
 
 .meal-card {
-  background: #313244; border-radius: 12px; padding: 14px 16px; margin-bottom: 8px;
-  border: 2px solid #45475a; cursor: pointer; transition: all 0.15s;
-  -webkit-tap-highlight-color: transparent;
+  background: var(--bg-secondary); border-radius: var(--radius-xl); padding: 14px var(--sp-lg);
+  margin-bottom: var(--sp-sm); border: 2px solid var(--border-color); cursor: pointer;
+  transition: all var(--ease-fast); -webkit-tap-highlight-color: transparent;
 }
-.meal-card:hover { border-color: #585b70; }
+.meal-card:hover { border-color: var(--border-hover); }
 .meal-card:active { transform: scale(0.98); }
 .meal-card.selected {
-  border-color: #a6e3a1; background: #2a3040;
+  border-color: var(--success);
+  background: rgba(var(--accent-r),var(--accent-g),var(--accent-b),0.06);
 }
 .meal-card.selected::after { content: none; }
-.meal-card-label { font-size: 14px; font-weight: 600; margin-bottom: 4px; }
-.meal-card-macros { font-size: 12px; color: #a6adc8; }
+.meal-card-label { font-size: var(--font-size-md); font-weight: 600; margin-bottom: 4px; }
+.meal-card-macros { font-size: var(--font-size-sm); color: var(--text-secondary); }
 .meal-card-items {
-  margin-top: 8px; padding-top: 8px; border-top: 1px solid #45475a;
-  display: none; font-size: 12px; color: #6c7086;
+  margin-top: var(--sp-sm); padding-top: var(--sp-sm); border-top: 1px solid var(--border-color);
+  display: none; font-size: var(--font-size-sm); color: var(--text-muted);
 }
 .meal-card-items.expanded { display: block; }
 .meal-card-item { padding: 3px 0; display: flex; justify-content: space-between; }
 .meal-card-item-name { flex: 1; }
-.meal-card-item-amount { color: #585b70; margin-left: 8px; white-space: nowrap; }
-.meal-card-check { color: #a6e3a1; font-weight: 700; margin-right: 8px; }
+.meal-card-item-amount { color: var(--text-muted); margin-left: var(--sp-sm); white-space: nowrap; }
+.meal-card-check { color: var(--success); font-weight: 700; margin-right: var(--sp-sm); }
 
 .meal-custom-card {
-  background: #1e1e2e; border: 2px dashed #45475a; border-radius: 12px;
-  padding: 14px 16px; margin-bottom: 8px; cursor: pointer; text-align: center;
-  color: #6c7086; font-size: 13px; transition: all 0.15s;
+  background: var(--bg-primary); border: 2px dashed var(--border-color); border-radius: var(--radius-xl);
+  padding: 14px var(--sp-lg); margin-bottom: var(--sp-sm); cursor: pointer; text-align: center;
+  color: var(--text-muted); font-size: var(--font-size-base); transition: all var(--ease-fast);
 }
-.meal-custom-card:hover { border-color: #89b4fa; color: #89b4fa; }
+.meal-custom-card:hover { border-color: var(--accent-primary); color: var(--accent-primary); }
 
 .meal-done {
-  background: #282838; border-radius: 10px; padding: 10px 14px; margin-bottom: 6px;
-  display: flex; align-items: center; gap: 8px; font-size: 13px; color: #6c7086;
+  background: var(--bg-tertiary); border-radius: var(--radius-lg); padding: var(--sp-md) 14px;
+  margin-bottom: 6px; display: flex; align-items: center; gap: var(--sp-sm);
+  font-size: var(--font-size-base); color: var(--text-secondary);
+  border: 1px solid var(--border-color);
 }
-.meal-done-check { color: #a6e3a1; }
+.meal-done-check { color: var(--success); }
 .meal-done-label { flex: 1; }
-.meal-done-macros { font-size: 11px; color: #585b70; }
+.meal-done-macros { font-size: var(--font-size-xs); color: var(--text-muted); }
 
 .meal-future {
-  background: #252535; border-radius: 10px; padding: 10px 14px; margin-bottom: 6px;
-  opacity: 0.5; font-size: 13px; color: #585b70;
-  display: flex; justify-content: space-between;
+  background: var(--bg-tertiary); border-radius: var(--radius-lg); padding: var(--sp-md) 14px;
+  margin-bottom: 6px; opacity: 0.5; font-size: var(--font-size-base); color: var(--text-muted);
+  display: flex; justify-content: space-between; border: 1px solid var(--border-color);
 }
 
 /* === FEEL BUTTONS === */
-.feel-row { display: flex; gap: 8px; margin: 12px 0; }
+.feel-row { display: flex; gap: var(--sp-sm); margin: var(--sp-md) 0; }
 .feel-btn {
-  flex: 1; padding: 14px 4px; border-radius: 10px; border: 2px solid #45475a;
-  background: #313244; color: #cdd6f4; cursor: pointer; text-align: center;
-  font-size: 12px; font-weight: 600; transition: all 0.15s;
+  flex: 1; padding: 14px 4px; border-radius: var(--radius-lg); border: 2px solid var(--border-color);
+  background: var(--bg-secondary); color: var(--text-primary); cursor: pointer; text-align: center;
+  font-size: var(--font-size-sm); font-weight: 600; transition: all var(--ease-fast);
   -webkit-tap-highlight-color: transparent;
 }
-.feel-btn:hover { border-color: #585b70; }
-.feel-btn.active { border-color: #89b4fa; background: #2a3040; }
+.feel-btn:hover { border-color: var(--border-hover); }
+.feel-btn.active { border-color: var(--accent-primary); background: rgba(var(--accent-r),var(--accent-g),var(--accent-b),0.08); }
 .feel-num { font-size: 20px; display: block; margin-bottom: 2px; }
 
 /* === SUMMARY CARD === */
-.summary-card { text-align: center; padding: 24px 16px; }
-.summary-title { font-size: 18px; font-weight: 700; margin-bottom: 16px; }
-.summary-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 16px; }
-.summary-item { background: #1e1e2e; border-radius: 10px; padding: 12px; }
-.summary-value { font-size: 20px; font-weight: 700; color: #89b4fa; }
-.summary-label { font-size: 11px; color: #6c7086; margin-top: 2px; }
+.summary-card { text-align: center; padding: var(--sp-2xl) var(--sp-lg); }
+.summary-title { font-size: var(--font-size-xl); font-weight: 700; margin-bottom: var(--sp-lg); }
+.summary-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-md); margin-bottom: var(--sp-lg); }
+.summary-item {
+  background: var(--bg-secondary); border-radius: var(--radius-lg); padding: var(--sp-md);
+  border: 1px solid var(--border-color);
+}
+.summary-value { font-size: 20px; font-weight: 700; color: var(--accent-primary); }
+.summary-label { font-size: var(--font-size-xs); color: var(--text-muted); margin-top: 2px; }
 
 /* === CHART === */
-.chart-container { position: relative; width: 100%; margin-bottom: 16px; }
+.chart-container { position: relative; width: 100%; margin-bottom: var(--sp-lg); }
 .chart-container canvas { width: 100% !important; }
 
 /* === ACCORDION === */
-.accordion { margin-bottom: 8px; }
+.accordion { margin-bottom: var(--sp-sm); }
 .accordion-header {
-  background: #313244; border-radius: 10px; padding: 12px 16px; cursor: pointer;
-  display: flex; justify-content: space-between; align-items: center;
-  border: 1px solid #45475a; font-size: 13px; font-weight: 600;
-  transition: all 0.15s;
+  background: var(--bg-secondary); border-radius: var(--radius-lg); padding: var(--sp-md) var(--sp-lg);
+  cursor: pointer; display: flex; justify-content: space-between; align-items: center;
+  border: 1px solid var(--border-color); font-size: var(--font-size-base); font-weight: 600;
+  transition: all var(--ease-fast);
 }
-.accordion-header:hover { background: #3a3a4e; }
+.accordion-header:hover { background: var(--bg-tertiary); }
 .accordion-body {
-  display: none; padding: 12px 16px; background: #282838;
-  border-radius: 0 0 10px 10px; border: 1px solid #45475a; border-top: none;
-  font-size: 13px;
+  display: none; padding: var(--sp-md) var(--sp-lg); background: var(--bg-tertiary);
+  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+  border: 1px solid var(--border-color); border-top: none;
+  font-size: var(--font-size-base);
 }
 .accordion-body.open { display: block; }
-.accordion-header.open { border-radius: 10px 10px 0 0; }
+.accordion-header.open { border-radius: var(--radius-lg) var(--radius-lg) 0 0; }
 
 /* === HISTORY LIST === */
 .history-day {
-  background: #313244; border-radius: 10px; padding: 14px 16px; margin-bottom: 8px;
-  border: 1px solid #45475a; cursor: pointer; transition: all 0.15s;
+  background: var(--bg-secondary); border-radius: var(--radius-lg); padding: 14px var(--sp-lg);
+  margin-bottom: var(--sp-sm); border: 1px solid var(--border-color); cursor: pointer;
+  transition: all var(--ease-fast);
 }
-.history-day:hover { background: #3a3a4e; }
+.history-day:hover { background: var(--bg-tertiary); }
+.history-day.feel-good { background: rgba(var(--accent-r),var(--accent-g),var(--accent-b),0.06); }
+.history-day.feel-bad { background: rgba(239,68,68,0.05); }
 .history-day-header { display: flex; justify-content: space-between; align-items: center; }
-.history-day-date { font-size: 14px; font-weight: 600; }
-.history-day-weight { font-size: 13px; color: #89b4fa; }
-.history-day-macros { font-size: 12px; color: #6c7086; margin-top: 4px; }
+.history-day-date { font-size: var(--font-size-md); font-weight: 600; }
+.history-day-weight { font-size: var(--font-size-base); color: var(--accent-primary); }
+.history-day-macros { font-size: var(--font-size-sm); color: var(--text-muted); margin-top: 4px; }
 .history-day-detail {
-  display: none; margin-top: 10px; padding-top: 10px;
-  border-top: 1px solid #45475a; font-size: 12px; color: #a6adc8;
+  display: none; margin-top: var(--sp-md); padding-top: var(--sp-md);
+  border-top: 1px solid var(--border-color); font-size: var(--font-size-sm); color: var(--text-secondary);
 }
 .history-day-detail.open { display: block; }
 .history-meal-line { padding: 3px 0; display: flex; justify-content: space-between; }
-.history-feel { margin-top: 6px; color: #6c7086; }
-.history-notes { margin-top: 4px; font-style: italic; color: #585b70; }
+.history-feel { margin-top: 6px; color: var(--text-muted); }
+.history-notes { margin-top: 4px; font-style: italic; color: var(--text-muted); }
 
 /* === MEALS BROWSE === */
-.browse-slot { margin-bottom: 16px; }
+.browse-slot { margin-bottom: var(--sp-lg); }
 .browse-slot-header {
-  font-size: 15px; font-weight: 700; margin-bottom: 4px; color: #cdd6f4;
+  font-size: var(--font-size-md); font-weight: 700; margin-bottom: 4px; color: var(--text-primary);
 }
-.browse-slot-sub { font-size: 12px; color: #6c7086; margin-bottom: 10px; }
+.browse-slot-sub { font-size: var(--font-size-sm); color: var(--text-muted); margin-bottom: var(--sp-md); }
 .browse-option {
-  background: #313244; border-radius: 10px; padding: 12px 16px; margin-bottom: 6px;
-  border: 1px solid #45475a; cursor: pointer; transition: all 0.15s;
+  background: var(--bg-secondary); border-radius: var(--radius-lg); padding: var(--sp-md) var(--sp-lg);
+  margin-bottom: 6px; border: 1px solid var(--border-color); cursor: pointer;
+  transition: all var(--ease-fast);
 }
-.browse-option:hover { background: #3a3a4e; }
+.browse-option:hover { background: var(--bg-tertiary); }
 .browse-option-header { display: flex; justify-content: space-between; align-items: center; }
-.browse-option-label { font-size: 13px; font-weight: 600; }
-.browse-option-macros { font-size: 12px; color: #a6adc8; }
+.browse-option-label { font-size: var(--font-size-base); font-weight: 600; }
+.browse-option-macros { font-size: var(--font-size-sm); color: var(--text-secondary); }
 .browse-option-badge {
-  font-size: 10px; background: #45475a; color: #a6adc8; border-radius: 6px;
-  padding: 2px 6px; margin-left: 8px;
+  font-size: 10px; background: var(--bg-tertiary); color: var(--text-secondary); border-radius: 6px;
+  padding: 2px 6px; margin-left: var(--sp-sm);
 }
 .browse-option-items {
-  display: none; margin-top: 8px; padding-top: 8px; border-top: 1px solid #45475a;
-  font-size: 12px; color: #6c7086;
+  display: none; margin-top: var(--sp-sm); padding-top: var(--sp-sm); border-top: 1px solid var(--border-color);
+  font-size: var(--font-size-sm); color: var(--text-muted);
 }
 .browse-option-items.open { display: block; }
 
 /* === SETTINGS === */
 .settings-section { margin-bottom: 20px; }
-.settings-label { font-size: 12px; color: #6c7086; margin-bottom: 6px; font-weight: 600; }
-.settings-value { font-size: 15px; margin-bottom: 12px; }
+.settings-label { font-size: var(--font-size-sm); color: var(--text-muted); margin-bottom: 6px; font-weight: 600; }
+.settings-value { font-size: var(--font-size-md); margin-bottom: var(--sp-md); }
 
 /* === GREETING === */
 .greeting { font-size: 24px; font-weight: 700; margin-bottom: 4px; }
-.greeting-sub { font-size: 14px; color: #6c7086; margin-bottom: 24px; }
+.greeting-sub { font-size: var(--font-size-md); color: var(--text-muted); margin-bottom: var(--sp-2xl); }
 
 /* === WEIGHT INPUT === */
-.weight-input-wrap { margin-bottom: 16px; text-align: center; }
+.weight-input-wrap { margin-bottom: var(--sp-lg); text-align: center; }
 .weight-input-wrap label {
-  font-size: 13px; color: #6c7086; display: block; margin-bottom: 8px;
+  font-size: var(--font-size-base); color: var(--text-muted); display: block; margin-bottom: var(--sp-sm);
 }
-.yesterday-ref { font-size: 12px; color: #585b70; margin-top: 8px; }
+.yesterday-ref { font-size: var(--font-size-sm); color: var(--text-muted); margin-top: var(--sp-sm); }
 
-/* === CUSTOM MEAL MODAL === */
+/* === MODALS === */
 .modal-overlay {
-  display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
-  background: rgba(0,0,0,0.7); z-index: 200; align-items: center; justify-content: center;
-  padding: 16px;
+  display: flex; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.7); z-index: var(--z-modal); align-items: center; justify-content: center;
+  padding: var(--sp-lg); opacity: 0; pointer-events: none; transition: opacity var(--ease-normal);
 }
-.modal-overlay.open { display: flex; }
+.modal-overlay.open { opacity: 1; pointer-events: auto; }
 .modal {
-  background: #313244; border-radius: 14px; padding: 20px; width: 100%;
-  max-width: 400px; border: 1px solid #45475a;
+  background: var(--bg-secondary); border-radius: var(--radius-2xl); padding: 20px; width: 100%;
+  max-width: 400px; border: 1px solid var(--border-color);
 }
-.modal-title { font-size: 16px; font-weight: 700; margin-bottom: 12px; }
-.modal-actions { display: flex; gap: 8px; margin-top: 12px; }
+.modal-title { font-size: var(--font-size-lg); font-weight: 700; margin-bottom: var(--sp-md); }
+.modal-actions { display: flex; gap: var(--sp-sm); margin-top: var(--sp-md); }
 .modal-actions .btn { flex: 1; }
 
-/* Notifications handled by BrainKit toast (theme.css) */
+.confirm-overlay {
+  display: flex; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.7); z-index: 250; align-items: center; justify-content: center;
+  padding: var(--sp-lg); opacity: 0; pointer-events: none; transition: opacity var(--ease-normal);
+}
+.confirm-overlay.open { opacity: 1; pointer-events: auto; }
 
-/* === ESCALATION INDICATOR === */
+/* === TOAST (BrainKit compat) === */
+.toast {
+  position: fixed; top: var(--sp-lg); left: 50%;
+  transform: translateX(-50%) translateY(-100px);
+  background: var(--bg-secondary); color: var(--text-primary);
+  padding: var(--sp-md) var(--sp-xl); border-radius: var(--radius-lg);
+  font-size: var(--font-size-base); font-weight: 600;
+  z-index: var(--z-toast); border: 1px solid var(--border-color);
+  transition: transform var(--ease-slow); pointer-events: none;
+}
+.toast.show { transform: translateX(-50%) translateY(0); }
+.toast.error { border-color: var(--error); color: var(--error); }
+.toast.success { border-color: var(--success); color: var(--success); }
+.toast.warning { border-color: var(--warning); color: var(--warning); }
+
+/* === ESCALATION NOTE === */
 .escalation-note {
-  background: #2a3040; border-radius: 8px; padding: 10px 14px; margin-top: 12px;
-  font-size: 12px; color: #89b4fa; border-left: 3px solid #89b4fa;
+  background: rgba(var(--accent-r),var(--accent-g),var(--accent-b),0.08);
+  border-radius: var(--radius-md); padding: var(--sp-md) 14px; margin-top: var(--sp-md);
+  font-size: var(--font-size-sm); color: var(--accent-primary); border-left: 3px solid var(--accent-primary);
 }
 
-/* === UNDO BUTTON === */
+/* === UNDO / RESET === */
 .undo-btn {
-  background: none; border: none; color: #585b70; font-size: 11px; cursor: pointer;
-  padding: 4px 8px; margin-left: 4px;
+  background: none; border: none; color: var(--text-muted); font-size: var(--font-size-xs); cursor: pointer;
+  padding: 4px var(--sp-sm); margin-left: 4px;
 }
-.undo-btn:hover { color: #f38ba8; }
+.undo-btn:hover { color: var(--error); }
 
-/* === RESET BUTTON (top-right corner) === */
 .today-header { display: flex; justify-content: flex-end; margin-bottom: 4px; }
 .reset-btn {
-  background: none; border: none; color: #45475a; font-size: 11px; cursor: pointer;
-  padding: 4px 8px; transition: color 0.15s;
+  background: none; border: none; color: var(--text-muted); font-size: var(--font-size-xs); cursor: pointer;
+  padding: 4px var(--sp-sm); transition: color var(--ease-fast);
 }
-.reset-btn:hover { color: #f38ba8; }
-
-/* === CONFIRM MODAL === */
-.confirm-overlay {
-  display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
-  background: rgba(0,0,0,0.7); z-index: 250; align-items: center; justify-content: center;
-  padding: 16px;
-}
-.confirm-overlay.open { display: flex; }
+.reset-btn:hover { color: var(--error); }
 
 /* === ANIMATIONS === */
 @keyframes slideIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 .animate-in { animation: slideIn 0.2s ease-out; }
 
-/* === CUSTOM MEAL POLLING STATE === */
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
 .meal-polling {
-  background: #2a3040; border-radius: 10px; padding: 12px 14px; margin-bottom: 6px;
-  display: flex; align-items: center; gap: 10px; font-size: 13px; color: #89b4fa;
-  animation: pulse 1.5s ease-in-out infinite;
-  border: 1px solid #89b4fa33;
+  background: rgba(var(--accent-r),var(--accent-g),var(--accent-b),0.06);
+  border-radius: var(--radius-lg); padding: var(--sp-md) 14px; margin-bottom: 6px;
+  display: flex; align-items: center; gap: var(--sp-md); font-size: var(--font-size-base);
+  color: var(--accent-primary); animation: pulse 1.5s ease-in-out infinite;
+  border: 1px solid rgba(var(--accent-r),var(--accent-g),var(--accent-b),0.2);
 }
 .meal-polling-dot {
-  width: 8px; height: 8px; border-radius: 50%; background: #89b4fa;
+  width: 8px; height: 8px; border-radius: 50%; background: var(--accent-primary);
   animation: pulse 1s ease-in-out infinite;
 }
 </style>
+<script>
+// Second Brain Theme Bridge — reads parent app's theme from localStorage
+(function() {
+  const STORAGE_KEY = 'second-brain-theme';
+  const defaults = { mode: 'light', accentColor: '#D97757', accentHover: '#C4684A' };
+
+  function hexToRgb(hex) {
+    const r = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+    return r ? { r: parseInt(r[1],16), g: parseInt(r[2],16), b: parseInt(r[3],16) } : null;
+  }
+
+  function applyTheme() {
+    let prefs = defaults;
+    try {
+      const stored = localStorage.getItem(STORAGE_KEY);
+      if (stored) prefs = { ...defaults, ...JSON.parse(stored) };
+    } catch(e) {}
+
+    let mode = prefs.mode;
+    if (mode === 'system') {
+      mode = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    }
+
+    document.documentElement.setAttribute('data-theme', mode);
+    document.documentElement.style.setProperty('--accent-primary', prefs.accentColor);
+    document.documentElement.style.setProperty('--accent-hover', prefs.accentHover);
+
+    const rgb = hexToRgb(prefs.accentColor);
+    if (rgb) {
+      document.documentElement.style.setProperty('--accent-r', rgb.r);
+      document.documentElement.style.setProperty('--accent-g', rgb.g);
+      document.documentElement.style.setProperty('--accent-b', rgb.b);
+    }
+
+    const accentLight = prefs.accentColor + '15';
+    document.documentElement.style.setProperty('--accent-light', accentLight);
+  }
+
+  applyTheme();
+
+  window.addEventListener('storage', function(e) {
+    if (e.key === STORAGE_KEY) applyTheme();
+  });
+
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyTheme);
+})();
+</script>
 </head>
 <body>
 
@@ -357,7 +488,7 @@ textarea { resize: vertical; min-height: 60px; font-family: inherit; }
 <div id="custom-modal" class="modal-overlay">
   <div class="modal">
     <div class="modal-title">Custom Meal</div>
-    <p style="font-size:12px;color:#6c7086;margin-bottom:12px;">Describe what you ate. Claude will estimate the macros.</p>
+    <p style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">Describe what you ate. Claude will estimate the macros.</p>
     <textarea id="custom-meal-text" placeholder="e.g., Two scrambled eggs with toast and butter"></textarea>
     <div class="modal-actions">
       <button class="btn btn-secondary" onclick="closeCustomModal()">Cancel</button>
@@ -370,10 +501,10 @@ textarea { resize: vertical; min-height: 60px; font-family: inherit; }
 <div id="confirm-modal" class="confirm-overlay">
   <div class="modal">
     <div class="modal-title">Reset Today</div>
-    <p style="font-size:13px;color:#a6adc8;margin-bottom:16px;">Reset today's data? This can't be undone.</p>
+    <p style="font-size:13px;color:var(--text-secondary);margin-bottom:16px;">Reset today's data? This can't be undone.</p>
     <div class="modal-actions">
       <button class="btn btn-secondary" onclick="closeConfirmModal()">Cancel</button>
-      <button class="btn btn-secondary" style="background:#f38ba8;color:#1e1e2e;" onclick="confirmResetToday()">Reset</button>
+      <button class="btn btn-danger" onclick="confirmResetToday()">Reset</button>
     </div>
   </div>
 </div>
@@ -410,6 +541,10 @@ function getGreeting() {
   if (h < 12) return 'Good morning';
   if (h < 17) return 'Good afternoon';
   return 'Good evening';
+}
+
+function cssVar(name) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
 
 // notify() removed — using BrainKit.toast() instead
@@ -663,13 +798,13 @@ function renderMealProgress(container, today, headerHtml) {
         <div class="macro-current">${totals.cal}</div>
         <div class="macro-target">/ ${targets.calories}</div>
         <div class="macro-label">calories</div>
-        <div class="macro-progress"><div class="macro-progress-fill" style="width:${calPct}%;background:#89b4fa;"></div></div>
+        <div class="macro-progress"><div class="macro-progress-fill" style="width:${calPct}%;background:var(--accent-primary);"></div></div>
       </div>
       <div class="macro-item">
         <div class="macro-current">${totals.protein}g</div>
         <div class="macro-target">/ ${targets.protein}g</div>
         <div class="macro-label">protein</div>
-        <div class="macro-progress"><div class="macro-progress-fill" style="width:${proPct}%;background:#a6e3a1;"></div></div>
+        <div class="macro-progress"><div class="macro-progress-fill" style="width:${proPct}%;background:var(--success);"></div></div>
       </div>
     </div>
   `;
@@ -735,7 +870,7 @@ function renderMealProgress(container, today, headerHtml) {
           </div>
           <div class="meal-section-time">${currentMeal.time_window}</div>
         </div>
-        ${currentMeal.note ? `<div style="font-size:11px;color:#585b70;margin-bottom:8px;padding:0 4px;">${currentMeal.note}</div>` : ''}
+        ${currentMeal.note ? `<div style="font-size:var(--font-size-xs);color:var(--text-muted);margin-bottom:var(--sp-sm);padding:0 4px;">${currentMeal.note}</div>` : ''}
     `;
 
     for (const opt of currentMeal.options) {
@@ -840,18 +975,18 @@ function renderEndOfDay(container, today, totals) {
         </div>
 
         <div style="margin-top:12px;">
-          <label style="font-size:12px;color:#6c7086;display:block;margin-bottom:6px;">Steps</label>
+          <label style="font-size:var(--font-size-sm);color:var(--text-muted);display:block;margin-bottom:6px;">Steps</label>
           <input type="number" id="eod-steps" placeholder="8000" inputmode="numeric">
         </div>
 
         <div style="margin-top:12px;">
-          <label style="font-size:12px;color:#6c7086;display:block;margin-bottom:6px;">Anything to note?</label>
+          <label style="font-size:var(--font-size-sm);color:var(--text-muted);display:block;margin-bottom:6px;">Anything to note?</label>
           <textarea id="eod-notes" placeholder="Optional..."></textarea>
         </div>
 
         <div style="margin-top:12px;display:flex;align-items:center;gap:10px;">
-          <label style="font-size:13px;cursor:pointer;display:flex;align-items:center;gap:8px;">
-            <input type="checkbox" id="eod-tweak" style="width:auto;accent-color:#89b4fa;">
+          <label style="font-size:var(--font-size-base);cursor:pointer;display:flex;align-items:center;gap:8px;">
+            <input type="checkbox" id="eod-tweak" style="width:auto;accent-color:var(--accent-primary);">
             Request diet adjustment?
           </label>
         </div>
@@ -944,14 +1079,14 @@ function renderDaySummary(container, today, headerHtml) {
     for (const m of today.meals) {
       const opt = getOptionById(m.option_id);
       const meal = getMealBySlot(m.slot);
-      mealsHtml += `<div style="padding:3px 0;font-size:12px;color:#a6adc8;">${meal?.name || 'Slot ' + m.slot}: ${opt?.label || m.option_id}</div>`;
+      mealsHtml += `<div style="padding:3px 0;font-size:var(--font-size-sm);color:var(--text-secondary);">${meal?.name || 'Slot ' + m.slot}: ${opt?.label || m.option_id}</div>`;
     }
   }
   if (today.custom_meals) {
     for (const cm of today.custom_meals) {
       const meal = getMealBySlot(cm.slot);
       const cmMacros = getCustomMealMacros(cm);
-      mealsHtml += `<div style="padding:3px 0;font-size:12px;color:#a6adc8;">${meal?.name || 'Slot ' + cm.slot}: ${getCustomMealItemsLabel(cm)} (~${cmMacros.cal} cal)</div>`;
+      mealsHtml += `<div style="padding:3px 0;font-size:var(--font-size-sm);color:var(--text-secondary);">${meal?.name || 'Slot ' + cm.slot}: ${getCustomMealItemsLabel(cm)} (~${cmMacros.cal} cal)</div>`;
     }
   }
 
@@ -976,9 +1111,9 @@ function renderDaySummary(container, today, headerHtml) {
           <div class="summary-label">Protein</div>
         </div>
       </div>
-      <div style="font-size:13px;color:#6c7086;margin-bottom:8px;">${adherence}</div>
-      ${today.end_of_day.steps ? `<div style="font-size:12px;color:#585b70;">Steps: ${today.end_of_day.steps.toLocaleString()}</div>` : ''}
-      ${today.end_of_day.notes ? `<div style="font-size:12px;color:#585b70;font-style:italic;margin-top:4px;">"${today.end_of_day.notes}"</div>` : ''}
+      <div style="font-size:var(--font-size-base);color:var(--text-muted);margin-bottom:var(--sp-sm);">${adherence}</div>
+      ${today.end_of_day.steps ? `<div style="font-size:var(--font-size-sm);color:var(--text-muted);">Steps: ${today.end_of_day.steps.toLocaleString()}</div>` : ''}
+      ${today.end_of_day.notes ? `<div style="font-size:var(--font-size-sm);color:var(--text-muted);font-style:italic;margin-top:4px;">"${today.end_of_day.notes}"</div>` : ''}
       <div style="margin-top:12px;text-align:left;">
         ${mealsHtml}
       </div>
@@ -1087,7 +1222,7 @@ function renderProgress() {
   const weights = dates.filter(d => dailyLog[d].weight).map(d => ({ date: d, weight: dailyLog[d].weight }));
 
   if (weights.length === 0) {
-    container.innerHTML = '<div style="text-align:center;padding:40px;color:#6c7086;">No data yet. Log your first weight on the Today tab.</div>';
+    container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-muted);">No data yet. Log your first weight on the Today tab.</div>';
     return;
   }
 
@@ -1130,9 +1265,9 @@ function renderProgress() {
   }
 
   let html = `
-    <div style="margin-bottom:16px;">
-      <div style="font-size:18px;font-weight:700;margin-bottom:4px;">Progress</div>
-      <div style="font-size:12px;color:#6c7086;">Weight trend over time</div>
+    <div style="margin-bottom:var(--sp-lg);">
+      <div style="font-size:var(--font-size-xl);font-weight:700;margin-bottom:4px;">Progress</div>
+      <div style="font-size:var(--font-size-sm);color:var(--text-muted);">Weight trend over time</div>
     </div>
 
     <div class="chart-container">
@@ -1171,7 +1306,7 @@ function renderProgress() {
     </div>
 
     <div style="margin-top:20px;">
-      <div style="font-size:15px;font-weight:700;margin-bottom:10px;">Weekly Breakdown</div>
+      <div style="font-size:var(--font-size-md);font-weight:700;margin-bottom:10px;">Weekly Breakdown</div>
       <div id="weekly-breakdown"></div>
     </div>
   `;
@@ -1199,6 +1334,10 @@ function renderWeightChart(weights, ewma) {
     return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
   });
 
+  const accentColor = cssVar('--accent-primary');
+  const mutedColor = cssVar('--text-muted');
+  const borderClr = cssVar('--border-color');
+
   weightChart = new Chart(ctx, {
     type: 'line',
     data: {
@@ -1207,19 +1346,19 @@ function renderWeightChart(weights, ewma) {
         {
           label: 'Weight',
           data: weights.map(w => w.weight),
-          borderColor: '#6c7086',
-          backgroundColor: 'rgba(108,112,134,0.1)',
+          borderColor: mutedColor,
+          backgroundColor: 'transparent',
           borderWidth: 1.5,
           pointRadius: 4,
-          pointBackgroundColor: '#89b4fa',
-          pointBorderColor: '#89b4fa',
+          pointBackgroundColor: accentColor,
+          pointBorderColor: accentColor,
           tension: 0,
           fill: false
         },
         {
           label: 'Trend (7d EWMA)',
           data: ewma,
-          borderColor: '#89b4fa',
+          borderColor: accentColor,
           borderWidth: 3,
           pointRadius: 0,
           tension: 0.3,
@@ -1234,13 +1373,13 @@ function renderWeightChart(weights, ewma) {
       plugins: {
         legend: {
           display: true,
-          labels: { color: '#6c7086', font: { size: 11 }, boxWidth: 12, padding: 12 }
+          labels: { color: mutedColor, font: { size: 11 }, boxWidth: 12, padding: 12 }
         },
         tooltip: {
-          backgroundColor: '#313244',
-          titleColor: '#cdd6f4',
-          bodyColor: '#a6adc8',
-          borderColor: '#45475a',
+          backgroundColor: cssVar('--bg-secondary'),
+          titleColor: cssVar('--text-primary'),
+          bodyColor: cssVar('--text-secondary'),
+          borderColor: borderClr,
           borderWidth: 1,
           cornerRadius: 8,
           padding: 10
@@ -1248,12 +1387,12 @@ function renderWeightChart(weights, ewma) {
       },
       scales: {
         x: {
-          ticks: { color: '#585b70', font: { size: 10 } },
-          grid: { color: 'rgba(69,71,90,0.3)' }
+          ticks: { color: mutedColor, font: { size: 10 } },
+          grid: { color: borderClr + '4D' }
         },
         y: {
-          ticks: { color: '#585b70', font: { size: 10 } },
-          grid: { color: 'rgba(69,71,90,0.3)' },
+          ticks: { color: mutedColor, font: { size: 10 } },
+          grid: { color: borderClr + '4D' },
           suggestedMin: Math.min(...weights.map(w => w.weight)) - 2,
           suggestedMax: Math.max(...weights.map(w => w.weight)) + 2
         }
@@ -1298,7 +1437,7 @@ function renderWeeklyBreakdown(dates) {
       <div class="accordion">
         <div class="accordion-header" onclick="this.classList.toggle('open');this.nextElementSibling.classList.toggle('open');">
           <span>Week of ${weekLabel}</span>
-          <span style="font-size:12px;color:#6c7086;">Avg: ${avgWeight} lbs &middot; ${avgCal} cal</span>
+          <span style="font-size:var(--font-size-sm);color:var(--text-muted);">Avg: ${avgWeight} lbs &middot; ${avgCal} cal</span>
         </div>
         <div class="accordion-body">
     `;
@@ -1308,16 +1447,16 @@ function renderWeeklyBreakdown(dates) {
       const feelLabels = ['', 'Rough', 'Meh', 'Okay', 'Good', 'Great'];
       const feel = day.end_of_day?.feel ? feelLabels[day.end_of_day.feel] : '—';
       html += `
-        <div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #3a3a4e;">
+        <div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border-color);">
           <span>${formatDate(d)}</span>
-          <span style="color:#6c7086;">${day.weight || '—'} lbs &middot; ${t.cal} cal &middot; ${t.protein}g &middot; ${feel}</span>
+          <span style="color:var(--text-muted);">${day.weight || '—'} lbs &middot; ${t.cal} cal &middot; ${t.protein}g &middot; ${feel}</span>
         </div>
       `;
     }
     html += '</div></div>';
   }
 
-  el.innerHTML = html || '<div style="color:#585b70;font-size:13px;">No weeks to show yet.</div>';
+  el.innerHTML = html || '<div style="color:var(--text-muted);font-size:var(--font-size-base);">No weeks to show yet.</div>';
 }
 
 // ============================================================
@@ -1326,12 +1465,12 @@ function renderWeeklyBreakdown(dates) {
 function renderMeals() {
   const container = document.getElementById('meals-content');
   if (!mealPlan) {
-    container.innerHTML = '<div style="text-align:center;padding:40px;color:#6c7086;">No meal plan loaded.</div>';
+    container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-muted);">No meal plan loaded.</div>';
     return;
   }
 
   const freq = getOptionFrequency();
-  let html = '<div style="font-size:18px;font-weight:700;margin-bottom:16px;">Meal Plan</div>';
+  let html = '<div style="font-size:var(--font-size-xl);font-weight:700;margin-bottom:var(--sp-lg);">Meal Plan</div>';
 
   for (const meal of mealPlan.meals) {
     html += `
@@ -1355,7 +1494,7 @@ function renderMeals() {
             ${opt.items.map(it => `
               <div style="display:flex;justify-content:space-between;padding:3px 0;">
                 <span>${it.name}</span>
-                <span style="color:#585b70;">${it.amount} &middot; ${it.cal} cal &middot; ${it.protein}g</span>
+                <span style="color:var(--text-muted);">${it.amount} &middot; ${it.cal} cal &middot; ${it.protein}g</span>
               </div>
             `).join('')}
           </div>
@@ -1377,11 +1516,11 @@ function renderHistory() {
   const dates = getSortedDates();
 
   if (dates.length === 0) {
-    container.innerHTML = '<div style="text-align:center;padding:40px;color:#6c7086;">No history yet.</div>';
+    container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-muted);">No history yet.</div>';
     return;
   }
 
-  let html = '<div style="font-size:18px;font-weight:700;margin-bottom:16px;">History</div>';
+  let html = '<div style="font-size:var(--font-size-xl);font-weight:700;margin-bottom:var(--sp-lg);">History</div>';
 
   for (const d of dates) {
     const day = dailyLog[d];
@@ -1389,11 +1528,10 @@ function renderHistory() {
     const feelLabels = ['', 'Rough', 'Meh', 'Okay', 'Good', 'Great'];
     const feel = day.end_of_day?.feel || 0;
 
-    // Subtle background shade based on feel (neutral tones)
-    const bgShade = feel >= 4 ? '#2a3040' : feel <= 2 && feel > 0 ? '#302a2a' : '#313244';
+    const feelClass = feel >= 4 ? ' feel-good' : feel <= 2 && feel > 0 ? ' feel-bad' : '';
 
     html += `
-      <div class="history-day" style="background:${bgShade};" onclick="this.querySelector('.history-day-detail').classList.toggle('open')">
+      <div class="history-day${feelClass}" onclick="this.querySelector('.history-day-detail').classList.toggle('open')">
         <div class="history-day-header">
           <span class="history-day-date">${formatDate(d)}</span>
           <span class="history-day-weight">${day.weight ? day.weight + ' lbs' : '—'}</span>
@@ -1409,7 +1547,7 @@ function renderHistory() {
         html += `
           <div class="history-meal-line">
             <span>${meal?.name || 'Slot ' + m.slot}</span>
-            <span style="color:#6c7086;">${opt?.label || m.option_id} (${opt?.total_cal || '?'} cal)</span>
+            <span style="color:var(--text-muted);">${opt?.label || m.option_id} (${opt?.total_cal || '?'} cal)</span>
           </div>
         `;
       }
@@ -1421,7 +1559,7 @@ function renderHistory() {
         html += `
           <div class="history-meal-line">
             <span>${meal?.name || 'Slot ' + cm.slot}</span>
-            <span style="color:#6c7086;">${getCustomMealItemsLabel(cm)} (~${cmMacros.cal || '?'} cal)</span>
+            <span style="color:var(--text-muted);">${getCustomMealItemsLabel(cm)} (~${cmMacros.cal || '?'} cal)</span>
           </div>
         `;
       }
@@ -1444,7 +1582,7 @@ function renderHistory() {
 function renderSettings() {
   const container = document.getElementById('settings-content');
   if (!mealPlan) {
-    container.innerHTML = '<div style="text-align:center;padding:40px;color:#6c7086;">No meal plan loaded.</div>';
+    container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-muted);">No meal plan loaded.</div>';
     return;
   }
 
@@ -1452,7 +1590,7 @@ function renderSettings() {
   const phase = mealPlan.phase ? mealPlan.phase.charAt(0).toUpperCase() + mealPlan.phase.slice(1) : '—';
 
   container.innerHTML = `
-    <div style="font-size:18px;font-weight:700;margin-bottom:16px;">Settings</div>
+    <div style="font-size:var(--font-size-xl);font-weight:700;margin-bottom:var(--sp-lg);">Settings</div>
 
     <div class="settings-section">
       <div class="settings-label">Current Phase</div>
@@ -1474,11 +1612,11 @@ function renderSettings() {
       <div class="settings-value">${mealPlan.meals.length} meals/day</div>
     </div>
 
-    <button class="btn btn-primary btn-large" style="margin-top:16px;" onclick="requestPlanUpdate()">
+    <button class="btn btn-primary btn-large" style="margin-top:var(--sp-lg);" onclick="requestPlanUpdate()">
       Request Plan Update
     </button>
 
-    <div style="margin-top:24px;font-size:11px;color:#585b70;text-align:center;">
+    <div style="margin-top:var(--sp-2xl);font-size:var(--font-size-xs);color:var(--text-muted);text-align:center;">
       Diet Tracker &middot; Second Brain App
     </div>
   `;

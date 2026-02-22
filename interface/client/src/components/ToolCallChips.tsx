@@ -36,7 +36,7 @@ function formatArgs(args: Record<string, any>): { key: string; value: string }[]
 
 const ToolChip: React.FC<{ tool: ToolCallData }> = ({ tool }) => {
   const [expanded, setExpanded] = useState(false);
-  const displayName = getToolDisplayName(tool.tool_name);
+  const displayName = getToolDisplayName(tool.tool_name, true);
   const summary = extractToolSummary(tool.tool_name, tool.args);
   const isError = tool.is_error;
 

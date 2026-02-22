@@ -1,3 +1,18 @@
+export interface ContentBlock {
+  id: string;
+  type: 'thinking' | 'text' | 'tool_use' | 'tool_result';
+  content: string;
+  status: 'in_progress' | 'complete';
+  // Tool fields
+  tool_name?: string;
+  tool_call_id?: string;
+  tool_input?: Record<string, unknown>;
+  is_error?: boolean;
+  // Thinking/timing fields
+  started_at?: number;
+  duration_ms?: number;
+}
+
 export interface Agent {
   name: string;
   display_name: string;
@@ -65,6 +80,8 @@ export interface ChatMessage {
   injected?: boolean;
   // Image attachments
   images?: ChatImageRef[];
+  // Block-based content (present on streaming/new assistant messages)
+  blocks?: ContentBlock[];
 }
 
 /** Persisted tool call message (role: 'tool_call', hidden: true in server data) */

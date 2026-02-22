@@ -2,6 +2,7 @@
 Working Memory tools.
 
 Ephemeral notes that persist across exchanges but auto-expire based on TTL.
+Each agent gets its own private working memory store, isolated by agent name.
 """
 
 import os
@@ -16,6 +17,17 @@ from ..registry import register_tool
 SCRIPTS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../.claude/scripts"))
 if SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, SCRIPTS_DIR)
+
+# Base .claude directory (for resolving per-agent memory.md paths)
+_CLAUDE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../.claude"))
+
+
+def _get_agent_store(args: Dict[str, Any]):
+    """Extract agent name from args and return the appropriate store."""
+    sys.path.insert(0, SCRIPTS_DIR)
+    from working_memory import get_store
+    agent_name = args.pop("_agent_name", None) or "ren"
+    return get_store(agent_name=agent_name), agent_name
 
 
 @register_tool("memory")
@@ -50,9 +62,10 @@ Default TTL is 5 exchanges. Max is 10. Pinned items never expire.""",
 async def working_memory_add(args: Dict[str, Any]) -> Dict[str, Any]:
     """Add a working memory item."""
     try:
-        sys.path.insert(0, SCRIPTS_DIR)
-        from working_memory import get_store, WorkingMemoryError
+        from working_memory import WorkingMemoryError
         from datetime import datetime
+
+        store, agent_name = _get_agent_store(args)
 
         content = args.get("content", "").strip()
         if not content:
@@ -76,7 +89,6 @@ async def working_memory_add(args: Dict[str, Any]) -> Dict[str, Any]:
             except Exception as e:
                 return {"content": [{"type": "text", "text": f"Invalid deadline format: {e}"}], "is_error": True}
 
-        store = get_store()
         item = store.add_item(
             content=content,
             tag=tag,
@@ -117,9 +129,10 @@ You can update content, TTL, tag, pinned status, or deadline.""",
 async def working_memory_update(args: Dict[str, Any]) -> Dict[str, Any]:
     """Update a working memory item."""
     try:
-        sys.path.insert(0, SCRIPTS_DIR)
-        from working_memory import get_store, WorkingMemoryError
+        from working_memory import WorkingMemoryError
         from datetime import datetime
+
+        store, agent_name = _get_agent_store(args)
 
         index = args.get("index")
         if not index or index < 1:
@@ -138,7 +151,6 @@ async def working_memory_update(args: Dict[str, Any]) -> Dict[str, Any]:
             except Exception as e:
                 return {"content": [{"type": "text", "text": f"Invalid deadline format: {e}"}], "is_error": True}
 
-        store = get_store()
         item = store.update_item(
             index=index,
             new_content=args.get("content"),
@@ -171,14 +183,14 @@ async def working_memory_update(args: Dict[str, Any]) -> Dict[str, Any]:
 async def working_memory_remove(args: Dict[str, Any]) -> Dict[str, Any]:
     """Remove a working memory item."""
     try:
-        sys.path.insert(0, SCRIPTS_DIR)
-        from working_memory import get_store, WorkingMemoryError
+        from working_memory import WorkingMemoryError
+
+        store, agent_name = _get_agent_store(args)
 
         index = args.get("index")
         if not index or index < 1:
             return {"content": [{"type": "text", "text": "Valid index (1+) is required"}], "is_error": True}
 
-        store = get_store()
         removed = store.remove_item(index)
 
         return {"content": [{"type": "text", "text": f"Removed: {removed.content[:80]}..."}]}
@@ -196,10 +208,7 @@ async def working_memory_remove(args: Dict[str, Any]) -> Dict[str, Any]:
 async def working_memory_list(args: Dict[str, Any]) -> Dict[str, Any]:
     """List working memory items."""
     try:
-        sys.path.insert(0, SCRIPTS_DIR)
-        from working_memory import get_store
-
-        store = get_store()
+        store, agent_name = _get_agent_store(args)
         items = store.list_items()
 
         if not items:
@@ -252,10 +261,11 @@ original working memory item is removed after promotion (set keep=true to retain
 async def working_memory_snapshot(args: Dict[str, Any]) -> Dict[str, Any]:
     """Promote working memory item to memory.md."""
     try:
-        sys.path.insert(0, SCRIPTS_DIR)
-        from working_memory import get_store, WorkingMemoryError
+        from working_memory import WorkingMemoryError
         import datetime
         import re
+
+        store, agent_name = _get_agent_store(args)
 
         index = args.get("index")
         section = args.get("section", "Promoted from Working Memory")
@@ -266,7 +276,6 @@ async def working_memory_snapshot(args: Dict[str, Any]) -> Dict[str, Any]:
             return {"content": [{"type": "text", "text": "Valid index (1+) is required"}], "is_error": True}
 
         # Get the working memory item
-        store = get_store()
         items = store.list_items()
 
         if not items:
@@ -286,11 +295,12 @@ async def working_memory_snapshot(args: Dict[str, Any]) -> Dict[str, Any]:
         if item.tag:
             content = f"[{item.tag}] {content}"
 
-        # Now append to memory.md
-        memory_path = os.path.join(os.path.dirname(SCRIPTS_DIR), "memory.md")
+        # Resolve memory.md path: all agents use .claude/agents/{name}/memory.md
+        agent_name = agent_name or "ren"
+        memory_path = os.path.join(_CLAUDE_DIR, "agents", agent_name, "memory.md")
 
         if not os.path.exists(memory_path):
-            return {"content": [{"type": "text", "text": "memory.md not found"}], "is_error": True}
+            return {"content": [{"type": "text", "text": f"memory.md not found at {memory_path}"}], "is_error": True}
 
         with open(memory_path, 'r') as f:
             memory_content = f.read()

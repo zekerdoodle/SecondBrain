@@ -361,22 +361,37 @@ class WorkingMemoryStore:
         return format_working_memory_section(items)
 
 
-# ---- Singleton ----
+# ---- Per-agent store registry ----
 
-_store: Optional[WorkingMemoryStore] = None
+_stores: Dict[str, WorkingMemoryStore] = {}
 
-
-def get_store() -> WorkingMemoryStore:
-    """Get the singleton working memory store."""
-    global _store
-    if _store is None:
-        # Store in .claude directory
-        persist_path = Path(__file__).parent.parent.parent / "working_memory.json"
-        _store = WorkingMemoryStore(persist_path)
-    return _store
+# Base directory for agent stores
+_AGENTS_DIR = Path(__file__).parent.parent.parent / "agents"
 
 
-def reset_store() -> None:
-    """Reset the singleton (for testing)."""
-    global _store
-    _store = None
+def get_store(agent_name: Optional[str] = None) -> WorkingMemoryStore:
+    """Get the working memory store for a specific agent.
+
+    All agents (including Ren) use .claude/agents/{name}/working_memory.json.
+    If no agent name is provided, defaults to 'ren'.
+    """
+    agent_name = agent_name or "ren"
+    if agent_name not in _stores:
+        persist_path = _AGENTS_DIR / agent_name / "working_memory.json"
+        # Ensure agent directory exists
+        persist_path.parent.mkdir(parents=True, exist_ok=True)
+        _stores[agent_name] = WorkingMemoryStore(persist_path)
+    return _stores[agent_name]
+
+
+def reset_store(agent_name: Optional[str] = None) -> None:
+    """Reset a specific store or all stores (for testing).
+
+    Args:
+        agent_name: Specific agent to reset, or None for ren.
+                    Pass sentinel "__all__" to reset all stores.
+    """
+    if agent_name == "__all__":
+        _stores.clear()
+    else:
+        _stores.pop(agent_name or "ren", None)

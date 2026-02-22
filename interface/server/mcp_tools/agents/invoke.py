@@ -229,12 +229,9 @@ _CHAIN_DESCRIPTION, _CHAIN_SCHEMA = _build_chain_tool_schema()
 @tool(name="invoke_agent_chain", description=_CHAIN_DESCRIPTION, input_schema=_CHAIN_SCHEMA)
 async def invoke_agent_chain(args: Dict[str, Any]) -> Dict[str, Any]:
     """Invoke multiple agents in sequence (serial execution)."""
-    import asyncio
-    from datetime import datetime
-    from runner import invoke_agent as _invoke_agent
-    from agent_notifications import get_notification_queue
-
     try:
+        from runner import invoke_agent_chain as _invoke_chain
+
         chain = args.get("chain", [])
         on_failure = args.get("on_failure", "alert_and_stop")
         summarize = args.get("summarize", False)
@@ -248,25 +245,18 @@ async def invoke_agent_chain(args: Dict[str, Any]) -> Dict[str, Any]:
         if not source_chat_id:
             return {"content": [{"type": "text", "text": "Error: source_chat_id required for chain notifications"}], "is_error": True}
 
-        # Start the chain execution in the background
-        asyncio.create_task(_run_agent_chain(
+        # Delegate to runner (same pattern as ping mode)
+        result = await _invoke_chain(
             chain=chain,
             on_failure=on_failure,
             summarize=summarize,
             source_chat_id=source_chat_id,
-            invoked_at=datetime.utcnow()
-        ))
+        )
 
-        # Build acknowledgment message
-        agent_names = [step["agent"] for step in chain]
-        chain_str = " → ".join(agent_names)
+        if "error" in result:
+            return {"content": [{"type": "text", "text": result["error"]}], "is_error": True}
 
-        return {
-            "content": [{
-                "type": "text",
-                "text": f"Agent chain started: {chain_str}\n\nYou'll be notified when the chain completes."
-            }]
-        }
+        return {"content": [{"type": "text", "text": result["message"]}]}
 
     except Exception as e:
         import traceback
@@ -274,173 +264,6 @@ async def invoke_agent_chain(args: Dict[str, Any]) -> Dict[str, Any]:
             "content": [{"type": "text", "text": f"Error starting agent chain: {str(e)}\n{traceback.format_exc()}"}],
             "is_error": True
         }
-
-
-async def _run_agent_chain(
-    chain: List[Dict[str, str]],
-    on_failure: str,
-    summarize: bool,
-    source_chat_id: str,
-    invoked_at
-) -> None:
-    """
-    Execute an agent chain sequentially and send notification on completion.
-
-    Args:
-        chain: List of {"agent": name, "prompt": task} dicts
-        on_failure: "alert_and_stop" or "skip_and_continue"
-        summarize: Whether to summarize outputs
-        source_chat_id: Chat ID for notification
-        invoked_at: When the chain was invoked
-    """
-    import logging
-    from datetime import datetime
-    from runner import invoke_agent as _invoke_agent
-    from agent_notifications import get_notification_queue
-
-    logger = logging.getLogger("agents.chain")
-    logger.info(f"Starting agent chain with {len(chain)} agents")
-
-    results = []  # List of (agent_name, status, response/error)
-    chain_failed = False
-    failed_agent = None
-
-    for i, step in enumerate(chain):
-        agent_name = step["agent"]
-        prompt = step["prompt"]
-
-        logger.info(f"Chain step {i+1}/{len(chain)}: Running agent '{agent_name}'")
-
-        try:
-            # Run agent in foreground mode (blocking)
-            result = await _invoke_agent(
-                name=agent_name,
-                prompt=prompt,
-                mode="foreground",
-                source_chat_id=source_chat_id,
-                model_override=None
-            )
-
-            # Check result
-            if hasattr(result, "status"):
-                if result.status == "success":
-                    results.append((agent_name, "success", result.response))
-                    logger.info(f"Chain step {i+1}: Agent '{agent_name}' succeeded")
-                else:
-                    error_msg = result.error or result.status
-                    results.append((agent_name, "error", error_msg))
-                    logger.warning(f"Chain step {i+1}: Agent '{agent_name}' failed: {error_msg}")
-
-                    if on_failure == "alert_and_stop":
-                        chain_failed = True
-                        failed_agent = agent_name
-                        break
-            else:
-                # Dict result (error case)
-                if "error" in result:
-                    results.append((agent_name, "error", result["error"]))
-                    logger.warning(f"Chain step {i+1}: Agent '{agent_name}' failed: {result['error']}")
-
-                    if on_failure == "alert_and_stop":
-                        chain_failed = True
-                        failed_agent = agent_name
-                        break
-                else:
-                    results.append((agent_name, "success", str(result)))
-
-        except Exception as e:
-            logger.error(f"Chain step {i+1}: Agent '{agent_name}' exception: {e}")
-            results.append((agent_name, "exception", str(e)))
-
-            if on_failure == "alert_and_stop":
-                chain_failed = True
-                failed_agent = agent_name
-                break
-
-    # Build the notification response
-    response = _format_chain_results(
-        results=results,
-        chain_failed=chain_failed,
-        failed_agent=failed_agent,
-        total_steps=len(chain),
-        summarize=summarize
-    )
-
-    # Add to notification queue (same pattern as ping mode)
-    queue = get_notification_queue()
-    queue.add(
-        agent="agent_chain",  # Use special agent name for chain notifications
-        agent_response=response,
-        source_chat_id=source_chat_id,
-        invoked_at=invoked_at,
-        completed_at=datetime.utcnow(),
-    )
-
-    logger.info(f"Agent chain completed: {len(results)}/{len(chain)} agents ran")
-
-
-def _format_chain_results(
-    results: List[tuple],
-    chain_failed: bool,
-    failed_agent: str,
-    total_steps: int,
-    summarize: bool
-) -> str:
-    """
-    Format chain results for notification.
-
-    Args:
-        results: List of (agent_name, status, response/error) tuples
-        chain_failed: Whether the chain was stopped due to failure
-        failed_agent: Name of agent that caused failure (if any)
-        total_steps: Total number of steps in the chain
-        summarize: Whether to summarize outputs
-
-    Returns:
-        Formatted response string
-    """
-    parts = []
-
-    # Header with status
-    completed = len(results)
-    successful = sum(1 for _, status, _ in results if status == "success")
-
-    if chain_failed:
-        parts.append(f"⚠️ **Agent Chain Stopped** ({completed}/{total_steps} steps completed, {successful} successful)")
-        parts.append(f"Chain stopped at agent '{failed_agent}' due to failure.")
-    else:
-        if successful == completed:
-            parts.append(f"✅ **Agent Chain Completed** ({completed}/{total_steps} steps, all successful)")
-        else:
-            parts.append(f"⚠️ **Agent Chain Completed with Errors** ({completed}/{total_steps} steps, {successful} successful)")
-
-    parts.append("")
-
-    # Results for each agent
-    if summarize:
-        # Summarized format
-        parts.append("**Summary:**")
-        for agent_name, status, response in results:
-            if status == "success":
-                # Truncate long responses for summary
-                summary = response[:500] + "..." if len(response) > 500 else response
-                parts.append(f"- **{agent_name}**: {summary}")
-            else:
-                parts.append(f"- **{agent_name}**: ❌ {response}")
-    else:
-        # Full format
-        for agent_name, status, response in results:
-            parts.append(f"---")
-            parts.append(f"**Agent: {agent_name}**")
-            if status == "success":
-                parts.append(f"Status: ✅ Success")
-                parts.append(f"\n{response}")
-            else:
-                parts.append(f"Status: ❌ Failed ({status})")
-                parts.append(f"Error: {response}")
-            parts.append("")
-
-    return "\n".join(parts)
 
 
 # =============================================================================

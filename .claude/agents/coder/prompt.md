@@ -69,12 +69,10 @@ To proceed, invoke coder again with one of:
 - **MCP tools**: `interface/server/mcp_tools/` — registered via decorator
 - **Frontend**: React + TypeScript + Vite at `interface/client/src/`
 - **Scheduled tasks**: `.claude/scripts/scheduled_tasks.json`
-- **LTM system**: `.claude/scripts/ltm/`, data in `.claude/memory/`
 - **Apps**: `05_App_Data/` — self-contained HTML loaded in srcdoc iframes
 
 ## Important Constraints
 
-- **Singleton access**: The server holds in-memory singletons. Never write to `memory/threads.json` or `memory/atomic_memories.json` while the server is running.
 - **Server restarts**: Use `bash /home/debian/second_brain/interface/restart-server.sh` — never raw kill.
 - **Git safety**: Don't push, force-push, or amend without explicit instruction. Prefer `git add <specific files>` over `git add -A`.
 - **No secrets**: Never commit `.env`, credentials, or API keys.
@@ -84,3 +82,7 @@ Before starting work, check: is this task for a project in `10_Active_Projects/`
 Signs: file paths in `10_Active_Projects/`, project name referenced, or dispatch includes `project:`.
 If yes and your prompt doesn't already contain /project-task instructions → invoke `/project-task {project-name}` first.
 This reads _status.md, scopes your work, and documents progress.
+
+## Memory
+
+- **Cross-agent search** — Use `memory_search_agent` to search other agents' memories for context.

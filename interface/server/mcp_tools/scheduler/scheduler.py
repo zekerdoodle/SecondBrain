@@ -21,7 +21,7 @@ if SCRIPTS_DIR not in sys.path:
 @register_tool("scheduler")
 @tool(
     name="schedule_self",
-    description="""Schedule Primary Claude to run a prompt at a specified time.
+    description="""Schedule the current agent to run a prompt at a specified time.
 
 Use this for self-reminders, recurring syncs, maintenance tasks, or any automated prompt execution.
 
@@ -47,11 +47,10 @@ output will appear in that room. If not specified, uses the active room or creat
 async def schedule_self(args: Dict[str, Any]) -> Dict[str, Any]:
     """Add a scheduled task.
 
-    When called by a non-primary agent (i.e. ``_agent_name`` is injected by
-    ``_inject_agent_context``), the task is stored as an **agent-type** task so
-    that the scheduler dispatches it through the agent runner rather than
-    ClaudeWrapper.  This avoids concurrency issues with prompt-type tasks and
-    ensures the agent runs with its own config/tools.
+    All agents store tasks as **agent-type** tasks so the scheduler dispatches
+    them through the agent runner.  The ``_agent_name`` (injected by
+    ``_inject_agent_context``) determines which agent config to use;
+    defaults to ``ren`` if not specified.
     """
     try:
         import scheduler_tool
@@ -65,16 +64,12 @@ async def schedule_self(args: Dict[str, Any]) -> Dict[str, Any]:
         if not prompt or not schedule:
             return {"content": [{"type": "text", "text": "Both prompt and schedule are required"}], "is_error": True}
 
-        if agent_name:
-            # Non-primary agent: create an agent-type task so the scheduler
-            # dispatches through invoke_agent() instead of ClaudeWrapper
-            result = scheduler_tool.add_task(
-                prompt, schedule, silent=silent, task_type="agent",
-                agent=agent_name, room_id=room_id
-            )
-        else:
-            # Primary Claude: create a prompt-type task (original behavior)
-            result = scheduler_tool.add_task(prompt, schedule, silent=silent, room_id=room_id)
+        # All agents (including ren) use agent-type tasks
+        effective_agent = agent_name or "ren"
+        result = scheduler_tool.add_task(
+            prompt, schedule, silent=silent, task_type="agent",
+            agent=effective_agent, room_id=room_id
+        )
 
         return {"content": [{"type": "text", "text": result}]}
 

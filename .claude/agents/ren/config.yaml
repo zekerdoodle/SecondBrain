@@ -2,24 +2,17 @@ name: ren
 description: Primary companion agent. Interacts directly with the user, delegates work
   to specialized agents.
 model: opus
-type: primary
+type: sdk
 timeout_seconds: 1800
 max_turns: 200
 chattable: true
 icon: anchor
 skills:
-- moltbook
 - project-task
 - resume-thread
 - character-gen
 - sync
-native_tools: []
-mcp_tools:
-- mcp__brain__working_memory_add
-- mcp__brain__working_memory_update
-- mcp__brain__working_memory_remove
-- mcp__brain__working_memory_list
-- mcp__brain__working_memory_snapshot
+tools:
 - mcp__brain__memory_append
 - mcp__brain__memory_read
 - mcp__brain__schedule_self
@@ -28,16 +21,8 @@ mcp_tools:
 - mcp__brain__scheduler_remove
 - mcp__brain__invoke_agent
 - mcp__brain__invoke_agent_chain
+- mcp__brain__invoke_agent_parallel
 - mcp__brain__schedule_agent
-- mcp__brain__moltbook_feed
-- mcp__brain__moltbook_post
-- mcp__brain__moltbook_comment
-- mcp__brain__moltbook_get_post
-- mcp__brain__moltbook_notifications
-- mcp__brain__moltbook_account_status
-- mcp__brain__moltbook_check_dms
-- mcp__brain__moltbook_respond_challenge
-- mcp__brain__moltbook_challenge_log
 - mcp__brain__consult_llm
 - mcp__brain__fal_text_to_image
 - mcp__brain__fal_image_to_image
@@ -48,11 +33,17 @@ mcp_tools:
 - mcp__brain__forms_save
 - mcp__brain__forms_list
 - mcp__brain__bash
-- mcp__brain__ltm_search
 - mcp__brain__restart_server
 - mcp__brain__process_list
 - mcp__brain__compact_conversation
-- mcp__brain__web_search
-- mcp__brain__page_parser
 - mcp__brain__send_critical_notification
 - mcp__brain__fetch_skill
+- mcp__brain__working_memory_add
+- mcp__brain__working_memory_update
+- mcp__brain__working_memory_list
+- mcp__brain__working_memory_remove
+- mcp__brain__working_memory_snapshot
+- mcp__brain__memory_save
+- mcp__brain__memory_search
+- mcp__brain__memory_search_agent
+- mcp__brain__search_conversation_history

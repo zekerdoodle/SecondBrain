@@ -1,18 +1,23 @@
 name: general_purpose
-type: sdk
+description: Flexible agent for general tasks. Can read/write files, run commands,
+  and handle miscellaneous work that doesn't fit other specialists.
 model: sonnet
-description: "Flexible agent for general tasks. Can read/write files, run commands, and handle miscellaneous work that doesn't fit other specialists."
+type: sdk
+timeout_seconds: 300
+max_turns: 200
 chattable: true
-color: "#4A90D9"
 icon: lightning
 tools:
-  - Read
-  - Write
-  - Edit
-  - Glob
-  - Grep
-  - Bash
-  - WebFetch
-  - mcp__brain__memory_append
-  - mcp__brain__memory_read
-timeout_seconds: 300
+- Read
+- Write
+- Edit
+- Glob
+- Grep
+- Bash
+- WebFetch
+- mcp__brain__memory_append
+- mcp__brain__memory_read
+- mcp__brain__memory_save
+- mcp__brain__memory_search
+- mcp__brain__memory_search_agent
+- mcp__brain__search_conversation_history

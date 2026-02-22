@@ -5,9 +5,8 @@ description: Software development specialist. Reads docs, checks for ambiguity b
 model: opus
 type: sdk
 timeout_seconds: 1800
+max_turns: 200
 chattable: false
-system_prompt_preset: claude_code
-color: '#a6e3a1'
 icon: terminal
 tools:
 - Read
@@ -22,5 +21,21 @@ tools:
 - TaskStop
 - WebFetch
 - WebSearch
+- TodoWrite
 - mcp__brain__fal_text_to_image
 - mcp__brain__fal_list_models
+- mcp__brain__memory_search_agent
+- mcp__brain__memory_save
+- mcp__brain__memory_search
+- mcp__brain__memory_append
+- mcp__brain__memory_read
+- mcp__brain__search_conversation_history
+- mcp__brain__schedule_self
+- mcp__brain__scheduler_list
+- mcp__brain__scheduler_update
+- mcp__brain__working_memory_add
+- mcp__brain__working_memory_update
+- mcp__brain__working_memory_remove
+- mcp__brain__working_memory_list
+- mcp__brain__working_memory_snapshot
+- mcp__brain__fetch_skill
