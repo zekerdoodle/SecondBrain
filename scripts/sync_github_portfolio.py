@@ -156,7 +156,7 @@ ALLOWLIST_FILES = [
 
 # Agent directories to include (config.yaml + prompt.md only)
 ALLOWLIST_AGENTS = [
-    "chat_coder",
+    "patch",
     "chat_research",
     "coder",
     "cua_orchestrator",

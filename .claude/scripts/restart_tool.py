@@ -84,7 +84,7 @@ def save_continuation_state(
     Args:
         session_id: The session that triggered the restart.
         reason: Why the restart was triggered.
-        source: Who/what triggered it (e.g. 'ren', 'chat_coder', 'settings_ui').
+        source: Who/what triggered it (e.g. 'ren', 'patch', 'settings_ui').
         messages: Optional messages for the triggering session.
         all_active_sessions: Optional dict of {session_id: agent_name} for ALL
             sessions that were actively processing at restart time.

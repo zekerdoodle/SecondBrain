@@ -57,7 +57,7 @@ def serialize_bash(args: dict, output: str, is_error: bool) -> dict:
 def serialize_invoke_agent(args: dict, output: str, is_error: bool) -> dict:
     kept = _pick(args, ["agent", "mode", "model_override"])
     if "prompt" in args:
-        kept["prompt"] = _truncate(str(args["prompt"]), 300)
+        kept["prompt"] = str(args["prompt"])  # Prompts are already compressed; store verbatim
     return {
         "args": kept,
         "output_summary": _truncate(output, 500),
@@ -67,7 +67,21 @@ def serialize_invoke_agent(args: dict, output: str, is_error: bool) -> dict:
 def serialize_invoke_agent_chain(args: dict, output: str, is_error: bool) -> dict:
     kept = _pick(args, ["agents", "context"])
     if "initial_prompt" in args:
-        kept["initial_prompt"] = _truncate(str(args["initial_prompt"]), 300)
+        kept["initial_prompt"] = str(args["initial_prompt"])  # Store verbatim
+    return {
+        "args": kept,
+        "output_summary": _truncate(output, 500),
+    }
+
+
+def serialize_invoke_agent_parallel(args: dict, output: str, is_error: bool) -> dict:
+    kept = {}
+    if "agents" in args and isinstance(args["agents"], list):
+        # Preserve full agent/prompt pairs verbatim — prompts are already compressed
+        kept["agents"] = [
+            {k: v for k, v in inv.items() if k in ("agent", "prompt", "model_override")}
+            for inv in args["agents"]
+        ]
     return {
         "args": kept,
         "output_summary": _truncate(output, 500),
@@ -342,6 +356,7 @@ TOOL_SERIALIZERS: Dict[str, Callable[[dict, str, bool], dict]] = {
     "Bash": serialize_bash,
     "invoke_agent": serialize_invoke_agent,
     "invoke_agent_chain": serialize_invoke_agent_chain,
+    "invoke_agent_parallel": serialize_invoke_agent_parallel,
     "consult_llm": serialize_consult_llm,
     "generate_image": serialize_generate_image,
     "edit_image": serialize_edit_image,
@@ -404,8 +419,9 @@ TOOL_SERIALIZERS: Dict[str, Callable[[dict, str, bool], dict]] = {
     "working_memory_remove": serialize_compact(["index"]),
     "working_memory_list": serialize_compact([]),
     "working_memory_snapshot": serialize_compact(["index", "section"]),
-    "memory_append": serialize_compact(["section"]),
-    "memory_read": serialize_memory_read,
+    "memory_create": serialize_compact(["triggers"]),
+    "memory_update": serialize_compact(["id"]),
+    "memory_delete": serialize_compact(["id"]),
     "forms_define": serialize_compact(["form_id", "title"]),
     "forms_show": serialize_compact(["form_id"]),
     "forms_list": serialize_compact(["form_id"]),
@@ -482,12 +498,18 @@ def format_tool_for_history(tool_msg: dict) -> str:
     output = tool_msg.get("output_summary", "")
     is_error = tool_msg.get("is_error", False)
 
+    # Agent invocation tools — preserve prompts verbatim in history
+    agent_tools = {"invoke_agent", "invoke_agent_chain", "invoke_agent_parallel"}
+    is_agent_tool = display_name in agent_tools
+
     # Build param string from args
     param_parts = []
     for k, v in args.items():
         val = str(v)
-        if len(val) > 120:
-            val = val[:117] + "..."
+        # Don't truncate prompt fields for agent invocations
+        if not (is_agent_tool and k in ("prompt", "initial_prompt", "agents")):
+            if len(val) > 120:
+                val = val[:117] + "..."
         param_parts.append(f"{k}: {val}")
     params_str = " | ".join(param_parts) if param_parts else ""
 

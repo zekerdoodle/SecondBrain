@@ -83,10 +83,13 @@ SCHEDULER_TOOLS = [
     "scheduler_remove",
 ]
 
-# Memory category includes journal, working memory, and LTM
-JOURNAL_TOOLS = [
-    "memory_append",
-    "memory_read",
+# Memory category: unified memory + working memory + conversation search
+UNIFIED_MEMORY_TOOLS = [
+    "memory_create",
+    "memory_search",
+    "memory_update",
+    "memory_delete",
+    "memory_search_agent",
 ]
 
 WORKING_MEMORY_TOOLS = [
@@ -97,14 +100,11 @@ WORKING_MEMORY_TOOLS = [
     "working_memory_snapshot",
 ]
 
-CONTEXTUAL_MEMORY_TOOLS = [
-    "memory_save",
-    "memory_search",
-    "memory_search_agent",
+CONVERSATION_SEARCH_TOOLS = [
     "search_conversation_history",
 ]
 
-MEMORY_TOOLS = JOURNAL_TOOLS + WORKING_MEMORY_TOOLS + CONTEXTUAL_MEMORY_TOOLS
+MEMORY_TOOLS = UNIFIED_MEMORY_TOOLS + WORKING_MEMORY_TOOLS + CONVERSATION_SEARCH_TOOLS
 
 UTILITY_TOOLS = [
     "page_parser",
@@ -179,9 +179,9 @@ TOOL_CATEGORIES = {
     "finance": FINANCE_TOOLS,
     "scheduler": SCHEDULER_TOOLS,
     "memory": MEMORY_TOOLS,
-    "journal": JOURNAL_TOOLS,           # Subcategory of memory
-    "working_memory": WORKING_MEMORY_TOOLS,  # Subcategory of memory
-    "contextual_memory": CONTEXTUAL_MEMORY_TOOLS,  # Subcategory of memory
+    "unified_memory": UNIFIED_MEMORY_TOOLS,       # Subcategory of memory
+    "working_memory": WORKING_MEMORY_TOOLS,       # Subcategory of memory
+    "conversation_search": CONVERSATION_SEARCH_TOOLS,  # Subcategory of memory
     "utilities": UTILITY_TOOLS,
     "agents": AGENT_TOOLS,
     "bash": BASH_TOOLS,
@@ -270,7 +270,7 @@ def get_category_for_tool(tool_name: str) -> str | None:
     for category, tools in TOOL_CATEGORIES.items():
         if tool_name in tools:
             # Return the primary category (not subcategories)
-            if category in ("journal", "working_memory", "contextual_memory"):
+            if category in ("unified_memory", "working_memory", "conversation_search"):
                 return "memory"
             return category
     return None

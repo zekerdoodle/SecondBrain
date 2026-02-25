@@ -17,6 +17,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
+# The SDK's stream_input() keeps stdin open until the first `result` message arrives
+# or a timeout fires (CLAUDE_CODE_STREAM_CLOSE_TIMEOUT, default 60s).  Agents that
+# use page_parser with summary subagents can take 90-120 seconds, which hits the
+# default 60s timeout and closes stdin while Claude is still mid-conversation,
+# causing CLIConnectionError: ProcessTransport is not ready for writing.
+# Set to 10 minutes — well above any agent's timeout_seconds.
+os.environ.setdefault("CLAUDE_CODE_STREAM_CLOSE_TIMEOUT", "600000")
+
 from models import (
     AgentConfig, AgentInvocation, AgentResult, InvocationMode
 )
@@ -30,8 +38,15 @@ if _server_dir not in sys.path:
 from process_registry import register_process, deregister_process
 
 from claude_agent_sdk.types import (
+    AssistantMessage,
+    ResultMessage,
+    TextBlock,
+    ThinkingBlock,
     ThinkingConfigAdaptive,
     ThinkingConfigEnabled,
+    ToolResultBlock,
+    ToolUseBlock,
+    UserMessage,
 )
 
 logger = logging.getLogger("agents.runner")
@@ -220,7 +235,7 @@ async def _run_agent(config: AgentConfig, invocation: AgentInvocation) -> AgentR
     started_at = datetime.utcnow()
 
     try:
-        response = await _run_sdk_agent(config, invocation)
+        response, transcript, blocks = await _run_sdk_agent(config, invocation)
 
         return AgentResult(
             agent=config.name,
@@ -228,6 +243,8 @@ async def _run_agent(config: AgentConfig, invocation: AgentInvocation) -> AgentR
             response=response,
             started_at=started_at,
             completed_at=datetime.utcnow(),
+            transcript=transcript,
+            blocks=blocks,
         )
 
     except asyncio.TimeoutError:
@@ -363,7 +380,7 @@ async def _run_chain_agent(
                 _log_execution(invocation, result)
 
                 if result.status == "success":
-                    results.append((agent_name, "success", result.response))
+                    results.append((agent_name, "success", result.transcript or result.response))
                     logger.info(f"Chain step {i+1}: Agent '{agent_name}' succeeded")
                 else:
                     error_msg = result.error or result.status
@@ -500,23 +517,69 @@ async def _run_sdk_agent(config: AgentConfig, invocation: AgentInvocation) -> st
             logger.debug(f"Agent '{agent_name}': could not load working memory: {e}")
         return ""
 
+    # Pre-compute skill reminder for system prompt injection (above memory).
+    _skill_reminder = ""
+    agent_has_skills = config.skills is None or (isinstance(config.skills, list) and len(config.skills) > 0)
+    if agent_has_skills:
+        try:
+            from skill_injector import get_skill_reminder
+            _skill_reminder = get_skill_reminder(allowed_skills=config.skills) or ""
+            if _skill_reminder:
+                logger.info(f"Agent '{config.name}': will inject skill menu into system prompt")
+        except Exception as e:
+            logger.warning(f"Skill menu generation failed for agent '{config.name}': {e}")
+
+    # Pre-compute agent list block for injection above memory.
+    _effective_tools = list(config.tools) if config.tools else []
+    _agent_list_block = ""
+    try:
+        from mcp_tools.agents import get_agent_list_for_prompt
+        _agent_list_block = get_agent_list_for_prompt(_effective_tools) or ""
+        if _agent_list_block:
+            logger.info(f"Agent '{config.name}': will inject agent list into system prompt")
+    except Exception as e:
+        logger.warning(f"Agent '{config.name}': failed to get agent list: {e}")
+
     if config.system_prompt_preset:
         append_parts = []
         if config.prompt:
             append_parts.append(config.prompt)
-        # Include per-agent memory.md in append
-        agent_memory_path = Path(__file__).parent / config.name / "memory.md"
-        if agent_memory_path.exists():
+        # Skill menu sits above memory in the system prompt
+        if _skill_reminder:
+            append_parts.append(_skill_reminder)
+        # Agent list sits above memory in the system prompt
+        if _agent_list_block:
+            append_parts.append(_agent_list_block)
+        # Include per-agent always_load memories from memories.json
+        agent_memories_path = Path(__file__).parent / config.name / "memories.json"
+        if agent_memories_path.exists():
             try:
-                memory_content = agent_memory_path.read_text().strip()
-                if memory_content:
+                all_memories = json.loads(agent_memories_path.read_text())
+                always_load = [m for m in all_memories if m.get("always_load")]
+                if always_load:
+                    lines = [f"- {m['content']}" for m in always_load]
+                    memory_block = "\n".join(lines)
                     append_parts.append(
                         "\n---\n\n"
                         "Your persistent memory (notes you've saved across conversations):\n\n"
-                        f"{memory_content}"
+                        f"{memory_block}"
                     )
             except Exception as e:
-                logger.warning(f"Agent '{config.name}': could not read memory.md for preset: {e}")
+                logger.warning(f"Agent '{config.name}': could not read memories.json for preset: {e}")
+        else:
+            # Fallback: legacy memory.md (for agents not yet migrated)
+            agent_memory_path = Path(__file__).parent / config.name / "memory.md"
+            if agent_memory_path.exists():
+                try:
+                    memory_content = agent_memory_path.read_text().strip()
+                    if memory_content:
+                        append_parts.append(
+                            "\n---\n\n"
+                            "Your persistent memory (notes you've saved across conversations):\n\n"
+                            f"{memory_content}"
+                        )
+                except Exception as e:
+                    logger.warning(f"Agent '{config.name}': could not read memory.md for preset: {e}")
         # Include per-agent working memory
         wm_block = _load_working_memory_block(config.name)
         if wm_block:
@@ -533,20 +596,44 @@ async def _run_sdk_agent(config: AgentConfig, invocation: AgentInvocation) -> st
         parts = []
         if config.prompt:
             parts.append(config.prompt)
-        # Include per-agent memory.md alongside instructions
-        agent_memory_path = Path(__file__).parent / config.name / "memory.md"
-        if agent_memory_path.exists():
+        # Skill menu sits above memory in the system prompt
+        if _skill_reminder:
+            parts.append(_skill_reminder)
+        # Agent list sits above memory in the system prompt
+        if _agent_list_block:
+            parts.append(_agent_list_block)
+        # Include per-agent always_load memories from memories.json
+        agent_memories_path = Path(__file__).parent / config.name / "memories.json"
+        if agent_memories_path.exists():
             try:
-                memory_content = agent_memory_path.read_text().strip()
-                if memory_content:
+                all_memories = json.loads(agent_memories_path.read_text())
+                always_load = [m for m in all_memories if m.get("always_load")]
+                if always_load:
+                    lines = [f"- {m['content']}" for m in always_load]
+                    memory_block = "\n".join(lines)
                     parts.append(
                         "\n---\n\n"
                         "Your persistent memory (notes you've saved across conversations):\n\n"
-                        f"{memory_content}"
+                        f"{memory_block}"
                     )
-                    logger.info(f"Agent '{config.name}': loaded memory.md for replace-mode system prompt")
+                    logger.info(f"Agent '{config.name}': loaded {len(always_load)} always_load memories for replace-mode system prompt")
             except Exception as e:
-                logger.warning(f"Agent '{config.name}': could not read memory.md for replace: {e}")
+                logger.warning(f"Agent '{config.name}': could not read memories.json for replace: {e}")
+        else:
+            # Fallback: legacy memory.md (for agents not yet migrated)
+            agent_memory_path = Path(__file__).parent / config.name / "memory.md"
+            if agent_memory_path.exists():
+                try:
+                    memory_content = agent_memory_path.read_text().strip()
+                    if memory_content:
+                        parts.append(
+                            "\n---\n\n"
+                            "Your persistent memory (notes you've saved across conversations):\n\n"
+                            f"{memory_content}"
+                        )
+                        logger.info(f"Agent '{config.name}': loaded memory.md for replace-mode system prompt")
+                except Exception as e:
+                    logger.warning(f"Agent '{config.name}': could not read memory.md for replace: {e}")
         # Include per-agent working memory
         wm_block = _load_working_memory_block(config.name)
         if wm_block:
@@ -591,24 +678,6 @@ async def _run_sdk_agent(config: AgentConfig, invocation: AgentInvocation) -> st
                 )
             except Exception as e:
                 logger.error(f"Failed to create MCP server for agent '{config.name}': {e}")
-
-    # Inject the shared "Available agents" block into the system prompt — but only
-    # if this agent has access to any agent-calling tools (invoke_agent, etc.).
-    # Agents without agent tools never see the agent list.
-    try:
-        from mcp_tools.agents import get_agent_list_for_prompt
-        agent_list_block = get_agent_list_for_prompt(effective_tools)
-        if agent_list_block:
-            if isinstance(system_prompt, dict):
-                # Preset mode — append to the "append" field
-                existing = system_prompt.get("append", "")
-                system_prompt["append"] = existing + agent_list_block
-            else:
-                # Replace mode — append to the string
-                system_prompt = system_prompt + agent_list_block
-            logger.info(f"Agent '{config.name}': injected agent list into system prompt")
-    except Exception as e:
-        logger.warning(f"Agent '{config.name}': failed to inject agent list: {e}")
 
     options_kwargs = {
         "model": config.model,
@@ -660,25 +729,39 @@ async def _run_sdk_agent(config: AgentConfig, invocation: AgentInvocation) -> st
     if config.output_format:
         options.output_format = config.output_format
 
-    # Inject skill menu (lightweight list of available skills) into the prompt.
-    # Full skill bodies are loaded on demand via the fetch_skill MCP tool.
+    # Auto-retrieve contextual memories relevant to the agent's task prompt
+    try:
+        scripts_dir = str(Path(__file__).parent.parent / "scripts")
+        if scripts_dir not in sys.path:
+            sys.path.insert(0, scripts_dir)
+        from contextual_memory import auto_retrieve_context, rewrite_query_for_retrieval
+
+        raw_query = (invocation.prompt or "")[-1000:]
+        retrieval_queries = await rewrite_query_for_retrieval(raw_query)
+        logger.info(f"Agent '{config.name}': query rewrite: '{raw_query[:80]}' -> {retrieval_queries}")
+        ctx_block = auto_retrieve_context(
+            query=retrieval_queries,
+            agent_name=config.name,
+        )
+        if ctx_block:
+            if isinstance(options.system_prompt, dict):
+                existing = options.system_prompt.get("append", "")
+                options.system_prompt["append"] = existing + "\n\n" + ctx_block
+            else:
+                options.system_prompt = (options.system_prompt or "") + "\n\n" + ctx_block
+            logger.info(f"Agent '{config.name}': injected contextual memory into system prompt")
+    except Exception as e:
+        logger.warning(f"Agent '{config.name}': contextual memory auto-retrieve failed: {e}")
+
     effective_prompt = invocation.prompt
-    agent_has_skills = config.skills is None or (isinstance(config.skills, list) and len(config.skills) > 0)
-    if agent_has_skills:
-        try:
-            from skill_injector import get_skill_reminder
-            skill_reminder = get_skill_reminder(allowed_skills=config.skills)
-            if skill_reminder:
-                effective_prompt = f"{skill_reminder}\n\n{invocation.prompt}"
-                logger.info(f"Injected skill menu into agent '{config.name}' prompt")
-        except Exception as e:
-            logger.warning(f"Skill menu injection failed for agent '{config.name}': {e}")
 
     result_text = ""
+    transcript = ""
+    blocks = []
 
     try:
         async with asyncio.timeout(config.timeout_seconds):
-            result_text = await _consume_query(effective_prompt, options)
+            result_text, transcript, blocks = await _consume_query(effective_prompt, options)
     except asyncio.TimeoutError:
         raise
     except ExceptionGroup as eg:
@@ -701,17 +784,149 @@ async def _run_sdk_agent(config: AgentConfig, invocation: AgentInvocation) -> st
             except Exception as e:
                 logger.warning(f"Failed to deregister agent '{config.name}': {e}")
 
-    return result_text
+    return result_text, transcript, blocks
 
 
-async def _consume_query(prompt: str, options) -> str:
+def _extract_tool_content(content) -> str:
+    """Normalize ToolResultBlock.content to a string."""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict):
+                if item.get("type") == "text":
+                    parts.append(item.get("text", ""))
+                else:
+                    parts.append(json.dumps(item))
+            else:
+                parts.append(str(item))
+        return "\n".join(parts)
+    return str(content)
+
+
+def _truncate(text: str, limit: int) -> str:
+    """Truncate text to limit chars, adding ellipsis if truncated."""
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "\n... (truncated)"
+
+
+def _format_transcript(captured: list, result_meta: Optional[dict] = None) -> str:
+    """Render captured message entries into a readable markdown transcript.
+
+    Args:
+        captured: List of dicts with keys like 'type', 'text', 'name', 'input', 'content', 'is_error'.
+        result_meta: Optional dict with 'num_turns', 'cost', 'duration_ms' from ResultMessage.
     """
-    Consume the async generator from query() and return the final result.
+    TOOL_INPUT_LIMIT = 500
+    TOOL_RESULT_LIMIT = 3000
+
+    parts = []
+    for entry in captured:
+        etype = entry.get("type")
+
+        if etype == "text":
+            parts.append(entry["text"])
+
+        elif etype == "tool_use":
+            name = entry["name"]
+            raw_input = entry.get("input", {})
+            input_str = json.dumps(raw_input, indent=2) if isinstance(raw_input, dict) else str(raw_input)
+            parts.append(f"\n---\n**Tool: `{name}`**\n{_truncate(input_str, TOOL_INPUT_LIMIT)}")
+
+        elif etype == "tool_result":
+            content = entry.get("content", "")
+            is_error = entry.get("is_error", False)
+            prefix = "**Error:**" if is_error else "**Result:**"
+            parts.append(f"{prefix}\n{_truncate(content, TOOL_RESULT_LIMIT)}\n---\n")
+
+    # Append metadata footer if available
+    if result_meta:
+        meta_parts = []
+        if result_meta.get("num_turns"):
+            meta_parts.append(f"{result_meta['num_turns']} turns")
+        if result_meta.get("cost") is not None:
+            meta_parts.append(f"${result_meta['cost']:.4f}")
+        if result_meta.get("duration_ms"):
+            secs = result_meta["duration_ms"] / 1000
+            meta_parts.append(f"{secs:.1f}s")
+        if meta_parts:
+            parts.append(f"\n---\n*{' | '.join(meta_parts)}*")
+
+    return "\n\n".join(parts)
+
+
+def _captured_to_blocks(captured: list) -> list:
+    """Convert captured SDK messages to ContentBlock-compatible dicts for UI rendering.
+
+    Returns a flat list of blocks matching the frontend ContentBlock interface:
+    - text: {id, type, content, status}
+    - thinking: {id, type, content, status, duration_ms}
+    - tool_use: {id, type, content, tool_name, tool_call_id, tool_input, status}
+    - tool_result: {id, type, content, tool_call_id, is_error, status}
+    """
+    import uuid as _uuid
+
+    blocks = []
+    for entry in captured:
+        etype = entry.get("type")
+
+        if etype == "text":
+            blocks.append({
+                "id": f"blk_{_uuid.uuid4().hex[:12]}",
+                "type": "text",
+                "content": entry.get("text", ""),
+                "status": "complete",
+            })
+
+        elif etype == "thinking":
+            blocks.append({
+                "id": f"blk_{_uuid.uuid4().hex[:12]}",
+                "type": "thinking",
+                "content": entry.get("text", ""),
+                "status": "complete",
+            })
+
+        elif etype == "tool_use":
+            tool_call_id = entry.get("id", f"toolu_{_uuid.uuid4().hex[:20]}")
+            blocks.append({
+                "id": f"blk_{_uuid.uuid4().hex[:12]}",
+                "type": "tool_use",
+                "content": "",
+                "tool_name": entry.get("name", ""),
+                "tool_call_id": tool_call_id,
+                "tool_input": entry.get("input", {}),
+                "status": "complete",
+            })
+
+        elif etype == "tool_result":
+            blocks.append({
+                "id": f"blk_{_uuid.uuid4().hex[:12]}",
+                "type": "tool_result",
+                "content": entry.get("content", ""),
+                "tool_call_id": entry.get("tool_use_id", ""),
+                "is_error": entry.get("is_error", False),
+                "status": "complete",
+            })
+
+    return blocks
+
+
+async def _consume_query(prompt: str, options) -> tuple:
+    """
+    Consume the async generator from query() and return (result_text, transcript, blocks).
+
+    Captures all SDK messages into a structured transcript and UI-ready blocks.
+    - result_text: the final ResultMessage.result (used for compact ping notifications)
+    - transcript: a full markdown-formatted trace (for MCP tool consumers / other agents)
+    - blocks: list of ContentBlock-compatible dicts (for UI rendering with tool pills)
 
     When MCP servers are configured, the prompt is sent as an AsyncIterable
     (streaming mode) so the SDK keeps stdin open for the bidirectional MCP
-    control protocol. Without this, the CLI subprocess can't send MCP JSONRPC
-    requests back through stdin/stdout.
+    control protocol.
     """
     from claude_agent_sdk import query
 
@@ -719,8 +934,6 @@ async def _consume_query(prompt: str, options) -> str:
     has_mcp = bool(options.mcp_servers)
 
     if has_mcp:
-        # Wrap prompt in an async iterable so the SDK uses stream_input(),
-        # which keeps stdin open for MCP JSONRPC communication.
         async def _prompt_stream():
             yield {
                 "type": "user",
@@ -734,14 +947,56 @@ async def _consume_query(prompt: str, options) -> str:
         effective_prompt = prompt
 
     result_text = ""
-    async for message in query(prompt=effective_prompt, options=options):
-        # Capture final result
-        if hasattr(message, "result"):
-            result_text = message.result
-        elif hasattr(message, "structured_output") and message.structured_output:
-            result_text = json.dumps(message.structured_output, indent=2)
+    captured = []  # List of transcript entries
+    result_meta = None
 
-    return result_text
+    async for message in query(prompt=effective_prompt, options=options):
+        if isinstance(message, AssistantMessage):
+            for block in (message.content or []):
+                if isinstance(block, TextBlock):
+                    captured.append({"type": "text", "text": block.text})
+                elif isinstance(block, ToolUseBlock):
+                    captured.append({
+                        "type": "tool_use",
+                        "name": block.name,
+                        "id": block.id,
+                        "input": block.input,
+                    })
+                elif isinstance(block, ThinkingBlock):
+                    captured.append({
+                        "type": "thinking",
+                        "text": block.thinking or "",
+                    })
+
+        elif isinstance(message, UserMessage):
+            # UserMessage carries tool results back
+            content = message.content
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, ToolResultBlock):
+                        captured.append({
+                            "type": "tool_result",
+                            "tool_use_id": block.tool_use_id,
+                            "content": _extract_tool_content(block.content),
+                            "is_error": block.is_error or False,
+                        })
+            # String content from UserMessage is not interesting for transcript
+
+        elif isinstance(message, ResultMessage):
+            result_text = message.result or ""
+            if hasattr(message, "structured_output") and message.structured_output:
+                result_text = json.dumps(message.structured_output, indent=2)
+            result_meta = {
+                "num_turns": getattr(message, "num_turns", None),
+                "cost": getattr(message, "total_cost_usd", None),
+                "duration_ms": getattr(message, "duration_ms", None),
+            }
+
+        # Skip SystemMessage, StreamEvent — not relevant for transcript
+
+    transcript = _format_transcript(captured, result_meta)
+    blocks = _captured_to_blocks(captured)
+    return result_text, transcript, blocks
 
 
 def _log_execution(invocation: AgentInvocation, result: AgentResult) -> None:
@@ -765,10 +1020,13 @@ def _log_execution(invocation: AgentInvocation, result: AgentResult) -> None:
                 else:
                     data = {"executions": []}
 
-                # Add new entry
+                # Add new entry (truncate transcript to avoid bloating the log)
+                result_dict = result.to_dict()
+                if result_dict.get("transcript") and len(result_dict["transcript"]) > 5000:
+                    result_dict["transcript"] = result_dict["transcript"][:5000] + "\n... (truncated in log)"
                 entry = {
                     "invocation": invocation.to_dict(),
-                    "result": result.to_dict(),
+                    "result": result_dict,
                 }
                 data["executions"].append(entry)
 

@@ -13,8 +13,9 @@ skills:
 - character-gen
 - sync
 tools:
-- mcp__brain__memory_append
-- mcp__brain__memory_read
+- mcp__brain__memory_create
+- mcp__brain__memory_update
+- mcp__brain__memory_delete
 - mcp__brain__schedule_self
 - mcp__brain__scheduler_list
 - mcp__brain__scheduler_update
@@ -32,7 +33,6 @@ tools:
 - mcp__brain__forms_show
 - mcp__brain__forms_save
 - mcp__brain__forms_list
-- mcp__brain__bash
 - mcp__brain__restart_server
 - mcp__brain__process_list
 - mcp__brain__compact_conversation
@@ -43,7 +43,7 @@ tools:
 - mcp__brain__working_memory_list
 - mcp__brain__working_memory_remove
 - mcp__brain__working_memory_snapshot
-- mcp__brain__memory_save
 - mcp__brain__memory_search
 - mcp__brain__memory_search_agent
 - mcp__brain__search_conversation_history
+- mcp__brain__bash

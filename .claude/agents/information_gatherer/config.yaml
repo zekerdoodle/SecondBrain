@@ -25,9 +25,9 @@ tools:
 - mcp__brain__page_parser
 - mcp__brain__process_list
 - mcp__brain__bash
-- mcp__brain__memory_read
-- mcp__brain__memory_append
-- mcp__brain__memory_save
+- mcp__brain__memory_create
+- mcp__brain__memory_update
+- mcp__brain__memory_delete
 - mcp__brain__memory_search
 - mcp__brain__memory_search_agent
 - mcp__brain__search_conversation_history
@@ -36,3 +36,5 @@ tools:
 - mcp__brain__forms_define
 - mcp__brain__forms_show
 - mcp__brain__fetch_skill
+- mcp__brain__scheduler_update
+- mcp__brain__scheduler_remove

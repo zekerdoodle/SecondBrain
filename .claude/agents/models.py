@@ -47,6 +47,7 @@ class AgentConfig:
     type: AgentType
     model: str
     description: str
+    display_name: Optional[str] = None  # Human-friendly name (e.g., "Patch"). Falls back to title-cased `name`.
     tools: List[str] = field(default_factory=list)
     timeout_seconds: int = 300
     max_turns: int = 200
@@ -70,6 +71,7 @@ class AgentConfig:
             type=AgentType(data.get("type", "sdk")),
             model=data.get("model", "sonnet"),
             description=data.get("description", f"Agent: {data['name']}"),
+            display_name=data.get("display_name"),
             tools=data.get("tools", []),
             timeout_seconds=data.get("timeout_seconds") or data.get("timeout") or 300,
             max_turns=data.get("max_turns", 200),
@@ -143,10 +145,12 @@ class AgentResult:
     started_at: datetime
     completed_at: datetime
     error: Optional[str] = None
+    transcript: Optional[str] = None
+    blocks: Optional[List[Dict[str, Any]]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""
-        return {
+        d = {
             "agent": self.agent,
             "status": self.status,
             "response": self.response,
@@ -154,6 +158,10 @@ class AgentResult:
             "completed_at": self.completed_at.isoformat(),
             "error": self.error,
         }
+        if self.transcript:
+            d["transcript"] = self.transcript
+        # blocks are not serialized to execution log (too large)
+        return d
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "AgentResult":
@@ -165,6 +173,7 @@ class AgentResult:
             started_at=datetime.fromisoformat(data["started_at"]),
             completed_at=datetime.fromisoformat(data["completed_at"]),
             error=data.get("error"),
+            transcript=data.get("transcript"),
         )
 
 

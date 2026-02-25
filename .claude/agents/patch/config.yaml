@@ -1,14 +1,13 @@
-name: chat_coder
-description: Interactive coder agent for direct conversation. Identical to coder but
-  conversational — asks clarifying questions via forms instead of returning early.
-  For the user's direct use only.
+name: patch
+description: "Patch — interactive coder agent for direct conversation. Finds what's\
+  \ broken and fixes it. Conversational — asks clarifying questions via forms instead\
+  \ of returning early. For the user's direct use only."
 model: opus
 type: sdk
 timeout_seconds: 1800
 max_turns: 200
 chattable: true
 icon: code
-system_prompt_preset: claude_code
 skills:
 - project-task
 tools:
@@ -31,9 +30,9 @@ tools:
 - mcp__brain__fal_list_models
 - mcp__brain__forms_define
 - mcp__brain__forms_show
-- mcp__brain__memory_append
-- mcp__brain__memory_read
-- mcp__brain__memory_save
+- mcp__brain__memory_create
+- mcp__brain__memory_update
+- mcp__brain__memory_delete
 - mcp__brain__memory_search
 - mcp__brain__memory_search_agent
 - mcp__brain__search_conversation_history
@@ -45,3 +44,5 @@ tools:
 - mcp__brain__scheduler_list
 - mcp__brain__scheduler_update
 - mcp__brain__schedule_agent
+- mcp__brain__invoke_agent
+- mcp__brain__invoke_agent_parallel

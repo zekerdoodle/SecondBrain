@@ -625,7 +625,7 @@ export const EditorView: React.FC<EditorViewProps> = ({
       {/* Content Area */}
       <div className="flex-1 overflow-hidden relative">
         {viewMode === 'view' ? (
-          <div ref={editorViewRef} className="absolute inset-0 overflow-auto p-8 bg-[var(--bg-secondary)]" data-color-mode="light">
+          <div ref={editorViewRef} className={`absolute inset-0 ${isHtmlFile(selectedFile) ? 'overflow-hidden' : 'overflow-auto p-8'} bg-[var(--bg-secondary)]`} data-color-mode="light">
             {isMarkdownFile(selectedFile) ? (
               <div className="prose font-editor w-full max-w-none" style={{ fontFamily: 'var(--font-editor)', fontSize: 'var(--font-size-base)' }}>
                 <MDEditor.Markdown

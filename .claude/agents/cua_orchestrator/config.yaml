@@ -11,9 +11,9 @@ tools:
 - Bash
 - Read
 - Write
-- mcp__brain__memory_append
-- mcp__brain__memory_read
-- mcp__brain__memory_save
+- mcp__brain__memory_create
+- mcp__brain__memory_update
+- mcp__brain__memory_delete
 - mcp__brain__memory_search
 - mcp__brain__memory_search_agent
 - mcp__brain__search_conversation_history

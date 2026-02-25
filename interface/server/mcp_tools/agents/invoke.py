@@ -131,7 +131,7 @@ async def invoke_agent(args: Dict[str, Any]) -> Dict[str, Any]:
             # AgentResult object
             if hasattr(result, "status"):
                 if result.status == "success":
-                    return {"content": [{"type": "text", "text": result.response}]}
+                    return {"content": [{"type": "text", "text": result.transcript or result.response}]}
                 else:
                     error_msg = f"Agent {agent_name} failed: {result.error or result.status}"
                     return {"content": [{"type": "text", "text": error_msg}], "is_error": True}
@@ -374,7 +374,7 @@ async def invoke_agent_parallel(args: Dict[str, Any]) -> Dict[str, Any]:
                     # Extract response from AgentResult or dict
                     if hasattr(result, "status"):
                         if result.status == "success":
-                            return {"idx": idx, "status": "success", "response": result.response, "duration": duration}
+                            return {"idx": idx, "status": "success", "response": result.transcript or result.response, "duration": duration}
                         else:
                             error_msg = result.error or result.status
                             return {"idx": idx, "status": "error", "error": error_msg, "duration": duration}

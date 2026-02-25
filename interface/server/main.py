@@ -870,14 +870,11 @@ class AskClaudeRequest(BaseModel):
 async def app_bridge_ask_claude(req: AskClaudeRequest):
     """
     Brain Bridge v2: Request-response Claude API for embedded apps.
-    Uses the Anthropic API directly (no agent SDK) for fast, lightweight responses.
-    Apps can ask Claude questions and get structured responses back.
+    Uses the Agent SDK for consistent auth and infrastructure.
     """
-    import anthropic
+    from claude_agent_sdk import query, ClaudeAgentOptions
 
     try:
-        client = anthropic.Anthropic()
-
         system_prompt = (
             "You are a helpful assistant embedded in a Second Brain app. "
             "Respond concisely and directly. When asked to return structured data (JSON, numbers, lists), "
@@ -886,21 +883,21 @@ async def app_bridge_ask_claude(req: AskClaudeRequest):
         if req.system_hint:
             system_prompt += f"\n\nApp context: {req.system_hint}"
 
-        message = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=4096,
-            system=system_prompt,
-            messages=[{"role": "user", "content": req.prompt}]
+        options = ClaudeAgentOptions(
+            model="sonnet",
+            system_prompt=system_prompt,
+            max_turns=1,
+            permission_mode="bypassPermissions",
+            setting_sources=[],
         )
 
-        # Extract text from response
-        response_text = ""
-        for block in message.content:
-            if hasattr(block, 'text'):
-                response_text += block.text
+        result_text = ""
+        async for message in query(prompt=req.prompt, options=options):
+            if hasattr(message, "result"):
+                result_text = message.result
 
-        logger.info(f"App Bridge askClaude: prompt={req.prompt[:80]}... response_len={len(response_text)}")
-        return {"response": response_text, "usage": {"input_tokens": message.usage.input_tokens, "output_tokens": message.usage.output_tokens}}
+        logger.info(f"App Bridge askClaude: prompt={req.prompt[:80]}... response_len={len(result_text)}")
+        return {"response": result_text}
 
     except Exception as e:
         logger.error(f"App Bridge askClaude error: {e}")
@@ -987,10 +984,7 @@ def get_apps():
 @app.get("/api/app-icon/{path:path}")
 def get_app_icon(path: str):
     """Serve app icon images from 05_App_Data/."""
-    safe_path = os.path.normpath(path)
-    if safe_path.startswith(".."):
-        raise HTTPException(status_code=403, detail="Path traversal blocked")
-    full_path = os.path.join(APP_DATA_DIR, safe_path)
+    full_path = validate_app_path(path)
     if not os.path.exists(full_path):
         raise HTTPException(status_code=404, detail="Icon not found")
     return FileResponse(full_path)
@@ -1014,7 +1008,7 @@ def list_agents(all: bool = False):
     return {"agents": [
         {
             "name": a.name,
-            "display_name": " ".join(w.capitalize() for w in a.name.split("_")),
+            "display_name": a.display_name or " ".join(w.capitalize() for w in a.name.split("_")),
             "description": a.description,
             "model": a.model,
             "is_default": a.default,
@@ -4012,6 +4006,44 @@ def _build_interleaved_messages(all_segments, completed_tool_calls):
 
 # --- Scheduler ---
 
+
+def _build_agent_display_messages(prompt: str, result, agent_name: str) -> list:
+    """Build display_messages list from an agent result with proper blocks for UI rendering.
+
+    If the agent result has blocks (ContentBlock-compatible dicts), creates an assistant
+    message with a blocks array so the frontend renders tool pills, thinking sections, etc.
+    Falls back to flat text content if no blocks are available.
+    """
+    user_msg = {
+        "id": str(uuid.uuid4()),
+        "role": "user",
+        "content": f"[Scheduled Agent: {agent_name}] {prompt}",
+        "status": "complete",
+    }
+
+    blocks = getattr(result, "blocks", None) if result.status == "success" else None
+
+    if blocks:
+        assistant_msg = {
+            "id": str(uuid.uuid4()),
+            "role": "assistant",
+            "content": "",
+            "status": "complete",
+            "blocks": blocks,
+        }
+    else:
+        # Fallback to flat text
+        text = (result.transcript or result.response) if result.status == "success" else f"Error: {result.error}"
+        assistant_msg = {
+            "id": str(uuid.uuid4()),
+            "role": "assistant",
+            "content": text or "",
+            "status": "complete",
+        }
+
+    return [user_msg, assistant_msg]
+
+
 async def _execute_scheduled_task(task_info):
     """Execute a single scheduled task. Extracted from scheduler_loop to allow concurrent dispatch."""
     try:
@@ -4030,6 +4062,16 @@ async def _execute_scheduled_task(task_info):
             task_type = task_info.get("type", "prompt")
             agent_name = task_info.get("agent")
             task_project = task_info.get("project")
+
+        # Initialize variables used by the notification block
+        actual_session_id: Optional[str] = None
+        assistant_content: list = []
+        title: str = "Scheduled Task"
+
+        # Guard: agent tasks require agent_name
+        if task_type == "agent" and not agent_name:
+            logger.warning(f"Scheduled agent task has no agent name (task_id={task_id}). Skipping.")
+            return
 
         # Handle agent tasks
         if task_type == "agent" and agent_name:
@@ -4083,19 +4125,16 @@ You are running as a scheduled task. Your output will be delivered directly to r
                                 project=task_project
                             )
 
-                            agent_output = result.response if result.status == "success" else f"Error: {result.error}"
-                            if agent_output:
-                                existing_messages.append({
-                                    "id": str(uuid.uuid4()),
-                                    "role": "system",
-                                    "content": f"[Scheduled Agent: {agent_name}] {prompt}"
-                                })
-                                existing_messages.append({
-                                    "id": str(uuid.uuid4()),
-                                    "role": "assistant",
-                                    "content": agent_output
-                                })
+                            new_msgs = _build_agent_display_messages(prompt, result, agent_name)
+                            if new_msgs:
+                                existing_messages.extend(new_msgs)
                                 existing_chat["messages"] = existing_messages
+                                # Update display_messages for block-based UI rendering
+                                dm = existing_chat.get("display_messages")
+                                if dm is not None:
+                                    dm.extend(new_msgs)
+                                else:
+                                    existing_chat["display_messages"] = list(existing_messages)
                                 chat_manager.save_chat(agent_room_id, existing_chat)
                                 if rooms_meta:
                                     rooms_meta.bump(agent_room_id)
@@ -4183,19 +4222,16 @@ You are running as a scheduled task. Your output will be shown to the user.
                                 project=task_project
                             )
 
-                            agent_output = result.response if result.status == "success" else f"Error: {result.error}"
-                            if agent_output:
-                                existing_messages.append({
-                                    "id": str(uuid.uuid4()),
-                                    "role": "system",
-                                    "content": f"[Scheduled Agent: {agent_name}] {prompt}"
-                                })
-                                existing_messages.append({
-                                    "id": str(uuid.uuid4()),
-                                    "role": "assistant",
-                                    "content": agent_output
-                                })
+                            new_msgs = _build_agent_display_messages(prompt, result, agent_name)
+                            agent_output = (result.transcript or result.response) if result.status == "success" else f"Error: {result.error}"
+                            if new_msgs:
+                                existing_messages.extend(new_msgs)
                                 existing_chat["messages"] = existing_messages
+                                dm = existing_chat.get("display_messages")
+                                if dm is not None:
+                                    dm.extend(new_msgs)
+                                else:
+                                    existing_chat["display_messages"] = list(existing_messages)
                                 chat_manager.save_chat(agent_room_id, existing_chat)
                                 if rooms_meta:
                                     rooms_meta.bump(agent_room_id)
@@ -4227,9 +4263,8 @@ You are running as a scheduled task. Your output will be shown to the user in a 
                             project=task_project
                         )
 
-                        agent_output = result.response if result.status == "success" else f"Error: {result.error}"
-                        # Strip tool markers from agent output (agents may include raw tool markers)
-                        clean_agent_output = strip_tool_markers(agent_output) if agent_output else ""
+                        display_msgs = _build_agent_display_messages(prompt, result, agent_name)
+                        agent_output = (result.transcript or result.response) if result.status == "success" else f"Error: {result.error}"
 
                         session_id = str(uuid.uuid4())
                         actual_session_id = session_id
@@ -4243,14 +4278,12 @@ You are running as a scheduled task. Your output will be shown to the user in a 
                             "is_system": False,
                             "scheduled": True,
                             "agent": agent_name,
-                            "messages": [
-                                {"id": str(uuid.uuid4()), "role": "system", "content": f"[Scheduled Agent: {agent_name}] {prompt}"},
-                                {"id": str(uuid.uuid4()), "role": "assistant", "content": clean_agent_output}
-                            ]
+                            "messages": display_msgs,
+                            "display_messages": display_msgs,
                         }
                         chat_manager.save_chat(actual_session_id, chat_data)
                         await broadcast_chat_created(actual_session_id, title, agent_name, scheduled=True)
-                        assistant_content = [clean_agent_output] if clean_agent_output else []
+                        assistant_content = [agent_output] if agent_output else []
                         logger.info(f"Saved non-silent agent task result: {actual_session_id}")
 
                     # Fall through to notification block below
@@ -4341,6 +4374,11 @@ You are running as a scheduled task. Your output will be shown to the user in a 
                 chat_manager.save_chat(actual_session_id, chat_data)
                 await broadcast_chat_created(actual_session_id, title, is_system=is_silent, scheduled=True)
                 logger.info(f"Saved scheduled task result: {actual_session_id} (is_system={is_silent})")
+
+        # Guard: skip notification if no session was created (defensive)
+        if actual_session_id is None:
+            logger.warning(f"Scheduled task produced no session_id (task_type={task_type}). Skipping notification.")
+            return
 
         # Determine notification channels based on visibility
         decision = should_notify(
@@ -5213,7 +5251,9 @@ async def serve_spa(full_path: str):
     if full_path.startswith("api/") or full_path.startswith("ws/"):
         raise HTTPException(status_code=404)
 
-    file_path = os.path.join(CLIENT_BUILD_DIR, full_path)
+    file_path = os.path.abspath(os.path.join(CLIENT_BUILD_DIR, full_path))
+    if not file_path.startswith(CLIENT_BUILD_DIR):
+        raise HTTPException(status_code=403, detail="Path traversal blocked")
     if os.path.isfile(file_path):
         return FileResponse(file_path)
 

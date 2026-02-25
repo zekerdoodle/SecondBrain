@@ -229,12 +229,12 @@ async def working_memory_list(args: Dict[str, Any]) -> Dict[str, Any]:
 @register_tool("memory")
 @tool(
     name="working_memory_snapshot",
-    description="""Promote a working memory item to permanent storage (memory.md).
+    description="""Promote a working memory item to permanent storage (memories.json with always_load=true).
 
-This "snapshots" an ephemeral working memory note into the permanent self-journal.
+This "snapshots" an ephemeral working memory note into your permanent memory store.
 Use this when a temporary observation or note becomes important enough to persist.
 
-The item will be added to the specified section in memory.md. By default, the
+The item is saved as an always_load memory entry. By default, the
 original working memory item is removed after promotion (set keep=true to retain it).""",
     input_schema={
         "type": "object",
@@ -242,7 +242,7 @@ original working memory item is removed after promotion (set keep=true to retain
             "index": {"type": "integer", "description": "The item number to promote (1-based)"},
             "section": {
                 "type": "string",
-                "description": "Section in memory.md (e.g., 'Self-Reflections', 'Working Theories', 'Lessons Learned')",
+                "description": "Section label for organization (e.g., 'Lessons Learned', 'User Preferences')",
                 "default": "Promoted from Working Memory"
             },
             "keep": {
@@ -259,11 +259,11 @@ original working memory item is removed after promotion (set keep=true to retain
     }
 )
 async def working_memory_snapshot(args: Dict[str, Any]) -> Dict[str, Any]:
-    """Promote working memory item to memory.md."""
+    """Promote working memory item to memories.json as always_load."""
     try:
         from working_memory import WorkingMemoryError
         import datetime
-        import re
+        import json
 
         store, agent_name = _get_agent_store(args)
 
@@ -295,48 +295,42 @@ async def working_memory_snapshot(args: Dict[str, Any]) -> Dict[str, Any]:
         if item.tag:
             content = f"[{item.tag}] {content}"
 
-        # Resolve memory.md path: all agents use .claude/agents/{name}/memory.md
+        # Save to memories.json as always_load
         agent_name = agent_name or "ren"
-        memory_path = os.path.join(_CLAUDE_DIR, "agents", agent_name, "memory.md")
+        memories_path = os.path.join(_CLAUDE_DIR, "agents", agent_name, "memories.json")
 
-        if not os.path.exists(memory_path):
-            return {"content": [{"type": "text", "text": f"memory.md not found at {memory_path}"}], "is_error": True}
+        # Load existing memories
+        memories = []
+        if os.path.exists(memories_path):
+            try:
+                memories = json.loads(open(memories_path).read())
+                if not isinstance(memories, list):
+                    memories = []
+            except Exception:
+                memories = []
 
-        with open(memory_path, 'r') as f:
-            memory_content = f.read()
+        # Create new memory entry
+        next_id = max((m.get("id", 0) for m in memories), default=0) + 1
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        new_memory = {
+            "id": next_id,
+            "triggers": [section, content[:60]],
+            "content": content,
+            "always_load": True,
+            "private": False,
+            "created": now,
+            "updated": now,
+            "type": "observation",
+        }
 
-        # Find section and append
-        section_marker = f"## {section}"
-        if section_marker in memory_content:
-            start_idx = memory_content.index(section_marker) + len(section_marker)
-            next_section = memory_content.find("\n## ", start_idx)
-            if next_section == -1:
-                next_section = memory_content.find("\n---", start_idx)
+        memories.append(new_memory)
 
-            if next_section != -1:
-                memory_content = (
-                    memory_content[:next_section].rstrip() +
-                    f"\n- {content}\n" +
-                    memory_content[next_section:]
-                )
-            else:
-                memory_content = memory_content.rstrip() + f"\n- {content}\n"
-        else:
-            memory_content = memory_content.rstrip() + f"\n\n## {section}\n\n- {content}\n"
+        # Save
+        os.makedirs(os.path.dirname(memories_path), exist_ok=True)
+        with open(memories_path, 'w') as f:
+            json.dump(memories, f, indent=2, ensure_ascii=False)
 
-        # Update timestamp
-        today = datetime.date.today().isoformat()
-        if "*Last updated:" in memory_content:
-            memory_content = re.sub(
-                r'\*Last updated: .*\*',
-                f'*Last updated: {today}*',
-                memory_content
-            )
-
-        with open(memory_path, 'w') as f:
-            f.write(memory_content)
-
-        result = f"Promoted to memory.md [{section}]: {content[:80]}..."
+        result = f"Promoted to permanent memory #{next_id} [always_load]: {content[:80]}..."
 
         # Remove from working memory unless keep=true
         if not keep:

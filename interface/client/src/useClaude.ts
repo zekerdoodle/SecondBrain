@@ -1070,7 +1070,7 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
         case 'restart_continuation':
           // Server restart is continuing conversations — may arrive multiple times
           // (once per session that was active when restart was triggered).
-          // data.source = who triggered the restart (e.g. "ren", "chat_coder", "settings_ui")
+          // data.source = who triggered the restart (e.g. "ren", "patch", "settings_ui")
           // data.role = "trigger" (initiated the restart) or "bystander" (was just working)
           // data.agent = the agent for this specific session
           console.log(`Restart continuation: session=${data.session_id}, agent=${data.agent}, role=${data.role}, source=${data.source}, reason=${data.reason}`);

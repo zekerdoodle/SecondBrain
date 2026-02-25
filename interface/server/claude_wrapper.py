@@ -276,59 +276,128 @@ class ClaudeWrapper:
             logger.debug(f"Agent '{agent_name}': could not load working memory: {e}")
         return ""
 
-    def _build_system_prompt(self, agent_config) -> str:
-        """Build system prompt for a chattable agent (prompt.md + optional memory.md).
+    def _get_skill_reminder(self, agent_config) -> str:
+        """Get skill menu block for an agent, or empty string."""
+        agent_skills = getattr(agent_config, "skills", None)
+        agent_has_skills = agent_skills is None or (isinstance(agent_skills, list) and len(agent_skills) > 0)
+        if not agent_has_skills:
+            return ""
+        try:
+            import sys as _sys
+            _agents_dir = str(Path(self.cwd) / ".claude" / "agents")
+            if _agents_dir not in _sys.path:
+                _sys.path.insert(0, _agents_dir)
+            from skill_injector import get_skill_reminder
+            reminder = get_skill_reminder(allowed_skills=agent_skills) or ""
+            if reminder:
+                logger.info(f"Agent '{agent_config.name}': will inject skill menu into system prompt")
+            return reminder
+        except Exception as e:
+            logger.warning(f"Skill menu generation failed for agent '{agent_config.name}': {e}")
+            return ""
 
-        Memory is loaded from .claude/agents/{name}/memory.md. This file is
-        unique to each agent — it is NOT shared with Ren or other agents.
-        Agents can write to it to persist notes across conversations.
+    def _build_system_prompt(self, agent_config, agent_list_block: str = "") -> str:
+        """Build system prompt for a chattable agent (prompt.md + always_load memories).
+
+        Memory is loaded from .claude/agents/{name}/memories.json (always_load items).
+        Falls back to memory.md for agents not yet migrated.
         """
         parts = []
         if agent_config.prompt:
             parts.append(agent_config.prompt)
-        # Per-agent memory.md (optional, agent-scoped)
-        memory_path = Path(self.cwd) / ".claude" / "agents" / agent_config.name / "memory.md"
-        if memory_path.exists():
+        # Skill menu sits above memory in the system prompt
+        skill_reminder = self._get_skill_reminder(agent_config)
+        if skill_reminder:
+            parts.append(skill_reminder)
+        # Agent list sits above memory in the system prompt
+        if agent_list_block:
+            parts.append(agent_list_block)
+        # Per-agent always_load memories from memories.json
+        memories_path = Path(self.cwd) / ".claude" / "agents" / agent_config.name / "memories.json"
+        if memories_path.exists():
             try:
-                content = memory_path.read_text().strip()
-                if content:
+                all_memories = json.loads(memories_path.read_text())
+                always_load = [m for m in all_memories if m.get("always_load")]
+                if always_load:
+                    lines = [f"- {m['content']}" for m in always_load]
+                    memory_block = "\n".join(lines)
                     parts.append(
                         "\n---\n\n"
                         "Your persistent memory (notes you've saved across conversations):\n\n"
-                        f"{content}"
+                        f"{memory_block}"
                     )
-                    logger.info(f"Agent '{agent_config.name}': loaded memory.md ({memory_path.stat().st_size} bytes)")
+                    logger.info(f"Agent '{agent_config.name}': loaded {len(always_load)} always_load memories")
             except Exception as e:
-                logger.warning(f"Agent '{agent_config.name}': could not read memory.md: {e}")
+                logger.warning(f"Agent '{agent_config.name}': could not read memories.json: {e}")
+        else:
+            # Fallback: legacy memory.md
+            memory_path = Path(self.cwd) / ".claude" / "agents" / agent_config.name / "memory.md"
+            if memory_path.exists():
+                try:
+                    content = memory_path.read_text().strip()
+                    if content:
+                        parts.append(
+                            "\n---\n\n"
+                            "Your persistent memory (notes you've saved across conversations):\n\n"
+                            f"{content}"
+                        )
+                        logger.info(f"Agent '{agent_config.name}': loaded memory.md ({memory_path.stat().st_size} bytes)")
+                except Exception as e:
+                    logger.warning(f"Agent '{agent_config.name}': could not read memory.md: {e}")
         # Per-agent working memory
         wm_block = self._load_agent_working_memory(agent_config.name)
         if wm_block:
             parts.append(wm_block)
         return "\n".join(parts)
 
-    def _build_system_prompt_preset(self, agent_config) -> dict:
+    def _build_system_prompt_preset(self, agent_config, agent_list_block: str = "") -> dict:
         """Build a SystemPromptPreset dict for agents using a system prompt preset.
 
-        The agent's prompt.md content and memory.md become the 'append' field,
+        The agent's prompt.md content and always_load memories become the 'append' field,
         layered on top of Claude Code's native system instructions.
         """
         append_parts = []
         if agent_config.prompt:
             append_parts.append(agent_config.prompt)
-        # Per-agent memory.md (same logic as _build_system_prompt)
-        memory_path = Path(self.cwd) / ".claude" / "agents" / agent_config.name / "memory.md"
-        if memory_path.exists():
+        # Skill menu sits above memory in the system prompt
+        skill_reminder = self._get_skill_reminder(agent_config)
+        if skill_reminder:
+            append_parts.append(skill_reminder)
+        # Agent list sits above memory in the system prompt
+        if agent_list_block:
+            append_parts.append(agent_list_block)
+        # Per-agent always_load memories from memories.json
+        memories_path = Path(self.cwd) / ".claude" / "agents" / agent_config.name / "memories.json"
+        if memories_path.exists():
             try:
-                content = memory_path.read_text().strip()
-                if content:
+                all_memories = json.loads(memories_path.read_text())
+                always_load = [m for m in all_memories if m.get("always_load")]
+                if always_load:
+                    lines = [f"- {m['content']}" for m in always_load]
+                    memory_block = "\n".join(lines)
                     append_parts.append(
                         "\n---\n\n"
                         "Your persistent memory (notes you've saved across conversations):\n\n"
-                        f"{content}"
+                        f"{memory_block}"
                     )
-                    logger.info(f"Agent '{agent_config.name}': loaded memory.md for preset append")
+                    logger.info(f"Agent '{agent_config.name}': loaded {len(always_load)} always_load memories for preset append")
             except Exception as e:
-                logger.warning(f"Agent '{agent_config.name}': could not read memory.md: {e}")
+                logger.warning(f"Agent '{agent_config.name}': could not read memories.json: {e}")
+        else:
+            # Fallback: legacy memory.md
+            memory_path = Path(self.cwd) / ".claude" / "agents" / agent_config.name / "memory.md"
+            if memory_path.exists():
+                try:
+                    content = memory_path.read_text().strip()
+                    if content:
+                        append_parts.append(
+                            "\n---\n\n"
+                            "Your persistent memory (notes you've saved across conversations):\n\n"
+                            f"{content}"
+                        )
+                        logger.info(f"Agent '{agent_config.name}': loaded memory.md for preset append")
+                except Exception as e:
+                    logger.warning(f"Agent '{agent_config.name}': could not read memory.md: {e}")
         # Per-agent working memory
         wm_block = self._load_agent_working_memory(agent_config.name)
         if wm_block:
@@ -345,12 +414,8 @@ class ClaudeWrapper:
 
     def _build_options(self, agent_config) -> ClaudeAgentOptions:
         """Build SDK options for any chattable agent (including Ren)."""
-        if agent_config.system_prompt_preset:
-            system_prompt = self._build_system_prompt_preset(agent_config)
-        else:
-            system_prompt = self._build_system_prompt(agent_config)
-
-        # Separate native tools from MCP tools
+        # Separate native tools from MCP tools (needed before building system prompt
+        # so we can compute the agent list block for injection above memory).
         agent_tools = agent_config.tools or []
         mcp_tool_names = [t for t in agent_tools if t.startswith("mcp__")]
         native_tool_names = [t for t in agent_tools if not t.startswith("mcp__")]
@@ -373,6 +438,21 @@ class ClaudeWrapper:
         for wm_tool in WM_TOOLS:
             if wm_tool not in mcp_tool_names:
                 mcp_tool_names.append(wm_tool)
+
+        # Pre-compute agent list block for injection above memory in system prompt.
+        agent_list_block = ""
+        try:
+            from mcp_tools.agents import get_agent_list_for_prompt
+            agent_list_block = get_agent_list_for_prompt(mcp_tool_names) or ""
+            if agent_list_block:
+                logger.info(f"Chattable agent '{agent_config.name}': will inject agent list into system prompt")
+        except Exception as e:
+            logger.warning(f"Chattable agent '{agent_config.name}': failed to get agent list: {e}")
+
+        if agent_config.system_prompt_preset:
+            system_prompt = self._build_system_prompt_preset(agent_config, agent_list_block)
+        else:
+            system_prompt = self._build_system_prompt(agent_config, agent_list_block)
 
         # Determine if this agent uses the Claude Code preset
         use_preset = bool(agent_config.system_prompt_preset)
@@ -402,22 +482,6 @@ class ClaudeWrapper:
                 agent_name=agent_config.name,
                 allowed_skills=agent_skills if agent_has_skills else "NO_SKILLS",
             )
-
-        # Inject the shared "Available agents" block into the system prompt — but
-        # only if this agent has access to any agent-calling tools.
-        try:
-            from mcp_tools.agents import get_agent_list_for_prompt
-            agent_list_block = get_agent_list_for_prompt(mcp_tool_names)
-            if agent_list_block:
-                if isinstance(system_prompt, dict):
-                    # Preset mode — append to the "append" field
-                    existing = system_prompt.get("append", "")
-                    system_prompt["append"] = existing + agent_list_block
-                else:
-                    system_prompt = system_prompt + agent_list_block
-                logger.info(f"Chattable agent '{agent_config.name}': injected agent list into system prompt")
-        except Exception as e:
-            logger.warning(f"Chattable agent '{agent_config.name}': failed to inject agent list: {e}")
 
         options_kwargs = {
             "model": agent_config.model,
@@ -483,26 +547,36 @@ class ClaudeWrapper:
         self._conversation_history = conversation_history or []
         options = self._build_options(agent_config)
 
-        # Inject skill menu (lightweight list of available skills) into the prompt.
-        # Full skill bodies are loaded on demand via the fetch_skill MCP tool.
-        agent_skills = getattr(agent_config, "skills", None)
-        agent_has_skills = agent_skills is None or (isinstance(agent_skills, list) and len(agent_skills) > 0)
-        if agent_has_skills:
-            try:
-                import sys as _sys
-                _agents_dir = str(Path(self.cwd) / ".claude" / "agents")
-                if _agents_dir not in _sys.path:
-                    _sys.path.insert(0, _agents_dir)
-                from skill_injector import get_skill_reminder
-                skill_reminder = get_skill_reminder(allowed_skills=agent_skills)
-                if skill_reminder:
-                    if isinstance(prompt, list):
-                        prompt = [{"type": "text", "text": skill_reminder}] + prompt
-                    else:
-                        prompt = f"{skill_reminder}\n\n{prompt}"
-                    logger.info(f"Injected skill menu into agent '{agent_config.name}' prompt")
-            except Exception as e:
-                logger.warning(f"Skill menu injection failed for agent '{agent_config.name}': {e}")
+        # Auto-retrieve contextual memories relevant to the user's message
+        try:
+            scripts_dir = str(Path(self.cwd) / ".claude" / "scripts")
+            if scripts_dir not in sys.path:
+                sys.path.insert(0, scripts_dir)
+            from contextual_memory import auto_retrieve_context, rewrite_query_for_retrieval
+
+            # Extract raw user text for retrieval query
+            if isinstance(prompt, list):
+                raw_query = " ".join(
+                    block.get("text", "") for block in prompt if block.get("type") == "text"
+                )
+            else:
+                raw_query = str(prompt)
+            raw_query = raw_query[-1000:]
+
+            retrieval_queries = await rewrite_query_for_retrieval(raw_query, self._conversation_history)
+            ctx_block = auto_retrieve_context(
+                query=retrieval_queries,
+                agent_name=agent_config.name,
+            )
+            if ctx_block:
+                if isinstance(options.system_prompt, dict):
+                    existing = options.system_prompt.get("append", "")
+                    options.system_prompt["append"] = existing + "\n\n" + ctx_block
+                else:
+                    options.system_prompt = (options.system_prompt or "") + "\n\n" + ctx_block
+                logger.info(f"Agent '{agent_config.name}': injected contextual memory into system prompt")
+        except Exception as e:
+            logger.warning(f"Agent '{agent_config.name}': contextual memory auto-retrieve failed: {e}")
 
         logger.info(f"Running agent chat '{agent_config.name}': model={agent_config.model}, streaming_input={use_streaming_input}")
 

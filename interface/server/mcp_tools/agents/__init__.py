@@ -46,7 +46,8 @@ def build_agent_list_block() -> tuple[str, list[str]]:
     agent_lines = []
     for name, config in sorted(visible.items()):
         desc = config.description or "No description"
-        agent_lines.append(f"- {name}: {desc}")
+        display = config.display_name or name
+        agent_lines.append(f"- {display}: {desc}")
     agent_list = "\n".join(agent_lines)
 
     # All names (including hidden) for schema enum validation

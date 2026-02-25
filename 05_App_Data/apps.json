@@ -18,12 +18,6 @@
     "description": "Create and edit chat agents with custom prompts, tools, and personality"
   },
   {
-    "name": "Hypertrophy",
-    "icon": "hypertrophy/icon2.png",
-    "entry": "hypertrophy/index.html",
-    "description": "Smart hypertrophy training tracker with auto-progression, soreness-based volume management, and joint pain monitoring"
-  },
-  {
     "name": "Agent Dashboard",
     "icon": "agent-dashboard/icon.png",
     "entry": "agent-dashboard/index.html",
