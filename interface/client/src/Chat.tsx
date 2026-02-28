@@ -581,9 +581,9 @@ export const Chat: React.FC<ChatProps> = ({
   // Agent selection state
   const { agents, defaultAgent, getAgent } = useAgents();
   const [selectedAgentName, setSelectedAgentName] = useState<string | null>(null);
-  const effectiveAgentName = currentAgent || selectedAgentName || defaultAgent?.name || 'ren';
+  const effectiveAgentName = currentAgent || selectedAgentName || defaultAgent?.name || 'character';
   const selectedAgentObj = getAgent(effectiveAgentName);
-  const agentDisplayName = selectedAgentObj?.display_name || 'Ren';
+  const agentDisplayName = selectedAgentObj?.display_name || 'Character';
 
   // Reset chess game when session changes (new chat or loading different chat)
   useEffect(() => {
@@ -1325,7 +1325,7 @@ export const Chat: React.FC<ChatProps> = ({
                         <div className="font-medium text-[var(--text-primary)] truncate group-hover:text-[var(--accent-primary)] transition-colors">
                           {chat.title}
                         </div>
-                        {chat.agent && chat.agent !== 'ren' && chat.agent !== 'claudey' && (() => {
+                        {chat.agent && chat.agent !== 'character' && chat.agent !== 'claudey' && (() => {
                           const chatAgentObj = getAgent(chat.agent);
                           const ChatAgentIcon = getAgentIcon(chatAgentObj?.icon);
                           return (

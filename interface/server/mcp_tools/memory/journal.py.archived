@@ -33,10 +33,10 @@ _CLAUDE_DIR = os.path.dirname(SCRIPTS_DIR)  # .claude/
 def _resolve_memory_path(args: Dict[str, Any]) -> str:
     """Return the memory.md path for the calling agent.
 
-    All agents (including Ren) use .claude/agents/{name}/memory.md.
-    If no agent name is provided, defaults to 'ren'.
+    All agents (including Character) use .claude/agents/{name}/memory.md.
+    If no agent name is provided, defaults to 'character'.
     """
-    agent_name = args.get("_agent_name") or "ren"
+    agent_name = args.get("_agent_name") or "character"
     return os.path.join(_CLAUDE_DIR, "agents", agent_name, "memory.md")
 
 
@@ -85,7 +85,7 @@ async def memory_append(args: Dict[str, Any]) -> Dict[str, Any]:
             return {"content": [{"type": "text", "text": "content is required"}], "is_error": True}
 
         memory_path = _resolve_memory_path(args)
-        agent_label = args.get("_agent_name", "ren")
+        agent_label = args.get("_agent_name", "character")
 
         # Auto-create if the file doesn't exist yet (agent memory files start empty)
         if not os.path.exists(memory_path):
@@ -154,7 +154,7 @@ async def memory_read(args: Dict[str, Any]) -> Dict[str, Any]:
     """Read the calling agent's memory.md."""
     try:
         memory_path = _resolve_memory_path(args)
-        agent_label = args.get("_agent_name", "ren")
+        agent_label = args.get("_agent_name", "character")
 
         if not os.path.exists(memory_path):
             return {"content": [{"type": "text", "text": f"No memory file found for '{agent_label}'. Use memory_append to create one."}]}

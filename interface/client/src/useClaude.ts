@@ -616,9 +616,9 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
             setSessionId(data.id);
             // Note: setSessionId triggers useEffect that saves to localStorage
           }
-          // Capture agent from session_init (default to "ren" for backward compatibility)
+          // Capture agent from session_init (default to "character" for backward compatibility)
           if (data.agent !== undefined) {
-            setCurrentAgent(data.agent || "ren");
+            setCurrentAgent(data.agent || "character");
           }
           break;
 
@@ -1070,7 +1070,7 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
         case 'restart_continuation':
           // Server restart is continuing conversations — may arrive multiple times
           // (once per session that was active when restart was triggered).
-          // data.source = who triggered the restart (e.g. "ren", "patch", "settings_ui")
+          // data.source = who triggered the restart (e.g. "character", "patch", "settings_ui")
           // data.role = "trigger" (initiated the restart) or "bystander" (was just working)
           // data.agent = the agent for this specific session
           console.log(`Restart continuation: session=${data.session_id}, agent=${data.agent}, role=${data.role}, source=${data.source}, reason=${data.reason}`);
@@ -1726,7 +1726,7 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
         if (!res.ok) throw new Error("Failed to load");
         const data = await res.json();
         setMessages(data.display_messages || data.messages || []);
-        setCurrentAgent(data.agent || "ren");
+        setCurrentAgent(data.agent || "character");
       }
     } catch (e) {
       console.error(e);

@@ -25,6 +25,8 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import urljoin
 
+import aiohttp
+
 from bs4 import BeautifulSoup
 from markdownify import markdownify as md
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
@@ -47,6 +49,9 @@ class DocSource:
     known_pages: list[str]
     link_pattern: str  # regex to find links in the main page
     slug_pattern: str  # regex to extract page slug from href
+    skip_pages: list[str] = field(default_factory=list)  # pages to never sync (404s, invalid)
+    page_timeouts: dict[str, int] = field(default_factory=dict)  # per-page timeout overrides (ms)
+    raw_urls: dict[str, str] = field(default_factory=dict)  # pages fetched as raw markdown (no Playwright)
 
 
 # Agent SDK documentation
@@ -150,6 +155,17 @@ CLAUDE_CODE_SOURCE = DocSource(
     ],
     link_pattern="/docs/en/",
     slug_pattern=r"/docs/en/([a-z0-9-]+)/?$",
+    skip_pages=[
+        "claude-md",  # 404 — content lives in the "memory" page (confirmed 2026-02-27)
+    ],
+    page_timeouts={
+        "changelog": 90000,  # Large page (~111KB), redirects to GitHub — needs extra time
+    },
+    raw_urls={
+        # Changelog redirects to GitHub which never reaches networkidle.
+        # Fetch the raw markdown directly instead.
+        "changelog": "https://raw.githubusercontent.com/anthropics/claude-code/main/CHANGELOG.md",
+    },
 )
 
 ALL_SOURCES = [AGENT_SDK_SOURCE, CLAUDE_CODE_SOURCE]
@@ -243,16 +259,52 @@ def extract_title(soup: BeautifulSoup, fallback: str) -> str:
     return fallback.replace('-', ' ').title()
 
 
-async def fetch_page_with_playwright(page, url: str) -> tuple[Optional[str], Optional[str]]:
+async def fetch_raw_markdown(url: str) -> Optional[str]:
+    """
+    Fetch raw markdown content directly (no Playwright needed).
+    Used for pages that are already in markdown format (e.g. GitHub raw URLs).
+
+    Returns:
+        markdown content string, or None on failure
+    """
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=60)) as resp:
+                if resp.status == 200:
+                    content = await resp.text()
+                    logger.info(f"  Fetched raw markdown ({len(content)} chars) from {url}")
+                    return content
+                else:
+                    logger.error(f"Raw fetch failed for {url}: HTTP {resp.status}")
+                    return None
+    except Exception as e:
+        logger.error(f"Raw fetch error for {url}: {e}")
+        return None
+
+
+async def fetch_page_with_playwright(page, url: str, timeout: int = PAGE_LOAD_TIMEOUT) -> tuple[Optional[str], Optional[str]]:
     """
     Fetch a page using Playwright and wait for JavaScript to render.
+
+    Args:
+        page: Playwright page object
+        url: URL to fetch
+        timeout: Page load timeout in milliseconds (default: PAGE_LOAD_TIMEOUT)
 
     Returns:
         tuple of (html_content, title) or (None, None) on failure
     """
     try:
-        # Navigate to the page
-        await page.goto(url, wait_until="networkidle", timeout=PAGE_LOAD_TIMEOUT)
+        # Navigate to the page — try networkidle first, fall back to domcontentloaded
+        try:
+            await page.goto(url, wait_until="networkidle", timeout=timeout)
+        except PlaywrightTimeout:
+            # networkidle can fail on heavy pages (e.g. GitHub) that have persistent
+            # background connections. Retry with domcontentloaded which is more lenient.
+            logger.warning(f"networkidle timeout for {url}, retrying with domcontentloaded")
+            await page.goto(url, wait_until="domcontentloaded", timeout=timeout)
+            # Give JS a moment to render content after DOM is loaded
+            await asyncio.sleep(3)
 
         # Wait for the main content to appear
         # Look for common content selectors
@@ -298,6 +350,9 @@ async def discover_pages(page, source: DocSource) -> list[str]:
                     if slug and slug not in ['agent-sdk', 'en', 'docs']:
                         pages.add(slug)
 
+    # Filter out pages in the skip list
+    pages -= set(source.skip_pages)
+
     return sorted(pages)
 
 
@@ -317,30 +372,44 @@ async def sync_page(
     filename = f"{page_slug}.md"
     filepath = source.docs_dir / filename
 
-    logger.info(f"Fetching: {url}")
+    # Check if this page has a raw URL override (e.g. GitHub raw markdown)
+    if page_slug in source.raw_urls:
+        raw_url = source.raw_urls[page_slug]
+        logger.info(f"Fetching: {page_slug} via raw URL: {raw_url}")
+        markdown = await fetch_raw_markdown(raw_url)
+        if not markdown:
+            return (page_slug, False, f"Failed to fetch raw content from {raw_url}")
+        title = page_slug.replace('-', ' ').title()
+    else:
+        # Standard Playwright fetch
+        timeout = source.page_timeouts.get(page_slug, PAGE_LOAD_TIMEOUT)
+        if timeout != PAGE_LOAD_TIMEOUT:
+            logger.info(f"Fetching: {url} (custom timeout: {timeout}ms)")
+        else:
+            logger.info(f"Fetching: {url}")
 
-    html, page_title = await fetch_page_with_playwright(page, url)
-    if not html:
-        return (page_slug, False, "Failed to fetch page")
+        html, page_title = await fetch_page_with_playwright(page, url, timeout=timeout)
+        if not html:
+            return (page_slug, False, "Failed to fetch page")
 
-    # Parse HTML
-    soup = BeautifulSoup(html, 'html.parser')
+        # Parse HTML
+        soup = BeautifulSoup(html, 'html.parser')
 
-    # Check if page loaded properly (not just loading placeholders)
-    text_content = soup.get_text()
-    if 'Loading...' in text_content and len(text_content) < 500:
-        logger.warning(f"Page {page_slug} may not have loaded properly")
+        # Check if page loaded properly (not just loading placeholders)
+        text_content = soup.get_text()
+        if 'Loading...' in text_content and len(text_content) < 500:
+            logger.warning(f"Page {page_slug} may not have loaded properly")
 
-    # Check for 404 pages
-    title_text = soup.find('title')
-    if title_text and 'Not Found' in title_text.get_text():
-        return (page_slug, False, "Page not found (404)")
+        # Check for 404 pages
+        title_text = soup.find('title')
+        if title_text and 'Not Found' in title_text.get_text():
+            return (page_slug, False, "Page not found (404)")
 
-    # Extract title
-    title = extract_title(soup, page_slug)
+        # Extract title
+        title = extract_title(soup, page_slug)
 
-    # Convert to markdown
-    markdown = clean_markdown(html)
+        # Convert to markdown
+        markdown = clean_markdown(html)
 
     # Skip if content is too short (likely didn't load)
     if len(markdown) < 100:

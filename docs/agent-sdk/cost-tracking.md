@@ -1,299 +1,179 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/cost-tracking
-title: Tracking Costs and Usage
-last_fetched: 2026-02-18T10:01:29.149693+00:00
+title: Track cost and usage
+last_fetched: 2026-02-27T10:01:25.834582+00:00
 ---
 
 Copy page
 
-# SDK Cost Tracking
-
 The Claude Agent SDK provides detailed token usage information for each interaction with Claude. This guide explains how to properly track costs and understand usage reporting, especially when dealing with parallel tool uses and multi-step conversations.
 
-For complete API documentation, see the [TypeScript SDK reference](/docs/en/agent-sdk/typescript).
+For complete API documentation, see the [TypeScript SDK reference](/docs/en/agent-sdk/typescript) and [Python SDK reference](/docs/en/agent-sdk/python).
 
-## Understanding Token Usage
+## Understand token usage
 
-When Claude processes requests, it reports token usage at the message level. This usage data is essential for tracking costs and billing users appropriately.
+The TypeScript and Python SDKs expose usage data at different levels of detail:
 
-### Key Concepts
+- **TypeScript** provides per-step token breakdowns on each assistant message (`message.message.id`, `message.message.usage`), per-model cost via `modelUsage`, and a cumulative total on the result message.
+- **Python** provides the accumulated total on the result message (`total_cost_usd` and `usage` dict). Per-step breakdowns are not available on individual assistant messages.
 
-1. **Steps**: A step is a single request/response pair between your application and Claude
-2. **Messages**: Individual messages within a step (text, tool uses, tool results)
-3. **Usage**: Token consumption data attached to assistant messages
+Both SDKs use the same underlying cost model. The difference is how much granularity each SDK exposes.
 
-## Usage Reporting Structure
+Cost tracking depends on understanding how the SDK scopes usage data:
 
-### Single vs Parallel Tool Use
+- **`query()` call:** one invocation of the SDK's `query()` function. A single call can involve multiple steps (Claude responds, uses tools, gets results, responds again). Each call produces one [`result`](/docs/en/agent-sdk/typescript#sdk-result-message) message at the end.
+- **Step:** a single request/response cycle within a `query()` call. In TypeScript, each step produces assistant messages with token usage.
+- **Session:** a series of `query()` calls linked by a session ID (using the `resume` option). Each `query()` call within a session reports its own cost independently.
 
-When Claude executes tools, the usage reporting differs based on whether tools are executed sequentially or in parallel:
+The following diagram shows the message stream from a single `query()` call, with token usage reported at each step and the authoritative total at the end:
+
+![Diagram showing a query producing two steps of messages. Step 1 has four assistant messages sharing the same ID and usage (count once), Step 2 has one assistant message with a new ID, and the final result message shows total_cost_usd for billing.](/docs/images/agent-sdk/message-usage-flow.svg)
+
+1. 1
+
+ Each step produces assistant messages
+
+ When Claude responds, it sends one or more assistant messages. In TypeScript, each assistant message contains a nested `BetaMessage` (accessed via `message.message`) with an `id` and a [`usage`](/docs/en/api/messages) object with token counts (`input_tokens`, `output_tokens`). When Claude uses multiple tools in one turn, all messages in that turn share the same `id`, so deduplicate by ID to avoid double-counting. In Python, per-step usage is not available on individual messages.
+2. 2
+
+ The result message provides the authoritative total
+
+ When the `query()` call completes, the SDK emits a result message with `total_cost_usd` and cumulative `usage`. This is available in both TypeScript ([`SDKResultMessage`](/docs/en/agent-sdk/typescript#sdk-result-message)) and Python ([`ResultMessage`](/docs/en/agent-sdk/python#result-message)). If you make multiple `query()` calls (for example, in a multi-turn session), each result only reflects the cost of that individual call. If you only need the total cost, you can ignore the per-step usage and read this single value.
+
+## Get the total cost of a query
+
+The result message ([TypeScript](/docs/en/agent-sdk/typescript#sdk-result-message), [Python](/docs/en/agent-sdk/python#result-message)) is the last message in every `query()` call. It includes `total_cost_usd`, the cumulative cost across all steps in that call. This works for both success and error results. If you use sessions to make multiple `query()` calls, each result only reflects the cost of that individual call.
+
+The following examples iterate over the message stream from a `query()` call and print the total cost when the `result` message arrives:
 
 TypeScript
 
 ```shiki
 import { query } from "@anthropic-ai/claude-agent-sdk";
 
-// Example: Tracking usage in a conversation
-const result = await query({
- prompt: "Analyze this codebase and run tests",
- options: {
- onMessage: (message) => {
- if (message.type === "assistant" && message.usage) {
- console.log(`Message ID: ${message.id}`);
- console.log("Usage:", message.usage);
+for await (const message of query({ prompt: "Summarize this project" })) {
+ if (message.type === "result") {
+ console.log(`Total cost: $${message.total_cost_usd}`);
  }
- }
- }
-});
+}
 ```
 
-### Message Flow Example
+## Track detailed usage in TypeScript
 
-Here's how messages and usage are reported in a typical multi-step conversation:
+The TypeScript SDK exposes additional usage granularity that is not available in Python. The Python SDK's `AssistantMessage` does not expose per-step token usage or per-model breakdowns. Use [`ResultMessage.usage`](/docs/en/agent-sdk/python#result-message) for cumulative totals instead.
 
-```inline-block
-<!-- Step 1: Initial request with parallel tool uses -->
-assistant (text) { id: "msg_1", usage: { output_tokens: 100, ... } }
-assistant (tool_use) { id: "msg_1", usage: { output_tokens: 100, ... } }
-assistant (tool_use) { id: "msg_1", usage: { output_tokens: 100, ... } }
-assistant (tool_use) { id: "msg_1", usage: { output_tokens: 100, ... } }
-user (tool_result)
-user (tool_result)
-user (tool_result)
+### Track per-step usage
 
-<!-- Step 2: Follow-up response -->
-assistant (text) { id: "msg_2", usage: { output_tokens: 98, ... } }
-```
+Each assistant message contains a nested `BetaMessage` (accessed via `message.message`) with an `id` and `usage` object with token counts. When Claude uses tools in parallel, multiple messages share the same `id` with identical usage data. Track which IDs you've already counted and skip duplicates to avoid inflated totals.
 
-## Important Usage Rules
+Parallel tool calls produce multiple assistant messages whose nested `BetaMessage` shares the same `id` and identical usage. Always deduplicate by ID to get accurate per-step token counts.
 
-### 1. Same ID = Same Usage
-
-**All messages with the same `id` field report identical usage**. When Claude sends multiple messages in the same turn (for example, text + tool uses), they share the same message ID and usage data.
+The following example accumulates input and output tokens across all steps, counting each unique message ID only once:
 
 ```shiki
-// All these messages have the same ID and usage
-const messages = [
- { type: "assistant", id: "msg_123", usage: { output_tokens: 100 } },
- { type: "assistant", id: "msg_123", usage: { output_tokens: 100 } },
- { type: "assistant", id: "msg_123", usage: { output_tokens: 100 } }
-];
+import { query } from "@anthropic-ai/claude-agent-sdk";
 
-// Charge only once per unique message ID
-const uniqueUsage = messages[0].usage; // Same for all messages with this ID
-```
+const seenIds = new Set<string>();
+let totalInputTokens = 0;
+let totalOutputTokens = 0;
 
-### 2. Charge Once Per Step
+for await (const message of query({ prompt: "Summarize this project" })) {
+ if (message.type === "assistant") {
+ const msgId = message.message.id;
 
-**You should only charge users once per step**, not for each individual message. When you see multiple assistant messages with the same ID, use the usage from any one of them.
-
-### 3. Result Message Contains Cumulative Usage
-
-The final `result` message contains the total cumulative usage from all steps in the conversation:
-
-```shiki
-// Final result includes total usage
-const result = await query({
- prompt: "Multi-step task",
- options: { /* ... */ }
-});
-
-console.log("Total usage:", result.usage);
-console.log("Total cost:", result.usage.total_cost_usd);
-```
-
-### 4. Per-Model Usage Breakdown
-
-The result message also includes `modelUsage`, which provides authoritative per-model usage data. Like `total_cost_usd`, this field is accurate and suitable for billing purposes. This is especially useful when using multiple models (for example, Haiku for subagents, Opus for the main agent).
-
-```shiki
-// modelUsage provides per-model breakdown
-type ModelUsage = {
- inputTokens: number
- outputTokens: number
- cacheReadInputTokens: number
- cacheCreationInputTokens: number
- webSearchRequests: number
- costUSD: number
- contextWindow: number
+ // Parallel tool calls share the same ID, only count once
+ if (!seenIds.has(msgId)) {
+ seenIds.add(msgId);
+ totalInputTokens += message.message.usage.input_tokens;
+ totalOutputTokens += message.message.usage.output_tokens;
+ }
+ }
 }
 
-// Access from result message
-const result = await query({ prompt: "..." });
+console.log(`Steps: ${seenIds.size}`);
+console.log(`Input tokens: ${totalInputTokens}`);
+console.log(`Output tokens: ${totalOutputTokens}`);
+```
 
-// result.modelUsage is a map of model name to ModelUsage
-for (const [modelName, usage] of Object.entries(result.modelUsage)) {
+### Break down usage per model
+
+The result message includes [`modelUsage`](/docs/en/agent-sdk/typescript#model-usage), a map of model name to per-model token counts and cost. This is useful when you run multiple models (for example, Haiku for subagents and Opus for the main agent) and want to see where tokens are going.
+
+The following example runs a query and prints the cost and token breakdown for each model used:
+
+```shiki
+import { query } from "@anthropic-ai/claude-agent-sdk";
+
+for await (const message of query({ prompt: "Summarize this project" })) {
+ if (message.type !== "result") continue;
+
+ for (const [modelName, usage] of Object.entries(message.modelUsage)) {
  console.log(`${modelName}: $${usage.costUSD.toFixed(4)}`);
  console.log(` Input tokens: ${usage.inputTokens}`);
  console.log(` Output tokens: ${usage.outputTokens}`);
+ console.log(` Cache read: ${usage.cacheReadInputTokens}`);
+ console.log(` Cache creation: ${usage.cacheCreationInputTokens}`);
+ }
 }
 ```
 
-For the complete type definitions, see the [TypeScript SDK reference](/docs/en/agent-sdk/typescript).
+## Accumulate costs across multiple calls
 
-## Implementation: Cost Tracking System
+Each `query()` call returns its own `total_cost_usd`. The SDK does not provide a session-level total, so if your application makes multiple `query()` calls (for example, in a multi-turn session or across different users), accumulate the totals yourself.
 
-Here's a complete example of implementing a cost tracking system:
+The following examples run two `query()` calls sequentially, add each call's `total_cost_usd` to a running total, and print both the per-call and combined cost:
 
 TypeScript
 
 ```shiki
 import { query } from "@anthropic-ai/claude-agent-sdk";
 
-class CostTracker {
- private processedMessageIds = new Set<string>();
- private stepUsages: Array<any> = [];
+// Track cumulative cost across multiple query() calls
+let totalSpend = 0;
 
- async trackConversation(prompt: string) {
- const result = await query({
- prompt,
- options: {
- onMessage: (message) => {
- this.processMessage(message);
+const prompts = [
+ "Read the files in src/ and summarize the architecture",
+ "List all exported functions in src/auth.ts"
+];
+
+for (const prompt of prompts) {
+ for await (const message of query({ prompt })) {
+ if (message.type === "result") {
+ totalSpend += message.total_cost_usd ?? 0;
+ console.log(`This call: $${message.total_cost_usd}`);
  }
- }
- });
-
- return {
- result,
- stepUsages: this.stepUsages,
- totalCost: result.usage?.total_cost_usd || 0
- };
- }
-
- private processMessage(message: any) {
- // Only process assistant messages with usage
- if (message.type !== "assistant" || !message.usage) {
- return;
- }
-
- // Skip if we've already processed this message ID
- if (this.processedMessageIds.has(message.id)) {
- return;
- }
-
- // Mark as processed and record usage
- this.processedMessageIds.add(message.id);
- this.stepUsages.push({
- messageId: message.id,
- timestamp: new Date().toISOString(),
- usage: message.usage,
- costUSD: this.calculateCost(message.usage)
- });
- }
-
- private calculateCost(usage: any): number {
- // Implement your pricing calculation here
- // This is a simplified example
- const inputCost = usage.input_tokens * 0.00003;
- const outputCost = usage.output_tokens * 0.00015;
- const cacheReadCost = (usage.cache_read_input_tokens || 0) * 0.0000075;
-
- return inputCost + outputCost + cacheReadCost;
  }
 }
 
-// Usage
-const tracker = new CostTracker();
-const { result, stepUsages, totalCost } = await tracker.trackConversation(
- "Analyze and refactor this code"
-);
-
-console.log(`Steps processed: ${stepUsages.length}`);
-console.log(`Total cost: $${totalCost.toFixed(4)}`);
+console.log(`Total spend: $${totalSpend.toFixed(4)}`);
 ```
 
-## Handling Edge Cases
+## Handle errors, caching, and token discrepancies
 
-### Output Token Discrepancies
+For accurate cost tracking, account for failed conversations, cache token pricing, and occasional reporting inconsistencies.
+
+### Resolve output token discrepancies
 
 In rare cases, you might observe different `output_tokens` values for messages with the same ID. When this occurs:
 
-1. **Use the highest value** - The final message in a group typically contains the accurate total
-2. **Verify against total cost** - The `total_cost_usd` in the result message is authoritative
-3. **Report inconsistencies** - File issues at the [Claude Code GitHub repository](https://github.com/anthropics/claude-code/issues)
+1. **Use the highest value:** the final message in a group typically contains the accurate total.
+2. **Verify against total cost:** the `total_cost_usd` in the result message is authoritative.
+3. **Report inconsistencies:** file issues at the [Claude Code GitHub repository](https://github.com/anthropics/claude-code/issues).
 
-### Cache Token Tracking
+### Track costs on failed conversations
 
-When using prompt caching, track these token types separately:
+Both success and error result messages include `usage` and `total_cost_usd`. If a conversation fails mid-way, you still consumed tokens up to the point of failure. Always read cost data from the result message regardless of its `subtype`.
 
-```shiki
-interface CacheUsage {
- cache_creation_input_tokens: number;
- cache_read_input_tokens: number;
- cache_creation: {
- ephemeral_5m_input_tokens: number;
- ephemeral_1h_input_tokens: number;
- };
-}
-```
+### Track cache tokens
 
-## Best Practices
+The Agent SDK automatically uses [prompt caching](/docs/en/build-with-claude/prompt-caching) to reduce costs on repeated content. You do not need to configure caching yourself. The usage object includes two additional fields for cache tracking:
 
-1. **Use Message IDs for Deduplication**: Always track processed message IDs to avoid double-charging
-2. **Monitor the Result Message**: The final result contains authoritative cumulative usage
-3. **Implement Logging**: Log all usage data for auditing and debugging
-4. **Handle Failures Gracefully**: Track partial usage even if a conversation fails
-5. **Consider Streaming**: For streaming responses, accumulate usage as messages arrive
+- `cache_creation_input_tokens`: tokens used to create new cache entries (charged at a higher rate than standard input tokens).
+- `cache_read_input_tokens`: tokens read from existing cache entries (charged at a reduced rate).
 
-## Usage Fields Reference
+Track these separately from `input_tokens` to understand caching savings. In TypeScript, these fields are typed on the [`Usage`](/docs/en/agent-sdk/typescript#usage) object. In Python, they appear as keys in the [`ResultMessage.usage`](/docs/en/agent-sdk/python#result-message) dict (for example, `message.usage.get("cache_read_input_tokens", 0)`).
 
-Each usage object contains:
-
-- `input_tokens`: Base input tokens processed
-- `output_tokens`: Tokens generated in the response
-- `cache_creation_input_tokens`: Tokens used to create cache entries
-- `cache_read_input_tokens`: Tokens read from cache
-- `service_tier`: The service tier used (for example, "standard")
-- `total_cost_usd`: Total cost in USD (only in result message)
-
-## Example: Building a Billing Dashboard
-
-Here's how to aggregate usage data for a billing dashboard:
-
-```shiki
-class BillingAggregator {
- private userUsage = new Map<string, {
- totalTokens: number;
- totalCost: number;
- conversations: number;
- }>();
-
- async processUserRequest(userId: string, prompt: string) {
- const tracker = new CostTracker();
- const { result, stepUsages, totalCost } = await tracker.trackConversation(prompt);
-
- // Update user totals
- const current = this.userUsage.get(userId) || {
- totalTokens: 0,
- totalCost: 0,
- conversations: 0
- };
-
- const totalTokens = stepUsages.reduce((sum, step) =>
- sum + step.usage.input_tokens + step.usage.output_tokens, 0
- );
-
- this.userUsage.set(userId, {
- totalTokens: current.totalTokens + totalTokens,
- totalCost: current.totalCost + totalCost,
- conversations: current.conversations + 1
- });
-
- return result;
- }
-
- getUserBilling(userId: string) {
- return this.userUsage.get(userId) || {
- totalTokens: 0,
- totalCost: 0,
- conversations: 0
- };
- }
-}
-```
-
-## Related Documentation
+## Related documentation
 
 - [TypeScript SDK Reference](/docs/en/agent-sdk/typescript) - Complete API documentation
 - [SDK Overview](/docs/en/agent-sdk/overview) - Getting started with the SDK

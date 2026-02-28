@@ -39,16 +39,16 @@ CLAUDE_DIR = os.path.dirname(SCRIPTS_DIR)  # .claude/
 def _resolve_memory_dir(args: Dict[str, Any]) -> Path:
     """Return the memory/ directory for the calling agent.
 
-    All agents (including Ren) use .claude/agents/{name}/memory/.
-    If no agent name is provided, defaults to 'ren'.
+    All agents (including Character) use .claude/agents/{name}/memory/.
+    If no agent name is provided, defaults to 'character'.
     """
-    agent_name = args.get("_agent_name") or "ren"
+    agent_name = args.get("_agent_name") or "character"
     return Path(CLAUDE_DIR) / "agents" / agent_name / "memory"
 
 
 def _agent_label(args: Dict[str, Any]) -> str:
     """Human-readable label for the calling agent."""
-    return args.get("_agent_name") or "ren"
+    return args.get("_agent_name") or "character"
 
 
 def _get_retriever():
@@ -469,12 +469,12 @@ async def memory_search_agent(args: Dict[str, Any]) -> Dict[str, Any]:
         if target_agent:
             agents_to_search = [target_agent]
         else:
-            # Search all agents (including ren)
+            # Search all agents (including character)
             all_agents = retriever.get_all_agent_names()
             agents_to_search = []
-            # Include ren explicitly if not already in the list
-            if "ren" not in all_agents:
-                agents_to_search.append("ren")
+            # Include character explicitly if not already in the list
+            if "character" not in all_agents:
+                agents_to_search.append("character")
             for name in all_agents:
                 if name != calling_agent:
                     agents_to_search.append(name)

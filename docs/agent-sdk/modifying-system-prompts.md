@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/modifying-system-prompts
 title: Modifying system prompts
-last_fetched: 2026-02-12T10:03:25.128291+00:00
+last_fetched: 2026-02-26T10:01:54.680814+00:00
 ---
 
 Copy page
@@ -132,11 +132,7 @@ import { writeFile, mkdir } from "fs/promises";
 import { join } from "path";
 import { homedir } from "os";
 
-async function createOutputStyle(
- name: string,
- description: string,
- prompt: string
-) {
+async function createOutputStyle(name: string, description: string, prompt: string) {
  // User-level: ~/.claude/output-styles
  // Project-level: .claude/output-styles
  const outputStylesDir = join(homedir(), ".claude", "output-styles");
@@ -150,10 +146,7 @@ description: ${description}
 
 ${prompt}`;
 
- const filePath = join(
- outputStylesDir,
- `${name.toLowerCase().replace(/\s+/g, "-")}.md`
- );
+ const filePath = join(outputStylesDir, `${name.toLowerCase().replace(/\s+/g, "-")}.md`);
  await writeFile(filePath, content, "utf-8");
 }
 
@@ -198,8 +191,7 @@ for await (const message of query({
  systemPrompt: {
  type: "preset",
  preset: "claude_code",
- append:
- "Always include detailed docstrings and type hints in Python code."
+ append: "Always include detailed docstrings and type hints in Python code."
  }
  }
 })) {

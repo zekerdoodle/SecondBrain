@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/migration-guide
 title: Migrate to Claude Agent SDK
-last_fetched: 2026-02-12T10:03:16.857072+00:00
+last_fetched: 2026-02-26T10:01:47.563765+00:00
 ---
 
 Copy page
@@ -45,26 +45,26 @@ Change all imports from `@anthropic-ai/claude-code` to `@anthropic-ai/claude-age
 import { query, tool, createSdkMcpServer } from "@anthropic-ai/claude-code";
 
 // After
-import {
- query,
- tool,
- createSdkMcpServer
-} from "@anthropic-ai/claude-agent-sdk";
+import { query, tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 ```
 
 **4. Update package.json dependencies:**
 
 If you have the package listed in your `package.json`, update it:
 
+Before:
+
 ```shiki
-// Before
 {
  "dependencies": {
  "@anthropic-ai/claude-code": "^1.0.0"
  }
 }
+```
 
-// After
+After:
+
+```shiki
 {
  "dependencies": {
  "@anthropic-ai/claude-agent-sdk": "^0.1.0"

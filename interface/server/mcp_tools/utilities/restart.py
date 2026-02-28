@@ -81,7 +81,7 @@ async def restart_server(args: Dict[str, Any]) -> Dict[str, Any]:
             }
 
         # Auto-detect the source agent from the chat's stored agent field
-        source_agent = "ren"  # Default — ren is the primary agent
+        source_agent = "character"  # Default — character is the primary agent
         try:
             if chat_manager:
                 stored_chat = chat_manager.load_chat(session_id)
@@ -95,7 +95,7 @@ async def restart_server(args: Dict[str, Any]) -> Dict[str, Any]:
         # Build a map of ALL actively processing sessions -> their agent names
         all_active = {}
         for sid in active_processing:
-            agent = "ren"  # Default
+            agent = "character"  # Default
             try:
                 if chat_manager:
                     sc = chat_manager.load_chat(sid)

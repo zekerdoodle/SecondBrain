@@ -165,7 +165,7 @@ ALLOWLIST_AGENTS = [
     "general_purpose",
     "html_expert",
     "information_gatherer",
-    "ren",
+    "character",
     "research_critic",
     "notifications",
     "_template",

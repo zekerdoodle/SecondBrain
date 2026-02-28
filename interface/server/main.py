@@ -8,10 +8,10 @@ FastAPI server providing:
 - Scheduled task execution
 """
 
-from fastapi import FastAPI, WebSocket, HTTPException, WebSocketDisconnect, UploadFile, File as FastAPIFile, Form
+from fastapi import FastAPI, WebSocket, HTTPException, WebSocketDisconnect, UploadFile, File as FastAPIFile, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, PlainTextResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, PlainTextResponse, HTMLResponse, RedirectResponse, Response
 from pydantic import BaseModel
 import os
 import logging
@@ -131,7 +131,7 @@ def save_server_state():
     # Build a map of actively processing sessions -> agent names
     processing_agents = {}
     for sid in active_processing_sessions:
-        agent = "ren"  # Default
+        agent = "character"  # Default
         try:
             stored = chat_manager.load_chat(sid)
             if stored and stored.get("agent"):
@@ -193,7 +193,7 @@ def save_continuation_on_shutdown():
         # Build map of actively processing sessions -> agent names
         all_active = {}
         for sid in active_processing_sessions:
-            agent = "ren"
+            agent = "character"
             try:
                 stored = chat_manager.load_chat(sid)
                 if stored and stored.get("agent"):
@@ -275,12 +275,12 @@ def load_restart_continuation() -> Optional[Dict]:
         if "sessions" not in continuation:
             continuation["sessions"] = [{
                 "session_id": continuation.get("session_id"),
-                "agent": continuation.get("source", "ren"),
+                "agent": continuation.get("source", "character"),
                 "role": "trigger",
                 "message_count": continuation.get("message_count", 0),
             }]
             if "source" not in continuation:
-                continuation["source"] = "ren"
+                continuation["source"] = "character"
 
         session_count = len(continuation.get("sessions", []))
         logger.info(
@@ -543,7 +543,7 @@ def restart_server_endpoint(rebuild: bool = False, reason: str = None):
         # Build map of actively processing sessions -> agent names
         all_active = {}
         for sid in active_processing_sessions:
-            agent = "ren"
+            agent = "character"
             try:
                 stored = chat_manager.load_chat(sid)
                 if stored and stored.get("agent"):
@@ -584,6 +584,26 @@ def restart_server_endpoint(rebuild: bool = False, reason: str = None):
 
 # --- File API ---
 
+
+def _file_etag(file_path: str) -> str:
+    """Generate an ETag from file modification time and size."""
+    stat = os.stat(file_path)
+    return f'"{stat.st_mtime_ns:x}-{stat.st_size:x}"'
+
+
+def _file_response_with_etag(target_path: str, request: Request) -> Response:
+    """Return a FileResponse with ETag/Cache-Control, or 304 if unchanged."""
+    etag = _file_etag(target_path)
+    cache_headers = {
+        "Cache-Control": "no-cache, must-revalidate",
+        "ETag": etag,
+    }
+    if_none_match = request.headers.get("if-none-match")
+    if if_none_match == etag:
+        return Response(status_code=304, headers=cache_headers)
+    return FileResponse(target_path, headers=cache_headers)
+
+
 @app.get("/api/files")
 def list_files(path: str = ""):
     target_dir = os.path.join(ROOT_DIR, path)
@@ -620,15 +640,14 @@ def read_file(file_path: str):
 
 
 @app.get("/api/raw/{file_path:path}")
-def raw_file(file_path: str):
+def raw_file(file_path: str, request: Request):
     """Serve a file as-is (binary-safe) for images, PDFs, etc."""
     target_path = os.path.join(ROOT_DIR, file_path)
     if not os.path.abspath(target_path).startswith(ROOT_DIR):
         raise HTTPException(status_code=403, detail="Access denied")
     if not os.path.exists(target_path):
         raise HTTPException(status_code=404)
-    # Cache images/static assets for 1 hour, revalidate after
-    return FileResponse(target_path, headers={"Cache-Control": "public, max-age=3600, must-revalidate"})
+    return _file_response_with_etag(target_path, request)
 
 
 @app.post("/api/file/{file_path:path}")
@@ -1098,7 +1117,7 @@ def create_agent(req: AgentCreateRequest):
     name = req.name.strip().lower()
     if not _re.match(r'^[a-z][a-z0-9_]*$', name):
         raise HTTPException(status_code=400, detail="Name must be lowercase letters, numbers, and underscores, starting with a letter")
-    reserved = {"ren", "background", "_template", "notifications", "__pycache__"}
+    reserved = {"character", "background", "_template", "notifications", "__pycache__"}
     if name in reserved:
         raise HTTPException(status_code=400, detail=f"Name '{name}' is reserved")
 
@@ -3457,7 +3476,7 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
     except Exception as e:
         logger.debug(f"Working memory advance_exchange failed: {e}")
 
-    # Trigger Chat Titler for ALL chats (not just Ren)
+    # Trigger Chat Titler for ALL chats (not just Character)
     # Skip system continuations, error-only exchanges, and empty responses
     if not is_system_continuation and all_segments and not had_error:
         try:
@@ -4024,10 +4043,14 @@ def _build_agent_display_messages(prompt: str, result, agent_name: str) -> list:
     blocks = getattr(result, "blocks", None) if result.status == "success" else None
 
     if blocks:
+        # Always populate content with text fallback for conversation history.
+        # blocks carries the rich UI data; content is used by _build_history_context
+        # when the user responds inline to a scheduled task chat.
+        text = (result.transcript or result.response) or ""
         assistant_msg = {
             "id": str(uuid.uuid4()),
             "role": "assistant",
-            "content": "",
+            "content": text,
             "status": "complete",
             "blocks": blocks,
         }
@@ -4507,7 +4530,7 @@ async def restart_continuation_wakeup():
     # Send a restart_continuation notification to the client for EACH session
     for session_info in sessions:
         session_id = session_info.get("session_id")
-        agent = session_info.get("agent", "ren")
+        agent = session_info.get("agent", "character")
         role = session_info.get("role", "trigger")
 
         if not session_id:
@@ -5236,13 +5259,13 @@ def google_auth_callback(code: str = None, state: str = None, error: str = None)
 # Serve files binary-safe at /file/ paths (short alias for /api/raw/)
 # Used by HTML apps rendered in editor iframes to load images, etc.
 @app.get("/file/{file_path:path}")
-def serve_file(file_path: str):
+def serve_file(file_path: str, request: Request):
     target_path = os.path.join(ROOT_DIR, file_path)
     if not os.path.abspath(target_path).startswith(ROOT_DIR):
         raise HTTPException(status_code=403, detail="Access denied")
     if not os.path.exists(target_path) or not os.path.isfile(target_path):
         raise HTTPException(status_code=404, detail="File not found")
-    return FileResponse(target_path)
+    return _file_response_with_etag(target_path, request)
 
 
 # Catch-all route for SPA - must be LAST

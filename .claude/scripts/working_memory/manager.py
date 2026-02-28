@@ -372,10 +372,10 @@ _AGENTS_DIR = Path(__file__).parent.parent.parent / "agents"
 def get_store(agent_name: Optional[str] = None) -> WorkingMemoryStore:
     """Get the working memory store for a specific agent.
 
-    All agents (including Ren) use .claude/agents/{name}/working_memory.json.
-    If no agent name is provided, defaults to 'ren'.
+    All agents (including Character) use .claude/agents/{name}/working_memory.json.
+    If no agent name is provided, defaults to 'character'.
     """
-    agent_name = agent_name or "ren"
+    agent_name = agent_name or "character"
     if agent_name not in _stores:
         persist_path = _AGENTS_DIR / agent_name / "working_memory.json"
         # Ensure agent directory exists
@@ -388,10 +388,10 @@ def reset_store(agent_name: Optional[str] = None) -> None:
     """Reset a specific store or all stores (for testing).
 
     Args:
-        agent_name: Specific agent to reset, or None for ren.
+        agent_name: Specific agent to reset, or None for character.
                     Pass sentinel "__all__" to reset all stores.
     """
     if agent_name == "__all__":
         _stores.clear()
     else:
-        _stores.pop(agent_name or "ren", None)
+        _stores.pop(agent_name or "character", None)

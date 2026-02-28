@@ -36,7 +36,7 @@ export const AgentSelector: React.FC<AgentSelectorProps> = ({
   const agent = selectedAgent;
   const IconComponent = getAgentIcon(agent?.icon);
   const color = 'var(--accent-primary)';
-  const displayName = agent?.display_name || 'Ren';
+  const displayName = agent?.display_name || 'Character';
 
   return (
     <div ref={ref} className="relative">

@@ -7,6 +7,7 @@ Each agent gets its own private working memory store, isolated by agent name.
 
 import os
 import sys
+from pathlib import Path
 from typing import Any, Dict
 
 from claude_agent_sdk import tool
@@ -26,7 +27,7 @@ def _get_agent_store(args: Dict[str, Any]):
     """Extract agent name from args and return the appropriate store."""
     sys.path.insert(0, SCRIPTS_DIR)
     from working_memory import get_store
-    agent_name = args.pop("_agent_name", None) or "ren"
+    agent_name = args.pop("_agent_name", None) or "character"
     return get_store(agent_name=agent_name), agent_name
 
 
@@ -262,8 +263,6 @@ async def working_memory_snapshot(args: Dict[str, Any]) -> Dict[str, Any]:
     """Promote working memory item to memories.json as always_load."""
     try:
         from working_memory import WorkingMemoryError
-        import datetime
-        import json
 
         store, agent_name = _get_agent_store(args)
 
@@ -295,23 +294,16 @@ async def working_memory_snapshot(args: Dict[str, Any]) -> Dict[str, Any]:
         if item.tag:
             content = f"[{item.tag}] {content}"
 
-        # Save to memories.json as always_load
-        agent_name = agent_name or "ren"
-        memories_path = os.path.join(_CLAUDE_DIR, "agents", agent_name, "memories.json")
+        # Save to memories.json using unified memory helpers (atomic writes + locking)
+        from .unified import _load_memories, _save_memories, _next_id, _now_iso, _reindex_agent
 
-        # Load existing memories
-        memories = []
-        if os.path.exists(memories_path):
-            try:
-                memories = json.loads(open(memories_path).read())
-                if not isinstance(memories, list):
-                    memories = []
-            except Exception:
-                memories = []
+        agent_name = agent_name or "character"
+        memories_path = Path(_CLAUDE_DIR) / "agents" / agent_name / "memories.json"
 
-        # Create new memory entry
-        next_id = max((m.get("id", 0) for m in memories), default=0) + 1
-        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        memories = _load_memories(memories_path)
+
+        now = _now_iso()
+        next_id = _next_id(memories)
         new_memory = {
             "id": next_id,
             "triggers": [section, content[:60]],
@@ -325,10 +317,10 @@ async def working_memory_snapshot(args: Dict[str, Any]) -> Dict[str, Any]:
 
         memories.append(new_memory)
 
-        # Save
-        os.makedirs(os.path.dirname(memories_path), exist_ok=True)
-        with open(memories_path, 'w') as f:
-            json.dump(memories, f, indent=2, ensure_ascii=False)
+        # Atomic save (temp file + rename + locking) and reindex for search
+        memories_path.parent.mkdir(parents=True, exist_ok=True)
+        _save_memories(memories_path, memories)
+        _reindex_agent(agent_name)
 
         result = f"Promoted to permanent memory #{next_id} [always_load]: {content[:80]}..."
 

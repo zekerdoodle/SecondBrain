@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/user-input
 title: Handle approvals and user input
-last_fetched: 2026-02-12T10:05:12.622739+00:00
+last_fetched: 2026-02-26T10:03:45.786090+00:00
 ---
 
 Copy page
@@ -340,7 +340,9 @@ For multi-select questions, join multiple labels with `", "`. For free-text inpu
 
 ```shiki
 {
- "questions": [...],
+ "questions": [
+ // ...
+ ],
  "answers": {
  "How should I format the output?": "Summary",
  "Which sections should I include?": "Introduction, Conclusion"

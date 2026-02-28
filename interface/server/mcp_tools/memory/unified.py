@@ -35,38 +35,48 @@ if SCRIPTS_DIR not in sys.path:
 
 CLAUDE_DIR = os.path.dirname(SCRIPTS_DIR)  # .claude/
 
+# Atomic file ops for crash-safe memory persistence
+from atomic_file_ops import AtomicFileOperations as _atomic_ops
+
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 def _resolve_memories_path(args: Dict[str, Any]) -> Path:
     """Return the memories.json path for the calling agent."""
-    agent_name = args.get("_agent_name") or "ren"
+    agent_name = args.get("_agent_name") or "character"
     return Path(CLAUDE_DIR) / "agents" / agent_name / "memories.json"
 
 
 def _agent_label(args: Dict[str, Any]) -> str:
-    return args.get("_agent_name") or "ren"
+    return args.get("_agent_name") or "character"
 
 
 def _load_memories(path: Path) -> List[Dict[str, Any]]:
-    """Load memories from JSON file. Returns empty list if missing/invalid."""
+    """Load memories from JSON file with locking. Returns empty list if missing/invalid."""
     if not path.exists():
         return []
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = _atomic_ops.load_json_safe(path, default=[])
         return data if isinstance(data, list) else []
-    except (json.JSONDecodeError, Exception) as e:
+    except Exception as e:
         logger.error(f"Failed to load {path}: {e}")
         return []
 
 
 def _save_memories(path: Path, memories: List[Dict[str, Any]]):
-    """Save memories to JSON file."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(memories, indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
+    """Save memories atomically (temp file + rename + locking).
+
+    Uses atomic_file_ops to prevent data loss on crash/restart:
+    writes to a temp file first, then atomically renames into place.
+    """
+    if not _atomic_ops.save_json_safe(path, memories):
+        logger.error(f"Atomic save failed for {path}, falling back to direct write")
+        # Last-resort fallback — better than losing the data entirely
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(memories, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
 
 
 def _next_id(memories: List[Dict[str, Any]]) -> int:

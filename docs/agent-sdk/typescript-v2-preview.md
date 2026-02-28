@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/typescript-v2-preview
 title: TypeScript SDK V2 interface (preview)
-last_fetched: 2026-02-12T10:05:05.316803+00:00
+last_fetched: 2026-02-26T10:03:38.076944+00:00
 ---
 
 Copy page
@@ -34,7 +34,9 @@ import { unstable_v2_prompt } from "@anthropic-ai/claude-agent-sdk";
 const result = await unstable_v2_prompt("What is 2 + 2?", {
  model: "claude-opus-4-6"
 });
-console.log(result.result);
+if (result.subtype === "success") {
+ console.log(result.result);
+}
 ```
 
 See the same operation in V1
@@ -77,8 +79,8 @@ for await (const msg of session.stream()) {
  // Filter for assistant messages to get human-readable output
  if (msg.type === "assistant") {
  const text = msg.message.content
- .filter(block => block.type === "text")
- .map(block => block.text)
+ .filter((block) => block.type === "text")
+ .map((block) => block.text)
  .join("");
  console.log(text);
  }
@@ -100,8 +102,8 @@ const q = query({
 for await (const msg of q) {
  if (msg.type === "assistant") {
  const text = msg.message.content
- .filter(block => block.type === "text")
- .map(block => block.text)
+ .filter((block) => block.type === "text")
+ .map((block) => block.text)
  .join("");
  console.log(text);
  }
@@ -127,8 +129,8 @@ for await (const msg of session.stream()) {
  // Filter for assistant messages to get human-readable output
  if (msg.type === "assistant") {
  const text = msg.message.content
- .filter(block => block.type === "text")
- .map(block => block.text)
+ .filter((block) => block.type === "text")
+ .map((block) => block.text)
  .join("");
  console.log(text);
  }
@@ -139,8 +141,8 @@ await session.send("Multiply that by 2");
 for await (const msg of session.stream()) {
  if (msg.type === "assistant") {
  const text = msg.message.content
- .filter(block => block.type === "text")
- .map(block => block.text)
+ .filter((block) => block.type === "text")
+ .map((block) => block.text)
  .join("");
  console.log(text);
  }
@@ -177,8 +179,8 @@ const q = query({
 for await (const msg of q) {
  if (msg.type === "assistant") {
  const text = msg.message.content
- .filter(block => block.type === "text")
- .map(block => block.text)
+ .filter((block) => block.type === "text")
+ .map((block) => block.text)
  .join("");
  console.log(text);
  }
@@ -202,8 +204,8 @@ import {
 function getAssistantText(msg: SDKMessage): string | null {
  if (msg.type !== "assistant") return null;
  return msg.message.content
- .filter(block => block.type === "text")
- .map(block => block.text)
+ .filter((block) => block.type === "text")
+ .map((block) => block.text)
  .join("");
 }
 
@@ -254,8 +256,8 @@ for await (const msg of initialQuery) {
  sessionId = msg.session_id;
  if (msg.type === "assistant") {
  const text = msg.message.content
- .filter(block => block.type === "text")
- .map(block => block.text)
+ .filter((block) => block.type === "text")
+ .map((block) => block.text)
  .join("");
  console.log("Initial response:", text);
  }
@@ -275,8 +277,8 @@ const resumedQuery = query({
 for await (const msg of resumedQuery) {
  if (msg.type === "assistant") {
  const text = msg.message.content
- .filter(block => block.type === "text")
- .map(block => block.text)
+ .filter((block) => block.type === "text")
+ .map((block) => block.text)
  .join("");
  console.log("Resumed response:", text);
  }
@@ -320,7 +322,7 @@ Creates a new session for multi-turn conversations.
 function unstable_v2_createSession(options: {
  model: string;
  // Additional options supported
-}): Session
+}): SDKSession;
 ```
 
 ### `unstable_v2_resumeSession()`
@@ -334,7 +336,7 @@ function unstable_v2_resumeSession(
  model: string;
  // Additional options supported
  }
-): Session
+): SDKSession;
 ```
 
 ### `unstable_v2_prompt()`
@@ -348,15 +350,16 @@ function unstable_v2_prompt(
  model: string;
  // Additional options supported
  }
-): Promise<Result>
+): Promise<SDKResultMessage>;
 ```
 
-### Session interface
+### SDKSession interface
 
 ```shiki
-interface Session {
- send(message: string): Promise<void>;
- stream(): AsyncGenerator<SDKMessage>;
+interface SDKSession {
+ readonly sessionId: string;
+ send(message: string | SDKUserMessage): Promise<void>;
+ stream(): AsyncGenerator<SDKMessage, void>;
  close(): void;
 }
 ```

@@ -50,7 +50,7 @@ async def schedule_self(args: Dict[str, Any]) -> Dict[str, Any]:
     All agents store tasks as **agent-type** tasks so the scheduler dispatches
     them through the agent runner.  The ``_agent_name`` (injected by
     ``_inject_agent_context``) determines which agent config to use;
-    defaults to ``ren`` if not specified.
+    defaults to ``character`` if not specified.
     """
     try:
         import scheduler_tool
@@ -64,8 +64,8 @@ async def schedule_self(args: Dict[str, Any]) -> Dict[str, Any]:
         if not prompt or not schedule:
             return {"content": [{"type": "text", "text": "Both prompt and schedule are required"}], "is_error": True}
 
-        # All agents (including ren) use agent-type tasks
-        effective_agent = agent_name or "ren"
+        # All agents (including character) use agent-type tasks
+        effective_agent = agent_name or "character"
         result = scheduler_tool.add_task(
             prompt, schedule, silent=silent, task_type="agent",
             agent=effective_agent, room_id=room_id

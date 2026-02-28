@@ -5,7 +5,7 @@ Uses the official Python SDK with:
 - Per-agent system prompts and memory (prompt.md + memory.md)
 - Full tool access with bypassPermissions
 - Streaming message support with partial events
-- All agents (including Ren) route through run_chat()
+- All agents (including Character) route through run_chat()
 """
 
 import os
@@ -413,7 +413,7 @@ class ClaudeWrapper:
         return preset
 
     def _build_options(self, agent_config) -> ClaudeAgentOptions:
-        """Build SDK options for any chattable agent (including Ren)."""
+        """Build SDK options for any chattable agent (including Character)."""
         # Separate native tools from MCP tools (needed before building system prompt
         # so we can compute the agent list block for injection above memory).
         agent_tools = agent_config.tools or []
@@ -540,7 +540,7 @@ class ClaudeWrapper:
         """
         Execute a prompt through an agent and stream results.
 
-        All agents (including Ren) use this single execution path.
+        All agents (including Character) use this single execution path.
         Agent-specific options are built from config.yaml via _build_options().
         Skills are handled by the skill injector + fetch_skill MCP tool.
         """

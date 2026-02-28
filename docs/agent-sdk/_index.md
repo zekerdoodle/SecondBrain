@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/
 title: Anthropic Agent SDK Documentation Index
-last_fetched: 2026-02-25T10:04:31.927614+00:00
+last_fetched: 2026-02-28T10:03:36.598205+00:00
 ---
 
 # Anthropic Agent SDK Documentation
@@ -30,7 +30,7 @@ This is a local mirror of the [Anthropic Agent SDK documentation](https://platfo
 - [Session Management](./sessions.md)
 - [Slash Commands in the SDK](./slash-commands.md)
 - [Subagents in the SDK](./subagents.md)
-- [Tracking Costs and Usage](./cost-tracking.md)
+- [Track cost and usage](./cost-tracking.md)
 - [TypeScript SDK V2 interface (preview)](./typescript-v2-preview.md)
 
 ## About This Mirror
@@ -38,7 +38,7 @@ This is a local mirror of the [Anthropic Agent SDK documentation](https://platfo
 This documentation mirror is automatically synced from the official Anthropic documentation.
 Claude Code agents can reference these files directly for up-to-date information.
 
-**Last sync:** 2026-02-25T10:04:31.927614+00:00
+**Last sync:** 2026-02-28T10:03:36.598205+00:00
 
 To manually sync, run:
 ```bash
