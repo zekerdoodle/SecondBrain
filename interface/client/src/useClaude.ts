@@ -185,6 +185,10 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
   // This prevents the race condition where stale/early events corrupt state during chat switching.
   const awaitingStateResponse = useRef(false);
 
+  // Turn tracking: drops stale events from cancelled edits/regenerates.
+  // Set on truncate/session_init; checked on done/interrupted to prevent stale completion.
+  const currentTurnId = useRef<string | null>(null);
+
   const flushDeltas = useCallback(() => {
     rafId.current = null;
     const deltas = pendingDeltas.current;
@@ -443,7 +447,8 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
         'message_end', 'session_status',
         'content_delta', 'tool_start', 'tool_end',
         'status', 'done', 'todo_update',
-        'message_accepted', 'session_init', 'message_received'
+        'message_accepted', 'session_init', 'message_received',
+        'truncate', 'interrupted'
       ]);
       if (streamingEventTypes.has(data.type) && data.sessionId &&
           sessionIdRef.current !== 'new' && data.sessionId !== sessionIdRef.current) {
@@ -620,6 +625,10 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
           if (data.agent !== undefined) {
             setCurrentAgent(data.agent || "character");
           }
+          // Track turn ID for stale event detection (edits/regenerates)
+          if (data.turnId) {
+            currentTurnId.current = data.turnId;
+          }
           break;
 
         // --- New block-based streaming events ---
@@ -782,11 +791,23 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
           if (data.sessionId && data.sessionId !== 'new') {
             setSessionId(data.sessionId);
           }
+          // Track turn ID — all subsequent events must match this turn
+          if (data.turnId) {
+            currentTurnId.current = data.turnId;
+          }
           // Reset delta batching
           pendingDeltas.current.clear();
           break;
 
         case 'done':
+          // STALE EVENT GUARD: Drop done events from cancelled edits/regenerates.
+          // When a second edit starts, its truncate sets currentTurnId. A done event
+          // from the first (cancelled) edit would have a different turnId — drop it.
+          if (data.turnId && currentTurnId.current && data.turnId !== currentTurnId.current) {
+            console.log(`[DONE] Dropping stale done event (turnId=${data.turnId}, current=${currentTurnId.current})`);
+            break;
+          }
+
           // Flush any pending deltas
           if (rafId.current) {
             cancelAnimationFrame(rafId.current);
@@ -932,6 +953,9 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
           // block-based rendering. Server's conv.messages use different IDs and don't
           // include blocks, so syncing destroys thinking blocks and per-block separation.
           // Server already saved to disk for future reloads; current session keeps blocks.
+
+          // Clear turn tracking — this turn completed successfully
+          currentTurnId.current = null;
           break;
 
         case 'error':
@@ -1105,6 +1129,11 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
           break;
 
         case 'interrupted':
+          // STALE EVENT GUARD: Drop interrupted events from cancelled edits/regenerates
+          if (data.turnId && currentTurnId.current && data.turnId !== currentTurnId.current) {
+            console.log(`[INTERRUPTED] Dropping stale interrupted event (turnId=${data.turnId}, current=${currentTurnId.current})`);
+            break;
+          }
           // Generation was stopped by user
           console.log('Generation interrupted:', data.success ? 'successfully' : 'failed');
           setStatus('idle');
@@ -1664,6 +1693,8 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
     injectedMessagesRef.current = [];
     // Guard against stale events from old session arriving before state response
     awaitingStateResponse.current = true;
+    // Clear turn tracking when switching/creating chats
+    currentTurnId.current = null;
     localStorage.removeItem(sessionKey);
     // Notify server: unregister from old session, don't redirect to active streams
     if (ws.current && ws.current.readyState === WebSocket.OPEN) {

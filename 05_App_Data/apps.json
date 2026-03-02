@@ -22,5 +22,11 @@
     "icon": "agent-dashboard/icon.png",
     "entry": "agent-dashboard/index.html",
     "description": "View and manage all agent schedules, timelines, and task automation"
+  },
+  {
+    "name": "Running",
+    "icon": "running/icon.png",
+    "entry": "running/index.html",
+    "description": "MED running tracker with auto-progression, deload sync, and session logging"
   }
 ]

@@ -1491,7 +1491,26 @@ export const Chat: React.FC<ChatProps> = ({
               }
             }
 
-            const prevMsg = idx > 0 ? processedMessages[idx - 1] : null;
+            // Walk backwards past hidden messages (form submissions, scheduled triggers,
+            // empty streaming) to find the actual previous VISIBLE message for header logic
+            let prevMsg: typeof processedMessages[0] | null = null;
+            for (let pi = idx - 1; pi >= 0; pi--) {
+              const pm = processedMessages[pi];
+              const pmUser = pm.message.role === 'user';
+              const pmHasBlocks = pm.message.blocks && pm.message.blocks.length > 0;
+              // Same skip conditions as above
+              if (pmUser && pm.message.content.startsWith('[FORM_SUBMISSION:')) continue;
+              if (pmUser && pm.message.content.includes('[SCHEDULED AUTOMATION]')) continue;
+              if (!pmUser && !pmHasBlocks && pm.message.isStreaming && !pm.message.content.trim()) continue;
+              if (!pmUser && pmHasBlocks) {
+                const hasVis = pm.message.blocks!.some(b =>
+                  b.content.trim() || b.type === 'tool_use' || b.type === 'tool_result' || b.type === 'thinking'
+                );
+                if (!hasVis && pm.message.isStreaming) continue;
+              }
+              prevMsg = pm;
+              break;
+            }
 
             return (
               <React.Fragment key={msg.id}>

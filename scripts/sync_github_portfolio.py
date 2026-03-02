@@ -26,7 +26,7 @@ from pathlib import Path
 # ============================================
 
 SOURCE_DIR = Path("/home/debian/second_brain")
-STAGING_DIR = SOURCE_DIR / "10_Active_Projects" / "portfolio_staging" / "SecondBrain"
+STAGING_DIR = SOURCE_DIR / "10_Active_Projects" / "portfolio-staging" / "SecondBrain"
 SYNC_META_FILE = STAGING_DIR / ".sync_meta.json"
 
 # ============================================
@@ -155,48 +155,29 @@ ALLOWLIST_FILES = [
 ]
 
 # Agent directories to include (config.yaml + prompt.md only)
+# Only expose generic/utility agents publicly — no personality-bearing agents
 ALLOWLIST_AGENTS = [
-    "patch",
-    "chat_research",
     "coder",
-    "cua_orchestrator",
-    "deep_research",
-    "deep_think",
     "general_purpose",
-    "html_expert",
-    "information_gatherer",
-    "character",
-    "research_critic",
-    "notifications",
     "_template",
 ]
 
 # Background agents (config.yaml + prompt.md + *.py, no state/)
+# Excluded from public repo — reveals ops workflows
 ALLOWLIST_BACKGROUND_AGENTS = [
-    "chronicler",
-    "gardener",
-    "librarian",
     "_template",
 ]
 
-# CUA orchestrator has a lib/ directory with Python code
-CUA_LIB_FILES = [
-    ".claude/agents/cua_orchestrator/__init__.py",
-    ".claude/agents/cua_orchestrator/__main__.py",
-    ".claude/agents/cua_orchestrator/run.py",
-    ".claude/agents/cua_orchestrator/README.md",
-    ".claude/agents/cua_orchestrator/lib/__init__.py",
-    ".claude/agents/cua_orchestrator/lib/orchestrator.py",
-    ".claude/agents/cua_orchestrator/lib/gemini_cua.py",
-]
+# CUA orchestrator lib files — excluded from public repo
+CUA_LIB_FILES = []
 
 # Skills to include (SKILL.md from each)
+# Excluded: moltbook (agent-specific social network behavior)
 ALLOWLIST_SKILLS = [
     "app-create",
     "compact",
     "expand-and-structure",
     "finance",
-    "moltbook",
     "practice-plan",
     "practice-review",
     "project-task",
@@ -217,6 +198,7 @@ SANITIZE_FILES = {
     ".claude/CLAUDE.md": "sanitize_claude_md",
     "05_App_Data/apps.json": "sanitize_apps_json",
     ".claude/skill_defs/character-gen/SKILL.md": "sanitize_riley_gen",
+    "README.md": "sanitize_readme",
 }
 
 # Files to generate from templates
@@ -404,6 +386,86 @@ def sanitize_riley_gen(content: str) -> str:
     content = re.sub(r'\n{3,}', '\n\n', content)
 
     return content
+
+
+def sanitize_readme(content: str) -> str:
+    """Sanitize README.md for public repo: strip specific agent names, personality references."""
+    lines = content.split('\n')
+    filtered = []
+    skip_until_blank = False
+    in_agent_list = False
+
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+
+        # Replace the "13+ specialized agents" intro to be generic
+        if 'fleet of 13+ specialized agents' in line:
+            filtered.append(line.replace('13+ specialized agents', 'specialized agents'))
+            i += 1
+            continue
+
+        # Strip the specific agent bullet list (lines starting with "- **AgentName**")
+        # These are in the Multi-Agent Orchestration section
+        if in_agent_list:
+            if line.startswith('- **') and '—' in line:
+                # Skip this agent bullet - but keep Coder and General Purpose
+                if '**Coder**' in line or '**General Purpose**' in line:
+                    filtered.append(line)
+                i += 1
+                continue
+            else:
+                in_agent_list = False
+
+        # Detect start of agent list
+        if line.startswith('- **Coder**') or line.startswith('- **Deep Research**'):
+            in_agent_list = True
+            if '**Coder**' in line:
+                filtered.append(line)
+            i += 1
+            continue
+
+        # Replace LTM pipeline description to not name specific agents
+        if 'Librarian extracts' in line and 'Gardener organizes' in line:
+            line = line.replace(
+                'Librarian extracts → Gardener organizes → Embeddings index',
+                'Background agents extract → organize → Embeddings index'
+            )
+        if 'a **Librarian** agent extracts' in line:
+            line = line.replace('a **Librarian** agent extracts', 'a background agent extracts')
+            line = line.replace('a **Gardener** agent organizes', 'another agent organizes')
+        if 'chronicler auto-descriptions' in line:
+            line = line.replace('chronicler auto-descriptions', 'auto-generated descriptions')
+
+        # Strip moltbook and character-gen from skills list
+        if '/moltbook' in line:
+            line = line.replace(' · `/moltbook`', '')
+            line = line.replace('`/moltbook` · ', '')
+        if '/character-gen' in line:
+            line = line.replace(' · `/character-gen`', '')
+            line = line.replace('`/character-gen` · ', '')
+        if '/character-gen' in line:
+            line = line.replace(' · `/character-gen`', '')
+            line = line.replace('`/character-gen` · ', '')
+
+        # Remove Social Network / Moltbook line
+        if 'Social Network' in line and 'Moltbook' in line:
+            i += 1
+            continue
+
+        # Clean MCP tools count and list (remove Moltbook mention)
+        if 'Moltbook' in line and 'MCP Tools' in line:
+            line = line.replace(', Moltbook', '')
+            line = line.replace('17 tool modules', '16 tool modules')
+
+        # Remove CUA/Gemini from tech stack
+        if 'Gemini Flash (CUA)' in line:
+            line = line.replace('Gemini Flash (CUA), ', '')
+
+        filtered.append(line)
+        i += 1
+
+    return '\n'.join(filtered)
 
 
 def generate_env_example() -> str:
@@ -758,24 +820,25 @@ def sync(dry_run: bool = True) -> dict:
                         copy_file(src, dst)
                         result['files_copied'].append(rel)
 
-    # --- 5. CUA orchestrator special files ---
-    print("\n--- Copying CUA orchestrator lib ---")
-    for rel_path in CUA_LIB_FILES:
-        src = SOURCE_DIR / rel_path
-        dst = STAGING_DIR / rel_path
-        if src.exists():
-            if dry_run:
-                result['files_copied'].append(rel_path)
+    # --- 5. CUA orchestrator special files (currently empty) ---
+    if CUA_LIB_FILES:
+        print("\n--- Copying CUA orchestrator lib ---")
+        for rel_path in CUA_LIB_FILES:
+            src = SOURCE_DIR / rel_path
+            dst = STAGING_DIR / rel_path
+            if src.exists():
+                if dry_run:
+                    result['files_copied'].append(rel_path)
+                else:
+                    copy_file(src, dst)
+                    result['files_copied'].append(rel_path)
             else:
-                copy_file(src, dst)
-                result['files_copied'].append(rel_path)
-        else:
-            result['skipped'].append(f"  SKIP CUA: {rel_path}")
+                result['skipped'].append(f"  SKIP CUA: {rel_path}")
 
     # --- 6. Copy skills (SKILL.md from each) ---
     print("\n--- Copying skills ---")
     for skill_name in ALLOWLIST_SKILLS:
-        skill_dir = SOURCE_DIR / ".claude" / "skills" / skill_name
+        skill_dir = SOURCE_DIR / ".claude" / "skill_defs" / skill_name
         if not skill_dir.exists():
             result['skipped'].append(f"  SKIP skill: {skill_name}")
             continue

@@ -268,10 +268,43 @@ function App() {
     loadInitialFile();
   }, []);
 
-  // Auto-refresh file list every 10 seconds
+  // Auto-refresh file list every 10 seconds, pausing when the tab is hidden
   useEffect(() => {
-    const interval = setInterval(refreshFiles, 10_000);
-    return () => clearInterval(interval);
+    let interval: ReturnType<typeof setInterval> | null = null;
+
+    const startPolling = () => {
+      if (!interval) {
+        interval = setInterval(refreshFiles, 10_000);
+      }
+    };
+
+    const stopPolling = () => {
+      if (interval) {
+        clearInterval(interval);
+        interval = null;
+      }
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        refreshFiles(); // Immediately refresh when tab becomes visible
+        startPolling();
+      } else {
+        stopPolling();
+      }
+    };
+
+    // Start polling only if the tab is currently visible
+    if (document.visibilityState === 'visible') {
+      startPolling();
+    }
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      stopPolling();
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
   }, []);
 
   // App registry for fullscreen mode

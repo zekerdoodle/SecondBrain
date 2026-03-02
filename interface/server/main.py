@@ -24,6 +24,7 @@ import signal
 import time
 import base64
 import hashlib
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from dataclasses import dataclass, field
@@ -629,14 +630,26 @@ def list_files(path: str = ""):
 
 
 @app.get("/api/file/{file_path:path}")
-def read_file(file_path: str):
+def read_file(file_path: str, request: Request):
     target_path = os.path.join(ROOT_DIR, file_path)
     if not os.path.abspath(target_path).startswith(ROOT_DIR):
         raise HTTPException(status_code=403, detail="Access denied")
     if not os.path.exists(target_path):
         raise HTTPException(status_code=404)
-    with open(target_path, 'r', encoding='utf-8') as f:
-        return {"content": f.read()}
+    # Serve binary files (images, PDFs, etc.) directly instead of trying UTF-8 decode
+    import mimetypes
+    mime_type, _ = mimetypes.guess_type(target_path)
+    if mime_type and not mime_type.startswith("text/") and mime_type not in (
+        "application/json", "application/xml", "application/javascript",
+        "application/x-yaml", "application/toml",
+    ):
+        return _file_response_with_etag(target_path, request)
+    try:
+        with open(target_path, 'r', encoding='utf-8') as f:
+            return {"content": f.read()}
+    except UnicodeDecodeError:
+        # Fallback: serve as binary if UTF-8 decode fails
+        return _file_response_with_etag(target_path, request)
 
 
 @app.get("/api/raw/{file_path:path}")
@@ -740,6 +753,33 @@ async def serve_chat_image(filename: str):
         raise HTTPException(status_code=404, detail="Image not found")
     # Chat images are content-hashed and immutable — cache aggressively
     return FileResponse(target_path, headers={"Cache-Control": "public, max-age=31536000, immutable"})
+
+
+@app.post("/api/chat/images/gc")
+async def chat_image_gc(delete: bool = False, min_age_days: float = 7.0):
+    """Run garbage collection on orphaned chat images.
+
+    Args:
+        delete: If True, actually delete orphans. If False, dry run (default).
+        min_age_days: Only delete orphans older than this many days (default: 7).
+    """
+    try:
+        # Import the GC module
+        import importlib.util
+        gc_script = os.path.join(ROOT_DIR, ".claude", "scripts", "chat_image_gc.py")
+        spec = importlib.util.spec_from_file_location("chat_image_gc", gc_script)
+        gc_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(gc_module)
+
+        result = gc_module.run_gc(
+            delete=delete,
+            min_age_days=min_age_days,
+            as_json=True,
+        )
+        return result
+    except Exception as e:
+        logger.error(f"Chat image GC error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.delete("/api/file/{file_path:path}")
@@ -849,17 +889,47 @@ def validate_app_path(path: str) -> str:
 @app.post("/api/app-bridge/write")
 def app_bridge_write(req: AppBridgeWriteRequest):
     """Write data to app data directory. Used by HTML apps running in editor."""
+    temp_path = None
     try:
         abs_path = validate_app_path(req.path)
-        os.makedirs(os.path.dirname(abs_path), exist_ok=True)
-        with open(abs_path, 'w', encoding='utf-8') as f:
-            f.write(req.data)
+        target_dir = os.path.dirname(abs_path)
+        os.makedirs(target_dir, exist_ok=True)
+
+        # Atomic write: write to temp file in same directory, then replace
+        fd = tempfile.NamedTemporaryFile(
+            mode='w',
+            encoding='utf-8',
+            dir=target_dir,
+            prefix=f'.{os.path.basename(abs_path)}',
+            suffix='.tmp',
+            delete=False
+        )
+        temp_path = fd.name
+        try:
+            fd.write(req.data)
+            fd.flush()
+            os.fsync(fd.fileno())
+            fd.close()
+        except BaseException:
+            fd.close()
+            raise
+
+        # Atomic rename (same filesystem, so this is guaranteed atomic)
+        os.replace(temp_path, abs_path)
+        temp_path = None  # Successfully moved, no cleanup needed
         return {"status": "ok"}
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"App bridge write error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        # Clean up temp file if it still exists (write or replace failed)
+        if temp_path:
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
 
 
 @app.get("/api/app-bridge/read", response_class=PlainTextResponse)
@@ -1636,6 +1706,13 @@ async def broadcast_to_session(session_id: str, message: dict):
     if "sessionId" not in message:
         message = {**message, "sessionId": session_id}
 
+    # Auto-inject turnId from streaming state so clients can detect stale events
+    # from cancelled edits/regenerates. This covers ALL broadcast events automatically.
+    if "turnId" not in message:
+        ss = session_streaming_states.get(session_id)
+        if ss and ss.turn_id:
+            message = {**message, "turnId": ss.turn_id}
+
     dead = set()
     for ws in list(clients):  # snapshot to avoid concurrent modification
         try:
@@ -1743,6 +1820,8 @@ class SessionStreamingState:
     todos: Optional[list] = None
     seq: int = 0
     last_updated: float = field(default_factory=time.time)
+    # Turn tracking: unique ID per edit/regenerate/message to prevent stale event processing
+    turn_id: Optional[str] = None
 
     # Internal tracking (not sent to clients)
     _current_blocks: List[ContentBlock] = field(default_factory=list)
@@ -1858,6 +1937,10 @@ class SessionStreamingState:
 
 # Map of session_id -> streaming state
 session_streaming_states: Dict[str, SessionStreamingState] = {}
+
+# Track active edit/regenerate tasks for cancellation on re-edit
+# Maps chat_id -> asyncio.Task so we can cancel stale tasks
+active_edit_tasks: Dict[str, asyncio.Task] = {}
 
 # Track active tool heartbeat tasks for cancellation
 # Key: session_id, Value: asyncio.Task
@@ -2016,6 +2099,60 @@ def _cleanup_chat_locks():
     if stale:
         logger.info(f"Cleaned up {len(stale)} stale chat locks")
 
+
+# Chat image GC state - runs once daily
+_last_image_gc_time: float = 0.0
+_IMAGE_GC_INTERVAL = 86400  # 24 hours between GC runs
+_IMAGE_GC_MIN_AGE_DAYS = 7  # Only delete orphans older than 7 days
+
+
+async def _maybe_run_image_gc():
+    """Run chat image garbage collection if enough time has passed (once daily)."""
+    global _last_image_gc_time
+    now = time.time()
+
+    if now - _last_image_gc_time < _IMAGE_GC_INTERVAL:
+        return
+
+    _last_image_gc_time = now
+
+    try:
+        # Run GC in a thread to avoid blocking the event loop (file I/O)
+        import importlib.util
+        gc_script = os.path.join(ROOT_DIR, ".claude", "scripts", "chat_image_gc.py")
+
+        if not os.path.exists(gc_script):
+            return
+
+        spec = importlib.util.spec_from_file_location("chat_image_gc", gc_script)
+        gc_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(gc_module)
+
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None,
+            lambda: gc_module.run_gc(
+                delete=True,
+                min_age_days=_IMAGE_GC_MIN_AGE_DAYS,
+                as_json=True,
+            )
+        )
+
+        if result.get("deleted", 0) > 0:
+            logger.info(
+                f"Image GC: deleted {result['deleted']} orphaned images, "
+                f"freed {result.get('freed_bytes_human', '0 B')}"
+            )
+        else:
+            orphans = result.get("orphan_count", 0)
+            if orphans > 0:
+                logger.info(f"Image GC: {orphans} orphans found but none old enough to delete")
+            else:
+                logger.debug("Image GC: no orphaned images found")
+    except Exception as e:
+        logger.error(f"Image GC error: {e}")
+
+
 # Track pending form requests (for forms_show tool)
 # Key: session_id, Value: {"form_id": str, "prefill": dict}
 pending_form_requests: Dict[str, Dict[str, Any]] = {}
@@ -2109,11 +2246,14 @@ async def websocket_endpoint(websocket: WebSocket):
                     _init_messages = list(_existing_chat_data.get("display_messages") or _existing_chat_data.get("messages", []))
 
                 # Register streaming state IMMEDIATELY (before task runs)
+                turn_id = str(uuid.uuid4())
                 active_processing_sessions[state_key] = time.time()
                 session_streaming_states[state_key] = SessionStreamingState(
                     status="streaming",
                     messages=_init_messages,
+                    turn_id=turn_id,
                 )
+                data["turnId"] = turn_id
                 register_client(websocket, state_key)
                 logger.info(f"PRE-TASK: Registered streaming state for {state_key}")
 
@@ -2131,9 +2271,10 @@ async def websocket_endpoint(websocket: WebSocket):
                     await websocket.send_json({
                         "type": "session_init",
                         "id": state_key,
-                        "agent": ws_agent
+                        "agent": ws_agent,
+                        "turnId": turn_id
                     })
-                    logger.info(f"PRE-TASK: Sent immediate session_init for {state_key}, agent={ws_agent}")
+                    logger.info(f"PRE-TASK: Sent immediate session_init for {state_key}, agent={ws_agent}, turnId={turn_id}")
                 except Exception:
                     pass  # Client may have already disconnected
 
@@ -2142,23 +2283,57 @@ async def websocket_endpoint(websocket: WebSocket):
             elif action == "edit":
                 # For edits, we know the chat_id upfront
                 chat_id = data.get("sessionId")
+                turn_id = str(uuid.uuid4())
                 if chat_id:
+                    # Cancel any previous edit/regenerate task for this chat
+                    prev_task = active_edit_tasks.pop(chat_id, None)
+                    if prev_task and not prev_task.done():
+                        prev_task.cancel()
+                        logger.info(f"EDIT: Cancelled previous edit/regenerate task for {chat_id}")
+                        # Also interrupt the active Claude wrapper to stop SDK processing
+                        prev_wrapper = active_claude_wrappers.get(chat_id)
+                        if prev_wrapper:
+                            try:
+                                await prev_wrapper.interrupt()
+                                logger.info(f"EDIT: Interrupted previous Claude wrapper for {chat_id}")
+                            except Exception as e:
+                                logger.warning(f"EDIT: Failed to interrupt previous wrapper: {e}")
                     active_processing_sessions[chat_id] = time.time()
                     session_streaming_states[chat_id] = SessionStreamingState(
                         status="streaming",
+                        turn_id=turn_id,
                     )
                     register_client(websocket, chat_id)
-                asyncio.create_task(handle_edit(websocket, data))
+                data["turnId"] = turn_id
+                task = asyncio.create_task(handle_edit(websocket, data))
+                if chat_id:
+                    active_edit_tasks[chat_id] = task
             elif action == "regenerate":
                 # For regenerate, we know the chat_id upfront
                 session_id = data.get("sessionId")
+                turn_id = str(uuid.uuid4())
                 if session_id:
+                    # Cancel any previous edit/regenerate task for this chat
+                    prev_task = active_edit_tasks.pop(session_id, None)
+                    if prev_task and not prev_task.done():
+                        prev_task.cancel()
+                        logger.info(f"REGENERATE: Cancelled previous edit/regenerate task for {session_id}")
+                        prev_wrapper = active_claude_wrappers.get(session_id)
+                        if prev_wrapper:
+                            try:
+                                await prev_wrapper.interrupt()
+                            except Exception:
+                                pass
                     active_processing_sessions[session_id] = time.time()
                     session_streaming_states[session_id] = SessionStreamingState(
                         status="streaming",
+                        turn_id=turn_id,
                     )
                     register_client(websocket, session_id)
-                asyncio.create_task(handle_regenerate(websocket, data))
+                data["turnId"] = turn_id
+                task = asyncio.create_task(handle_regenerate(websocket, data))
+                if session_id:
+                    active_edit_tasks[session_id] = task
             elif action == "interrupt":
                 await handle_interrupt(websocket, data)
             elif action == "inject":
@@ -2555,6 +2730,14 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
                             msg["formData"]["status"] = "submitted"
                             logger.info(f"Marked form {submitted_form_id} as submitted in conv.messages")
                             break
+                    # Also update in SS messages (source for display_messages rebuild)
+                    _ss_for_form = session_streaming_states.get(state_key)
+                    if _ss_for_form:
+                        for msg in _ss_for_form.messages:
+                            if msg.get("formData", {}).get("formId") == submitted_form_id:
+                                msg["formData"]["status"] = "submitted"
+                                logger.info(f"Marked form {submitted_form_id} as submitted in SS messages")
+                                break
 
             title = existing.get("title") if existing else chat_manager.generate_title(data.get("message", ""))
             early_save_data = {
@@ -2565,6 +2748,11 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
             }
             if agent_name:
                 early_save_data["agent"] = agent_name
+            # Preserve display_messages from existing chat if present (early save
+            # only updates flat messages; wiping display_messages would lose block
+            # rendering data for prior turns)
+            if existing and existing.get("display_messages"):
+                early_save_data["display_messages"] = existing["display_messages"]
             chat_manager.save_chat(early_save_id, early_save_data)
             logger.info(f"EARLY_SAVE: Saved user message to {early_save_id}, agent={agent_name}")
 
@@ -3436,11 +3624,11 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
                 serialized_ss.append(_dm)
 
         n_ss = len(serialized_ss)
-        # Count only user/assistant messages in conv.messages — tool_call and form
-        # entries are blocks *within* SS assistant messages, not separate entries.
-        # Comparing against len(conv.messages) directly causes n_conv > n_ss even
-        # when SS has the full history, incorrectly triggering the merge branch.
-        n_conv_meaningful = sum(1 for m in conv.messages if m.get("role") in ("user", "assistant"))
+        # Count only user/assistant messages in conv.messages, excluding form
+        # entries. Form messages have role="assistant" but are separate entries
+        # not tracked in SS, so including them inflates n_conv and incorrectly
+        # triggers the merge branch.
+        n_conv_meaningful = sum(1 for m in conv.messages if m.get("role") in ("user", "assistant") and not m.get("formData"))
 
         if n_ss >= n_conv_meaningful:
             # SS has full history (normal flow with disk-init) - use it directly
@@ -3449,6 +3637,27 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
             # SS is partial (e.g. restart continuation) - prepend older conv history
             conv_meaningful = [m for m in conv.messages if m.get("role") in ("user", "assistant")]
             display_msgs = conv_meaningful[:n_conv_meaningful - n_ss] + serialized_ss
+
+        # Inject form messages — they're persisted in conv.messages but not
+        # tracked in SS, so they'd be lost from display_messages on reload.
+        if completed_form_messages:
+            existing_form_ids = {
+                m.get("formData", {}).get("formId")
+                for m in display_msgs if m.get("formData")
+            }
+            for _, fm in completed_form_messages:
+                fm_id = fm.get("formData", {}).get("formId")
+                if fm_id and fm_id not in existing_form_ids:
+                    # Insert before the final assistant message so the form
+                    # appears in roughly the right position (it was shown
+                    # during tool execution, before the final text response).
+                    insert_idx = len(display_msgs)
+                    for i in range(len(display_msgs) - 1, -1, -1):
+                        if display_msgs[i].get("role") == "assistant":
+                            insert_idx = i
+                            break
+                    display_msgs.insert(insert_idx, fm)
+            logger.info(f"DISPLAY_MSGS: Injected {len(completed_form_messages)} form messages into display_messages")
 
         final_save_data["display_messages"] = display_msgs
 
@@ -3515,9 +3724,14 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
     state_key = chat_id_for_storage
     # Stop any running heartbeat for this session
     stop_tool_heartbeat(state_key)
+    # Capture turn_id before clearing (needed for done event below)
+    _done_turn_id = None
     if state_key in session_streaming_states:
+        _done_turn_id = session_streaming_states[state_key].turn_id
         del session_streaming_states[state_key]
         logger.info(f"STREAMING_STATE: Cleared for {state_key}")
+    # Clean up active edit task tracking
+    active_edit_tasks.pop(state_key, None)
     # Remove from active processing and track as recently completed
     if state_key in active_processing_sessions:
         active_processing_sessions.pop(state_key, None)
@@ -3534,6 +3748,8 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
     # For very long chats, omit messages and let the client fall back to API fetch
     logger.info(f"DONE: Broadcasting done event with sessionId={chat_id_for_storage}")
     done_payload = {"type": "done", "sessionId": chat_id_for_storage}
+    if _done_turn_id:
+        done_payload["turnId"] = _done_turn_id
     if len(conv.messages) <= 500:
         done_payload["messages"] = conv.messages
     await broadcast_to_session(chat_id_for_storage, done_payload)
@@ -3599,6 +3815,14 @@ async def handle_edit(websocket: WebSocket, data: dict):
     conv.session_id = chat_id
     conv.messages = context_messages.copy()  # Messages before the edit
     active_conversations[chat_id] = conv
+
+    # Seed streaming state with context messages so subscribe/snapshot
+    # returns the full conversation history if user switches tabs during streaming.
+    # Without this, the streaming state (initialized empty by the websocket loop)
+    # would only contain the edited user message + assistant response.
+    ss = session_streaming_states.get(chat_id)
+    if ss is not None:
+        ss.messages = list(context_messages)
 
     # BROADCAST truncation to ALL clients viewing this session
     # This ensures multi-device consistency during edits
@@ -3670,6 +3894,12 @@ async def handle_regenerate(websocket: WebSocket, data: dict):
     conv.session_id = session_id
     conv.messages = context_messages.copy()
     active_conversations[session_id] = conv
+
+    # Seed streaming state with context messages so subscribe/snapshot
+    # returns the full conversation history if user switches tabs during streaming.
+    ss = session_streaming_states.get(session_id)
+    if ss is not None:
+        ss.messages = list(context_messages)
 
     # BROADCAST truncation to ALL clients viewing this session
     # Show context + the user message we're regenerating from
@@ -4474,6 +4704,9 @@ async def scheduler_loop():
 
             # Periodic maintenance: clean up stale chat locks
             _cleanup_chat_locks()
+
+            # Periodic maintenance: chat image garbage collection (once daily)
+            await _maybe_run_image_gc()
 
         except Exception as e:
             logger.error(f"Scheduler Error: {e}")

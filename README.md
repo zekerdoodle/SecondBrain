@@ -9,15 +9,9 @@ Second Brain is a self-hosted platform where Claude doesn't just answer question
 ## Features
 
 ### Multi-Agent Orchestration
-A fleet of 13+ specialized agents that can be invoked individually, chained sequentially, or fanned out in parallel:
+A fleet of specialized agents that can be invoked individually, chained sequentially, or fanned out in parallel:
 
 - **Coder** — Full software development with Claude Code SDK (Opus-powered, file I/O, bash, web search)
-- **Deep Research** — Multi-phase research orchestrator: decomposes questions, fans out parallel information gatherers, iteratively replans, then synthesizes
-- **Deep Think** — Pure reasoning engine for architecture decisions, strategic analysis, and synthesis
-- **CUA Orchestrator** — Computer Use Agent for browser automation via Gemini Flash
-- **Information Gatherer** — Fast explorer for web and local knowledge retrieval
-- **Research Critic** — Evaluates research quality, checks sources, identifies gaps
-- **HTML Expert** — Builds polished, self-contained HTML pages from structured specs
 - **General Purpose** — Flexible agent for tasks that don't fit a specialist
 
 Agents are defined declaratively via `config.yaml` + `prompt.md`, supporting SDK agents (Claude Agent SDK `query()`), CLI agents (Claude `--print` mode), and a primary companion agent.
@@ -28,11 +22,11 @@ Persistent memory that actually works — no more losing context between convers
 | Layer | Purpose | Mechanism |
 |-------|---------|-----------|
 | **Working Memory** | Ephemeral scratchpad for active session context | JSON store, reviewed and promoted regularly |
-| **Semantic LTM** | Long-term knowledge extracted from conversations | Librarian extracts → Gardener organizes → Embeddings index |
+| **Semantic LTM** | Long-term knowledge extracted from conversations | Background agents extract → organize → Embeddings index |
 | **Personal Journal** | Self-authored reflections, rules, and lessons | `memory.md`, always loaded into context |
-| **Recent Memory** | Conversation history with semantic search | Thread-based with chronicler auto-descriptions |
+| **Recent Memory** | Conversation history with semantic search | Thread-based with auto-generated descriptions |
 
-The LTM pipeline runs automatically: a **Librarian** agent extracts atomic facts from conversations, a **Gardener** agent organizes and deduplicates them, and an embeddings system enables semantic retrieval at query time.
+The LTM pipeline runs automatically: a background agent extracts atomic facts from conversations, another agent organizes and deduplicates them, and an embeddings system enables semantic retrieval at query time.
 
 ### Scheduled Autonomous Agents
 Agents that run on cron — not just when you ask:
@@ -45,7 +39,7 @@ Agents that run on cron — not just when you ask:
 ### Skills System
 Slash-command workflows that encode complex, repeatable processes:
 
-`/sync` · `/red-team` · `/research-assistant` · `/project-task` · `/app-create` · `/expand-and-structure` · `/scaffold-mvp` · `/reflection` · `/compact` · `/finance` · `/practice-plan` · `/practice-review` · `/resume-thread` · `/moltbook` · `/character-gen`
+`/sync` · `/red-team` · `/research-assistant` · `/project-task` · `/app-create` · `/expand-and-structure` · `/scaffold-mvp` · `/reflection` · `/compact` · `/finance` · `/practice-plan` · `/practice-review` · `/resume-thread`
 
 Each skill is a structured prompt template that orchestrates agents, manages state, and produces consistent outputs. Skills are the platform's workflow engine.
 
@@ -76,7 +70,6 @@ Claude as the primary intelligence, with external models for second opinions:
 - **Spotify Control** — Playback control and music search
 - **YouTube** — Music playback and video search
 - **Push Notifications** — PWA notifications for async agent completions
-- **Social Network** — Moltbook (AI social network) integration
 
 ---
 
@@ -121,7 +114,7 @@ Claude as the primary intelligence, with external models for second opinions:
 **Key components:**
 - **FastAPI Server** — WebSocket chat, REST APIs, static file serving, CORS, graceful shutdown with state persistence
 - **Claude Wrapper** — Manages Claude Agent SDK conversations with streaming, tool use, and conversation state
-- **MCP Tools** — 17 tool modules (agents, bash, chess, forms, Gmail, Google, image, LLM, memory, Moltbook, scheduler, Spotify, utilities, YouTube) registered via decorator pattern
+- **MCP Tools** — 16 tool modules (agents, bash, chess, forms, Gmail, Google, image, LLM, memory, scheduler, Spotify, utilities, YouTube) registered via decorator pattern
 - **Agent Runner** — Executes agents via SDK `query()` or CLI `--print`, manages timeouts, logs executions, handles process registration
 - **Process Registry** — Tracks all running agent processes with PID, prevents orphans, enables graceful shutdown
 - **Message WAL** — Write-ahead log for message durability across server restarts
@@ -136,7 +129,7 @@ Claude as the primary intelligence, with external models for second opinions:
 | **AI** | Claude Agent SDK, Claude API (Opus, Sonnet, Haiku) |
 | **Backend** | Python 3.11, FastAPI, uvicorn, WebSockets |
 | **Frontend** | React 18, TypeScript, Vite, Tailwind CSS |
-| **External LLMs** | Gemini Flash (CUA), GPT-4 (consultation), Perplexity (search) |
+| **External LLMs** | GPT-4 (consultation), Perplexity (search) |
 | **Image Generation** | fal.ai (multiple models) |
 | **Integrations** | Google OAuth (Tasks, Calendar, Gmail), Spotify, YouTube, Plaid |
 | **Infrastructure** | Self-hosted on Debian, Cloudflare Tunnel, PWA with push notifications |

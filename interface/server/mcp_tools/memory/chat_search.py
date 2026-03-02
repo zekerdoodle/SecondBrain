@@ -228,6 +228,7 @@ Rules:
 async def extract_with_haiku(
     query: str,
     windows: List[Dict[str, Any]],
+    keyword_hint: Optional[str] = None,
 ) -> Optional[ExtractionResponse]:
     """
     Call Haiku to extract structured results from context windows.
@@ -260,8 +261,12 @@ async def extract_with_haiku(
 
         window_blocks.append("\n".join(lines))
 
-    prompt = f"""Search query: "{query}"
+    keyword_note = ""
+    if keyword_hint:
+        keyword_note = f'\nNote: The user is specifically searching for the keyword "{keyword_hint}". Prioritize excerpts containing this exact term.\n'
 
+    prompt = f"""Search query: "{query}"
+{keyword_note}
 Here are excerpts from past conversations that may be relevant:
 
 ---
@@ -373,13 +378,24 @@ Use this when you need to find what was discussed in a previous chat — specifi
 
 Returns relevant conversation excerpts with verbatim quotes and context.
 
-This searches the raw chat archives (~900 conversations), NOT the structured memory system. Use memory_search for structured memories, and this tool for finding specific past discussions.""",
+This searches the raw chat archives (~900 conversations), NOT the structured memory system. Use memory_search for structured memories, and this tool for finding specific past discussions.
+
+By default, searches only YOUR OWN conversation history. Use `agent: "all"` to search across all agents, or specify another agent's name to search their chats.
+
+Search modes:
+- Semantic only: provide `query` — best for conceptual/topical searches
+- Keyword only: provide `keyword` — best for exact terms, function names, project names
+- Hybrid: provide both `query` and `keyword` — best-of-both-worlds, keyword matches boosted""",
     input_schema={
         "type": "object",
         "properties": {
             "query": {
                 "type": "string",
                 "description": "What to search for in past conversations. Be specific — e.g. 'discussion about switching from Redis to SQLite' rather than just 'database'.",
+            },
+            "keyword": {
+                "type": "string",
+                "description": "Exact keyword or phrase to match. Best for function names, project names, specific terms (e.g. 'build_chat_index', 'moltbook', 'Qwen3').",
             },
             "max_results": {
                 "type": "integer",
@@ -402,19 +418,25 @@ This searches the raw chat archives (~900 conversations), NOT the structured mem
                     },
                 },
             },
+            "agent": {
+                "type": "string",
+                "description": "Filter by agent. Defaults to your own chats only. Use 'all' to search across all agents, or specify another agent's name (e.g. 'character', 'ops', 'coder').",
+            },
         },
-        "required": ["query"],
     },
 )
 async def search_conversation_history(args: Dict[str, Any]) -> Dict[str, Any]:
-    """Search conversation history using semantic embeddings + LLM extraction."""
+    """Search conversation history using semantic embeddings, keyword matching, or both."""
     try:
         search_query = args.get("query", "").strip()
+        keyword = args.get("keyword", "").strip()
         max_results = min(args.get("max_results", 5), 10)
         date_range_raw = args.get("date_range")
+        agent_param = args.get("agent", "").strip()
+        calling_agent = args.pop("_agent_name", None)
 
-        if not search_query:
-            return _error("query is required")
+        if not search_query and not keyword:
+            return _error("At least one of 'query' or 'keyword' is required.")
 
         start_time = time.time()
 
@@ -440,8 +462,27 @@ async def search_conversation_history(args: Dict[str, Any]) -> Dict[str, Any]:
             if dr:
                 date_range = dr
 
-        # Layer 1: Get embedding search results
-        from contextual_memory.chat_embedding_index import get_index, search
+        # Load index
+        from contextual_memory.chat_embedding_index import (
+            get_index, search, keyword_search, hybrid_search,
+            expand_agent_names,
+        )
+
+        # Determine agent filter:
+        # - "all" → no filter (search everything)
+        # - specific agent name → expand aliases and filter
+        # - not provided → default to calling agent's own chats
+        agent_filter = None
+        agent_scope_label = "all agents"
+        if agent_param.lower() == "all":
+            agent_filter = None
+            agent_scope_label = "all agents"
+        elif agent_param:
+            agent_filter = expand_agent_names(agent_param)
+            agent_scope_label = f"agent: {agent_param}"
+        elif calling_agent:
+            agent_filter = expand_agent_names(calling_agent)
+            agent_scope_label = f"agent: {calling_agent}"
 
         index = get_index()
 
@@ -451,14 +492,27 @@ async def search_conversation_history(args: Dict[str, Any]) -> Dict[str, Any]:
                 "The index will be built automatically on next use."
             )}]}
 
-        # Search with generous k for grouping (we'll narrow down per-conversation)
-        k = max_results * 4  # Get more hits to have good per-conversation coverage
-        hits = search(index, search_query, k=k, date_range=date_range)
+        # Determine search mode and run appropriate search
+        k = max_results * 4  # Get more hits for per-conversation grouping
+
+        if search_query and keyword:
+            search_mode = "hybrid"
+            hits = hybrid_search(index, search_query, keyword, k=k, date_range=date_range, agent_filter=agent_filter)
+        elif keyword:
+            search_mode = "keyword"
+            hits = keyword_search(index, keyword, k=k, date_range=date_range, agent_filter=agent_filter)
+        else:
+            search_mode = "semantic"
+            hits = search(index, search_query, k=k, date_range=date_range, agent_filter=agent_filter)
+
+        display_query = search_query or keyword
 
         if not hits:
+            mode_label = {"semantic": "semantic", "keyword": "keyword", "hybrid": "hybrid"}[search_mode]
+            scope_hint = f' Scope: {agent_scope_label}.' if agent_filter else ''
             return {"content": [{"type": "text", "text": (
-                f'No conversations found matching "{search_query}". '
-                f"Try different search terms or broaden your query."
+                f'No conversations found matching "{display_query}" ({mode_label} search).{scope_hint} '
+                f"Try different search terms, broaden your query, or use agent: \"all\" to search across all agents."
             )}]}
 
         search_time = time.time() - start_time
@@ -471,21 +525,29 @@ async def search_conversation_history(args: Dict[str, Any]) -> Dict[str, Any]:
             fallback = format_embedding_fallback(hits, max_results)
             return {"content": [{"type": "text", "text": fallback}]}
 
+        # Build Haiku extraction query — hint about keyword if present
+        haiku_query = search_query or keyword
+        if keyword and search_query:
+            haiku_query = f'{search_query} (keyword: "{keyword}")'
+
         # Try Haiku extraction
-        extraction = await extract_with_haiku(search_query, windows)
+        extraction = await extract_with_haiku(
+            haiku_query, windows, keyword_hint=keyword if keyword else None,
+        )
 
         total_time = time.time() - start_time
 
         if extraction and extraction.results:
             # Format structured results
             return _format_extraction_response(
-                extraction, search_query, total_time, search_time, len(index.metadata)
+                extraction, display_query, total_time, search_time,
+                len(index.metadata), search_mode=search_mode,
             )
         else:
             # Fallback to raw embedding results
             logger.info("Haiku extraction returned no results, using fallback")
             fallback = format_embedding_fallback(hits, max_results)
-            fallback += f"\n\n*Search completed in {total_time:.1f}s across {len(index.metadata)} indexed messages*"
+            fallback += f"\n\n*{search_mode.title()} search completed in {total_time:.1f}s across {len(index.metadata)} indexed messages*"
             return {"content": [{"type": "text", "text": fallback}]}
 
     except Exception as e:
@@ -502,8 +564,11 @@ def _format_extraction_response(
     total_time: float,
     search_time: float,
     index_size: int,
+    search_mode: str = "semantic",
 ) -> Dict[str, Any]:
     """Format the Haiku extraction response as readable markdown."""
+    mode_label = {"semantic": "🔍 Semantic", "keyword": "🔑 Keyword", "hybrid": "🔀 Hybrid"}
+    mode_str = mode_label.get(search_mode, search_mode.title())
     lines = [f'## Conversation Search: "{query}"\n']
 
     for i, result in enumerate(extraction.results, 1):
@@ -520,7 +585,7 @@ def _format_extraction_response(
             lines.append("")
 
     lines.append(
-        f"*Found {len(extraction.results)} relevant conversations. "
+        f"*{mode_str} search — found {len(extraction.results)} relevant conversations. "
         f"Searched {index_size} messages in {search_time:.1f}s, "
         f"total: {total_time:.1f}s*"
     )

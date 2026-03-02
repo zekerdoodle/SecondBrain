@@ -92,6 +92,7 @@ def _inject_agent_context(tools, agent_name: str):
     AGENT_CONTEXT_TOOLS = {
         "memory_create", "memory_update", "memory_delete",
         "memory_search", "memory_search_agent",
+        "search_conversation_history",
         "schedule_self",
         "working_memory_add", "working_memory_update",
         "working_memory_remove", "working_memory_list",
