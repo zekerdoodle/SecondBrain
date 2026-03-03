@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/file-checkpointing
 title: Rewind file changes with checkpointing
-last_fetched: 2026-02-12T10:02:46.684323+00:00
+last_fetched: 2026-03-03T10:01:23.904947+00:00
 ---
 
 Copy page
@@ -48,7 +48,6 @@ Python
 
 ```shiki
 import asyncio
-import os
 from claude_agent_sdk import (
  ClaudeSDKClient,
  ClaudeAgentOptions,
@@ -64,7 +63,6 @@ async def main():
  extra_args={
  "replay-user-messages": None
  }, # Required to receive checkpoint UUIDs in the response stream
- env={**os.environ, "CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING": "1"},
  )
 
  checkpoint_id = None
@@ -97,34 +95,6 @@ asyncio.run(main())
 
 1. 1
 
- Set the environment variable
-
- File checkpointing requires the `CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING` environment variable. You can set it either via command line before running your script, or directly in the SDK options.
-
- **Option 1: Set via command line**
-
- Python
-
- ```shiki
- export CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING=1
- ```
-
- **Option 2: Set in SDK options**
-
- Pass the environment variable through the `env` option when configuring the SDK:
-
- Python
-
- ```shiki
- import os
-
- options = ClaudeAgentOptions(
- enable_file_checkpointing=True,
- env={**os.environ, "CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING": "1"},
- )
- ```
-2. 2
-
  Enable checkpointing
 
  Configure your SDK options to enable checkpointing and receive checkpoint UUIDs:
@@ -146,7 +116,7 @@ asyncio.run(main())
  async with ClaudeSDKClient(options) as client:
  await client.query("Refactor the authentication module")
  ```
-3. 3
+2. 2
 
  Capture checkpoint UUID and session ID
 
@@ -170,7 +140,7 @@ asyncio.run(main())
  if isinstance(message, ResultMessage):
  session_id = message.session_id
  ```
-4. 4
+3. 3
 
  Rewind files
 
@@ -206,7 +176,6 @@ Python
 
 ```shiki
 import asyncio
-import os
 from claude_agent_sdk import ClaudeSDKClient, ClaudeAgentOptions, UserMessage
 
 async def main():
@@ -214,7 +183,6 @@ async def main():
  enable_file_checkpointing=True,
  permission_mode="acceptEdits",
  extra_args={"replay-user-messages": None},
- env={**os.environ, "CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING": "1"},
  )
 
  safe_checkpoint = None
@@ -248,7 +216,6 @@ Python
 
 ```shiki
 import asyncio
-import os
 from dataclasses import dataclass
 from datetime import datetime
 from claude_agent_sdk import (
@@ -270,7 +237,6 @@ async def main():
  enable_file_checkpointing=True,
  permission_mode="acceptEdits",
  extra_args={"replay-user-messages": None},
- env={**os.environ, "CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING": "1"},
  )
 
  checkpoints = []
@@ -417,7 +383,7 @@ Before you begin, make sure you have the [Claude Agent SDK installed](/docs/en/a
 
  Run the example
 
- Set the environment variable and run the script from the same directory as your utility file.
+ Run the script from the same directory as your utility file.
 
  Open your utility file (`utils.py` or `utils.ts`) in your IDE or editor before running the script. You'll see the file update in real-time as the agent adds doc comments, then revert back to the original when you choose to rewind.
 
@@ -430,7 +396,6 @@ Before you begin, make sure you have the [Claude Agent SDK installed](/docs/en/a
  TypeScript
 
  ```shiki
- export CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING=1
  python try_checkpointing.py
  ```
 
@@ -472,10 +437,10 @@ This error occurs when the checkpoint data doesn't exist for the specified user 
 
 **Common causes**:
 
-- The `CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING` environment variable isn't set
+- File checkpointing was not enabled on the original session (`enable_file_checkpointing` or `enableFileCheckpointing` was not set to `true`)
 - The session wasn't properly completed before attempting to resume and rewind
 
-**Solution**: Make sure you've set the environment variable (see [Set the environment variable](#set-the-environment-variable)), then use the pattern shown in the examples: capture the first user message UUID, complete the session fully, then resume with an empty prompt and call `rewindFiles()` once.
+**Solution**: Ensure `enable_file_checkpointing=True` (Python) or `enableFileCheckpointing: true` (TypeScript) was set on the original session, then use the pattern shown in the examples: capture the first user message UUID, complete the session fully, then resume with an empty prompt and call `rewindFiles()` once.
 
 ### "ProcessTransport is not ready for writing" error
 

@@ -369,7 +369,7 @@ async def _fal_queue_run(model: str, payload: dict) -> dict:
         )
 
 
-def _save_result_images(
+async def _save_result_images(
     result: dict,
     output_path: Optional[str] = None,
     prefix: str = "fal",
@@ -397,16 +397,17 @@ def _save_result_images(
 
         if output_path and len(images) == 1:
             resolved_out = _resolve_path(output_path)
-            os.makedirs(os.path.dirname(resolved_out), exist_ok=True)
+            parent = os.path.dirname(resolved_out)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
             dest = resolved_out
         else:
             filename = _generate_filename(prefix=f"{prefix}_{i+1}")
             dest = os.path.join(OUTPUT_DIR, filename)
 
-        # Synchronous download (we're already in an async context,
-        # but httpx sync is fine for small image files)
-        with httpx.Client(timeout=HTTP_TIMEOUT) as dl_client:
-            dl_resp = dl_client.get(url)
+        # Async download to avoid blocking the event loop
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as dl_client:
+            dl_resp = await dl_client.get(url)
             dl_resp.raise_for_status()
             with open(dest, "wb") as f:
                 f.write(dl_resp.content)
@@ -522,7 +523,7 @@ async def fal_text_to_image(args: Dict[str, Any]) -> Dict[str, Any]:
         logger.info(f"fal text-to-image: model={model}, prompt={prompt[:80]}...")
         result = await _fal_run(model, payload, use_queue=use_queue)
 
-        saved = _save_result_images(result, output_path=output_path, prefix="t2i")
+        saved = await _save_result_images(result, output_path=output_path, prefix="t2i")
 
         seed_used = result.get("seed", "unknown")
         text = f"Generated {len(saved)} image(s) via {model} (seed: {seed_used}):\n"
@@ -646,7 +647,7 @@ async def fal_image_to_image(args: Dict[str, Any]) -> Dict[str, Any]:
         logger.info(f"fal image-to-image: model={model}, prompt={prompt[:80]}...")
         result = await _fal_run(model, payload, use_queue=use_queue)
 
-        saved = _save_result_images(result, output_path=output_path, prefix="i2i")
+        saved = await _save_result_images(result, output_path=output_path, prefix="i2i")
 
         text = f"Edited image via {model}:\n"
         text += f"  Prompt: {prompt}\n"
@@ -813,7 +814,7 @@ async def fal_multi_ref_image(args: Dict[str, Any]) -> Dict[str, Any]:
         )
         result = await _fal_run(model, payload, use_queue=use_queue)
 
-        saved = _save_result_images(result, output_path=output_path, prefix="mref")
+        saved = await _save_result_images(result, output_path=output_path, prefix="mref")
 
         text = f"Generated image via {model} with {len(cdn_urls)} reference image(s):\n"
         text += f"  Prompt: {prompt}\n"

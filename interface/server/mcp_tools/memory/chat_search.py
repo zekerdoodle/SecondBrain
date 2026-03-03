@@ -34,6 +34,7 @@ if SCRIPTS_DIR not in sys.path:
 
 CLAUDE_DIR = os.path.dirname(SCRIPTS_DIR)  # .claude/
 CHATS_DIR = os.path.join(CLAUDE_DIR, "chats")
+PROJECTS_DIR = os.path.join(os.path.expanduser("~"), ".claude", "projects")
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -48,28 +49,103 @@ MAX_TOTAL_TOKENS = 30000      # Total token budget for all windows
 
 class Excerpt(BaseModel):
     """A single excerpt from a conversation."""
-    speaker: str = Field(description="Who said this: 'user' or 'assistant'")
-    text: str = Field(description="Verbatim quote from the conversation")
-    timestamp: Optional[str] = Field(
-        default=None,
-        description="When this was said (ISO date or relative like '2 days ago')"
-    )
+    model_config = {"extra": "ignore"}
+
+    speaker: str = Field(default="assistant", description="Who said this: 'user' or 'assistant'")
+    text: str = Field(default="", description="Verbatim quote from the conversation")
 
 
 class ConversationResult(BaseModel):
     """Search result for a single conversation."""
-    conversation_id: str = Field(description="Chat session ID")
-    conversation_title: str = Field(description="Chat title")
-    date: Optional[str] = Field(default=None, description="Approximate date of the conversation")
-    relevance: str = Field(description="Brief explanation of why this conversation is relevant")
-    excerpts: List[Excerpt] = Field(description="Key excerpts that answer the query")
+    model_config = {"extra": "ignore"}
+
+    conversation_id: str = Field(default="", description="Chat session ID")
+    conversation_title: str = Field(default="", description="Chat title")
+    date: str = Field(default="", description="Approximate date (YYYY-MM-DD) or empty string")
+    relevance: str = Field(default="", description="Brief explanation of why this conversation is relevant")
+    excerpts: List[Excerpt] = Field(default_factory=list, description="Key excerpts that answer the query")
 
 
 class ExtractionResponse(BaseModel):
     """Structured response from Haiku extraction."""
+    model_config = {"extra": "ignore"}
+
     results: List[ConversationResult] = Field(
+        default_factory=list,
         description="Relevant conversations with excerpts, ordered by relevance"
     )
+
+
+
+# ── Chat file loading ──────────────────────────────────────────────────────────
+
+def _find_chat_file(chat_id: str) -> Optional[Tuple[Path, str]]:
+    """Find a chat file by ID, checking both JSON and JSONL locations.
+
+    Returns (path, format) where format is 'json' or 'jsonl', or None if not found.
+    """
+    # Check Second Brain JSON chats first
+    json_path = Path(CHATS_DIR) / f"{chat_id}.json"
+    if json_path.exists():
+        return json_path, "json"
+
+    # Check Claude Code JSONL projects
+    projects_path = Path(PROJECTS_DIR)
+    if projects_path.exists():
+        for proj_dir in projects_path.iterdir():
+            if not proj_dir.is_dir():
+                continue
+            jsonl_path = proj_dir / f"{chat_id}.jsonl"
+            if jsonl_path.exists():
+                return jsonl_path, "jsonl"
+
+    return None
+
+
+def _load_messages_json(chat_path: Path) -> List[Dict[str, Any]]:
+    """Load messages from a Second Brain JSON chat file."""
+    with open(chat_path, "r", encoding="utf-8") as f:
+        chat_data = json.load(f)
+    return chat_data.get("messages", [])
+
+
+def _load_messages_jsonl(chat_path: Path) -> List[Dict[str, Any]]:
+    """Load messages from a Claude Code JSONL chat file.
+
+    Converts JSONL format to the same {role, content} structure as JSON chats.
+    Only returns user/assistant messages (skips tool results, system messages).
+    """
+    from contextual_memory.chat_embedding_index import _extract_text_content
+
+    messages = []
+    with open(chat_path, "r", encoding="utf-8") as f:
+        for line in f:
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            msg_type = obj.get("type")
+            if msg_type not in ("user", "assistant"):
+                continue
+
+            # Skip tool result messages
+            if "toolUseResult" in obj:
+                continue
+
+            message = obj.get("message", {})
+            if not message:
+                continue
+
+            role = message.get("role", msg_type)
+            content = _extract_text_content(message.get("content", ""))
+
+            messages.append({
+                "role": role,
+                "content": content,
+            })
+
+    return messages
 
 
 # ── Context window building ──────────────────────────────────────────────────
@@ -126,84 +202,108 @@ def build_context_windows(
         if total_tokens >= max_total_tokens:
             break
 
-        chat_path = Path(CHATS_DIR) / f"{group['chat_id']}.json"
-        if not chat_path.exists():
+        # Find chat file (JSON or JSONL)
+        found = _find_chat_file(group["chat_id"])
+        if not found:
+            logger.debug(f"Chat file not found for {group['chat_id']}")
             continue
 
+        chat_path, chat_format = found
+
         try:
-            with open(chat_path, "r", encoding="utf-8") as f:
-                chat_data = json.load(f)
+            if chat_format == "json":
+                messages = _load_messages_json(chat_path)
+            else:
+                messages = _load_messages_jsonl(chat_path)
 
-            messages = chat_data.get("messages", [])
+            if not messages:
+                continue
 
-            # Determine the range of messages to include
-            match_indices = set(group["match_indices"])
-            min_idx = max(0, min(match_indices) - window_size)
-            max_idx = min(len(messages), max(match_indices) + window_size + 1)
+            # Cluster nearby matches — matches within window_size*2 of each
+            # other merge into one cluster; distant matches get separate windows
+            match_indices = sorted(group["match_indices"])
+            clusters: List[List[int]] = []
+            current_cluster: List[int] = [match_indices[0]]
 
-            # Extract messages in range (only user/assistant)
-            window_messages = []
-            window_tokens = 0
+            for idx in match_indices[1:]:
+                if idx - current_cluster[-1] <= window_size * 2:
+                    current_cluster.append(idx)
+                else:
+                    clusters.append(current_cluster)
+                    current_cluster = [idx]
+            clusters.append(current_cluster)
 
-            for i in range(min_idx, max_idx):
-                if i >= len(messages):
+            # Build a sub-window for each cluster
+            for cluster in clusters:
+                if total_tokens >= max_total_tokens:
                     break
 
-                msg = messages[i]
-                role = msg.get("role", "")
+                cluster_set = set(cluster)
+                min_idx = max(0, min(cluster) - window_size)
+                max_idx = min(len(messages), max(cluster) + window_size + 1)
 
-                if role not in ("user", "assistant"):
-                    continue
+                window_messages = []
+                window_tokens = 0
 
-                # Skip hidden messages
-                if msg.get("hidden", False):
-                    continue
-
-                content = msg.get("content", "")
-                if isinstance(content, list):
-                    text_parts = []
-                    for block in content:
-                        if isinstance(block, dict) and block.get("type") == "text":
-                            text_parts.append(block.get("text", ""))
-                        elif isinstance(block, str):
-                            text_parts.append(block)
-                    content = "\n".join(text_parts)
-
-                if not isinstance(content, str):
-                    continue
-
-                cleaned = strip_tool_markers(content)
-                if not cleaned:
-                    continue
-
-                # Token budget per window
-                msg_tokens = int(len(cleaned) * TOKENS_PER_CHAR)
-                if window_tokens + msg_tokens > max_tokens_per_window:
-                    # Truncate this message to fit
-                    remaining = max_tokens_per_window - window_tokens
-                    if remaining > 100:  # Only include if meaningful
-                        char_limit = int(remaining / TOKENS_PER_CHAR)
-                        cleaned = cleaned[:char_limit] + "..."
-                        msg_tokens = remaining
-                    else:
+                for i in range(min_idx, max_idx):
+                    if i >= len(messages):
                         break
 
-                window_messages.append({
-                    "role": role,
-                    "content": cleaned,
-                    "is_match": i in match_indices,
-                })
-                window_tokens += msg_tokens
+                    msg = messages[i]
+                    role = msg.get("role", "")
 
-            if window_messages:
-                windows.append({
-                    "chat_id": group["chat_id"],
-                    "title": group["title"],
-                    "score": group["score"],
-                    "timestamp": group.get("timestamp"),
-                    "messages": window_messages,
-                })
-                total_tokens += window_tokens
+                    if role not in ("user", "assistant"):
+                        continue
+
+                    # Skip hidden messages
+                    if msg.get("hidden", False):
+                        continue
+
+                    content = msg.get("content", "")
+                    if isinstance(content, list):
+                        text_parts = []
+                        for block in content:
+                            if isinstance(block, dict) and block.get("type") == "text":
+                                text_parts.append(block.get("text", ""))
+                            elif isinstance(block, str):
+                                text_parts.append(block)
+                        content = "\n".join(text_parts)
+
+                    if not isinstance(content, str):
+                        continue
+
+                    cleaned = strip_tool_markers(content)
+                    if not cleaned:
+                        continue
+
+                    # Token budget per window
+                    msg_tokens = int(len(cleaned) * TOKENS_PER_CHAR)
+                    if window_tokens + msg_tokens > max_tokens_per_window:
+                        # Truncate this message to fit
+                        remaining = max_tokens_per_window - window_tokens
+                        if remaining > 100:  # Only include if meaningful
+                            char_limit = int(remaining / TOKENS_PER_CHAR)
+                            cleaned = cleaned[:char_limit] + "..."
+                            msg_tokens = remaining
+                        else:
+                            break
+
+                    window_messages.append({
+                        "role": role,
+                        "content": cleaned,
+                        "is_match": i in cluster_set,
+                    })
+                    window_tokens += msg_tokens
+
+                if window_messages:
+                    windows.append({
+                        "chat_id": group["chat_id"],
+                        "title": group["title"],
+                        "score": group["score"],
+                        "timestamp": group.get("timestamp"),
+                        "messages": window_messages,
+                    })
+                    total_tokens += window_tokens
 
         except Exception as e:
             logger.warning(f"Error loading chat {group['chat_id']}: {e}")
@@ -212,17 +312,77 @@ def build_context_windows(
     return windows
 
 
+# ── JSON repair ───────────────────────────────────────────────────────────────
+
+def _repair_truncated_json(json_str: str) -> Optional[str]:
+    """Attempt to repair truncated JSON from Haiku by closing open structures.
+
+    Works by tracking open brackets/braces/strings and closing them.
+    Returns None if the input is too broken to repair.
+    """
+    if not json_str or not json_str.strip().startswith('{'):
+        return None
+
+    # Find the last complete result object by looking for the pattern
+    # Try progressively shorter substrings until we find valid JSON
+    # Strategy: find last complete "}" and close the remaining structure
+
+    # Count open structures
+    in_string = False
+    escape_next = False
+    stack = []
+
+    for ch in json_str:
+        if escape_next:
+            escape_next = False
+            continue
+        if ch == '\\' and in_string:
+            escape_next = True
+            continue
+        if ch == '"' and not escape_next:
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+
+        if ch in '{[':
+            stack.append(ch)
+        elif ch == '}':
+            if stack and stack[-1] == '{':
+                stack.pop()
+        elif ch == ']':
+            if stack and stack[-1] == '[':
+                stack.pop()
+
+    if not stack:
+        return json_str  # Already valid
+
+    # If we're inside a string, close it first
+    if in_string:
+        json_str += '"'
+
+    # Close remaining open structures in reverse order
+    closers = {'{': '}', '[': ']'}
+    suffix = ""
+    for opener in reversed(stack):
+        suffix += closers.get(opener, '')
+
+    repaired = json_str + suffix
+    return repaired
+
+
 # ── Haiku extraction ──────────────────────────────────────────────────────────
 
-EXTRACTION_SYSTEM_PROMPT = """You are a precise conversation search tool. Given a user's search query and excerpts from past conversations, extract the most relevant portions.
+EXTRACTION_SYSTEM_PROMPT = """You are a conversation search tool. Given a user's search query and excerpts from past conversations, extract relevant portions.
 
 Rules:
-1. Only include conversations that are genuinely relevant to the query
-2. Use VERBATIM quotes from the conversation text — do not paraphrase
-3. Include enough context for the excerpts to be meaningful
-4. Order results by relevance (most relevant first)
-5. If none of the conversations are relevant, return an empty results list
-6. Keep excerpts concise but complete — include the key information"""
+1. Include conversations that contain information related to the query — even partial matches or indirect context count
+2. Messages marked with ⭐ are search hits — prioritize extracting those and their surrounding context
+3. Use VERBATIM quotes from the conversation text — do not paraphrase
+4. Keep each excerpt to 1-3 sentences MAX (the most relevant sentences only)
+5. Order results by relevance (most relevant first)
+6. ONLY return an empty results list if the conversations have absolutely nothing to do with the query
+7. Return valid, complete JSON — never truncate mid-string"""
 
 
 async def extract_with_haiku(
@@ -233,10 +393,17 @@ async def extract_with_haiku(
     """
     Call Haiku to extract structured results from context windows.
 
-    Follows the query_rewriter.py pattern: fully consume async generator.
+    Uses plain text JSON response (not SDK structured output) for reliability.
     """
-    from claude_agent_sdk import query as sdk_query, ClaudeAgentOptions, ResultMessage, AssistantMessage, ToolUseBlock
+    logger.info(f"[DIAG] extract_with_haiku ENTERED: query={query[:80]!r}, windows={len(windows)}, keyword_hint={keyword_hint!r}")
+    try:
+        from claude_agent_sdk import query as sdk_query, ClaudeAgentOptions, ResultMessage
+        logger.info("[DIAG] SDK imports succeeded")
+    except Exception as import_err:
+        logger.error(f"[DIAG] SDK import failed: {import_err}")
+        return None
     import datetime
+    import re
 
     # Format windows for the prompt
     window_blocks = []
@@ -273,11 +440,28 @@ Here are excerpts from past conversations that may be relevant:
 {"---".join(window_blocks)}
 ---
 
-Extract the most relevant conversations and quotes that answer the search query. Return structured JSON."""
+Extract the most relevant conversations and quotes that answer the search query.
+
+Return ONLY a JSON object with this exact structure (no markdown, no explanation):
+{{
+  "results": [
+    {{
+      "conversation_id": "the chat session ID",
+      "conversation_title": "the chat title",
+      "date": "YYYY-MM-DD or null",
+      "relevance": "brief explanation of why this is relevant",
+      "excerpts": [
+        {{
+          "speaker": "user or assistant",
+          "text": "verbatim quote from the conversation"
+        }}
+      ]
+    }}
+  ]
+}}"""
 
     try:
-        structured_data = None
-        result = None
+        result_text = None
 
         # IMPORTANT: Must fully consume the async generator to avoid cancel scope errors
         async for message in sdk_query(
@@ -285,30 +469,69 @@ Extract the most relevant conversations and quotes that answer the search query.
             options=ClaudeAgentOptions(
                 model="haiku",
                 system_prompt=EXTRACTION_SYSTEM_PROMPT,
-                output_format={
-                    "type": "json_schema",
-                    "schema": ExtractionResponse.model_json_schema()
-                },
                 max_turns=1,
+                permission_mode="bypassPermissions",
+                allowed_tools=[],
+                setting_sources=[],
             )
         ):
-            # SDK workaround: structured output arrives as StructuredOutput tool use block
-            if isinstance(message, AssistantMessage):
-                for block in message.content:
-                    if isinstance(block, ToolUseBlock) and block.name == "StructuredOutput":
-                        structured_data = block.input
-
             if isinstance(message, ResultMessage):
-                data = message.structured_output or structured_data
-                if data:
-                    result = ExtractionResponse.model_validate(data)
-                elif message.is_error:
+                if message.is_error:
                     logger.warning(f"Haiku extraction error: {message.result}")
+                elif message.result:
+                    result_text = message.result
 
-        return result
+        if not result_text:
+            logger.warning("Haiku extraction returned empty result")
+            return None
 
-    except Exception as e:
-        logger.warning(f"Haiku extraction failed: {e}")
+        # Parse JSON from text response — handle markdown code blocks
+        json_str = result_text.strip()
+        # Strip ```json ... ``` wrapper if present
+        md_match = re.search(r'```(?:json)?\s*\n?(.*?)\n?```', json_str, re.DOTALL)
+        if md_match:
+            json_str = md_match.group(1).strip()
+
+        # Try to find JSON object in the response
+        if not json_str.startswith('{'):
+            start = json_str.find('{')
+            end = json_str.rfind('}')
+            if start >= 0 and end > start:
+                json_str = json_str[start:end + 1]
+
+        try:
+            data = json.loads(json_str)
+        except json.JSONDecodeError as e:
+            # Try to repair truncated JSON by closing open structures
+            repaired = _repair_truncated_json(json_str)
+            if repaired:
+                try:
+                    data = json.loads(repaired)
+                    logger.info("Repaired truncated JSON from Haiku response")
+                except json.JSONDecodeError:
+                    logger.warning(f"Haiku returned invalid JSON (repair failed): {e}. Response: {result_text[:500]}")
+                    return None
+            else:
+                logger.warning(f"Haiku returned invalid JSON: {e}. Response: {result_text[:500]}")
+                return None
+
+        # Lenient validation — fix common issues before validating
+        if isinstance(data, dict) and "results" in data:
+            for r in data["results"]:
+                if "excerpts" not in r:
+                    r["excerpts"] = []
+                for field in ("conversation_id", "conversation_title", "relevance"):
+                    if field not in r:
+                        r[field] = ""
+
+        try:
+            return ExtractionResponse.model_validate(data)
+        except Exception as e:
+            logger.warning(f"Haiku extraction validation failed: {e}. Data: {json.dumps(data)[:500]}")
+            return None
+
+    except BaseException as e:
+        logger.error(f"[DIAG] Haiku extraction failed ({type(e).__name__}): {e}", exc_info=True)
         return None
 
 
@@ -579,8 +802,7 @@ def _format_extraction_response(
 
         for excerpt in result.excerpts:
             speaker = "**User**" if excerpt.speaker == "user" else "**Assistant**"
-            ts = f" _{excerpt.timestamp}_" if excerpt.timestamp else ""
-            lines.append(f"{speaker}{ts}:")
+            lines.append(f"{speaker}:")
             lines.append(f"> {excerpt.text}")
             lines.append("")
 

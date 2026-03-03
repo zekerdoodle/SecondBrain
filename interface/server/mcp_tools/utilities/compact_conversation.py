@@ -4,8 +4,8 @@ Conversation Compaction tool.
 Compacts older conversation history into a dense summary, preserving the last N
 exchanges verbatim. Reduces context window usage for long conversations.
 
-The compaction subagent (Sonnet) produces a narrative summary preserving key
-decisions, facts, action items, tool results, and conversational flow.
+The compaction subagent (Opus) produces a thorough, comprehensive summary preserving
+all decisions, facts, action items, tool results, and conversational flow.
 """
 
 import os
@@ -22,17 +22,23 @@ from ..registry import register_tool
 logger = logging.getLogger("mcp_tools.compact_conversation")
 
 # Compaction subagent system prompt
-COMPACTION_SYSTEM_PROMPT = """You are a conversation compactor. Produce a dense, accurate summary of a conversation between the user (user) and Claude (assistant).
+COMPACTION_SYSTEM_PROMPT = """You are a conversation compactor. Produce a thorough, comprehensive summary of a conversation between the user (user) and Claude (assistant).
 
-Preserve:
-1. KEY DECISIONS and their rationale
-2. FACTS established (numbers, names, dates, preferences)
-3. ACTION ITEMS (what was committed to, by whom)
-4. TOOL RESULTS that mattered (commands run, API responses, errors hit)
-5. CURRENT STATE (what we're in the middle of, what's pending, what's been tried)
+Your job is to preserve EVERYTHING of substance. When in doubt, INCLUDE it. Lost context is unrecoverable — err heavily on the side of completeness.
 
-Do NOT include: pleasantries, greetings, social filler, redundant restatements.
-Write in narrative past tense. Use sections if the conversation spanned multiple distinct topics. Aim for 10-20% of the original length.
+Preserve ALL of the following:
+1. EVERY decision made and its full rationale (why X was chosen over Y)
+2. ALL facts established — numbers, names, dates, file paths, URLs, preferences, versions, config values
+3. ALL action items — what was committed to, by whom, and any conditions/caveats
+4. ALL tool results that produced meaningful output — commands run, their output, API responses, errors encountered, file contents read
+5. CURRENT STATE — what we're in the middle of, what's pending, what's been tried and failed, what's queued next
+6. TECHNICAL DETAILS — code snippets discussed, architecture decisions, specific implementations, variable names, function signatures
+7. USER PREFERENCES and opinions expressed — how the user wants things done, what he liked/disliked
+8. DEBUGGING HISTORY — what was investigated, what was ruled out, what the root cause was
+9. CONTEXT that would be needed to seamlessly continue the conversation — anything where losing it would force re-asking or re-investigating
+
+Do NOT include: pleasantries, greetings, social filler, redundant restatements of the same point.
+Write in narrative past tense. Use sections if the conversation spanned multiple distinct topics. Be thorough — aim for 20-40% of the original length. A longer summary that preserves everything is far better than a short one that loses context.
 
 Begin the summary with: === Compacted History ===
 End with: === End Compacted History ==="""
@@ -106,7 +112,7 @@ async def _summarize_messages(messages: List[Dict]) -> str:
     """
     Run the compaction subagent to summarize older messages.
 
-    Uses Sonnet via the Claude Agent SDK for speed and cost efficiency.
+    Uses Opus via the Claude Agent SDK for maximum comprehension and thoroughness.
     Returns a text summary.
     """
     from claude_agent_sdk import query, ClaudeAgentOptions, ResultMessage
@@ -126,7 +132,7 @@ async def _summarize_messages(messages: List[Dict]) -> str:
         async for message in query(
             prompt=prompt,
             options=ClaudeAgentOptions(
-                model="sonnet",
+                model="opus",
                 system_prompt=COMPACTION_SYSTEM_PROMPT,
                 max_turns=1,
                 permission_mode="bypassPermissions",
@@ -187,14 +193,21 @@ async def compact_conversation(args: Dict[str, Any]) -> Dict[str, Any]:
     main_module = sys.modules.get("main") or sys.modules.get("__main__")
     active_convs = getattr(main_module, "active_conversations", {})
     chat_manager = getattr(main_module, "chat_manager", None)
-    current_session = getattr(main_module, "current_processing_session", None)
+    active_processing = getattr(main_module, "active_processing_sessions", {})
+
+    # Auto-detect which session is calling this tool
+    current_session = None
+    for sid in active_processing:
+        if sid in active_convs:
+            current_session = sid
+            break
 
     if not current_session:
         return {
             "content": [
                 {
                     "type": "text",
-                    "text": "Error: Could not determine current session ID.",
+                    "text": "Error: Could not determine current session ID. No active conversations found.",
                 }
             ],
             "is_error": True,

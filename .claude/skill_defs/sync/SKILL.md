@@ -62,6 +62,19 @@ CRITICAL ROUTING RULE — the user's calendar and tasks are for USER'S actions o
 
 When in doubt about ownership: if a human doesn't need to do it, it's an agent task.
 
+**Examples — NEVER goes to Google Tasks/Calendar:**
+- Git backup failures, server errors, code bugs → nightly_queue.md
+- CUA rewrites, agent prompt updates, skill edits → sync_agent_tasks.md
+- Memory cleanup, storage audits, file structure issues → sync_agent_tasks.md
+- Moltbook API failures, scheduler issues → sync_agent_tasks.md
+- Any task where the action is taken by an agent, not the user
+
+**Examples — DOES go to Google Tasks:**
+- Job applications to review or submit
+- Personal appointments, meetings, deadlines
+- Purchases, errands, financial tasks
+- Decisions only the user can make (not just "approve agent work")
+
 1. EXTRACT the user-actionable items from the manifest → Create Google Tasks
 2. EXTRACT the user time-bound items → Create Google Calendar events
 3. EXTRACT agent/Character items → Write to 00_Inbox/sync_agent_tasks.md (Character will schedule these herself)

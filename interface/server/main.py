@@ -2731,7 +2731,7 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
                             logger.info(f"Marked form {submitted_form_id} as submitted in conv.messages")
                             break
                     # Also update in SS messages (source for display_messages rebuild)
-                    _ss_for_form = session_streaming_states.get(state_key)
+                    _ss_for_form = session_streaming_states.get(streaming_state_key)
                     if _ss_for_form:
                         for msg in _ss_for_form.messages:
                             if msg.get("formData", {}).get("formId") == submitted_form_id:
@@ -4946,6 +4946,9 @@ Please review the agent response(s) and take any necessary follow-up action. If 
         logger.info(f"Wake-up: fresh SDK session with {len(conversation_history)} messages of history, {len(notifications)} notifications (chat_id: {chat_id}, agents: {agent_names_str})")
         claude = ClaudeWrapper(session_id="new", cwd=ROOT_DIR, chat_id=chat_id, chat_messages=conversation_history)
 
+        # Register wrapper so interrupt/reconnect can find it
+        active_claude_wrappers[chat_id] = claude
+
         # --- Segment/tool tracking (same approach as _collect_structured_output) ---
         all_segments = []
         current_segment = []
@@ -5109,6 +5112,7 @@ Please review the agent response(s) and take any necessary follow-up action. If 
             # Finalize any partial content on error
             finalize_wakeup_segment()
         finally:
+            active_claude_wrappers.pop(chat_id, None)
             active_processing_sessions.pop(chat_id, None)
 
         # Append error content to last segment if any

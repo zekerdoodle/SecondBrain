@@ -683,6 +683,7 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
 
         case 'block_delta': {
           const { message_id, block_id, delta } = data;
+          lastActivityTime.current = Date.now();
           if (delta) {
             const key = `${message_id}:${block_id}`;
             const existing = pendingDeltas.current.get(key) || '';
@@ -1404,25 +1405,45 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
 
     // If we're in a processing state, set a timeout to auto-reset
     // This only triggers if no 'done' event arrives (stale state scenario)
-    processingTimeoutRef.current = setTimeout(() => {
-      // Double-check that we haven't received any activity updates
-      const timeSinceActivity = Date.now() - lastActivityTime.current;
-      if (timeSinceActivity < timeoutMs - 1000) {
-        // Activity happened recently, don't reset yet - reschedule
-        console.log(`Activity detected ${timeSinceActivity}ms ago, not resetting`);
-        return;
-      }
+    const scheduleTimeout = () => {
+      processingTimeoutRef.current = setTimeout(() => {
+        // Double-check that we haven't received any activity updates
+        const timeSinceActivity = Date.now() - lastActivityTime.current;
+        if (timeSinceActivity < timeoutMs - 1000) {
+          // Activity happened recently, don't reset yet - reschedule with remaining time
+          const remaining = timeoutMs - timeSinceActivity;
+          console.log(`Activity detected ${timeSinceActivity}ms ago, rescheduling timeout in ${remaining}ms`);
+          processingTimeoutRef.current = setTimeout(() => {
+            const recheck = Date.now() - lastActivityTime.current;
+            if (recheck < timeoutMs - 1000) {
+              // Still active - let the next status change re-trigger
+              console.log(`Still active after reschedule (${recheck}ms ago), deferring`);
+              return;
+            }
+            console.log(`Processing state timeout after reschedule - resetting to idle. Status was: ${status}`);
+            setStatus('idle');
+            setStatusText('');
+            setActiveTools(new Map());
+            setMessages(prev => prev.map(m =>
+              m.isStreaming ? { ...m, isStreaming: false } : m
+            ));
+            pendingDeltas.current.clear();
+          }, remaining);
+          return;
+        }
 
-      console.log(`Processing state timeout after ${timeoutMs/1000}s - resetting to idle (likely stale state). Status was: ${status}`);
-      setStatus('idle');
-      setStatusText('');
-      setActiveTools(new Map());
-      // Finalize any streaming messages
-      setMessages(prev => prev.map(m =>
-        m.isStreaming ? { ...m, isStreaming: false } : m
-      ));
-      pendingDeltas.current.clear();
-    }, timeoutMs);
+        console.log(`Processing state timeout after ${timeoutMs/1000}s - resetting to idle (likely stale state). Status was: ${status}`);
+        setStatus('idle');
+        setStatusText('');
+        setActiveTools(new Map());
+        // Finalize any streaming messages
+        setMessages(prev => prev.map(m =>
+          m.isStreaming ? { ...m, isStreaming: false } : m
+        ));
+        pendingDeltas.current.clear();
+      }, timeoutMs);
+    };
+    scheduleTimeout();
 
     return () => {
       if (processingTimeoutRef.current) {
@@ -1438,7 +1459,7 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
       return false;
     }
 
-    const msgId = Date.now().toString();
+    const msgId = crypto.randomUUID();
 
     // Add to pending messages queue with status tracking
     const queuedMsg: QueuedMessage = {

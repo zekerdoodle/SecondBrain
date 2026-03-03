@@ -877,13 +877,22 @@ export const Chat: React.FC<ChatProps> = ({
   const isUserNearBottom = useRef(true);
   useCodeBlockWrap(scrollRef);
 
-  // Auto-resize textarea
+  // Auto-resize textarea — preserve chat scroll position during reflow
   useEffect(() => {
     const textarea = textareaRef.current;
+    const scrollEl = scrollRef.current;
     if (textarea) {
+      // Snapshot scroll position before the resize reflow
+      const prevScrollTop = scrollEl?.scrollTop ?? 0;
+
       textarea.style.height = 'auto';
       const maxHeight = window.innerHeight * 0.5;
       textarea.style.height = Math.min(textarea.scrollHeight, maxHeight) + 'px';
+
+      // Restore scroll position so typing never moves the chat
+      if (scrollEl) {
+        scrollEl.scrollTop = prevScrollTop;
+      }
     }
   }, [input]);
 
