@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/python
 title: Agent SDK reference - Python
-last_fetched: 2026-02-28T10:02:16.582253+00:00
+last_fetched: 2026-03-04T10:03:18.133515+00:00
 ---
 
 Copy page
@@ -534,7 +534,7 @@ class ClaudeAgentOptions:
 | Property | Type | Default | Description |
 | --- | --- | --- | --- |
 | `tools` | `list[str] | ToolsPreset | None` | `None` | Tools configuration. Use `{"type": "preset", "preset": "claude_code"}` for Claude Code's default tools |
-| `allowed_tools` | `list[str]` | `[]` | List of allowed tool names |
+| `allowed_tools` | `list[str]` | `[]` | Tools to auto-approve without prompting. This does not restrict Claude to only these tools; unlisted tools fall through to `permission_mode` and `can_use_tool`. Use `disallowed_tools` to block tools. See [Permissions](/docs/en/agent-sdk/permissions#allow-and-deny-rules) |
 | `system_prompt` | `str | SystemPromptPreset | None` | `None` | System prompt configuration. Pass a string for custom prompt, or use `{"type": "preset", "preset": "claude_code"}` for Claude Code's system prompt. Add `"append"` to extend the preset |
 | `mcp_servers` | `dict[str, McpServerConfig] | str | Path` | `{}` | MCP server configurations or path to config file |
 | `permission_mode` | `PermissionMode | None` | `None` | Permission mode for tool usage |
@@ -542,7 +542,7 @@ class ClaudeAgentOptions:
 | `resume` | `str | None` | `None` | Session ID to resume |
 | `max_turns` | `int | None` | `None` | Maximum conversation turns |
 | `max_budget_usd` | `float | None` | `None` | Maximum budget in USD for the session |
-| `disallowed_tools` | `list[str]` | `[]` | List of disallowed tool names |
+| `disallowed_tools` | `list[str]` | `[]` | Tools to always deny. Deny rules are checked first and override `allowed_tools` and `permission_mode` (including `bypassPermissions`) |
 | `enable_file_checkpointing` | `bool` | `False` | Enable file change tracking for rewinding. See [File checkpointing](/docs/en/agent-sdk/file-checkpointing) |
 | `model` | `str | None` | `None` | Claude model to use |
 | `fallback_model` | `str | None` | `None` | Fallback model to use if the primary model fails |

@@ -186,10 +186,15 @@ def _generate_filename(prefix: str = "fal") -> str:
 
 
 def _resolve_path(path: str) -> str:
-    """Resolve a path relative to project root or absolute."""
+    """Resolve a path relative to project root, with containment check."""
+    project_root = os.path.realpath(os.path.expanduser("~/second_brain"))
     if os.path.isabs(path):
-        return path
-    return os.path.join(os.path.expanduser("~/second_brain"), path)
+        resolved = os.path.realpath(path)
+    else:
+        resolved = os.path.realpath(os.path.join(project_root, path))
+    if not resolved.startswith(project_root + os.sep) and resolved != project_root:
+        raise ValueError(f"Path escapes project root: {path}")
+    return resolved
 
 
 def _get_mime_type(path: str) -> str:

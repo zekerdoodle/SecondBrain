@@ -24,6 +24,7 @@ import signal
 import time
 import base64
 import hashlib
+import html
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -86,6 +87,7 @@ app.add_middleware(
 
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"))
 UI_CONFIG_FILE = os.path.join(ROOT_DIR, ".claude", "ui_config.json")
+PREFERENCES_FILE = os.path.join(ROOT_DIR, ".claude", "user_preferences.json")
 CHATS_DIR = os.path.join(ROOT_DIR, ".claude", "chats")
 WAL_DIR = os.path.join(ROOT_DIR, ".claude", "wal")
 CHAT_IMAGES_DIR = os.path.join(ROOT_DIR, ".claude", "chat_images")
@@ -380,16 +382,12 @@ async def _run_titler_background(
             logger.info(f"Titler: Updated title to '{new_title}' for {chat_id}")
 
         # Push title update to all connected clients
-        for ws in list(client_sessions):
-            try:
-                await ws.send_json({
-                    "type": "chat_title_update",
-                    "session_id": chat_id,
-                    "title": new_title,
-                    "confidence": result.get("confidence", 0.5)
-                })
-            except Exception:
-                pass
+        await broadcast_to_all_clients({
+            "type": "chat_title_update",
+            "session_id": chat_id,
+            "title": new_title,
+            "confidence": result.get("confidence", 0.5)
+        })
 
     except Exception as e:
         logger.error(f"Titler: Background task failed: {e}")
@@ -437,6 +435,56 @@ class UIConfigUpdateRequest(BaseModel):
     exclude_files: Optional[List[str]] = None
     exclude_patterns: Optional[List[str]] = None
     default_editor_file: Optional[str] = None
+
+
+class UserPreferencesUpdate(BaseModel):
+    theme: Optional[Dict[str, Any]] = None
+    typography: Optional[Dict[str, Any]] = None
+
+
+# --- User Preferences API (synced across devices) ---
+
+@app.get("/api/preferences")
+def get_preferences():
+    """Get user preferences (theme + typography), synced across all devices."""
+    if not os.path.exists(PREFERENCES_FILE):
+        return {"theme": None, "typography": None}
+    try:
+        with open(PREFERENCES_FILE, 'r') as f:
+            data = json.load(f)
+        return {
+            "theme": data.get("theme"),
+            "typography": data.get("typography"),
+        }
+    except Exception as e:
+        logger.error(f"Failed to load user preferences: {e}")
+        raise HTTPException(status_code=500, detail="Failed to load preferences")
+
+
+@app.patch("/api/preferences")
+def update_preferences(req: UserPreferencesUpdate):
+    """Update user preferences (partial update). Syncs across all devices."""
+    existing = {}
+    if os.path.exists(PREFERENCES_FILE):
+        try:
+            with open(PREFERENCES_FILE, 'r') as f:
+                existing = json.load(f)
+        except Exception:
+            pass
+
+    if req.theme is not None:
+        existing["theme"] = req.theme
+    if req.typography is not None:
+        existing["typography"] = req.typography
+
+    try:
+        os.makedirs(os.path.dirname(PREFERENCES_FILE), exist_ok=True)
+        with open(PREFERENCES_FILE, 'w') as f:
+            json.dump(existing, f, indent=2)
+        return {"status": "ok"}
+    except Exception as e:
+        logger.error(f"Failed to save user preferences: {e}")
+        raise HTTPException(status_code=500, detail="Failed to save preferences")
 
 
 # --- UI Config API ---
@@ -700,6 +748,27 @@ async def upload_files(dir_path: str, files: List[UploadFile] = FastAPIFile(...)
 ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 MAX_IMAGE_SIZE = 25 * 1024 * 1024  # 25MB
 
+# Magic byte signatures for server-side image type validation
+_IMAGE_MAGIC_BYTES = {
+    "image/png": [b"\x89PNG\r\n\x1a\n"],
+    "image/jpeg": [b"\xff\xd8\xff"],
+    "image/gif": [b"GIF87a", b"GIF89a"],
+    "image/webp": [b"RIFF"],  # Full check: RIFF????WEBP
+}
+
+def _validate_image_magic(content: bytes, claimed_type: str) -> bool:
+    """Validate that file content magic bytes match the claimed MIME type."""
+    signatures = _IMAGE_MAGIC_BYTES.get(claimed_type)
+    if not signatures:
+        return False
+    for sig in signatures:
+        if content[:len(sig)] == sig:
+            # Extra check for WebP: bytes 8-12 must be "WEBP"
+            if claimed_type == "image/webp" and content[8:12] != b"WEBP":
+                return False
+            return True
+    return False
+
 @app.post("/api/chat/images")
 async def upload_chat_images(files: List[UploadFile] = FastAPIFile(...)):
     """Upload images for use in chat messages. Returns image IDs and URLs."""
@@ -713,6 +782,10 @@ async def upload_chat_images(files: List[UploadFile] = FastAPIFile(...)):
         content = await file.read()
         if len(content) > MAX_IMAGE_SIZE:
             raise HTTPException(status_code=400, detail=f"Image too large: {len(content)} bytes. Max: {MAX_IMAGE_SIZE}")
+
+        # Server-side magic byte validation — prevents MIME spoofing (e.g. HTML disguised as image/png)
+        if not _validate_image_magic(content, content_type):
+            raise HTTPException(status_code=400, detail=f"File content does not match claimed type: {content_type}")
 
         # Generate unique filename using content hash
         content_hash = hashlib.sha256(content).hexdigest()[:12]
@@ -813,15 +886,16 @@ def rename_file(req: RenameRequest):
     else:
         new_path = os.path.join(parent_dir, req.new_name)
 
+    # Authorization/bounds check FIRST — prevents info disclosure via 404 on traversal attempts
+    if not os.path.abspath(old_path).startswith(ROOT_DIR) or \
+       not os.path.abspath(new_path).startswith(ROOT_DIR):
+        raise HTTPException(status_code=403, detail="Access denied")
+
     if not os.path.exists(old_path):
         raise HTTPException(status_code=404, detail="File not found")
 
     if os.path.exists(new_path):
         raise HTTPException(status_code=400, detail="Destination already exists")
-
-    if not os.path.abspath(old_path).startswith(ROOT_DIR) or \
-       not os.path.abspath(new_path).startswith(ROOT_DIR):
-        raise HTTPException(status_code=403, detail="Access denied")
 
     os.rename(old_path, new_path)
     return {"status": "ok"}
@@ -1144,10 +1218,12 @@ def list_tool_categories():
     """List available MCP tool categories for the Agent Builder."""
     try:
         from mcp_tools.constants import TOOL_CATEGORIES
+        # Hide internal categories and parent "memory" (subcategories cover it fully)
+        hidden = {"gardener", "memory"}
         return {"categories": [
             {"name": cat, "tools": tools}
             for cat, tools in TOOL_CATEGORIES.items()
-            if cat not in ("gardener",)  # Hide internal categories
+            if cat not in hidden
         ]}
     except ImportError:
         return {"categories": []}
@@ -1209,7 +1285,7 @@ def create_agent(req: AgentCreateRequest):
     from registry import get_registry
     get_registry().reload()
 
-    return {"status": "created", "name": name, "restart_required": True}
+    return {"status": "created", "name": name, "restart_required": False}
 
 
 @app.put("/api/agents/{name}")
@@ -1600,14 +1676,10 @@ async def make_chess_move(request: ChessMoveRequest):
     game_state = result.get("game_state", {})
 
     # Broadcast to all connected clients
-    for ws in list(client_sessions):
-        try:
-            await ws.send_json({
-                "type": "chess_update",
-                "game": game_state
-            })
-        except Exception:
-            pass
+    await broadcast_to_all_clients({
+        "type": "chess_update",
+        "game": game_state
+    })
 
     # Return context for Claude if it's now Claude's turn
     response = {
@@ -1728,19 +1800,37 @@ async def broadcast_to_session(session_id: str, message: dict):
             client_sessions.pop(ws, None)
 
 
+async def broadcast_to_all_clients(message: dict):
+    """Broadcast a message to ALL connected WebSocket clients with dead connection cleanup.
+
+    Collects dead connections during iteration, then removes them from both
+    client_sessions and session_clients dictionaries to prevent memory leaks.
+    """
+    dead = set()
+    for ws in list(client_sessions):
+        try:
+            await ws.send_json(message)
+        except Exception:
+            dead.add(ws)
+
+    # Clean up dead connections from both tracking dicts
+    if dead:
+        for ws in dead:
+            client_sessions.pop(ws, None)
+        for sid, clients in list(session_clients.items()):
+            clients -= dead
+            if not clients:
+                del session_clients[sid]
+
+
 async def broadcast_chat_created(chat_id: str, title: str, agent: str = None,
                                   is_system: bool = False, scheduled: bool = False):
     """Broadcast chat_created to ALL connected clients for history list updates."""
-    msg = {
+    await broadcast_to_all_clients({
         "type": "chat_created",
         "chat": {"id": chat_id, "title": title, "updated": time.time(),
                  "is_system": is_system, "scheduled": scheduled, "agent": agent}
-    }
-    for ws_client in list(client_sessions):
-        try:
-            await ws_client.send_json(msg)
-        except Exception:
-            pass
+    })
 
 
 def register_client(ws: WebSocket, session_id: str):
@@ -2805,9 +2895,9 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
         except Exception as e:
             logger.warning(f"EARLY_SAVE failed: {e}")
 
-    # Broadcast status to let clients know we're starting
+    # Broadcast status to let clients know we're starting (client handles fun phrase display)
     # Use streaming_state_key which should be set correctly by now
-    await broadcast_to_session(streaming_state_key, {"type": "status", "text": "Thinking..."})
+    await broadcast_to_session(streaming_state_key, {"type": "status", "text": ""})
 
     # ========== AGENT ROUTING: Determine target agent ==========
     agent_name = data.get("agent")  # Set by WS handler for new chats; propagated for existing chats
@@ -2957,7 +3047,7 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
                 pass
 
         if agent_config:
-            prompt_gen = claude.run_chat(prompt_for_sdk, agent_config=agent_config, conversation_history=conv.messages)
+            prompt_gen = claude.run_chat(prompt_for_sdk, agent_config=agent_config, conversation_history=conv.messages, session_id=chat_id_for_wrapper)
         else:
             raise RuntimeError("No agent config available and no default agent found")
 
@@ -3049,6 +3139,23 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
                                 "message_id": msg_id_blk,
                                 "role": "assistant"
                             })
+                        # Complete any in-progress thinking blocks (thinking → text transition)
+                        # This ensures the thinking timer stops when text generation begins.
+                        for blk in ss._current_blocks:
+                            if blk.type == "thinking" and blk.status == "in_progress":
+                                blk.status = "complete"
+                                meta = {}
+                                if blk.started_at:
+                                    blk.duration_ms = int((time.time() - blk.started_at) * 1000)
+                                    meta["duration_ms"] = blk.duration_ms
+                                events_to_broadcast.append({
+                                    "type": "block_end",
+                                    "seq": ss._next_seq(),
+                                    "sessionId": state_key,
+                                    "message_id": msg_id_blk,
+                                    "block_id": blk.id,
+                                    "metadata": meta if meta else None
+                                })
                         block, block_is_new = ss.get_or_create_block("text")
                         if block_is_new:
                             events_to_broadcast.append({
@@ -3202,6 +3309,34 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
                         logger.info(f"TODO_UPDATE: Broadcast {len(todo_list)} todos to session {state_key}")
                     except Exception as e:
                         logger.warning(f"TODO_UPDATE: Failed to parse TodoWrite args: {e}")
+
+                # ========== set_theme: Broadcast theme update to ALL connected clients ==========
+                if current_tool_name and current_tool_name.endswith("set_theme"):
+                    try:
+                        theme_args = json.loads(tool_args) if isinstance(tool_args, str) else tool_args
+                        # Read updated preferences from disk (the tool writes them)
+                        # We broadcast to ALL clients, not just the session
+                        theme_payload = {}
+                        if theme_args.get("accent_color"):
+                            from mcp_tools.utilities.set_theme import resolve_color
+                            color, hover = resolve_color(
+                                theme_args["accent_color"],
+                                theme_args.get("accent_hover")
+                            )
+                            theme_payload["accentColor"] = color
+                            theme_payload["accentHover"] = hover
+                        if theme_args.get("mode"):
+                            theme_payload["mode"] = theme_args["mode"]
+
+                        if theme_payload:
+                            # Broadcast to ALL connected clients (theme is global)
+                            await broadcast_to_all_clients({
+                                "type": "theme_update",
+                                "theme": theme_payload
+                            })
+                            logger.info(f"THEME_UPDATE: Broadcast to {len(client_sessions)} clients: {theme_payload}")
+                    except Exception as e:
+                        logger.warning(f"THEME_UPDATE: Failed to broadcast: {e}")
 
                 # ========== Block model: update existing tool_use block with args ==========
                 ss = session_streaming_states.get(state_key)
@@ -3378,14 +3513,10 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
                                 chess_game = json.load(f)
                             os.remove(chess_update_file)
                             logger.info(f"Broadcasting chess_update to all clients")
-                            for ws in list(client_sessions):
-                                try:
-                                    await ws.send_json({
-                                        "type": "chess_update",
-                                        "game": chess_game
-                                    })
-                                except Exception:
-                                    pass
+                            await broadcast_to_all_clients({
+                                "type": "chess_update",
+                                "game": chess_game
+                            })
                     except Exception as chess_err:
                         logger.warning(f"Error broadcasting chess_update: {chess_err}")
 
@@ -3705,7 +3836,7 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
                 logger.info(f"Titler: First exchange, generating initial title")
                 asyncio.create_task(_run_titler_background(
                     chat_id_for_storage,
-                    conv.messages,
+                    list(conv.messages),
                     None,
                     is_retitle=False
                 ))
@@ -3713,7 +3844,7 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
                 logger.info(f"Titler: Exchange {exchange_count}, checking for title update")
                 asyncio.create_task(_run_titler_background(
                     chat_id_for_storage,
-                    conv.messages,
+                    list(conv.messages),
                     current_title,
                     is_retitle=True
                 ))
@@ -4657,15 +4788,11 @@ You are running as a scheduled task. Your output will be shown to the user in a 
                 )
 
                 # Also send legacy scheduled_task_complete for backward compatibility
-                for ws in list(client_sessions):
-                    try:
-                        await ws.send_json({
-                            "type": "scheduled_task_complete",
-                            "session_id": actual_session_id,
-                            "title": title
-                        })
-                    except Exception:
-                        pass
+                await broadcast_to_all_clients({
+                    "type": "scheduled_task_complete",
+                    "session_id": actual_session_id,
+                    "title": title
+                })
 
             # Send push notification to mobile/offline clients
             if decision.use_push:
@@ -4704,6 +4831,16 @@ async def scheduler_loop():
 
             # Periodic maintenance: clean up stale chat locks
             _cleanup_chat_locks()
+
+            # Periodic maintenance: clean up stale rewriter sessions
+            try:
+                scripts_dir = str(Path(os.getcwd()) / ".claude" / "scripts")
+                if scripts_dir not in sys.path:
+                    sys.path.insert(0, scripts_dir)
+                from contextual_memory.retrieval import _get_persistent_rewriter
+                await _get_persistent_rewriter().cleanup_stale()
+            except Exception:
+                pass
 
             # Periodic maintenance: chat image garbage collection (once daily)
             await _maybe_run_image_gc()
@@ -4995,6 +5132,7 @@ Please review the agent response(s) and take any necessary follow-up action. If 
 
         if not wakeup_agent_config:
             logger.error("No agent config available for wake-up handler")
+            active_processing_sessions.pop(chat_id, None)
             return
 
         try:
@@ -5305,6 +5443,17 @@ async def shutdown_event():
     save_server_state()
     save_continuation_on_shutdown()
 
+    # Disconnect persistent query rewriter
+    try:
+        scripts_dir = str(Path(os.getcwd()) / ".claude" / "scripts")
+        if scripts_dir not in sys.path:
+            sys.path.insert(0, scripts_dir)
+        from contextual_memory import shutdown_rewriter
+        await shutdown_rewriter()
+        logger.info("Disconnected persistent query rewriter")
+    except Exception as e:
+        logger.debug(f"Query rewriter shutdown (non-critical): {e}")
+
     # Deregister all processes owned by this server PID
     try:
         deregister_by_pid()
@@ -5457,7 +5606,7 @@ def google_auth_callback(code: str = None, state: str = None, error: str = None)
     if error:
         return HTMLResponse(
             content="<html><body style='font-family:system-ui;max-width:500px;margin:80px auto;text-align:center'>"
-                    f"<h1>Authentication Failed</h1><p>Error: {error}</p>"
+                    f"<h1>Authentication Failed</h1><p>Error: {html.escape(str(error))}</p>"
                     "<p><a href='/api/auth/google/login'>Try again</a></p>"
                     "</body></html>",
             status_code=400,
@@ -5477,7 +5626,7 @@ def google_auth_callback(code: str = None, state: str = None, error: str = None)
     except ValueError as e:
         return HTMLResponse(
             content="<html><body style='font-family:system-ui;max-width:500px;margin:80px auto;text-align:center'>"
-                    f"<h1>Authentication Failed</h1><p>{e}</p>"
+                    f"<h1>Authentication Failed</h1><p>{html.escape(str(e))}</p>"
                     "<p><a href='/api/auth/google/login'>Try again</a></p>"
                     "</body></html>",
             status_code=400,

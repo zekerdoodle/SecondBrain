@@ -4,14 +4,20 @@ Chat History Search MCP Tool
 Provides semantic search over raw conversation archives.
 Two-layer pipeline:
   1. Qwen3 embedding search → top message-level hits grouped by conversation
-  2. Haiku LLM extraction → structured excerpts with verbatim quotes
+  2. Haiku LLM extraction → structured selections (window/message index ranges)
+
+Haiku returns message indices, not quoted text. The formatter splices verbatim
+messages from the already-loaded context windows — zero paraphrasing, zero hallucination.
 
 Falls back to raw embedding snippets if Haiku extraction fails.
 """
 
+import calendar
+import datetime
 import json
 import logging
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -43,16 +49,18 @@ DEFAULT_WINDOW_SIZE = 5       # Messages before/after match
 MAX_CONVERSATIONS = 10        # Max conversations in Haiku call
 MAX_TOKENS_PER_WINDOW = 4000  # Token budget per conversation window
 MAX_TOTAL_TOKENS = 30000      # Total token budget for all windows
+HAIKU_MAX_TURNS = 50          # Safety valve only — effectively unlimited
 
 
 # ── Pydantic models for Haiku structured output ──────────────────────────────
 
-class Excerpt(BaseModel):
-    """A single excerpt from a conversation."""
+class Selection(BaseModel):
+    """A message range selection from a context window."""
     model_config = {"extra": "ignore"}
 
-    speaker: str = Field(default="assistant", description="Who said this: 'user' or 'assistant'")
-    text: str = Field(default="", description="Verbatim quote from the conversation")
+    window_idx: int = Field(default=0, description="Index into the windows list")
+    msg_start: int = Field(default=0, description="First message index (inclusive)")
+    msg_end: int = Field(default=0, description="Last message index (inclusive)")
 
 
 class ConversationResult(BaseModel):
@@ -63,7 +71,7 @@ class ConversationResult(BaseModel):
     conversation_title: str = Field(default="", description="Chat title")
     date: str = Field(default="", description="Approximate date (YYYY-MM-DD) or empty string")
     relevance: str = Field(default="", description="Brief explanation of why this conversation is relevant")
-    excerpts: List[Excerpt] = Field(default_factory=list, description="Key excerpts that answer the query")
+    selections: List[Selection] = Field(default_factory=list, description="Message range selections from windows")
 
 
 class ExtractionResponse(BaseModel):
@@ -72,9 +80,8 @@ class ExtractionResponse(BaseModel):
 
     results: List[ConversationResult] = Field(
         default_factory=list,
-        description="Relevant conversations with excerpts, ordered by relevance"
+        description="Relevant conversations with selections, ordered by relevance"
     )
-
 
 
 # ── Chat file loading ──────────────────────────────────────────────────────────
@@ -323,11 +330,6 @@ def _repair_truncated_json(json_str: str) -> Optional[str]:
     if not json_str or not json_str.strip().startswith('{'):
         return None
 
-    # Find the last complete result object by looking for the pattern
-    # Try progressively shorter substrings until we find valid JSON
-    # Strategy: find last complete "}" and close the remaining structure
-
-    # Count open structures
     in_string = False
     escape_next = False
     stack = []
@@ -371,46 +373,189 @@ def _repair_truncated_json(json_str: str) -> Optional[str]:
     return repaired
 
 
+# ── Date query parsing ───────────────────────────────────────────────────────
+
+_MONTH_NAMES = {
+    "january": 1, "february": 2, "march": 3, "april": 4,
+    "may": 5, "june": 6, "july": 7, "august": 8,
+    "september": 9, "october": 10, "november": 11, "december": 12,
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4,
+    "jun": 6, "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+}
+
+
+def _parse_date_query(date_query: str) -> Optional[Dict[str, float]]:
+    """
+    Parse a natural language date query into a timestamp range.
+
+    Supports:
+      today, yesterday, this week, last week, last N days,
+      last N weeks, last N months, this month, last month,
+      this year, last year, March 2025, January, 2025, Q1 2025
+
+    Returns {"start": unix_ts, "end": unix_ts} or None if unparseable.
+    Uses datetime and calendar only — no LLM.
+    """
+    q = date_query.strip().lower()
+    if not q:
+        return None
+
+    now = datetime.datetime.now()
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    today_end = now.replace(hour=23, minute=59, second=59, microsecond=0)
+
+    # "today"
+    if q == "today":
+        return {"start": today_start.timestamp(), "end": today_end.timestamp()}
+
+    # "yesterday"
+    if q == "yesterday":
+        yesterday = today_start - datetime.timedelta(days=1)
+        yesterday_end = yesterday.replace(hour=23, minute=59, second=59)
+        return {"start": yesterday.timestamp(), "end": yesterday_end.timestamp()}
+
+    # "this week" — Monday of current week to now
+    if q == "this week":
+        monday = today_start - datetime.timedelta(days=today_start.weekday())
+        return {"start": monday.timestamp(), "end": now.timestamp()}
+
+    # "last week" — Monday to Sunday of previous week
+    if q == "last week":
+        this_monday = today_start - datetime.timedelta(days=today_start.weekday())
+        last_monday = this_monday - datetime.timedelta(days=7)
+        last_sunday = this_monday - datetime.timedelta(seconds=1)
+        return {"start": last_monday.timestamp(), "end": last_sunday.timestamp()}
+
+    # "this month"
+    if q == "this month":
+        month_start = today_start.replace(day=1)
+        return {"start": month_start.timestamp(), "end": now.timestamp()}
+
+    # "last month"
+    if q == "last month":
+        first_of_this = today_start.replace(day=1)
+        last_of_prev = first_of_this - datetime.timedelta(days=1)
+        first_of_prev = last_of_prev.replace(day=1, hour=0, minute=0, second=0)
+        end_of_prev = last_of_prev.replace(hour=23, minute=59, second=59)
+        return {"start": first_of_prev.timestamp(), "end": end_of_prev.timestamp()}
+
+    # "this year"
+    if q == "this year":
+        year_start = today_start.replace(month=1, day=1)
+        return {"start": year_start.timestamp(), "end": now.timestamp()}
+
+    # "last year"
+    if q == "last year":
+        prev_year = now.year - 1
+        year_start = datetime.datetime(prev_year, 1, 1)
+        year_end = datetime.datetime(prev_year, 12, 31, 23, 59, 59)
+        return {"start": year_start.timestamp(), "end": year_end.timestamp()}
+
+    # "last N days"
+    m = re.match(r"last\s+(\d+)\s+days?$", q)
+    if m:
+        n = int(m.group(1))
+        start = today_start - datetime.timedelta(days=n)
+        return {"start": start.timestamp(), "end": now.timestamp()}
+
+    # "last N weeks"
+    m = re.match(r"last\s+(\d+)\s+weeks?$", q)
+    if m:
+        n = int(m.group(1))
+        start = today_start - datetime.timedelta(weeks=n)
+        return {"start": start.timestamp(), "end": now.timestamp()}
+
+    # "last N months" — approximate as N*30 days
+    m = re.match(r"last\s+(\d+)\s+months?$", q)
+    if m:
+        n = int(m.group(1))
+        start = today_start - datetime.timedelta(days=n * 30)
+        return {"start": start.timestamp(), "end": now.timestamp()}
+
+    # "Q1 2025", "Q2 2025", etc.
+    m = re.match(r"q([1-4])\s+(\d{4})$", q)
+    if m:
+        quarter = int(m.group(1))
+        year = int(m.group(2))
+        quarter_months = {1: (1, 3), 2: (4, 6), 3: (7, 9), 4: (10, 12)}
+        start_month, end_month = quarter_months[quarter]
+        last_day = calendar.monthrange(year, end_month)[1]
+        start = datetime.datetime(year, start_month, 1)
+        end = datetime.datetime(year, end_month, last_day, 23, 59, 59)
+        return {"start": start.timestamp(), "end": end.timestamp()}
+
+    # "March 2025" — month name + year
+    for month_name, month_num in _MONTH_NAMES.items():
+        m = re.match(rf"^{month_name}\s+(\d{{4}})$", q)
+        if m:
+            year = int(m.group(1))
+            last_day = calendar.monthrange(year, month_num)[1]
+            start = datetime.datetime(year, month_num, 1)
+            end = datetime.datetime(year, month_num, last_day, 23, 59, 59)
+            return {"start": start.timestamp(), "end": end.timestamp()}
+
+    # "January" — month name alone (current year)
+    for month_name, month_num in _MONTH_NAMES.items():
+        if q == month_name:
+            year = now.year
+            last_day = calendar.monthrange(year, month_num)[1]
+            start = datetime.datetime(year, month_num, 1)
+            end = datetime.datetime(year, month_num, last_day, 23, 59, 59)
+            return {"start": start.timestamp(), "end": end.timestamp()}
+
+    # "2025" — year alone
+    m = re.match(r"^(\d{4})$", q)
+    if m:
+        year = int(m.group(1))
+        start = datetime.datetime(year, 1, 1)
+        end = datetime.datetime(year, 12, 31, 23, 59, 59)
+        return {"start": start.timestamp(), "end": end.timestamp()}
+
+    logger.warning(f"Could not parse date query: {date_query!r}")
+    return None
+
+
 # ── Haiku extraction ──────────────────────────────────────────────────────────
 
-EXTRACTION_SYSTEM_PROMPT = """You are a conversation search tool. Given a user's search query and excerpts from past conversations, extract relevant portions.
+EXTRACTION_SYSTEM_PROMPT = """You are a conversation search tool. Given a user's search query and excerpts from past conversations (with indexed headers), identify relevant message ranges.
 
 Rules:
-1. Include conversations that contain information related to the query — even partial matches or indirect context count
-2. Messages marked with ⭐ are search hits — prioritize extracting those and their surrounding context
-3. Use VERBATIM quotes from the conversation text — do not paraphrase
-4. Keep each excerpt to 1-3 sentences MAX (the most relevant sentences only)
-5. Order results by relevance (most relevant first)
-6. ONLY return an empty results list if the conversations have absolutely nothing to do with the query
-7. Return valid, complete JSON — never truncate mid-string"""
+1. Return SELECTIONS as window_idx + message index ranges — do NOT quote or paraphrase text
+2. Messages marked with ⭐ are search hits — prioritize selecting those and their surrounding context
+3. Each selection should capture a coherent exchange (include enough context to be understandable)
+4. Order results by relevance (most relevant first)
+5. ONLY return an empty results list if the conversations have absolutely nothing to do with the query
+6. Return valid, complete JSON — never truncate mid-string"""
 
 
-async def extract_with_haiku(
-    query: str,
-    windows: List[Dict[str, Any]],
-    keyword_hint: Optional[str] = None,
-) -> Optional[ExtractionResponse]:
-    """
-    Call Haiku to extract structured results from context windows.
+EXTRACTION_SYSTEM_PROMPT_WITH_TOOLS = """You are a conversation search tool. Given a user's search query and excerpts from past conversations (with indexed headers), identify relevant message ranges.
 
-    Uses plain text JSON response (not SDK structured output) for reliability.
-    """
-    logger.info(f"[DIAG] extract_with_haiku ENTERED: query={query[:80]!r}, windows={len(windows)}, keyword_hint={keyword_hint!r}")
-    try:
-        from claude_agent_sdk import query as sdk_query, ClaudeAgentOptions, ResultMessage
-        logger.info("[DIAG] SDK imports succeeded")
-    except Exception as import_err:
-        logger.error(f"[DIAG] SDK import failed: {import_err}")
-        return None
-    import datetime
-    import re
+Rules:
+1. Return SELECTIONS as window_idx + message index ranges — do NOT quote or paraphrase text
+2. Messages marked with ⭐ are search hits — prioritize selecting those and their surrounding context
+3. Each selection should capture a coherent exchange (include enough context to be understandable)
+4. Order results by relevance (most relevant first)
+5. ONLY return an empty results list if the conversations have absolutely nothing to do with the query
+6. Return valid, complete JSON — never truncate mid-string
 
-    # Format windows for the prompt
-    window_blocks = []
-    for w in windows:
-        lines = [f"### Conversation: {w['title']} (ID: {w['chat_id']})"]
+You have tools to refine your search if the initial results don't fully answer the query. Use them SPARINGLY — only if the provided windows are clearly insufficient.
 
-        # Add date if available
+Available tools (include in "tool_calls" array if needed):
+- refine_search: Run a new search with different terms. Args: {"query": "...", "keyword": "..."}
+- expand_context: Load more messages around a specific window. Args: {"window_idx": N, "direction": "before"|"after"|"both", "count": 10}
+- list_conversations: Browse available conversations. Args: {"date_start": "YYYY-MM-DD", "date_end": "YYYY-MM-DD"} (both optional)
+
+If you need to use tools, return: {"tool_calls": [...], "results": []}
+If results are sufficient, return: {"results": [...]}
+Never mix non-empty results with tool_calls."""
+
+
+def _build_window_blocks(windows: List[Dict[str, Any]]) -> str:
+    """Build indexed window blocks for the Haiku prompt."""
+    blocks = []
+    for w_idx, w in enumerate(windows):
+        lines = [f"[window_idx={w_idx}] ### Conversation: {w['title']} (ID: {w['chat_id']})"]
+
         ts = w.get("timestamp")
         if ts:
             try:
@@ -420,27 +565,46 @@ async def extract_with_haiku(
                 pass
 
         lines.append("")
-        for msg in w["messages"]:
+        for m_idx, msg in enumerate(w["messages"]):
             role_label = "[USER]" if msg["role"] == "user" else "[ASSISTANT]"
             match_marker = " ⭐" if msg.get("is_match") else ""
-            lines.append(f"{role_label}{match_marker}: {msg['content']}")
+            lines.append(f"[msg_idx={m_idx}] {role_label}{match_marker}: {msg['content']}")
             lines.append("")
 
-        window_blocks.append("\n".join(lines))
+        blocks.append("\n".join(lines))
 
+    return "---\n".join(blocks)
+
+
+def _build_extraction_prompt(
+    query: str,
+    windows: List[Dict[str, Any]],
+    keyword_hint: Optional[str] = None,
+    has_tools: bool = False,
+) -> str:
+    """Build the extraction prompt for Haiku."""
     keyword_note = ""
     if keyword_hint:
-        keyword_note = f'\nNote: The user is specifically searching for the keyword "{keyword_hint}". Prioritize excerpts containing this exact term.\n'
+        keyword_note = f'\nNote: The user is specifically searching for the keyword "{keyword_hint}". Prioritize selections containing this exact term.\n'
 
-    prompt = f"""Search query: "{query}"
+    window_text = _build_window_blocks(windows)
+
+    tool_call_schema = ""
+    if has_tools:
+        tool_call_schema = """,
+    "tool_calls": [
+        {"tool": "refine_search", "args": {"query": "new search terms", "keyword": "optional"}}
+    ]"""
+
+    return f"""Search query: "{query}"
 {keyword_note}
 Here are excerpts from past conversations that may be relevant:
 
 ---
-{"---".join(window_blocks)}
+{window_text}
 ---
 
-Extract the most relevant conversations and quotes that answer the search query.
+Extract the most relevant conversations and message ranges that answer the search query.
 
 Return ONLY a JSON object with this exact structure (no markdown, no explanation):
 {{
@@ -448,27 +612,31 @@ Return ONLY a JSON object with this exact structure (no markdown, no explanation
     {{
       "conversation_id": "the chat session ID",
       "conversation_title": "the chat title",
-      "date": "YYYY-MM-DD or null",
+      "date": "YYYY-MM-DD or empty string",
       "relevance": "brief explanation of why this is relevant",
-      "excerpts": [
-        {{
-          "speaker": "user or assistant",
-          "text": "verbatim quote from the conversation"
-        }}
+      "selections": [
+        {{"window_idx": 0, "msg_start": 2, "msg_end": 5}}
       ]
     }}
-  ]
+  ]{tool_call_schema}
 }}"""
+
+
+async def _call_haiku(prompt: str, system_prompt: str) -> Optional[str]:
+    """Make a single Haiku SDK call and return the result text."""
+    try:
+        from claude_agent_sdk import query as sdk_query, ClaudeAgentOptions, ResultMessage
+    except Exception as import_err:
+        logger.error(f"SDK import failed: {import_err}")
+        return None
 
     try:
         result_text = None
-
-        # IMPORTANT: Must fully consume the async generator to avoid cancel scope errors
         async for message in sdk_query(
             prompt=prompt,
             options=ClaudeAgentOptions(
                 model="haiku",
-                system_prompt=EXTRACTION_SYSTEM_PROMPT,
+                system_prompt=system_prompt,
                 max_turns=1,
                 permission_mode="bypassPermissions",
                 allowed_tools=[],
@@ -481,58 +649,416 @@ Return ONLY a JSON object with this exact structure (no markdown, no explanation
                 elif message.result:
                     result_text = message.result
 
-        if not result_text:
-            logger.warning("Haiku extraction returned empty result")
-            return None
+        return result_text
+    except BaseException as e:
+        logger.error(f"Haiku call failed ({type(e).__name__}): {e}", exc_info=True)
+        return None
 
-        # Parse JSON from text response — handle markdown code blocks
-        json_str = result_text.strip()
-        # Strip ```json ... ``` wrapper if present
-        md_match = re.search(r'```(?:json)?\s*\n?(.*?)\n?```', json_str, re.DOTALL)
-        if md_match:
-            json_str = md_match.group(1).strip()
 
-        # Try to find JSON object in the response
-        if not json_str.startswith('{'):
-            start = json_str.find('{')
-            end = json_str.rfind('}')
-            if start >= 0 and end > start:
-                json_str = json_str[start:end + 1]
+def _parse_haiku_json(result_text: str) -> Optional[Dict]:
+    """Parse JSON from Haiku's text response, with repair for truncation."""
+    if not result_text:
+        return None
 
+    json_str = result_text.strip()
+
+    # Strip ```json ... ``` wrapper if present
+    md_match = re.search(r'```(?:json)?\s*\n?(.*?)\n?```', json_str, re.DOTALL)
+    if md_match:
+        json_str = md_match.group(1).strip()
+
+    # Find JSON object in the response
+    if not json_str.startswith('{'):
+        start = json_str.find('{')
+        end = json_str.rfind('}')
+        if start >= 0 and end > start:
+            json_str = json_str[start:end + 1]
+
+    try:
+        return json.loads(json_str)
+    except json.JSONDecodeError:
+        repaired = _repair_truncated_json(json_str)
+        if repaired:
+            try:
+                data = json.loads(repaired)
+                logger.info("Repaired truncated JSON from Haiku response")
+                return data
+            except json.JSONDecodeError:
+                pass
+
+        logger.warning(f"Haiku returned invalid JSON. Response: {result_text[:500]}")
+        return None
+
+
+def _validate_selections(results: List[Dict], windows: List[Dict[str, Any]]) -> List[Dict]:
+    """Validate and clamp selection indices to valid ranges, skip invalid window_idx."""
+    for result in results:
+        if "selections" not in result:
+            result["selections"] = []
+            continue
+
+        valid_sels = []
+        for sel in result["selections"]:
+            w_idx = sel.get("window_idx", -1)
+
+            # Skip invalid window index
+            if w_idx < 0 or w_idx >= len(windows):
+                logger.debug(f"Skipping selection with invalid window_idx={w_idx} (have {len(windows)} windows)")
+                continue
+
+            n_msgs = len(windows[w_idx]["messages"])
+            if n_msgs == 0:
+                continue
+
+            # Clamp to valid range
+            msg_start = max(0, min(sel.get("msg_start", 0), n_msgs - 1))
+            msg_end = max(msg_start, min(sel.get("msg_end", msg_start), n_msgs - 1))
+
+            valid_sels.append({
+                "window_idx": w_idx,
+                "msg_start": msg_start,
+                "msg_end": msg_end,
+            })
+
+        result["selections"] = valid_sels
+
+    return results
+
+
+# ── Haiku inner tools (closures for multi-turn extraction) ───────────────────
+
+def _execute_haiku_tool(
+    tool_call: Dict,
+    current_windows: List[Dict[str, Any]],
+    index,
+    date_range: Optional[Dict],
+    agent_filter: Optional[set],
+) -> List[Dict[str, Any]]:
+    """Execute a Haiku inner tool and return new context windows (may be empty)."""
+    tool_name = tool_call.get("tool", "")
+    args = tool_call.get("args", {})
+
+    try:
+        if tool_name == "refine_search":
+            return _tool_refine_search(args, index, date_range, agent_filter)
+        elif tool_name == "expand_context":
+            return _tool_expand_context(args, current_windows)
+        elif tool_name == "list_conversations":
+            return _tool_list_conversations(args, index, agent_filter)
+        else:
+            logger.warning(f"Unknown Haiku tool: {tool_name}")
+            return []
+    except Exception as e:
+        logger.warning(f"Haiku tool '{tool_name}' failed: {e}")
+        return []
+
+
+def _tool_refine_search(
+    args: Dict,
+    index,
+    date_range: Optional[Dict],
+    agent_filter: Optional[set],
+) -> List[Dict[str, Any]]:
+    """Run a new embedding/keyword search and return new context windows."""
+    from contextual_memory.chat_embedding_index import search, keyword_search, hybrid_search
+
+    query = args.get("query", "").strip()
+    keyword = args.get("keyword", "").strip()
+
+    if not query and not keyword:
+        return []
+
+    k = 20
+    if query and keyword:
+        hits = hybrid_search(index, query, keyword, k=k, date_range=date_range, agent_filter=agent_filter)
+    elif keyword:
+        hits = keyword_search(index, keyword, k=k, date_range=date_range, agent_filter=agent_filter)
+    else:
+        hits = search(index, query, k=k, date_range=date_range, agent_filter=agent_filter)
+
+    if not hits:
+        return []
+
+    # Smaller budget for refinement windows
+    return build_context_windows(hits, max_conversations=5, max_total_tokens=10000)
+
+
+def _tool_expand_context(
+    args: Dict,
+    current_windows: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Load more messages around a specific window."""
+    from contextual_memory.chat_embedding_index import strip_tool_markers
+
+    w_idx = args.get("window_idx", -1)
+    direction = args.get("direction", "both")
+    count = min(args.get("count", 10), 20)  # Cap at 20
+
+    if w_idx < 0 or w_idx >= len(current_windows):
+        return []
+
+    window = current_windows[w_idx]
+    chat_id = window["chat_id"]
+
+    found = _find_chat_file(chat_id)
+    if not found:
+        return []
+
+    chat_path, chat_format = found
+
+    try:
+        if chat_format == "json":
+            all_messages = _load_messages_json(chat_path)
+        else:
+            all_messages = _load_messages_jsonl(chat_path)
+
+        if not all_messages:
+            return []
+
+        # Find approximate position of current window in the full message list
+        # by matching the first message's content prefix
+        current_msgs = window["messages"]
+        if not current_msgs:
+            return []
+
+        first_content = current_msgs[0]["content"][:100]
+        window_start = 0
+        for i, msg in enumerate(all_messages):
+            content = msg.get("content", "")
+            if isinstance(content, list):
+                content = " ".join(
+                    b.get("text", "") for b in content
+                    if isinstance(b, dict) and b.get("type") == "text"
+                )
+            if isinstance(content, str) and first_content in strip_tool_markers(content):
+                window_start = i
+                break
+
+        window_end = window_start + len(current_msgs)
+
+        # Determine range to load based on direction
+        if direction == "before":
+            new_start = max(0, window_start - count)
+            new_end = window_start
+        elif direction == "after":
+            new_start = window_end
+            new_end = min(len(all_messages), window_end + count)
+        else:  # both
+            new_start = max(0, window_start - count)
+            new_end = min(len(all_messages), window_end + count)
+
+        new_messages = []
+        for i in range(new_start, new_end):
+            msg = all_messages[i]
+            role = msg.get("role", "")
+            if role not in ("user", "assistant"):
+                continue
+            if msg.get("hidden", False):
+                continue
+
+            content = msg.get("content", "")
+            if isinstance(content, list):
+                text_parts = []
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        text_parts.append(block.get("text", ""))
+                    elif isinstance(block, str):
+                        text_parts.append(block)
+                content = "\n".join(text_parts)
+
+            if not isinstance(content, str):
+                continue
+
+            cleaned = strip_tool_markers(content)
+            if not cleaned:
+                continue
+
+            # Truncate for token budget
+            max_chars = int(MAX_TOKENS_PER_WINDOW / TOKENS_PER_CHAR)
+            if len(cleaned) > max_chars:
+                cleaned = cleaned[:max_chars] + "..."
+
+            new_messages.append({
+                "role": role,
+                "content": cleaned,
+                "is_match": False,
+            })
+
+        if new_messages:
+            return [{
+                "chat_id": chat_id,
+                "title": window["title"] + f" (expanded {direction})",
+                "score": window.get("score", 0),
+                "timestamp": window.get("timestamp"),
+                "messages": new_messages,
+            }]
+
+    except Exception as e:
+        logger.warning(f"expand_context failed for window {w_idx}: {e}")
+
+    return []
+
+
+def _tool_list_conversations(
+    args: Dict,
+    index,
+    agent_filter: Optional[set],
+) -> List[Dict[str, Any]]:
+    """Return a pseudo-window listing available conversations for browsing."""
+    date_start = args.get("date_start", "")
+    date_end = args.get("date_end", "")
+
+    # Parse date strings if provided
+    start_ts = 0.0
+    end_ts = float("inf")
+    if date_start:
         try:
-            data = json.loads(json_str)
-        except json.JSONDecodeError as e:
-            # Try to repair truncated JSON by closing open structures
-            repaired = _repair_truncated_json(json_str)
-            if repaired:
-                try:
-                    data = json.loads(repaired)
-                    logger.info("Repaired truncated JSON from Haiku response")
-                except json.JSONDecodeError:
-                    logger.warning(f"Haiku returned invalid JSON (repair failed): {e}. Response: {result_text[:500]}")
-                    return None
-            else:
-                logger.warning(f"Haiku returned invalid JSON: {e}. Response: {result_text[:500]}")
-                return None
+            dt = datetime.datetime.strptime(date_start, "%Y-%m-%d")
+            start_ts = dt.timestamp()
+        except ValueError:
+            pass
+    if date_end:
+        try:
+            dt = datetime.datetime.strptime(date_end, "%Y-%m-%d")
+            dt = dt.replace(hour=23, minute=59, second=59)
+            end_ts = dt.timestamp()
+        except ValueError:
+            pass
 
-        # Lenient validation — fix common issues before validating
+    # Scan index metadata, group by conversation
+    conversations: Dict[str, Dict] = {}
+    for meta in index.metadata:
+        if agent_filter and meta.chat_agent not in agent_filter:
+            continue
+
+        if meta.timestamp is not None:
+            if meta.timestamp < start_ts or meta.timestamp > end_ts:
+                continue
+
+        cid = meta.chat_id
+        if cid not in conversations:
+            conversations[cid] = {
+                "title": meta.chat_title,
+                "date": "",
+                "message_count": 0,
+                "chat_id": cid,
+            }
+            if meta.timestamp:
+                try:
+                    conversations[cid]["date"] = datetime.datetime.fromtimestamp(
+                        meta.timestamp
+                    ).strftime("%Y-%m-%d")
+                except (OSError, ValueError):
+                    pass
+
+        conversations[cid]["message_count"] += 1
+
+    # Sort by date (most recent first), limit to 30
+    sorted_convos = sorted(
+        conversations.values(),
+        key=lambda x: x.get("date", ""),
+        reverse=True,
+    )[:30]
+
+    # Format as a pseudo-window for Haiku to read
+    listing_lines = ["Available conversations:"]
+    for c in sorted_convos:
+        listing_lines.append(
+            f"- [{c['chat_id']}] {c['title']} ({c['date']}, {c['message_count']} messages)"
+        )
+
+    return [{
+        "chat_id": "__listing__",
+        "title": "Conversation Listing",
+        "score": 0,
+        "timestamp": None,
+        "messages": [{"role": "assistant", "content": "\n".join(listing_lines), "is_match": False}],
+    }]
+
+
+# ── Multi-turn extraction orchestrator ───────────────────────────────────────
+
+async def extract_with_haiku(
+    query: str,
+    windows: List[Dict[str, Any]],
+    keyword_hint: Optional[str] = None,
+    index=None,
+    date_range: Optional[Dict] = None,
+    agent_filter: Optional[set] = None,
+) -> Tuple[Optional[ExtractionResponse], List[Dict[str, Any]]]:
+    """
+    Call Haiku to extract structured results from context windows.
+
+    Supports multi-turn with inner tools (refine_search, expand_context,
+    list_conversations) when index is provided.
+
+    Returns (extraction_response, final_windows) tuple.
+    final_windows may be larger than input if Haiku tools added more context.
+    """
+    logger.info(
+        f"[DIAG] extract_with_haiku ENTERED: query={query[:80]!r}, "
+        f"windows={len(windows)}, keyword_hint={keyword_hint!r}"
+    )
+
+    has_tools = index is not None
+    max_turns = HAIKU_MAX_TURNS if has_tools else 1
+    system_prompt = EXTRACTION_SYSTEM_PROMPT_WITH_TOOLS if has_tools else EXTRACTION_SYSTEM_PROMPT
+
+    all_windows = list(windows)  # Mutable copy — may grow with tool results
+
+    for turn in range(max_turns):
+        prompt = _build_extraction_prompt(
+            query, all_windows, keyword_hint,
+            has_tools=has_tools,
+        )
+
+        result_text = await _call_haiku(prompt, system_prompt)
+        if not result_text:
+            logger.warning(f"Haiku extraction returned empty on turn {turn}")
+            return None, all_windows
+
+        data = _parse_haiku_json(result_text)
+        if data is None:
+            return None, all_windows
+
+        # Check for tool calls (multi-turn refinement)
+        tool_calls = data.get("tool_calls", [])
+
+        if tool_calls and has_tools:
+            logger.info(f"Haiku requested {len(tool_calls)} tool call(s) on turn {turn}")
+            for tc in tool_calls:
+                new_windows = _execute_haiku_tool(tc, all_windows, index, date_range, agent_filter)
+                if new_windows:
+                    all_windows.extend(new_windows)
+                    logger.info(
+                        f"  Tool '{tc.get('tool')}' added {len(new_windows)} windows "
+                        f"(total now: {len(all_windows)})"
+                    )
+            continue  # Next turn with expanded context
+
+        # Parse final results
         if isinstance(data, dict) and "results" in data:
+            # Validate and clamp selection indices
+            data["results"] = _validate_selections(data.get("results", []), all_windows)
+
+            # Ensure required fields have defaults
             for r in data["results"]:
-                if "excerpts" not in r:
-                    r["excerpts"] = []
                 for field in ("conversation_id", "conversation_title", "relevance"):
                     if field not in r:
                         r[field] = ""
 
-        try:
-            return ExtractionResponse.model_validate(data)
-        except Exception as e:
-            logger.warning(f"Haiku extraction validation failed: {e}. Data: {json.dumps(data)[:500]}")
-            return None
+            try:
+                extraction = ExtractionResponse.model_validate(data)
+                return extraction, all_windows
+            except Exception as e:
+                logger.warning(f"Haiku extraction validation failed: {e}. Data: {json.dumps(data)[:500]}")
+                return None, all_windows
 
-    except BaseException as e:
-        logger.error(f"[DIAG] Haiku extraction failed ({type(e).__name__}): {e}", exc_info=True)
-        return None
+        return None, all_windows
+
+    # Exhausted all turns without final results
+    logger.warning("Haiku exhausted all turns without returning final results")
+    return None, all_windows
 
 
 # ── Fallback formatting ──────────────────────────────────────────────────────
@@ -542,8 +1068,6 @@ def format_embedding_fallback(
     max_results: int = 5,
 ) -> str:
     """Format raw embedding search results as readable markdown (fallback path)."""
-    import datetime
-
     # Group by conversation, take top by score
     seen_chats: Dict[str, Dict] = {}
     for meta, score in hits:
@@ -627,6 +1151,10 @@ Search modes:
                 "minimum": 1,
                 "maximum": 10,
             },
+            "date_query": {
+                "type": "string",
+                "description": "Natural date filter: 'last week', 'last month', 'this year', 'March 2025', 'yesterday', 'last 3 days', 'January'. Takes precedence over date_range if both provided.",
+            },
             "date_range": {
                 "type": "object",
                 "description": "Optional date filter. Provide start and/or end as ISO date strings (YYYY-MM-DD).",
@@ -655,6 +1183,7 @@ async def search_conversation_history(args: Dict[str, Any]) -> Dict[str, Any]:
         keyword = args.get("keyword", "").strip()
         max_results = min(args.get("max_results", 5), 10)
         date_range_raw = args.get("date_range")
+        date_query = args.get("date_query", "").strip()
         agent_param = args.get("agent", "").strip()
         calling_agent = args.pop("_agent_name", None)
 
@@ -663,10 +1192,13 @@ async def search_conversation_history(args: Dict[str, Any]) -> Dict[str, Any]:
 
         start_time = time.time()
 
-        # Parse date range if provided
+        # Parse date filter: date_query takes precedence over date_range
         date_range = None
-        if date_range_raw:
-            import datetime
+        if date_query:
+            date_range = _parse_date_query(date_query)
+            if date_range is None:
+                logger.warning(f"Could not parse date_query={date_query!r}, ignoring")
+        elif date_range_raw:
             dr: Dict[str, float] = {}
             if "start" in date_range_raw:
                 try:
@@ -753,17 +1285,21 @@ async def search_conversation_history(args: Dict[str, Any]) -> Dict[str, Any]:
         if keyword and search_query:
             haiku_query = f'{search_query} (keyword: "{keyword}")'
 
-        # Try Haiku extraction
-        extraction = await extract_with_haiku(
-            haiku_query, windows, keyword_hint=keyword if keyword else None,
+        # Try Haiku extraction (multi-turn if index available)
+        extraction, final_windows = await extract_with_haiku(
+            haiku_query, windows,
+            keyword_hint=keyword if keyword else None,
+            index=index,
+            date_range=date_range,
+            agent_filter=agent_filter,
         )
 
         total_time = time.time() - start_time
 
         if extraction and extraction.results:
-            # Format structured results
+            # Format structured results with verbatim spliced messages
             return _format_extraction_response(
-                extraction, display_query, total_time, search_time,
+                extraction, final_windows, display_query, total_time, search_time,
                 len(index.metadata), search_mode=search_mode,
             )
         else:
@@ -783,13 +1319,18 @@ async def search_conversation_history(args: Dict[str, Any]) -> Dict[str, Any]:
 
 def _format_extraction_response(
     extraction: ExtractionResponse,
+    windows: List[Dict[str, Any]],
     query: str,
     total_time: float,
     search_time: float,
     index_size: int,
     search_mode: str = "semantic",
 ) -> Dict[str, Any]:
-    """Format the Haiku extraction response as readable markdown."""
+    """Format the Haiku extraction response as readable markdown.
+
+    Splices verbatim messages from windows based on selection indices —
+    no paraphrasing, no Haiku-generated quotes.
+    """
     mode_label = {"semantic": "🔍 Semantic", "keyword": "🔑 Keyword", "hybrid": "🔀 Hybrid"}
     mode_str = mode_label.get(search_mode, search_mode.title())
     lines = [f'## Conversation Search: "{query}"\n']
@@ -800,11 +1341,24 @@ def _format_extraction_response(
         lines.append(f"*{result.relevance}*")
         lines.append("")
 
-        for excerpt in result.excerpts:
-            speaker = "**User**" if excerpt.speaker == "user" else "**Assistant**"
-            lines.append(f"{speaker}:")
-            lines.append(f"> {excerpt.text}")
-            lines.append("")
+        # Splice verbatim messages from windows for each selection
+        for sel in result.selections:
+            if sel.window_idx < 0 or sel.window_idx >= len(windows):
+                continue
+
+            window = windows[sel.window_idx]
+            msgs = window["messages"]
+            start = max(0, sel.msg_start)
+            end = min(len(msgs) - 1, sel.msg_end)
+
+            for m_idx in range(start, end + 1):
+                msg = msgs[m_idx]
+                role_label = "**User**" if msg["role"] == "user" else "**Assistant**"
+                lines.append(f"{role_label}:")
+                # Format as blockquote, handling multiline content
+                for content_line in msg["content"].split("\n"):
+                    lines.append(f"> {content_line}")
+                lines.append("")
 
     lines.append(
         f"*{mode_str} search — found {len(extraction.results)} relevant conversations. "

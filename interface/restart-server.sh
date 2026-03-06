@@ -12,6 +12,9 @@ PORT=8000
 # Prevent nested-session detection when restarted from inside Claude Code
 unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT CLAUDE_AGENT_SDK_VERSION
 
+# Disable tool search/deferral — load all tools upfront
+export ENABLE_TOOL_SEARCH=false
+
 echo "Quick restart (skipping frontend build)..."
 
 # Gracefully stop previous server (SIGTERM first so shutdown handler can save state)

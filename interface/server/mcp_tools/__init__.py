@@ -86,6 +86,7 @@ def _inject_agent_context(tools, agent_name: str):
     Injects ``_agent_name`` into the args dict so that:
     - ``memory_create/update/delete/search`` target ``.claude/agents/{name}/memories.json``.
     - ``schedule_self`` creates an agent-type scheduled task dispatched via the agent runner.
+    - ``message_user`` tags new rooms with the calling agent's name.
     """
     from claude_agent_sdk import SdkMcpTool
 
@@ -97,6 +98,7 @@ def _inject_agent_context(tools, agent_name: str):
         "working_memory_add", "working_memory_update",
         "working_memory_remove", "working_memory_list",
         "working_memory_snapshot",
+        "message_user",
     }
 
     wrapped = []
@@ -251,6 +253,7 @@ def _load_all_tools():
     from . import chess
     from . import image
     from . import skills
+    from . import messaging
 
 
 # Auto-load tools when module is imported

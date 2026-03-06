@@ -1,6 +1,11 @@
 import os
+import json
 import uuid
+import fcntl
+import time
+import tempfile
 from datetime import datetime, timedelta
+from contextlib import contextmanager
 import logging
 from pathlib import Path
 
@@ -22,6 +27,77 @@ def _load_tasks():
 def _save_tasks(tasks):
     save_json(TASKS_FILE, tasks)
 
+
+@contextmanager
+def _transact_tasks():
+    """
+    Hold the file lock for an entire read→modify→write transaction.
+
+    Prevents TOCTOU races where concurrent callers (e.g. check_due_tasks vs
+    add_task from different processes) read stale data and clobber each other's
+    writes. Uses the same .json.lock file as atomic_file_ops so the two
+    locking mechanisms are mutually exclusive.
+
+    Yields a mutable list of tasks. On normal exit the list is written back
+    atomically (temp-file + rename). On exception the write is skipped.
+    """
+    lock_path = TASKS_FILE.with_suffix(f'{TASKS_FILE.suffix}.lock')
+    lock_fd = None
+    start_time = time.time()
+    timeout = 10.0
+
+    # Acquire exclusive lock (same lock file as atomic_file_ops).
+    # Use 'a' mode (not 'w') to avoid truncation races, and never unlink
+    # the lock file so all contenders share the same stable inode.
+    while True:
+        try:
+            lock_fd = open(lock_path, 'a')
+            fcntl.flock(lock_fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except (IOError, OSError):
+            if lock_fd:
+                try:
+                    lock_fd.close()
+                except Exception:
+                    pass
+                lock_fd = None
+            if time.time() - start_time > timeout:
+                raise TimeoutError(
+                    f"Could not acquire lock for {TASKS_FILE} within {timeout}s"
+                )
+            time.sleep(0.1)
+
+    try:
+        # --- Read (under lock, bypassing load_json's own lock) ---
+        tasks = []
+        if TASKS_FILE.exists():
+            try:
+                with open(TASKS_FILE, 'r', encoding='utf-8') as f:
+                    tasks = json.load(f)
+            except (json.JSONDecodeError, Exception):
+                tasks = []
+
+        yield tasks
+
+        # --- Write atomically (only reached on normal exit) ---
+        TASKS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            mode='w',
+            encoding='utf-8',
+            dir=TASKS_FILE.parent,
+            prefix=f'.{TASKS_FILE.name}',
+            suffix='.tmp',
+            delete=False,
+        ) as f:
+            temp_path = Path(f.name)
+            json.dump(tasks, f, indent=2, ensure_ascii=False, default=str)
+        temp_path.replace(TASKS_FILE)
+    finally:
+        # Release lock but keep lock file (stable inode prevents races)
+        fcntl.flock(lock_fd.fileno(), fcntl.LOCK_UN)
+        lock_fd.close()
+
+
 def add_task(prompt, schedule_text, silent=False, task_type="prompt", agent=None, room_id=None, project=None):
     """
     Schedules a new task.
@@ -39,31 +115,30 @@ def add_task(prompt, schedule_text, silent=False, task_type="prompt", agent=None
              injects PROJECT METADATA into the agent's prompt so output gets tagged with
              YAML frontmatter for automatic routing to the project's _status.md.
     """
-    tasks = _load_tasks()
-    new_task = {
-        "id": str(uuid.uuid4())[:8],
-        "prompt": prompt,
-        "schedule": schedule_text,
-        "created_at": datetime.now().isoformat(),
-        "last_run": datetime.now().isoformat(),
-        "active": True,
-        "silent": silent,
-        "type": task_type,
-    }
+    with _transact_tasks() as tasks:
+        new_task = {
+            "id": str(uuid.uuid4())[:8],
+            "prompt": prompt,
+            "schedule": schedule_text,
+            "created_at": datetime.now().isoformat(),
+            "last_run": datetime.now().isoformat(),
+            "active": True,
+            "silent": silent,
+            "type": task_type,
+        }
 
-    if task_type == "agent" and agent:
-        new_task["agent"] = agent
+        if task_type == "agent" and agent:
+            new_task["agent"] = agent
 
-    # Store room_id if provided for room-targeted delivery
-    if room_id:
-        new_task["room_id"] = room_id
+        # Store room_id if provided for room-targeted delivery
+        if room_id:
+            new_task["room_id"] = room_id
 
-    # Store project tag if provided for output routing
-    if project:
-        new_task["project"] = project
+        # Store project tag if provided for output routing
+        if project:
+            new_task["project"] = project
 
-    tasks.append(new_task)
-    _save_tasks(tasks)
+        tasks.append(new_task)
     mode = " (silent)" if silent else ""
     agent_info = f" via agent '{agent}'" if task_type == "agent" and agent else ""
     room_info = f" → room '{room_id}'" if room_id else ""
@@ -141,13 +216,12 @@ def list_tasks(include_inactive=False):
     return "\n".join(output)
 
 def remove_task(task_id):
-    tasks = _load_tasks()
-    initial_count = len(tasks)
-    tasks = [t for t in tasks if t['id'] != task_id]
+    with _transact_tasks() as tasks:
+        initial_count = len(tasks)
+        tasks[:] = [t for t in tasks if t['id'] != task_id]
 
-    if len(tasks) < initial_count:
-        _save_tasks(tasks)
-        return f"✅ Task `{task_id}` removed."
+        if len(tasks) < initial_count:
+            return f"✅ Task `{task_id}` removed."
     return f"❌ Task `{task_id}` not found."
 
 
@@ -162,276 +236,232 @@ def update_task(task_id, silent=None, active=None, schedule=None, prompt=None, r
     room_id: Set target room ID. Use empty string "" to clear room targeting.
     project: Set project tag (string or list). Use empty string "" to clear.
     """
-    tasks = _load_tasks()
-    found = False
+    with _transact_tasks() as tasks:
+        for t in tasks:
+            if t['id'] == task_id:
+                changes = []
 
-    for t in tasks:
-        if t['id'] == task_id:
-            found = True
-            changes = []
+                if silent is not None:
+                    old_silent = t.get('silent', False)
+                    t['silent'] = silent
+                    changes.append(f"silent: {old_silent} → {silent}")
 
-            if silent is not None:
-                old_silent = t.get('silent', False)
-                t['silent'] = silent
-                changes.append(f"silent: {old_silent} → {silent}")
+                if active is not None:
+                    old_active = t.get('active', True)
+                    t['active'] = active
+                    changes.append(f"active: {old_active} → {active}")
 
-            if active is not None:
-                old_active = t.get('active', True)
-                t['active'] = active
-                changes.append(f"active: {old_active} → {active}")
+                if schedule is not None:
+                    old_schedule = t.get('schedule')
+                    t['schedule'] = schedule
+                    changes.append(f"schedule: '{old_schedule}' → '{schedule}'")
 
-            if schedule is not None:
-                old_schedule = t.get('schedule')
-                t['schedule'] = schedule
-                changes.append(f"schedule: '{old_schedule}' → '{schedule}'")
+                if prompt is not None:
+                    t['prompt'] = prompt
+                    changes.append("prompt updated")
 
-            if prompt is not None:
-                t['prompt'] = prompt
-                changes.append("prompt updated")
+                if room_id is not None:
+                    old_room = t.get('room_id')
+                    if room_id == "":
+                        # Clear room targeting
+                        t.pop('room_id', None)
+                        changes.append(f"room_id: '{old_room}' → (cleared)")
+                    else:
+                        t['room_id'] = room_id
+                        changes.append(f"room_id: '{old_room}' → '{room_id}'")
 
-            if room_id is not None:
-                old_room = t.get('room_id')
-                if room_id == "":
-                    # Clear room targeting
-                    t.pop('room_id', None)
-                    changes.append(f"room_id: '{old_room}' → (cleared)")
-                else:
-                    t['room_id'] = room_id
-                    changes.append(f"room_id: '{old_room}' → '{room_id}'")
+                if project is not None:
+                    old_project = t.get('project')
+                    if project == "":
+                        # Clear project tag
+                        t.pop('project', None)
+                        changes.append(f"project: '{old_project}' → (cleared)")
+                    else:
+                        t['project'] = project
+                        changes.append(f"project: '{old_project}' → '{project}'")
 
-            if project is not None:
-                old_project = t.get('project')
-                if project == "":
-                    # Clear project tag
-                    t.pop('project', None)
-                    changes.append(f"project: '{old_project}' → (cleared)")
-                else:
-                    t['project'] = project
-                    changes.append(f"project: '{old_project}' → '{project}'")
+                return f"✅ Task `{task_id}` updated: {', '.join(changes)}"
 
-            _save_tasks(tasks)
-            return f"✅ Task `{task_id}` updated: {', '.join(changes)}"
-
-    if not found:
-        return f"❌ Task `{task_id}` not found."
+    return f"❌ Task `{task_id}` not found."
 
 def check_due_tasks():
     """
     Checks tasks and returns a list of prompts that actually need to run NOW.
     Updates 'last_run' for those tasks immediately.
+
+    The entire read→check→update→write is wrapped in _transact_tasks() so that
+    concurrent callers (e.g. add_task from an MCP tool) cannot read a stale
+    snapshot and clobber the last_run updates.
     """
-    tasks = _load_tasks()
     due_prompts = []
-    dirty = False
-    
-    now = datetime.now()
-    
-    for t in tasks:
-        # Clear previous errors
-        if 'last_error' in t:
-            del t['last_error']
-            dirty = True
 
-        if not t.get('active', True):
-            continue
-            
-        should_run = False
-        last_run_str = t.get('last_run')
-        last_run = datetime.fromisoformat(last_run_str) if last_run_str else None
-        
-        schedule = t['schedule'].lower().strip()
-        
-        try:
-            # 1. "every X minutes/hours/days"
-            # Regex: every (number)? (minute|hour|day)s?
-            match_every = re.match(r"every\s+(\d+)?\s*(minute|hour|day)s?", schedule)
-            
-            # 2. "daily at HH:MM(am/pm)?"
-            match_daily = re.search(r"daily at\s+(\d{1,2}):(\d{2})\s*(am|pm)?", schedule)
-            
-            # 3. "once at YYYY-MM-DD..."
-            match_once = re.search(r"once at\s+(.+)", schedule)
+    with _transact_tasks() as tasks:
+        now = datetime.now()
 
-            if match_every:
-                val = int(match_every.group(1)) if match_every.group(1) else 1
-                unit = match_every.group(2) # minute, hour, day
-                
-                delta = None
-                if "minute" in unit:
-                    delta = timedelta(minutes=val)
-                elif "hour" in unit:
-                    delta = timedelta(hours=val)
-                elif "day" in unit:
-                    delta = timedelta(days=val)
-                
-                if delta:
-                    if last_run is None:
-                        should_run = True 
-                    elif now - last_run >= delta:
-                        should_run = True
+        for t in tasks:
+            # Clear previous errors
+            if 'last_error' in t:
+                del t['last_error']
 
-            elif match_daily:
-                hour = int(match_daily.group(1))
-                minute = int(match_daily.group(2))
-                meridiem = match_daily.group(3) # am/pm/None
+            if not t.get('active', True):
+                continue
 
-                # Handle 12-hour format
-                if meridiem:
-                    if meridiem == "pm" and hour != 12:
-                        hour += 12
-                    elif meridiem == "am" and hour == 12:
-                        hour = 0
-                
-                target_today = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-                
-                # If target is in the future today, we wait.
-                # If target is in the past today:
-                #   If last_run was BEFORE today's target, run.
-                #   If last_run was AFTER today's target (i.e. we already ran today), don't run.
-                
-                if now >= target_today:
-                    # It's time or past time today.
-                    # Check if we ran today since the target time.
-                    if last_run is None or last_run < target_today:
-                        should_run = True
+            should_run = False
+            last_run_str = t.get('last_run')
+            last_run = datetime.fromisoformat(last_run_str) if last_run_str else None
 
-            elif match_once:
-                target_str = match_once.group(1).strip()
-                # Try strict ISO, then fuzzy if needed? Keeping strict for now
-                target_dt = datetime.fromisoformat(target_str)
+            schedule = t['schedule'].lower().strip()
 
-                if now >= target_dt:
-                    should_run = True
-                    t['active'] = False
-                    dirty = True
+            try:
+                # 1. "every X minutes/hours/days"
+                match_every = re.match(r"every\s+(\d+)?\s*(minute|hour|day)s?", schedule)
 
-            else:
-                # Try cron syntax: "minute hour day-of-month month day-of-week"
-                # e.g., "30 17 * * *" = daily at 5:30 PM
-                # Extended cron regex: each field can be *, a number, or contain commas/dashes/slashes
-                cron_match = re.match(r'^([\d,\-\*/]+)\s+([\d,\-\*/]+)\s+([\d,\-\*/]+)\s+([\d,\-\*/]+)\s+([\d,\-\*/]+)$', t['schedule'].strip())
+                # 2. "daily at HH:MM(am/pm)?"
+                match_daily = re.search(r"daily at\s+(\d{1,2}):(\d{2})\s*(am|pm)?", schedule)
 
-                if cron_match:
-                    cron_min, cron_hour, cron_dom, cron_month, cron_dow = cron_match.groups()
+                # 3. "once at YYYY-MM-DD..."
+                match_once = re.search(r"once at\s+(.+)", schedule)
 
-                    # Check if current time matches cron pattern
-                    # Supports: *, single values, comma-separated (1,3,5), ranges (1-5), steps (*/2, 1-5/2)
-                    def cron_field_matches(field, current_val):
-                        if field == '*':
-                            return True
-                        # Handle step on wildcard: */N
-                        if field.startswith('*/'):
-                            step = int(field[2:])
-                            return current_val % step == 0
-                        # Comma-separated: check each part
-                        for part in field.split(','):
-                            part = part.strip()
-                            if '/' in part:
-                                # range/step: e.g. 1-5/2
-                                range_part, step = part.split('/', 1)
-                                step = int(step)
-                                if '-' in range_part:
-                                    lo, hi = range_part.split('-', 1)
-                                    lo, hi = int(lo), int(hi)
-                                    if lo <= current_val <= hi and (current_val - lo) % step == 0:
-                                        return True
-                            elif '-' in part:
-                                # range: e.g. 1-5
-                                lo, hi = part.split('-', 1)
-                                lo, hi = int(lo), int(hi)
-                                if lo <= current_val <= hi:
-                                    return True
-                            else:
-                                # single value
-                                if int(part) == current_val:
-                                    return True
-                        return False
+                if match_every:
+                    val = int(match_every.group(1)) if match_every.group(1) else 1
+                    unit = match_every.group(2) # minute, hour, day
 
-                    # Check all fields against current time
-                    min_ok = cron_field_matches(cron_min, now.minute)
-                    hour_ok = cron_field_matches(cron_hour, now.hour)
-                    dom_ok = cron_field_matches(cron_dom, now.day)
-                    month_ok = cron_field_matches(cron_month, now.month)
-                    # weekday: cron uses 0=Sunday, Python uses 0=Monday
-                    # Convert Python's weekday (Mon=0) to cron (Sun=0): (weekday + 1) % 7
-                    python_dow = (now.weekday() + 1) % 7
-                    dow_ok = cron_field_matches(cron_dow, python_dow)
+                    delta = None
+                    if "minute" in unit:
+                        delta = timedelta(minutes=val)
+                    elif "hour" in unit:
+                        delta = timedelta(hours=val)
+                    elif "day" in unit:
+                        delta = timedelta(days=val)
 
-                    if min_ok and hour_ok and dom_ok and month_ok and dow_ok:
-                        # We're in the right minute - but did we already run this minute?
+                    if delta:
                         if last_run is None:
                             should_run = True
-                        else:
-                            # Only run if last_run was before this minute started
-                            this_minute_start = now.replace(second=0, microsecond=0)
-                            if last_run < this_minute_start:
-                                should_run = True
-                    else:
-                        # CATCH-UP LOGIC: Check if we missed the scheduled time
-                        # Only for TRUE daily cron jobs (specific hour/minute, wildcards for day/month)
-                        # Don't catch up for specific-date schedules (like "0 1 28 1 *")
-                        if cron_min != '*' and cron_hour != '*' and cron_dom == '*' and cron_month == '*':
-                            scheduled_hour = int(cron_hour)
-                            scheduled_min = int(cron_min)
+                        elif now - last_run >= delta:
+                            should_run = True
 
-                            # Calculate today's scheduled time
-                            today_target = now.replace(hour=scheduled_hour, minute=scheduled_min, second=0, microsecond=0)
+                elif match_daily:
+                    hour = int(match_daily.group(1))
+                    minute = int(match_daily.group(2))
+                    meridiem = match_daily.group(3) # am/pm/None
 
-                            # Check day-of-week constraint if specified
-                            dow_matches_today = cron_field_matches(cron_dow, python_dow)
+                    # Handle 12-hour format
+                    if meridiem:
+                        if meridiem == "pm" and hour != 12:
+                            hour += 12
+                        elif meridiem == "am" and hour == 12:
+                            hour = 0
 
-                            # If we're past the scheduled time today, and haven't run since the target
-                            if dow_matches_today and now > today_target:
-                                if last_run is None or last_run < today_target:
-                                    # Missed run - catch up! But add a grace period (6 hours)
-                                    hours_since_target = (now - today_target).total_seconds() / 3600
-                                    if hours_since_target <= 6:
-                                        should_run = True
-                                        logging.getLogger(__name__).info(
-                                            f"Catch-up: Running missed cron task '{t.get('id')}' "
-                                            f"(scheduled {scheduled_hour}:{scheduled_min:02d}, "
-                                            f"now {now.strftime('%H:%M')}, {hours_since_target:.1f}h late)"
-                                        )
+                    target_today = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+                    if now >= target_today:
+                        if last_run is None or last_run < target_today:
+                            should_run = True
+
+                elif match_once:
+                    target_str = match_once.group(1).strip()
+                    target_dt = datetime.fromisoformat(target_str)
+
+                    if now >= target_dt:
+                        should_run = True
+                        t['active'] = False
+
                 else:
-                    # Unrecognized format
-                    t['last_error'] = f"Unrecognized schedule format: '{t['schedule']}'"
-                    dirty = True
+                    # Try cron syntax: "minute hour day-of-month month day-of-week"
+                    cron_match = re.match(r'^([\d,\-\*/]+)\s+([\d,\-\*/]+)\s+([\d,\-\*/]+)\s+([\d,\-\*/]+)\s+([\d,\-\*/]+)$', t['schedule'].strip())
 
-        except Exception as e:
-            t['last_error'] = f"Parsing error: {str(e)}"
-            dirty = True
+                    if cron_match:
+                        cron_min, cron_hour, cron_dom, cron_month, cron_dow = cron_match.groups()
 
-        if should_run:
-            # Return task metadata along with prompt
-            task_type = t.get('type', 'prompt')
-            task_info = {
-                "id": t.get('id'),
-                "type": task_type,
-                "silent": t.get('silent', False)  # Default to non-silent (visible)
-            }
+                        def cron_field_matches(field, current_val):
+                            if field == '*':
+                                return True
+                            if field.startswith('*/'):
+                                step = int(field[2:])
+                                return current_val % step == 0
+                            for part in field.split(','):
+                                part = part.strip()
+                                if '/' in part:
+                                    range_part, step = part.split('/', 1)
+                                    step = int(step)
+                                    if '-' in range_part:
+                                        lo, hi = range_part.split('-', 1)
+                                        lo, hi = int(lo), int(hi)
+                                        if lo <= current_val <= hi and (current_val - lo) % step == 0:
+                                            return True
+                                elif '-' in part:
+                                    lo, hi = part.split('-', 1)
+                                    lo, hi = int(lo), int(hi)
+                                    if lo <= current_val <= hi:
+                                        return True
+                                else:
+                                    if int(part) == current_val:
+                                        return True
+                            return False
 
-            # Include room_id if specified for room-targeted delivery
-            if t.get('room_id'):
-                task_info["room_id"] = t['room_id']
+                        min_ok = cron_field_matches(cron_min, now.minute)
+                        hour_ok = cron_field_matches(cron_hour, now.hour)
+                        dom_ok = cron_field_matches(cron_dom, now.day)
+                        month_ok = cron_field_matches(cron_month, now.month)
+                        python_dow = (now.weekday() + 1) % 7
+                        dow_ok = cron_field_matches(cron_dow, python_dow)
 
-            # Include project tag if specified for output routing
-            if t.get('project'):
-                task_info["project"] = t['project']
+                        if min_ok and hour_ok and dom_ok and month_ok and dow_ok:
+                            if last_run is None:
+                                should_run = True
+                            else:
+                                this_minute_start = now.replace(second=0, microsecond=0)
+                                if last_run < this_minute_start:
+                                    should_run = True
+                        else:
+                            # CATCH-UP LOGIC for daily cron jobs
+                            if cron_min != '*' and cron_hour != '*' and cron_dom == '*' and cron_month == '*':
+                                scheduled_hour = int(cron_hour)
+                                scheduled_min = int(cron_min)
 
-            if task_type == "agent":
-                # Agent task - return agent name and prompt
-                task_info["agent"] = t.get('agent')
-                task_info["prompt"] = t['prompt']
-            else:
-                # Prompt task - format for Claude <3
-                task_info["prompt"] = f"👇 [SCHEDULED AUTOMATION] 👇\n{t['prompt']}"
+                                today_target = now.replace(hour=scheduled_hour, minute=scheduled_min, second=0, microsecond=0)
 
-            due_prompts.append(task_info)
-            t['last_run'] = now.isoformat()
-            dirty = True
+                                dow_matches_today = cron_field_matches(cron_dow, python_dow)
 
-    if dirty:
-        _save_tasks(tasks)
+                                if dow_matches_today and now > today_target:
+                                    if last_run is None or last_run < today_target:
+                                        hours_since_target = (now - today_target).total_seconds() / 3600
+                                        if hours_since_target <= 6:
+                                            should_run = True
+                                            logging.getLogger(__name__).info(
+                                                f"Catch-up: Running missed cron task '{t.get('id')}' "
+                                                f"(scheduled {scheduled_hour}:{scheduled_min:02d}, "
+                                                f"now {now.strftime('%H:%M')}, {hours_since_target:.1f}h late)"
+                                            )
+                    else:
+                        # Unrecognized format
+                        t['last_error'] = f"Unrecognized schedule format: '{t['schedule']}'"
+
+            except Exception as e:
+                t['last_error'] = f"Parsing error: {str(e)}"
+
+            if should_run:
+                task_type = t.get('type', 'prompt')
+                task_info = {
+                    "id": t.get('id'),
+                    "type": task_type,
+                    "silent": t.get('silent', False)
+                }
+
+                if t.get('room_id'):
+                    task_info["room_id"] = t['room_id']
+
+                if t.get('project'):
+                    task_info["project"] = t['project']
+
+                if task_type == "agent":
+                    task_info["agent"] = t.get('agent')
+                    task_info["prompt"] = t['prompt']
+                else:
+                    task_info["prompt"] = f"👇 [SCHEDULED AUTOMATION] 👇\n{t['prompt']}"
+
+                due_prompts.append(task_info)
+                t['last_run'] = now.isoformat()
 
     return due_prompts
 

@@ -3,6 +3,7 @@ import type { ChatMessage, ChatImageRef, MessageStatus } from './types';
 import { WS_URL, API_URL } from './config';
 import { useVisibility, type VisibilityState } from './hooks/useVisibility';
 import { extractToolSummary } from './utils/toolDisplay';
+import { applyTheme, loadThemePreferences } from './components/SettingsModal';
 
 const SESSION_KEY = 'second_brain_session_id';
 const PENDING_MSG_KEY = 'second_brain_pending_message';
@@ -33,6 +34,7 @@ export interface UserQueuedMessage {
 
 export type ConnectionStatus = 'connected' | 'connecting' | 'disconnected';
 export type ChatStatus = 'idle' | 'thinking' | 'tool_use' | 'processing';
+export type StreamPhase = 'idle' | 'initializing' | 'streaming' | 'stalled';
 
 export interface ActiveTool {
   id: string;
@@ -75,6 +77,8 @@ export interface ClaudeHook {
   sendMessageWithAgent: (text: string, agent?: string, images?: ChatImageRef[]) => boolean;
   // Todo list from agents using TodoWrite
   todos: TodoItem[];
+  // Stream phase for UI phrase selection
+  streamPhase: StreamPhase;
 }
 
 export interface NotificationData {
@@ -155,6 +159,8 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
   const [status, setStatus] = useState<ChatStatus>('idle');
   const [statusText, setStatusText] = useState<string>('');
   const [activeTools, setActiveTools] = useState<Map<string, ActiveTool>>(new Map());
+  const [streamPhase, setStreamPhase] = useState<StreamPhase>('idle');
+  const streamPhaseRef = useRef<StreamPhase>('idle');
   const [currentAgent, setCurrentAgent] = useState<string | null>(null);
   const [todos, setTodos] = useState<TodoItem[]>([]);
   // Derived: first active tool name for backward compat
@@ -163,6 +169,7 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
 
   const ws = useRef<WebSocket | null>(null);
   const reconnectAttempts = useRef(0);
+  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Refs for multi-instance support (needed in stale closures)
   const enabledRef = useRef(enabled);
@@ -557,6 +564,7 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
               setStatus('idle');
               setStatusText('');
               setActiveTools(new Map());
+              setStreamPhase('idle');
               setTodos(Array.isArray(data.todos) ? data.todos : []);
             }
 
@@ -575,7 +583,7 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
               pending.acknowledged = true;
               pending.status = 'confirmed';
               pending.serverTimestamp = serverTimestamp;
-              setStatusText('Thinking...');
+              setStatusText('');
             }
           }
           break;
@@ -610,7 +618,7 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
               pendingMessages.current.delete(data.message.id);
             }
 
-            setStatusText('Thinking...');
+            setStatusText('');
           }
           break;
 
@@ -659,9 +667,14 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
           }));
 
           // Update status based on block type
+          // Any block_start means the model has started generating — transition out of initializing
+          if (streamPhaseRef.current === 'initializing') {
+            setStreamPhase('streaming');
+            lastActivityTime.current = Date.now();
+          }
           if (block.type === 'thinking') {
             setStatus('thinking');
-            setStatusText('Thinking...');
+            setStatusText('');
           } else if (block.type === 'text') {
             setStatus('thinking');
             setStatusText('');
@@ -684,6 +697,10 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
         case 'block_delta': {
           const { message_id, block_id, delta } = data;
           lastActivityTime.current = Date.now();
+          // Transition from initializing/stalled → streaming on first delta
+          if (streamPhaseRef.current !== 'streaming') {
+            setStreamPhase('streaming');
+          }
           if (delta) {
             const key = `${message_id}:${block_id}`;
             const existing = pendingDeltas.current.get(key) || '';
@@ -758,6 +775,7 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
             setStatus('idle');
             setStatusText('');
             setActiveTools(new Map());
+            setStreamPhase('idle');
           }
           break;
         }
@@ -820,11 +838,12 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
           setStatusText('');
           setActiveTools(new Map());
           setTodos([]);
+          setStreamPhase('idle');
 
           // Mark all messages and blocks as complete, and insert any deferred injected messages
           setMessages(prev => {
             console.log(`[DONE] marking ${prev.length} messages complete, roles: ${prev.map(m => m.role).join(',')}`);
-            let updated = prev.map(m => ({
+            let updated: ChatMessage[] = prev.map(m => ({
               ...m,
               isStreaming: false,
               ...(m.blocks ? {
@@ -1054,6 +1073,24 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
           }
           break;
 
+        case 'theme_update':
+          // Agent set_theme tool fired - apply theme changes to all clients
+          if (data.theme) {
+            console.log('Theme update from agent:', data.theme);
+            // Merge with current preferences (partial update)
+            const current = loadThemePreferences();
+            const updated = { ...current, ...data.theme };
+            // Apply to DOM
+            applyTheme(updated);
+            // Persist to localStorage
+            try {
+              localStorage.setItem('second-brain-theme', JSON.stringify(updated));
+            } catch (e) {
+              console.error('Failed to persist theme update:', e);
+            }
+          }
+          break;
+
         case 'server_restarted':
           // Only primary instance handles reload — secondary instances will be cleaned up by the reload
           if (suppressGlobalEventsRef.current) break;
@@ -1143,8 +1180,8 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
           setTodos([]);
           // Finalize any streaming messages and insert confirmed injected messages at their positions
           setMessages(prev => {
-            let updated = prev.map(m =>
-              m.isStreaming ? { ...m, isStreaming: false } : m
+            let updated: ChatMessage[] = prev.map(m =>
+              m.isStreaming ? { ...m, isStreaming: false as const } : m
             );
             // Same position-based insertion logic as the done handler
             const injectedInfos = injectedMessagesRef.current;
@@ -1282,7 +1319,7 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
       reconnectAttempts.current++;
       const delay = Math.min(3000 * reconnectAttempts.current, 30000);
       console.log(`WebSocket closed. Reconnecting in ${delay / 1000}s...`);
-      setTimeout(connect, delay);
+      reconnectTimeoutRef.current = setTimeout(connect, delay);
     };
 
     socket.onerror = () => {
@@ -1328,6 +1365,11 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
 
     return () => {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
+      // Cancel any pending reconnect timeout
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
+      }
       // Cancel any pending delta flush RAF
       if (rafId.current) {
         cancelAnimationFrame(rafId.current);
@@ -1451,6 +1493,51 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
       }
     };
   }, [status]); // Re-run when status changes - timeout resets on each status change
+
+  // Stream phase management + stall detection
+  // Phase transitions: idle → initializing (message sent) → streaming (first delta) → stalled (no delta for N seconds)
+  const stallTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const STALL_THRESHOLD_MS = 4000; // 4 seconds of no deltas = stalled
+
+  // Keep ref in sync for stale closure access
+  useEffect(() => { streamPhaseRef.current = streamPhase; }, [streamPhase]);
+
+  // Transition to 'initializing' when we go from idle to thinking (message just sent)
+  useEffect(() => {
+    if (status === 'idle') {
+      setStreamPhase('idle');
+    } else if (streamPhaseRef.current === 'idle' && status === 'thinking') {
+      setStreamPhase('initializing');
+    }
+  }, [status]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Stall detection: poll lastActivityTime to catch gaps in streaming
+  useEffect(() => {
+    if (stallTimerRef.current) {
+      clearInterval(stallTimerRef.current);
+      stallTimerRef.current = null;
+    }
+
+    // Only run stall detection while streaming (not during tools or idle)
+    if (streamPhase !== 'streaming' && streamPhase !== 'stalled') return;
+    if (status === 'tool_use' || status === 'idle') return;
+
+    stallTimerRef.current = setInterval(() => {
+      const elapsed = Date.now() - lastActivityTime.current;
+      if (elapsed >= STALL_THRESHOLD_MS && streamPhase !== 'stalled') {
+        setStreamPhase('stalled');
+      } else if (elapsed < STALL_THRESHOLD_MS && streamPhase === 'stalled') {
+        setStreamPhase('streaming');
+      }
+    }, 1000);
+
+    return () => {
+      if (stallTimerRef.current) {
+        clearInterval(stallTimerRef.current);
+        stallTimerRef.current = null;
+      }
+    };
+  }, [streamPhase, status]);
 
   // Internal function to actually send a message (bypasses queue check)
   const sendMessageInternal = useCallback((text: string, images?: ChatImageRef[], agent?: string): boolean => {
@@ -1838,5 +1925,6 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
     currentAgent,
     sendMessageWithAgent,
     todos,
+    streamPhase,
   };
 };

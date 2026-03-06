@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/overview
 title: Agent SDK overview
-last_fetched: 2026-02-12T10:03:32.164986+00:00
+last_fetched: 2026-03-04T10:02:54.131520+00:00
 ---
 
 Copy page
@@ -226,7 +226,7 @@ For partners integrating the Claude Agent SDK, use of Claude branding is optiona
 - "Claude Code" or "Claude Code Agent"
 - Claude Code-branded ASCII art or visual elements that mimic Claude Code
 
-Your product should maintain its own branding and not appear to be Claude Code or any Anthropic product. For questions about branding compliance, contact our [sales team](https://www.anthropic.com/contact-sales).
+Your product should maintain its own branding and not appear to be Claude Code or any Anthropic product. For questions about branding compliance, contact the Anthropic [sales team](https://www.anthropic.com/contact-sales).
 
 ## License and terms
 

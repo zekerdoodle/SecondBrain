@@ -1,114 +1,668 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Agent Builder</title>
-<link rel="stylesheet" href="/file/05_App_Data/_shared/theme.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
-/* === Agent Builder — app-specific styles only === */
-/* Base styles, cards, buttons, inputs, toggles, alerts come from theme.css */
+/* ================================================================
+   DESIGN TOKENS — Second Brain Main UI Theme
+   ================================================================ */
 
-.container { max-width: 640px; margin: 0 auto; padding: var(--sp-lg); padding-bottom: 80px; }
-h1 { font-size: var(--font-size-2xl); font-weight: 700; margin-bottom: var(--sp-lg); }
+:root {
+  /* Backgrounds */
+  --bg: #FAF9F7;
+  --bg-surface: #FFFFFF;
+  --bg-raised: #FFFFFF;
+  --bg-deep: #F5F4F2;
+  --bg-inset: #EDEBE8;
 
-/* Mode Toggle (segmented control — not in shared kit) */
+  /* Text */
+  --text: #1a1a1a;
+  --text-secondary: #6B6B6B;
+  --text-muted: #9CA3AF;
+
+  /* Borders */
+  --border: #E8E6E3;
+  --border-hover: #D4D2CF;
+
+  /* Accent — Terracotta */
+  --accent: #D97757;
+  --accent-hover: #C4684A;
+  --accent-light: #FDF4F1;
+  --accent-subtle: rgba(217, 119, 87, 0.08);
+  --accent-muted: rgba(217, 119, 87, 0.15);
+
+  /* Status */
+  --success: #10B981;
+  --warning: #F59E0B;
+  --danger: #EF4444;
+
+  /* Typography */
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', Consolas, Monaco, monospace;
+  --font-size-xs: 11px;
+  --font-size-sm: 12px;
+  --font-size-base: 13px;
+  --font-size-md: 14px;
+  --font-size-lg: 16px;
+  --font-size-xl: 18px;
+  --font-size-2xl: 24px;
+
+  /* Spacing */
+  --sp-xs: 4px;
+  --sp-sm: 8px;
+  --sp-md: 12px;
+  --sp-lg: 16px;
+  --sp-xl: 20px;
+  --sp-2xl: 24px;
+
+  /* Radius */
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 12px;
+  --radius-2xl: 16px;
+  --radius-full: 9999px;
+
+  /* Shadows */
+  --shadow-xs: 0 1px 2px rgba(0,0,0,0.03);
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.05), 0 1px 2px rgba(0,0,0,0.03);
+  --shadow-md: 0 4px 6px rgba(0,0,0,0.04), 0 2px 4px rgba(0,0,0,0.03);
+
+  /* Transitions */
+  --ease-fast: 0.15s ease;
+  --ease-normal: 0.2s ease;
+  --ease-slow: 0.3s ease-out;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1a1a1a;
+    --bg-surface: #242424;
+    --bg-raised: #2d2d2d;
+    --bg-deep: #141414;
+    --bg-inset: #1f1f1f;
+
+    --text: #f5f5f5;
+    --text-secondary: #a0a0a0;
+    --text-muted: #6b6b6b;
+
+    --border: #3d3d3d;
+    --border-hover: #4d4d4d;
+
+    --accent-light: rgba(217, 119, 87, 0.12);
+    --accent-subtle: rgba(217, 119, 87, 0.06);
+    --accent-muted: rgba(217, 119, 87, 0.18);
+
+    --success: #34D399;
+    --warning: #FBBF24;
+    --danger: #F87171;
+
+    --shadow-xs: 0 1px 2px rgba(0,0,0,0.15);
+    --shadow-sm: 0 1px 3px rgba(0,0,0,0.2);
+    --shadow-md: 0 4px 6px rgba(0,0,0,0.25);
+  }
+}
+
+
+/* ================================================================
+   RESET & BASE
+   ================================================================ */
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: var(--font-sans);
+  font-size: var(--font-size-md);
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow-x: hidden;
+}
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: var(--radius-full); }
+::-webkit-scrollbar-thumb:hover { background: var(--border-hover); }
+
+::selection { background: var(--accent-muted); color: var(--text); }
+
+
+/* ================================================================
+   LAYOUT
+   ================================================================ */
+
+.container {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: var(--sp-2xl) var(--sp-lg);
+  padding-bottom: 80px;
+}
+
+
+/* ================================================================
+   PAGE HEADER
+   ================================================================ */
+
+.page-header { margin-bottom: var(--sp-2xl); }
+
+.page-header h1 {
+  font-size: var(--font-size-2xl);
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -0.02em;
+  margin-bottom: 2px;
+}
+
+.page-subtitle {
+  font-size: var(--font-size-md);
+  color: var(--text-muted);
+}
+
+
+/* ================================================================
+   MODE TOGGLE (Segmented Control)
+   ================================================================ */
+
 .mode-toggle {
-  display: flex; margin-bottom: 20px; border-radius: var(--radius-lg); overflow: hidden;
+  display: flex;
+  margin-bottom: var(--sp-xl);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  background: var(--bg-deep);
+  padding: 3px;
+  gap: 2px;
+}
+
+.mode-btn {
+  flex: 1;
+  padding: 9px var(--sp-lg);
+  text-align: center;
+  cursor: pointer;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--font-size-md);
+  font-weight: 600;
+  border: none;
+  border-radius: var(--radius-md);
+  font-family: inherit;
+  transition: all var(--ease-normal);
+}
+
+.mode-btn.active {
+  background: var(--accent);
+  color: #fff;
+  box-shadow: var(--shadow-xs);
+}
+
+.mode-btn:hover:not(.active) {
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+}
+
+
+/* ================================================================
+   CARDS
+   ================================================================ */
+
+.card {
+  background: var(--bg-surface);
+  border-radius: var(--radius-xl);
+  padding: var(--sp-xl);
+  border: 1px solid var(--border);
+  margin-bottom: var(--sp-md);
+  box-shadow: var(--shadow-xs);
+}
+
+.card-header {
+  font-size: var(--font-size-sm);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--accent);
+  margin-bottom: var(--sp-lg);
+}
+
+
+/* ================================================================
+   FORM INPUTS
+   ================================================================ */
+
+input[type="text"],
+input[type="number"],
+input[type="email"],
+input[type="search"],
+select,
+textarea {
+  width: 100%;
+  padding: 10px var(--sp-md);
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-base);
+  font-family: inherit;
+  outline: none;
+  transition: border-color var(--ease-normal), box-shadow var(--ease-normal);
+}
+
+input:focus, select:focus, textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-subtle);
+}
+
+input:disabled, select:disabled, textarea:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+textarea {
+  resize: vertical;
+  min-height: 80px;
+}
+
+select {
+  cursor: pointer;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%236B6B6B' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e");
+  background-position: right 10px center;
+  background-repeat: no-repeat;
+  background-size: 16px;
+  padding-right: 36px;
+}
+
+.field { margin-bottom: 14px; }
+
+.field label {
+  display: block;
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: var(--sp-xs);
+}
+
+.field .hint {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  margin-top: 3px;
+}
+
+
+/* ================================================================
+   BUTTONS
+   ================================================================ */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-sm);
+  padding: 10px 20px;
+  border-radius: var(--radius-md);
+  border: none;
+  cursor: pointer;
+  font-size: var(--font-size-md);
+  font-weight: 600;
+  font-family: inherit;
+  transition: all var(--ease-normal);
+  user-select: none;
+}
+
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.btn-primary {
+  background: var(--accent);
+  color: #fff;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(217, 119, 87, 0.25);
+}
+
+.btn-primary:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.btn-secondary {
+  background: var(--bg-deep);
+  color: var(--text);
   border: 1px solid var(--border);
 }
-.mode-btn {
-  flex: 1; padding: 10px; text-align: center; cursor: pointer;
-  background: var(--bg-surface); color: var(--text-muted); font-size: var(--font-size-base); font-weight: 600;
-  border: none; font-family: inherit; transition: all var(--ease-normal);
-}
-.mode-btn.active { background: var(--accent); color: var(--bg); }
-.mode-btn:hover:not(.active) { background: var(--ctp-surface1); color: var(--text-secondary); }
 
-/* Card spacing */
-.card { margin-bottom: var(--sp-md); }
-
-/* Textarea override for code */
-.field textarea {
-  min-height: 160px; font-family: var(--font-mono); font-size: var(--font-size-sm); line-height: 1.5;
+.btn-secondary:hover:not(:disabled) {
+  background: var(--border);
 }
 
-/* Toggle row */
-.toggle-row { display: flex; align-items: center; justify-content: space-between; padding: var(--sp-xs) 0; }
-.toggle-label { font-size: var(--font-size-base); font-weight: 500; }
-.toggle-sub { font-size: var(--font-size-xs); color: var(--text-muted); }
+.btn-row { display: flex; gap: 10px; margin-top: var(--sp-xl); }
 
-/* Tool chips */
+
+/* ================================================================
+   TOGGLE SWITCH
+   ================================================================ */
+
+.toggle {
+  width: 42px;
+  height: 24px;
+  border-radius: var(--radius-full);
+  background: var(--border);
+  position: relative;
+  cursor: pointer;
+  transition: background var(--ease-normal);
+  border: none;
+  flex-shrink: 0;
+}
+
+.toggle.on { background: var(--accent); }
+
+.toggle::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform var(--ease-normal);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+}
+
+.toggle.on::after { transform: translateX(18px); }
+
+.toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--sp-xs) 0;
+}
+
+.toggle-label { font-size: var(--font-size-md); font-weight: 500; }
+.toggle-sub { font-size: var(--font-size-xs); color: var(--text-muted); margin-top: 1px; }
+
+
+/* ================================================================
+   TOOL SECTION HEADERS
+   ================================================================ */
+
+.tool-section-header {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 700;
+  padding: var(--sp-md) 0 var(--sp-xs);
+  margin-top: var(--sp-lg);
+  border-top: 1px solid var(--border);
+}
+
+.tool-section-header:first-child { border-top: none; margin-top: 0; }
+
+
+/* ================================================================
+   NATIVE TOOL GROUPS
+   ================================================================ */
+
+.tool-group { margin-bottom: var(--sp-md); }
+
+.tool-group-label {
+  display: block;
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 5px;
+  font-weight: 600;
+}
+
+
+/* ================================================================
+   TOOL CHIPS
+   ================================================================ */
+
 .tool-cat { margin-bottom: var(--sp-md); }
-.tool-cat-name {
-  font-size: var(--font-size-sm); font-weight: 700; color: var(--accent); text-transform: uppercase;
-  letter-spacing: 0.5px; margin-bottom: 6px; cursor: pointer;
-}
-.tool-cat-name:hover { color: var(--accent-hover); }
-.tool-list { display: flex; flex-wrap: wrap; gap: 6px; }
-.tool-chip {
-  padding: 4px 10px; border-radius: 6px; font-size: var(--font-size-xs); cursor: pointer;
-  border: 1px solid var(--border); background: var(--bg); color: var(--text-muted);
-  transition: all var(--ease-fast); user-select: none;
-}
-.tool-chip.selected { border-color: var(--accent); background: rgba(137,180,250,0.15); color: var(--accent); }
-.tool-chip:hover { border-color: var(--accent); }
 
-/* Icon picker */
+.tool-cat-name {
+  font-size: var(--font-size-sm);
+  font-weight: 700;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 6px;
+  cursor: pointer;
+  transition: color var(--ease-fast);
+}
+
+.tool-cat-name:hover { color: var(--accent-hover); }
+
+.tool-list { display: flex; flex-wrap: wrap; gap: 6px; }
+
+.tool-chip {
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-xs);
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text-muted);
+  transition: all var(--ease-fast);
+  user-select: none;
+  font-weight: 500;
+}
+
+.tool-chip.selected {
+  border-color: var(--accent);
+  background: var(--accent-light);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.tool-chip:hover { border-color: var(--accent); color: var(--text-secondary); }
+
+
+/* ================================================================
+   ICON PICKER
+   ================================================================ */
+
 .icon-search { margin-bottom: var(--sp-sm); }
 .icon-search input { width: 100%; }
+
 .icon-categories { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: var(--sp-sm); }
+
 .icon-cat-btn {
-  padding: 3px 8px; border-radius: 4px; font-size: 10px; cursor: pointer;
-  border: 1px solid var(--border); background: var(--bg); color: var(--text-muted);
-  transition: all var(--ease-fast); text-transform: uppercase; letter-spacing: 0.3px; font-weight: 600;
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-xs);
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text-muted);
+  transition: all var(--ease-fast);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  font-weight: 600;
+  font-family: inherit;
 }
+
 .icon-cat-btn:hover { border-color: var(--accent); color: var(--accent); }
-.icon-cat-btn.active { border-color: var(--accent); background: rgba(137,180,250,0.15); color: var(--accent); }
-.icon-grid { display: flex; flex-wrap: wrap; gap: var(--sp-sm); max-height: 200px; overflow-y: auto; padding: 4px 0; }
+
+.icon-cat-btn.active {
+  border-color: var(--accent);
+  background: var(--accent-light);
+  color: var(--accent);
+}
+
+.icon-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-sm);
+  max-height: 200px;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+
 .icon-opt {
-  width: 40px; height: 40px; border-radius: var(--radius-lg); display: flex; align-items: center;
-  justify-content: center; cursor: pointer; border: 2px solid transparent;
-  background: var(--bg); transition: all var(--ease-fast); color: var(--text-muted);
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  border: 2px solid transparent;
+  background: var(--bg);
+  transition: all var(--ease-fast);
+  color: var(--text-muted);
 }
+
 .icon-opt svg { width: 20px; height: 20px; }
-.icon-opt:hover { border-color: var(--border); color: var(--text-secondary); }
-.icon-opt.selected { border-color: var(--accent); background: rgba(137,180,250,0.15); color: var(--accent); }
-.icon-selected-preview {
-  display: flex; align-items: center; gap: var(--sp-sm); margin-top: var(--sp-sm);
-  padding: 8px 12px; border-radius: var(--radius-lg); background: var(--bg-surface);
+.icon-opt:hover { border-color: var(--border-hover); color: var(--text-secondary); }
+
+.icon-opt.selected {
+  border-color: var(--accent);
+  background: var(--accent-light);
+  color: var(--accent);
 }
+
+.icon-selected-preview {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-sm);
+  margin-top: var(--sp-sm);
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  background: var(--bg-deep);
+}
+
 .icon-selected-preview svg { width: 24px; height: 24px; color: var(--accent); }
 .icon-selected-preview span { font-size: var(--font-size-sm); color: var(--text-muted); font-family: var(--font-mono); }
 
-/* Banner (uses alert pattern from theme.css with rename) */
-.banner { padding: 10px 14px; border-radius: var(--radius-lg); margin-bottom: 14px; font-size: var(--font-size-sm); line-height: 1.5; }
-.banner-warn { background: rgba(249,226,175,0.1); border: 1px solid var(--ctp-yellow); color: var(--ctp-yellow); }
-.banner-info { background: rgba(137,180,250,0.1); border: 1px solid var(--accent); color: var(--accent); }
-.banner-ok { background: rgba(166,227,161,0.1); border: 1px solid var(--success); color: var(--success); }
 
-/* Agent selector */
+/* ================================================================
+   BANNERS / ALERTS
+   ================================================================ */
+
+.banner {
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  margin-bottom: 14px;
+  font-size: var(--font-size-sm);
+  line-height: 1.5;
+  border: 1px solid;
+}
+
+.banner-warn {
+  background: rgba(245, 158, 11, 0.06);
+  border-color: rgba(245, 158, 11, 0.3);
+  color: var(--warning);
+}
+
+.banner-info {
+  background: var(--accent-subtle);
+  border-color: var(--accent-muted);
+  color: var(--accent);
+}
+
+.banner-ok {
+  background: rgba(16, 185, 129, 0.06);
+  border-color: rgba(16, 185, 129, 0.3);
+  color: var(--success);
+}
+
+
+/* ================================================================
+   TEXTAREA OVERRIDE FOR CODE
+   ================================================================ */
+
+.field textarea {
+  min-height: 160px;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  line-height: 1.6;
+}
+
+
+/* ================================================================
+   AGENT SELECTOR
+   ================================================================ */
+
 .agent-select { width: 100%; }
 
-/* Btn row */
-.btn-row { display: flex; gap: 10px; margin-top: var(--sp-lg); }
 
-/* Status (kept for inline form status separate from toast) */
-.status-msg { padding: var(--sp-md); text-align: center; font-size: var(--font-size-base); color: var(--text-secondary); }
+/* ================================================================
+   STATUS MESSAGE
+   ================================================================ */
+
+.status-msg {
+  padding: var(--sp-md);
+  text-align: center;
+  font-size: var(--font-size-md);
+  color: var(--text-secondary);
+}
+
+
+/* ================================================================
+   TOAST (brain-kit.js compatibility)
+   ================================================================ */
+
+.toast {
+  position: fixed;
+  top: var(--sp-lg);
+  left: 50%;
+  transform: translateX(-50%) translateY(-100px);
+  background: var(--bg-surface);
+  color: var(--text);
+  padding: var(--sp-md) var(--sp-xl);
+  border-radius: var(--radius-lg);
+  font-size: var(--font-size-md);
+  font-weight: 600;
+  z-index: 300;
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-md);
+  transition: transform var(--ease-slow);
+  pointer-events: none;
+}
+
+.toast.show { transform: translateX(-50%) translateY(0); }
+.toast.error { border-color: var(--danger); color: var(--danger); }
+.toast.success { border-color: var(--success); color: var(--success); }
+.toast.warning { border-color: var(--warning); color: var(--warning); }
+
+
+/* ================================================================
+   ANIMATIONS
+   ================================================================ */
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.card { animation: fadeIn 0.25s ease-out; }
 </style>
 </head>
 <body>
 <div class="container">
-  <h1>Agent Builder</h1>
+  <!-- Page Header -->
+  <div class="page-header">
+    <h1>Agent Builder</h1>
+    <p class="page-subtitle">Configure models, tools, prompts, and permissions</p>
+  </div>
 
   <!-- Mode Toggle -->
   <div class="mode-toggle">
-    <button class="mode-btn active" onclick="setMode('create')" id="mode-create">Create New</button>
-    <button class="mode-btn" onclick="setMode('edit')" id="mode-edit">Edit Existing</button>
+    <button class="mode-btn active" onclick="setMode('edit')" id="mode-edit">Edit Agent</button>
+    <button class="mode-btn" onclick="setMode('create')" id="mode-create">New Agent</button>
   </div>
 
   <!-- Edit: Agent Selector -->
-  <div id="edit-selector" style="display:none" class="card">
+  <div id="edit-selector" class="card">
     <div class="field">
       <label>Select Agent</label>
       <select id="agent-dropdown" class="agent-select" onchange="loadAgentForEdit()">
@@ -120,8 +674,8 @@ h1 { font-size: var(--font-size-2xl); font-weight: 700; margin-bottom: var(--sp-
   <!-- Form -->
   <div id="agent-form">
     <!-- Warnings -->
-    <div id="warn-claudey" class="banner banner-warn" style="display:none">
-      Editing Claudey's config directly is risky. Claudey has a special memory pipeline (CLAUDE.md + LTM) that depends on specific config settings. Proceed with caution.
+    <div id="warn-primary" class="banner banner-warn" style="display:none">
+      Warning: editing a core system agent. Changes to tools or prompt may affect system functionality.
     </div>
 
     <!-- Basic Info -->
@@ -129,8 +683,13 @@ h1 { font-size: var(--font-size-2xl); font-weight: 700; margin-bottom: var(--sp-
       <div class="card-header">Basic Info</div>
       <div class="field">
         <label>Name (lowercase, underscores)</label>
-        <input type="text" id="f-name" placeholder="my_agent" pattern="[a-z_]+" />
+        <input type="text" id="f-name" placeholder="my_agent" pattern="[a-z_]+" disabled />
         <div class="hint">Used as folder name. Cannot be changed after creation.</div>
+      </div>
+      <div class="field">
+        <label>Display Name</label>
+        <input type="text" id="f-display-name" placeholder="My Agent" />
+        <div class="hint">Human-friendly name shown in UI. Leave blank to auto-title from name.</div>
       </div>
       <div class="field">
         <label>Description</label>
@@ -183,6 +742,26 @@ h1 { font-size: var(--font-size-2xl); font-weight: 700; margin-bottom: var(--sp-
       </div>
     </div>
 
+    <!-- Thinking -->
+    <div class="card">
+      <div class="card-header">Thinking</div>
+      <div class="field">
+        <label>Effort</label>
+        <select id="f-effort">
+          <option value="">Default (model-level)</option>
+          <option value="low">Low</option>
+          <option value="medium">Medium</option>
+          <option value="high">High</option>
+        </select>
+        <div class="hint">Override thinking effort. Leave at default unless you have a reason.</div>
+      </div>
+      <div class="field">
+        <label>Thinking Budget (tokens)</label>
+        <input type="number" id="f-thinking-budget" placeholder="e.g. 16384" min="1024" max="100000" />
+        <div class="hint">Explicit budget_tokens. Overrides effort when set. 16384 is typical for Haiku.</div>
+      </div>
+    </div>
+
     <!-- Skills -->
     <div class="card">
       <div class="card-header">Skills</div>
@@ -205,17 +784,17 @@ h1 { font-size: var(--font-size-2xl); font-weight: 700; margin-bottom: var(--sp-
       <div class="card-header">Tools</div>
       <div class="field">
         <label>Native Tools</label>
-        <div class="tool-list" id="native-tools"></div>
+        <div id="native-tools"></div>
       </div>
       <div class="field" style="margin-top:12px">
-        <label>MCP Tools (by category)</label>
+        <label>MCP Tools</label>
         <div id="mcp-categories"></div>
       </div>
     </div>
 
     <!-- Actions -->
     <div class="btn-row">
-      <button class="btn btn-primary" id="save-btn" onclick="saveAgent()">Create Agent</button>
+      <button class="btn btn-primary" id="save-btn" onclick="saveAgent()">Save Changes</button>
     </div>
     <div id="save-status" class="status-msg" style="display:none"></div>
   </div>
@@ -224,58 +803,85 @@ h1 { font-size: var(--font-size-2xl); font-weight: 700; margin-bottom: var(--sp-
 <script src="/file/05_App_Data/_shared/brain-kit.js"></script>
 <script src="/file/05_App_Data/_shared/agent-icons.js"></script>
 <script>
-// Derive API base: we're in a srcdoc iframe with a <base> tag injected by the editor.
-// The <base> href points to the parent origin (e.g., https://brain.example.com/).
-// The API is served from the same origin (no port override — Cloudflare Tunnel handles routing).
+// Derive API base from <base> tag or parent origin
 function getApiBase() {
-  // 1. Try <base> tag (injected by Brain App Bridge)
   const base = document.querySelector('base');
   if (base && base.href && base.href !== 'about:srcdoc') {
-    try {
-      const u = new URL(base.href);
-      return `${u.origin}/api`;
-    } catch {}
+    try { return `${new URL(base.href).origin}/api`; } catch {}
   }
-  // 2. Try parent window (same-origin srcdoc iframe can access parent)
-  try {
-    return `${window.parent.location.origin}/api`;
-  } catch {}
-  // 3. Fallback (local dev)
+  try { return `${window.parent.location.origin}/api`; } catch {}
   return 'http://localhost:8000/api';
 }
 const API = getApiBase();
 
-let mode = 'create';
+// =============================================================================
+// State
+// =============================================================================
+let mode = 'edit';
 let allAgents = [];
 let toolCategories = [];
-let allSkills = [];           // Master skill list from /api/skills
+let allSkills = [];
 let selectedIcon = 'sparkles';
 let selectedNativeTools = new Set(['Bash']);
 let selectedMcpTools = new Set();
 let selectedSkills = new Set();
-let restrictSkills = false;   // false = null (all skills), true = explicit list
+let restrictSkills = false;
 let isChattable = true;
-let editOriginalType = null;  // Preserve original type when editing
-let activeIconCategory = 'all'; // Icon category filter
-let iconSearchQuery = '';        // Icon search text
+let editOriginalType = null;
+let activeIconCategory = 'all';
+let iconSearchQuery = '';
 
-// ICONS now comes from agent-icons.js (AGENT_ICONS global)
-// Extract unique categories for the filter bar
+// =============================================================================
+// Constants
+// =============================================================================
+
 const ICON_CATEGORIES = ['all', ...new Set(AGENT_ICONS.map(i => i.category))];
 
-const NATIVE_TOOLS = [
-  'Read', 'Write', 'Edit', 'Glob', 'Grep', 'NotebookEdit',
-  'Bash', 'Task', 'TaskOutput', 'TaskStop', 'KillShell',
-  'WebFetch', 'WebSearch',
-  'AskUserQuestion', 'TodoWrite',
-  'EnterPlanMode', 'ExitPlanMode',
+const NATIVE_TOOL_GROUPS = [
+  { label: 'File System', tools: ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'NotebookEdit'] },
+  { label: 'Execution',   tools: ['Bash', 'Task', 'TaskOutput', 'TaskStop', 'KillShell'] },
+  { label: 'Web',         tools: ['WebFetch', 'WebSearch'] },
+  { label: 'Interaction', tools: ['AskUserQuestion', 'TodoWrite', 'EnterPlanMode', 'ExitPlanMode'] },
 ];
+const NATIVE_TOOLS = NATIVE_TOOL_GROUPS.flatMap(g => g.tools);
 
-const RESERVED_NAMES = ['claudey', 'background', '_template', 'notifications', '__pycache__'];
+const RESERVED_NAMES = ['character', 'claudey', 'background', '_template', 'notifications', '__pycache__'];
+const CORE_AGENTS = ['character', 'claudey'];
 const MCP_PREFIX = 'mcp__brain__';
-
-// Default MCP categories for new chattable agents
 const DEFAULT_CATEGORIES = ['agents', 'scheduler', 'bash'];
+
+const SKIP_CATEGORIES = new Set(['memory', 'gardener']);
+
+const CATEGORY_LABELS = {
+  agents: 'Agent Orchestration',
+  scheduler: 'Scheduling',
+  bash: 'Shell',
+  utilities: 'Utilities',
+  unified_memory: 'Persistent Memory',
+  working_memory: 'Working Memory',
+  conversation_search: 'Conversation Search',
+  forms: 'Forms',
+  messaging: 'Messaging',
+  skills: 'Skills',
+  google: 'Calendar & Tasks',
+  gmail: 'Email',
+  youtube: 'YouTube Music',
+  spotify: 'Spotify',
+  image: 'Image Generation',
+  finance: 'Finance',
+  llm: 'LLM',
+  moltbook: 'Moltbook',
+  chess: 'Chess',
+};
+
+const MCP_SECTIONS = [
+  { label: 'Core Platform',    cats: ['agents', 'scheduler', 'bash', 'utilities'] },
+  { label: 'Memory',           cats: ['unified_memory', 'working_memory', 'conversation_search'] },
+  { label: 'Communication',    cats: ['forms', 'messaging', 'skills'] },
+  { label: 'Google Services',  cats: ['google', 'gmail'] },
+  { label: 'Media & Content',  cats: ['youtube', 'spotify', 'image'] },
+  { label: 'Other',            cats: ['finance', 'llm', 'moltbook', 'chess'] },
+];
 
 // =============================================================================
 // Init
@@ -343,11 +949,14 @@ function setMode(m) {
 
 function resetForm() {
   document.getElementById('f-name').value = '';
+  document.getElementById('f-display-name').value = '';
   document.getElementById('f-desc').value = '';
   document.getElementById('f-model').value = 'sonnet';
   document.getElementById('f-timeout').value = '300';
   document.getElementById('f-max-turns').value = '200';
   document.getElementById('f-prompt').value = '';
+  document.getElementById('f-effort').value = '';
+  document.getElementById('f-thinking-budget').value = '';
   document.getElementById('icon-search').value = '';
   iconSearchQuery = '';
   activeIconCategory = 'all';
@@ -357,7 +966,6 @@ function resetForm() {
   selectedNativeTools = new Set(['Bash']);
   selectedMcpTools = new Set();
   selectedSkills = new Set();
-  // Pre-select default MCP categories for new agents
   for (const cat of DEFAULT_CATEGORIES) {
     const catData = toolCategories.find(c => c.name === cat);
     if (catData) {
@@ -372,7 +980,7 @@ function resetForm() {
   renderSkillChips();
   updateChattableUI();
   updateRestrictSkillsUI();
-  document.getElementById('warn-claudey').style.display = 'none';
+  document.getElementById('warn-primary').style.display = 'none';
   document.getElementById('save-status').style.display = 'none';
 }
 
@@ -402,20 +1010,22 @@ async function loadAgentForEdit() {
     editOriginalType = config.type || 'sdk';
 
     document.getElementById('f-name').value = name;
+    document.getElementById('f-display-name').value = config.display_name || '';
     document.getElementById('f-desc').value = config.description || '';
     document.getElementById('f-model').value = config.model || 'sonnet';
     document.getElementById('f-timeout').value = config.timeout_seconds || config.timeout || 300;
     document.getElementById('f-max-turns').value = config.max_turns || 200;
     document.getElementById('f-prompt').value = data.prompt || '';
+    document.getElementById('f-effort').value = config.effort || '';
+    document.getElementById('f-thinking-budget').value = config.thinking_budget || '';
 
     isChattable = config.chattable === true;
     selectedIcon = config.icon || 'sparkles';
-    // Reset icon search/filter when loading an agent
     document.getElementById('icon-search').value = '';
     iconSearchQuery = '';
     activeIconCategory = 'all';
 
-    // Parse skills — null means "all skills", array means "only these"
+    // Parse skills
     if (config.skills != null && Array.isArray(config.skills)) {
       restrictSkills = true;
       selectedSkills = new Set(config.skills);
@@ -424,7 +1034,7 @@ async function loadAgentForEdit() {
       selectedSkills = new Set();
     }
 
-    // Parse tools — support both flat 'tools' list and separate 'native_tools'/'mcp_tools' lists
+    // Parse tools
     if (config.native_tools || config.mcp_tools) {
       selectedNativeTools = new Set(config.native_tools || []);
       const mcpList = Array.isArray(config.mcp_tools) ? config.mcp_tools : [];
@@ -444,7 +1054,8 @@ async function loadAgentForEdit() {
     updateChattableUI();
     updateRestrictSkillsUI();
 
-    document.getElementById('warn-claudey').style.display = name === 'claudey' ? 'block' : 'none';
+    document.getElementById('warn-primary').style.display =
+      CORE_AGENTS.includes(name) ? 'block' : 'none';
     document.getElementById('save-status').style.display = 'none';
   } catch (e) {
     showStatus('Failed to load agent: ' + e.message, 'error');
@@ -452,7 +1063,7 @@ async function loadAgentForEdit() {
 }
 
 // =============================================================================
-// Render helpers
+// Icon Picker
 // =============================================================================
 function renderIconCategories() {
   const container = document.getElementById('icon-categories');
@@ -515,80 +1126,121 @@ function updateIconPreview() {
   }
 }
 
+// =============================================================================
+// Native Tools
+// =============================================================================
 function renderNativeTools() {
   const container = document.getElementById('native-tools');
   container.innerHTML = '';
-  NATIVE_TOOLS.forEach(tool => {
-    const chip = document.createElement('div');
-    chip.className = 'tool-chip' + (selectedNativeTools.has(tool) ? ' selected' : '');
-    chip.textContent = tool;
-    chip.onclick = () => {
-      if (selectedNativeTools.has(tool)) {
-        selectedNativeTools.delete(tool);
-      } else {
-        selectedNativeTools.add(tool);
-      }
-      renderNativeTools();
-    };
-    container.appendChild(chip);
+
+  NATIVE_TOOL_GROUPS.forEach(group => {
+    const section = document.createElement('div');
+    section.className = 'tool-group';
+
+    const label = document.createElement('span');
+    label.className = 'tool-group-label';
+    label.textContent = group.label;
+    section.appendChild(label);
+
+    const list = document.createElement('div');
+    list.className = 'tool-list';
+    group.tools.forEach(tool => {
+      const chip = document.createElement('div');
+      chip.className = 'tool-chip' + (selectedNativeTools.has(tool) ? ' selected' : '');
+      chip.textContent = tool;
+      chip.onclick = () => {
+        selectedNativeTools.has(tool) ? selectedNativeTools.delete(tool) : selectedNativeTools.add(tool);
+        renderNativeTools();
+      };
+      list.appendChild(chip);
+    });
+    section.appendChild(list);
+    container.appendChild(section);
   });
 }
 
+// =============================================================================
+// MCP Tools
+// =============================================================================
 function renderMcpCategories() {
   const container = document.getElementById('mcp-categories');
   container.innerHTML = '';
-  toolCategories.forEach(cat => {
+
+  const catMap = Object.fromEntries(toolCategories.map(c => [c.name, c]));
+  const seenTools = new Set();
+  const renderedCats = new Set();
+
+  function renderCat(catName) {
+    const cat = catMap[catName];
+    if (!cat || SKIP_CATEGORIES.has(catName)) return;
+    renderedCats.add(catName);
+
+    const uniqueTools = cat.tools.filter(t => !seenTools.has(t));
+    uniqueTools.forEach(t => seenTools.add(t));
+    if (uniqueTools.length === 0) return;
+
     const div = document.createElement('div');
     div.className = 'tool-cat';
 
-    const mcpTools = cat.tools.map(t => MCP_PREFIX + t);
-    const allSelected = mcpTools.every(t => selectedMcpTools.has(t));
+    const allMcpTools = cat.tools.map(t => MCP_PREFIX + t);
+    const allSelected = allMcpTools.every(t => selectedMcpTools.has(t));
 
     const header = document.createElement('div');
     header.className = 'tool-cat-name';
-    header.textContent = (allSelected ? '\u2713 ' : '') + cat.name;
+    header.textContent = (allSelected ? '\u2713 ' : '') + (CATEGORY_LABELS[catName] || catName);
     header.onclick = () => {
-      if (allSelected) {
-        mcpTools.forEach(t => selectedMcpTools.delete(t));
-      } else {
-        mcpTools.forEach(t => selectedMcpTools.add(t));
-      }
+      if (allSelected) allMcpTools.forEach(t => selectedMcpTools.delete(t));
+      else allMcpTools.forEach(t => selectedMcpTools.add(t));
       renderMcpCategories();
     };
     div.appendChild(header);
 
     const list = document.createElement('div');
     list.className = 'tool-list';
-    cat.tools.forEach(tool => {
+    uniqueTools.forEach(tool => {
       const mcpName = MCP_PREFIX + tool;
       const chip = document.createElement('div');
       chip.className = 'tool-chip' + (selectedMcpTools.has(mcpName) ? ' selected' : '');
       chip.textContent = tool;
       chip.onclick = () => {
-        if (selectedMcpTools.has(mcpName)) {
-          selectedMcpTools.delete(mcpName);
-        } else {
-          selectedMcpTools.add(mcpName);
-        }
+        selectedMcpTools.has(mcpName) ? selectedMcpTools.delete(mcpName) : selectedMcpTools.add(mcpName);
         renderMcpCategories();
       };
       list.appendChild(chip);
     });
     div.appendChild(list);
     container.appendChild(div);
+  }
+
+  MCP_SECTIONS.forEach(section => {
+    const validCats = section.cats.filter(n => catMap[n] && !SKIP_CATEGORIES.has(n));
+    if (validCats.length === 0) return;
+
+    const header = document.createElement('div');
+    header.className = 'tool-section-header';
+    header.textContent = section.label;
+    container.appendChild(header);
+
+    validCats.forEach(renderCat);
+  });
+
+  toolCategories.forEach(cat => {
+    if (!renderedCats.has(cat.name) && !SKIP_CATEGORIES.has(cat.name)) {
+      renderCat(cat.name);
+    }
   });
 }
 
-// updateColorPreview removed — color picker no longer exists
-
+// =============================================================================
+// Chattable toggle
+// =============================================================================
 function toggleChattable() {
   isChattable = !isChattable;
   updateChattableUI();
 }
 
 function updateChattableUI() {
-  const btn = document.getElementById('f-chattable');
-  btn.classList.toggle('on', isChattable);
+  document.getElementById('f-chattable').classList.toggle('on', isChattable);
 }
 
 // =============================================================================
@@ -596,16 +1248,13 @@ function updateChattableUI() {
 // =============================================================================
 function toggleRestrictSkills() {
   restrictSkills = !restrictSkills;
-  if (!restrictSkills) {
-    selectedSkills.clear();
-  }
+  if (!restrictSkills) selectedSkills.clear();
   updateRestrictSkillsUI();
   renderSkillChips();
 }
 
 function updateRestrictSkillsUI() {
-  const btn = document.getElementById('f-restrict-skills');
-  btn.classList.toggle('on', restrictSkills);
+  document.getElementById('f-restrict-skills').classList.toggle('on', restrictSkills);
   document.getElementById('skills-list').style.display = restrictSkills ? 'block' : 'none';
 }
 
@@ -622,11 +1271,7 @@ function renderSkillChips() {
     chip.textContent = skill.name;
     chip.title = skill.description || '';
     chip.onclick = () => {
-      if (selectedSkills.has(skill.name)) {
-        selectedSkills.delete(skill.name);
-      } else {
-        selectedSkills.add(skill.name);
-      }
+      selectedSkills.has(skill.name) ? selectedSkills.delete(skill.name) : selectedSkills.add(skill.name);
       renderSkillChips();
     };
     container.appendChild(chip);
@@ -638,11 +1283,14 @@ function renderSkillChips() {
 // =============================================================================
 async function saveAgent() {
   const name = document.getElementById('f-name').value.trim();
+  const displayName = document.getElementById('f-display-name').value.trim();
   const desc = document.getElementById('f-desc').value.trim();
   const model = document.getElementById('f-model').value;
   const timeout = parseInt(document.getElementById('f-timeout').value) || 300;
   const maxTurns = parseInt(document.getElementById('f-max-turns').value) || 200;
   const prompt = document.getElementById('f-prompt').value;
+  const effort = document.getElementById('f-effort').value;
+  const thinkingBudget = parseInt(document.getElementById('f-thinking-budget').value) || null;
 
   // Validate name
   if (!name) {
@@ -658,13 +1306,11 @@ async function saveAgent() {
     return;
   }
 
-  // Build tools — use separate native_tools/mcp_tools for primary agents (Claudey),
-  // flat 'tools' list for all other agents
+  // Build config
   const nativeToolsList = [...selectedNativeTools];
   const mcpToolsList = [...selectedMcpTools];
   const isPrimary = mode === 'edit' && editOriginalType === 'primary';
 
-  // Build config
   const config = {
     name,
     description: desc,
@@ -676,19 +1322,18 @@ async function saveAgent() {
     icon: selectedIcon,
   };
 
-  // Skills: null = all skills (omit key), explicit array = only those
+  if (displayName) config.display_name = displayName;
+  if (effort) config.effort = effort;
+  if (thinkingBudget) config.thinking_budget = thinkingBudget;
+
   if (restrictSkills) {
     config.skills = [...selectedSkills].sort();
   }
-  // When restrictSkills is false, we omit the key entirely (null in config.yaml = all skills)
 
   if (isPrimary) {
-    // Primary agents (Claudey) use separate native_tools/mcp_tools keys
-    // so claude_wrapper.py can compute disallowed native tools correctly
     config.native_tools = nativeToolsList;
     config.mcp_tools = mcpToolsList;
   } else {
-    // Regular agents use a flat tools list (native + MCP combined)
     config.tools = [...nativeToolsList, ...mcpToolsList];
   }
 
@@ -696,7 +1341,7 @@ async function saveAgent() {
 
   try {
     document.getElementById('save-btn').disabled = true;
-    showStatus('Saving...', 'info');
+    document.getElementById('save-status').style.display = 'none';
 
     const url = mode === 'create' ? `${API}/agents` : `${API}/agents/${name}`;
     const method = mode === 'create' ? 'POST' : 'PUT';
@@ -712,18 +1357,17 @@ async function saveAgent() {
       throw new Error(err.detail || 'Save failed');
     }
 
-    const result = await res.json();
-    showStatus(
-      mode === 'create'
-        ? 'Agent created! Restart the server for it to appear in chat.'
-        : 'Agent updated! Restart the server for changes to take effect.',
-      'success'
-    );
+    await res.json();
 
-    // Refresh agent list
+    const msg = mode === 'create' ? 'Agent created!' : 'Changes saved!';
+    if (typeof BrainKit !== 'undefined' && BrainKit.toast) {
+      BrainKit.toast(msg, 'success');
+    } else {
+      showStatus(msg, 'success');
+    }
+
     await fetchAgents();
 
-    // If create mode, switch to edit mode with the new agent selected
     if (mode === 'create') {
       setMode('edit');
       document.getElementById('agent-dropdown').value = name;

@@ -1,9 +1,10 @@
 import React, { useRef, useEffect, useState } from 'react';
-import { Plus, X, Columns, ExternalLink } from 'lucide-react';
+import { Plus, X, Columns, ExternalLink, ChevronLeft, ChevronRight } from 'lucide-react';
 import { clsx } from 'clsx';
 import type { ChatTab, Agent } from '../types';
 import { getAgentIcon } from '../utils/agentIcons';
 import { ContextMenu, type MenuItemOrSeparator } from './ContextMenu';
+import { useScrollOverflow } from '../hooks/useScrollOverflow';
 
 interface ChatTabBarProps {
   tabs: ChatTab[];
@@ -28,7 +29,7 @@ export const ChatTabBar: React.FC<ChatTabBarProps> = ({
   isSecondary = false,
   onCloseSplit,
 }) => {
-  const scrollRef = useRef<HTMLDivElement>(null);
+  const { scrollRef, canScrollLeft, canScrollRight, scrollLeft: doScrollLeft, scrollRight: doScrollRight, onWheel } = useScrollOverflow();
   const activeTabRef = useRef<HTMLButtonElement>(null);
 
   // Context menu state
@@ -93,10 +94,22 @@ export const ChatTabBar: React.FC<ChatTabBarProps> = ({
         </button>
       )}
 
+      {/* Scroll left arrow */}
+      {canScrollLeft && (
+        <button
+          onClick={doScrollLeft}
+          className="flex-shrink-0 p-1 text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors"
+          title="Scroll left"
+        >
+          <ChevronLeft size={14} />
+        </button>
+      )}
+
       {/* Scrollable tab area */}
       <div
         ref={scrollRef}
         className="flex-1 flex items-center overflow-x-auto scrollbar-hide"
+        onWheel={onWheel}
       >
         {tabs.map((tab) => {
           const isActive = tab.sessionId === activeSessionId;
@@ -154,6 +167,17 @@ export const ChatTabBar: React.FC<ChatTabBarProps> = ({
           );
         })}
       </div>
+
+      {/* Scroll right arrow */}
+      {canScrollRight && (
+        <button
+          onClick={doScrollRight}
+          className="flex-shrink-0 p-1 text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors"
+          title="Scroll right"
+        >
+          <ChevronRight size={14} />
+        </button>
+      )}
 
       {/* New chat button - pinned right */}
       <button

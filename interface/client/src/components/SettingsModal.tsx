@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { X, Sun, Moon, Check, Palette, FolderX, Plus, Settings, FileEdit, Type, RefreshCw, Monitor } from 'lucide-react';
 import { clsx } from 'clsx';
 import { API_URL } from '../config';
+import ColorPicker from './ColorPicker';
 
 // Font options for each category
 const UI_FONTS = [
@@ -97,7 +98,7 @@ const DEFAULT_TYPOGRAPHY: TypographyPreferences = {
   fontSizeScale: 1,
 };
 
-// Load theme from localStorage
+// Load theme from localStorage (fast, synchronous — used as initial value)
 export function loadThemePreferences(): ThemePreferences {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
@@ -110,16 +111,18 @@ export function loadThemePreferences(): ThemePreferences {
   return DEFAULT_THEME;
 }
 
-// Save theme to localStorage
+// Save theme to localStorage + server (server sync is fire-and-forget)
 function saveThemePreferences(prefs: ThemePreferences): void {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(prefs));
   } catch (e) {
     console.error('Failed to save theme preferences:', e);
   }
+  // Sync to server for cross-device persistence
+  syncPreferencesToServer({ theme: prefs });
 }
 
-// Load typography from localStorage
+// Load typography from localStorage (fast, synchronous — used as initial value)
 export function loadTypographyPreferences(): TypographyPreferences {
   try {
     const stored = localStorage.getItem(TYPOGRAPHY_STORAGE_KEY);
@@ -132,12 +135,51 @@ export function loadTypographyPreferences(): TypographyPreferences {
   return DEFAULT_TYPOGRAPHY;
 }
 
-// Save typography to localStorage
+// Save typography to localStorage + server (server sync is fire-and-forget)
 function saveTypographyPreferences(prefs: TypographyPreferences): void {
   try {
     localStorage.setItem(TYPOGRAPHY_STORAGE_KEY, JSON.stringify(prefs));
   } catch (e) {
     console.error('Failed to save typography preferences:', e);
+  }
+  // Sync to server for cross-device persistence
+  syncPreferencesToServer({ typography: prefs });
+}
+
+// Fire-and-forget sync to server for cross-device persistence
+function syncPreferencesToServer(update: { theme?: ThemePreferences; typography?: TypographyPreferences }): void {
+  fetch(`${API_URL}/preferences`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(update),
+  }).catch(e => console.error('Failed to sync preferences to server:', e));
+}
+
+// Fetch preferences from server and apply (used on app init for cross-device sync)
+export async function loadServerPreferences(): Promise<{ theme?: ThemePreferences; typography?: TypographyPreferences }> {
+  try {
+    const res = await fetch(`${API_URL}/preferences`);
+    if (!res.ok) return {};
+    const data = await res.json();
+    const result: { theme?: ThemePreferences; typography?: TypographyPreferences } = {};
+
+    if (data.theme) {
+      const theme = { ...DEFAULT_THEME, ...data.theme };
+      result.theme = theme;
+      // Update localStorage to match server
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(theme));
+    }
+    if (data.typography) {
+      const typo = { ...DEFAULT_TYPOGRAPHY, ...data.typography };
+      result.typography = typo;
+      // Update localStorage to match server
+      localStorage.setItem(TYPOGRAPHY_STORAGE_KEY, JSON.stringify(typo));
+    }
+
+    return result;
+  } catch (e) {
+    console.error('Failed to load server preferences (using local):', e);
+    return {};
   }
 }
 
@@ -180,6 +222,10 @@ export function applyTheme(prefs: ThemePreferences): void {
   // Set accent color CSS variables
   root.style.setProperty('--accent-primary', prefs.accentColor);
   root.style.setProperty('--accent-hover', prefs.accentHover);
+
+  // User message bubbles match the accent color
+  root.style.setProperty('--user-bg', prefs.accentColor);
+  root.style.setProperty('--user-hover', prefs.accentHover);
 
   // Generate a lighter variant for backgrounds
   const accentLight = prefs.accentColor + '15'; // 15 = ~9% opacity in hex
@@ -225,6 +271,16 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
   const [restartLoading, setRestartLoading] = useState(false);
   const [restartStatus, setRestartStatus] = useState<'idle' | 'restarting' | 'error'>('idle');
   const [restartError, setRestartError] = useState<string | null>(null);
+
+  // Re-read preferences from localStorage when modal opens (picks up server-synced values)
+  useEffect(() => {
+    if (isOpen) {
+      const latest = loadThemePreferences();
+      setPreferences(latest);
+      setCustomColor(latest.accentColor);
+      setTypography(loadTypographyPreferences());
+    }
+  }, [isOpen]);
 
   // Apply theme when preferences change
   useEffect(() => {
@@ -342,14 +398,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
   const setAccentColor = (color: string, hover: string) => {
     setPreferences(prev => ({ ...prev, accentColor: color, accentHover: hover }));
     setCustomColor(color);
-  };
-
-  const handleCustomColorChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const color = e.target.value;
-    setCustomColor(color);
-    // Calculate a darker hover color
-    const hover = adjustBrightness(color, -15);
-    setPreferences(prev => ({ ...prev, accentColor: color, accentHover: hover }));
   };
 
   // Simple brightness adjustment for custom colors
@@ -537,33 +585,16 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
                 </div>
 
                 {/* Custom Color Picker */}
-                <div className="mt-4 flex items-center gap-3">
-                  <label className="text-sm text-[var(--text-secondary)]">Custom:</label>
-                  <div className="relative flex items-center gap-2 flex-1">
-                    <input
-                      type="color"
-                      value={customColor}
-                      onChange={handleCustomColorChange}
-                      className="w-10 h-10 rounded-lg border-2 border-[var(--border-color)] cursor-pointer appearance-none bg-transparent"
-                      style={{ padding: 0 }}
-                    />
-                    <input
-                      type="text"
-                      value={customColor.toUpperCase()}
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        if (/^#[0-9A-Fa-f]{0,6}$/.test(val)) {
-                          setCustomColor(val);
-                          if (val.length === 7) {
-                            const hover = adjustBrightness(val, -15);
-                            setPreferences(prev => ({ ...prev, accentColor: val, accentHover: hover }));
-                          }
-                        }
-                      }}
-                      className="flex-1 px-3 py-2 text-sm font-mono border border-[var(--border-color)] rounded-lg bg-[var(--bg-primary)] text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent-primary)] focus:ring-2 focus:ring-[var(--accent-primary)]/20"
-                      placeholder="#D97757"
-                    />
-                  </div>
+                <div className="mt-4">
+                  <label className="block text-sm text-[var(--text-secondary)] mb-2">Custom</label>
+                  <ColorPicker
+                    color={customColor}
+                    onChange={(hex) => {
+                      setCustomColor(hex);
+                      const hover = adjustBrightness(hex, -15);
+                      setPreferences(prev => ({ ...prev, accentColor: hex, accentHover: hover }));
+                    }}
+                  />
                 </div>
               </div>
 
@@ -1111,13 +1142,22 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
 // Hook for initializing theme and typography on app load
 export function useThemeInit(): void {
   useEffect(() => {
-    // Initialize theme
+    // Step 1: Immediately apply localStorage values (fast, no flicker)
     const themePrefs = loadThemePreferences();
     applyTheme(themePrefs);
 
-    // Initialize typography
     const typographyPrefs = loadTypographyPreferences();
     applyTypography(typographyPrefs);
+
+    // Step 2: Fetch server preferences and apply if they differ (cross-device sync)
+    loadServerPreferences().then(serverPrefs => {
+      if (serverPrefs.theme) {
+        applyTheme(serverPrefs.theme);
+      }
+      if (serverPrefs.typography) {
+        applyTypography(serverPrefs.typography);
+      }
+    });
 
     // Listen for system theme changes
     const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');

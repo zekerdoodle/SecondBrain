@@ -114,6 +114,7 @@ UTILITY_TOOLS = [
     "send_critical_notification",
     "process_list",
     "compact_conversation",
+    "set_theme",
 ]
 
 AGENT_TOOLS = [
@@ -166,6 +167,11 @@ SKILLS_TOOLS = [
     "fetch_skill",
 ]
 
+MESSAGING_TOOLS = [
+    "message_user",
+    "scan_rooms",
+]
+
 
 # =============================================================================
 # Category Mapping - Maps category names to tool lists
@@ -191,6 +197,7 @@ TOOL_CATEGORIES = {
     "chess": CHESS_TOOLS,
     "image": IMAGE_TOOLS,
     "skills": SKILLS_TOOLS,
+    "messaging": MESSAGING_TOOLS,
 }
 
 
@@ -213,7 +220,8 @@ ALL_TOOL_NAMES = (
     MOLTBOOK_TOOLS +
     CHESS_TOOLS +
     IMAGE_TOOLS +
-    SKILLS_TOOLS
+    SKILLS_TOOLS +
+    MESSAGING_TOOLS
 )
 
 # Set for O(1) lookup

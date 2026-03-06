@@ -535,7 +535,8 @@ class ClaudeWrapper:
         prompt,
         agent_config,
         conversation_history: Optional[List[Dict[str, Any]]] = None,
-        use_streaming_input: bool = True
+        use_streaming_input: bool = True,
+        session_id: Optional[str] = None,
     ) -> AsyncIterator[Dict[str, Any]]:
         """
         Execute a prompt through an agent and stream results.
@@ -561,12 +562,23 @@ class ClaudeWrapper:
                 )
             else:
                 raw_query = str(prompt)
-            raw_query = raw_query[-1000:]
+            # No truncation — chat history is naturally bounded by model context
 
-            retrieval_queries = await rewrite_query_for_retrieval(raw_query, self._conversation_history)
-            ctx_block = auto_retrieve_context(
-                query=retrieval_queries,
-                agent_name=agent_config.name,
+            retrieval_queries = await rewrite_query_for_retrieval(raw_query, self._conversation_history, session_id=session_id)
+            # Run CPU-bound retrieval (embedding model inference) in a thread
+            # to avoid blocking the event loop / freezing WebSocket heartbeats
+            import asyncio, functools
+            loop = asyncio.get_event_loop()
+            ctx_block = await asyncio.wait_for(
+                loop.run_in_executor(
+                    None,
+                    functools.partial(
+                        auto_retrieve_context,
+                        query=retrieval_queries,
+                        agent_name=agent_config.name,
+                    ),
+                ),
+                timeout=15.0,  # 15s max — don't let retrieval stall the agent
             )
             if ctx_block:
                 if isinstance(options.system_prompt, dict):

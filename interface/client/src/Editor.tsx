@@ -1,7 +1,8 @@
 import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import MDEditor from '@uiw/react-md-editor';
-import { FileText, Eye, Edit2, RotateCcw, Check, ExternalLink, X } from 'lucide-react';
+import { FileText, Eye, Edit2, RotateCcw, Check, ExternalLink, X, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useCodeBlockWrap } from './hooks/useCodeBlockWrap';
+import { useScrollOverflow } from './hooks/useScrollOverflow';
 import { escapeNonHtmlTags } from './utils/escapeNonHtmlTags';
 import { clsx } from 'clsx';
 import { API_URL } from './config';
@@ -328,6 +329,7 @@ export const EditorView: React.FC<EditorViewProps> = ({
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
   const editorViewRef = useRef<HTMLDivElement>(null);
   useCodeBlockWrap(editorViewRef);
+  const { scrollRef: fileTabScrollRef, canScrollLeft: fileCanScrollLeft, canScrollRight: fileCanScrollRight, scrollLeft: fileScrollLeft, scrollRight: fileScrollRight, onWheel: fileOnWheel } = useScrollOverflow();
 
   // Custom link click handler
   const handleLinkClick = useCallback((e: React.MouseEvent<HTMLAnchorElement>, href: string) => {
@@ -573,7 +575,18 @@ export const EditorView: React.FC<EditorViewProps> = ({
 
       {/* Tab Bar */}
       {openTabs.length > 0 && (
-        <div className="h-8 bg-[var(--bg-primary)] border-b border-[var(--border-color)] flex items-stretch overflow-x-auto shrink-0 scrollbar-hide">
+        <div className="h-8 bg-[var(--bg-primary)] border-b border-[var(--border-color)] flex items-stretch shrink-0">
+          {/* Scroll left arrow */}
+          {fileCanScrollLeft && (
+            <button
+              onClick={fileScrollLeft}
+              className="flex-shrink-0 px-1 flex items-center text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors border-r border-[var(--border-color)]"
+              title="Scroll left"
+            >
+              <ChevronLeft size={14} />
+            </button>
+          )}
+          <div ref={fileTabScrollRef} className="flex-1 flex items-stretch overflow-x-auto scrollbar-hide" onWheel={fileOnWheel}>
           {openTabs.map((tabPath) => {
             const fileName = tabPath.split('/').pop() || tabPath;
             const isActive = tabPath === selectedFile;
@@ -619,6 +632,17 @@ export const EditorView: React.FC<EditorViewProps> = ({
               </div>
             );
           })}
+          </div>
+          {/* Scroll right arrow */}
+          {fileCanScrollRight && (
+            <button
+              onClick={fileScrollRight}
+              className="flex-shrink-0 px-1 flex items-center text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors border-l border-[var(--border-color)]"
+              title="Scroll right"
+            >
+              <ChevronRight size={14} />
+            </button>
+          )}
         </div>
       )}
 

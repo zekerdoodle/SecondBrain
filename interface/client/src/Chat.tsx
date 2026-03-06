@@ -29,8 +29,32 @@ import type { ChatTab } from './types';
 const CHAT_TABS_KEY = 'second_brain_chat_tabs';
 const MAX_CHAT_TABS = 8;
 
-// Status phrases
-const THINKING_PHRASES = ['Thinking...', 'Processing...', 'Working on it...'];
+// Fun phrases for different generation phases
+const INITIAL_PHRASES = [
+  'Gathering thoughts...',
+  'Fetching memories...',
+  'Pulling it together...',
+  'Rummaging through memory...',
+  'Connecting the dots...',
+  'Loading context...',
+  'Recalling...',
+  'Piecing things together...',
+  'Dusting off the archives...',
+  'Warming up...',
+];
+
+const STALL_PHRASES = [
+  'Still working...',
+  'Crunching away...',
+  'Almost there...',
+  'Hammering it out...',
+  'Bear with me...',
+  'Deep in thought...',
+  'Wrangling the words...',
+  'Cooking something up...',
+  'Just a sec...',
+  'Percolating...',
+];
 
 
 // --- File path detection for clickable links ---
@@ -568,11 +592,11 @@ export const Chat: React.FC<ChatProps> = ({
     sessionId,
     connectionStatus,
     queuedMessages,
-    clearQueuedMessages,
     dismissQueuedMessage,
     currentAgent,
     sendMessageWithAgent,
     todos,
+    streamPhase,
   } = claude;
 
   // Keep ref updated
@@ -588,6 +612,12 @@ export const Chat: React.FC<ChatProps> = ({
   // Reset chess game when session changes (new chat or loading different chat)
   useEffect(() => {
     chessGame.resetGame();
+  }, [sessionId]);
+
+  // Flag: scroll to bottom on next messages render (set when switching conversations)
+  const scrollOnLoad = useRef(false);
+  useEffect(() => {
+    scrollOnLoad.current = true;
   }, [sessionId]);
 
   // Auto-add tab when sessionId transitions from 'new' to a real ID (new chat created)
@@ -873,6 +903,7 @@ export const Chat: React.FC<ChatProps> = ({
   }, []); // Empty deps - listener is stable, uses ref for sendMessage
 
   const scrollRef = useRef<HTMLDivElement>(null);
+  const historyListRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const isUserNearBottom = useRef(true);
   useCodeBlockWrap(scrollRef);
@@ -909,12 +940,68 @@ export const Chat: React.FC<ChatProps> = ({
     return () => el.removeEventListener('scroll', handleScroll);
   }, []);
 
-  // Auto-scroll only when user is near the bottom
+  // Keep isUserNearBottom fresh during DOM mutations that don't fire scroll events
+  // (e.g., thinking block expand/collapse changes content height)
   useEffect(() => {
-    if (scrollRef.current && isUserNearBottom.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    const el = scrollRef.current;
+    if (!el) return;
+    const inner = el.firstElementChild as HTMLElement;
+    if (!inner) return;
+    const observer = new ResizeObserver(() => {
+      const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+      isUserNearBottom.current = distFromBottom <= 150;
+    });
+    observer.observe(inner);
+    return () => observer.disconnect();
+  }, []);
+
+  // Track content at the end of messages to detect actual new content
+  // (vs. state-only changes like done handler marking blocks complete)
+  const prevScrollAnchor = useRef({ lastId: '', contentLen: 0 });
+
+  // Auto-scroll only when new content appears at the bottom AND user hasn't scrolled away.
+  // Keyed on [messages] only — status changes (thinking→idle) should never trigger scroll.
+  // Also handles one-time scroll-to-bottom when opening a conversation.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || messages.length === 0) {
+      prevScrollAnchor.current = { lastId: '', contentLen: 0 };
+      return;
     }
-  }, [messages, status]);
+
+    // One-time scroll to bottom when a conversation is first loaded
+    if (scrollOnLoad.current) {
+      scrollOnLoad.current = false;
+      // Use rAF so the DOM has rendered the messages before we measure scrollHeight
+      requestAnimationFrame(() => {
+        el.scrollTop = el.scrollHeight;
+        isUserNearBottom.current = true;
+      });
+      // Update anchor so subsequent content checks work correctly
+      const lastMsg = messages[messages.length - 1];
+      prevScrollAnchor.current = {
+        lastId: lastMsg.id,
+        contentLen: lastMsg.blocks
+          ? lastMsg.blocks.reduce((sum, b) => sum + (b.content?.length || 0), 0)
+          : (lastMsg.content?.length || 0),
+      };
+      return;
+    }
+
+    const lastMsg = messages[messages.length - 1];
+    const lastId = lastMsg.id;
+    const contentLen = lastMsg.blocks
+      ? lastMsg.blocks.reduce((sum, b) => sum + (b.content?.length || 0), 0)
+      : (lastMsg.content?.length || 0);
+
+    const prev = prevScrollAnchor.current;
+    const hasNewContent = lastId !== prev.lastId || contentLen > prev.contentLen;
+    prevScrollAnchor.current = { lastId, contentLen };
+
+    if (hasNewContent && isUserNearBottom.current) {
+      el.scrollTop = el.scrollHeight;
+    }
+  }, [messages]);
 
   // Load history
   useEffect(() => {
@@ -925,6 +1012,11 @@ export const Chat: React.FC<ChatProps> = ({
         .then(data => {
           setHistoryList(data.chats || []);
           setHistoryLoading(false);
+          requestAnimationFrame(() => {
+            if (historyListRef.current) {
+              historyListRef.current.scrollTop = 0;
+            }
+          });
         })
         .catch(err => {
           console.error(err);
@@ -1194,19 +1286,34 @@ export const Chat: React.FC<ChatProps> = ({
     setAttachments(prev => prev.filter(a => a.path !== path));
   };
 
+  // Ticker to cycle fun phrases during initializing/stalled phases
+  const [_phraseTick, setPhraseTick] = useState(0);
+  useEffect(() => {
+    if (streamPhase === 'initializing' || streamPhase === 'stalled') {
+      const interval = setInterval(() => setPhraseTick(t => t + 1), 2500);
+      return () => clearInterval(interval);
+    }
+  }, [streamPhase]);
+
   const getStatusDisplay = (): string => {
     // For tool_use status with active tools, rendering is handled per-tool in JSX
-    // This function is now only for non-tool or fallback states
     if (status === 'tool_use' && activeTools.size > 0) {
-      // Shouldn't be called in this case, but fallback just in case
       return `Running ${activeTools.size} tool${activeTools.size > 1 ? 's' : ''}...`;
     }
-    // For non-tool states, use statusText if available
-    if (statusText) return statusText;
-    if (status === 'thinking') {
-      return THINKING_PHRASES[Math.floor(Date.now() / 2000) % THINKING_PHRASES.length];
+    // Use statusText if explicitly set by server (e.g. tool names), but ignore generic "Thinking..."
+    if (statusText && statusText !== 'Thinking...') return statusText;
+    // Phase-aware fun phrases
+    if (streamPhase === 'initializing') {
+      return INITIAL_PHRASES[Math.floor(Date.now() / 2500) % INITIAL_PHRASES.length];
     }
-    if (status === 'processing') return 'Processing...';
+    if (streamPhase === 'stalled') {
+      return STALL_PHRASES[Math.floor(Date.now() / 3000) % STALL_PHRASES.length];
+    }
+    // During active streaming — no status text needed (content is flowing)
+    if (streamPhase === 'streaming') return '';
+    if (status === 'thinking' || status === 'processing') {
+      return INITIAL_PHRASES[Math.floor(Date.now() / 2500) % INITIAL_PHRASES.length];
+    }
     return '';
   };
 
@@ -1309,7 +1416,7 @@ export const Chat: React.FC<ChatProps> = ({
         )}
 
         {/* History List */}
-        <div className="flex-1 overflow-y-auto p-4">
+        <div ref={historyListRef} className="flex-1 overflow-y-auto p-4">
           {historyLoading && historyList.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full text-[var(--text-muted)]">
               <Loader2 size={32} className="mb-3 animate-spin opacity-50" />
@@ -1569,9 +1676,10 @@ export const Chat: React.FC<ChatProps> = ({
 
           {/* Queued messages are now rendered in fixed strip above input area — see below */}
 
-          {/* Status indicator — only for legacy (non-block) streaming */}
+          {/* Status indicator — shows during initializing/stalled phases, hidden while content flows */}
           {status !== 'idle' && activeTools.size === 0 &&
-           !messages.some(m => m.isStreaming && m.blocks && m.blocks.length > 0) && (
+           streamPhase !== 'streaming' &&
+           !messages.some(m => m.isStreaming && m.blocks && m.blocks.length > 0 && m.blocks.some(b => b.type === 'text' && b.content.trim())) && (
             <div className="flex items-center gap-2 pl-11 animate-in">
               <Loader2 size={14} className="animate-spin" style={{ color: 'var(--accent-primary)' }} />
               <span className="text-xs text-[var(--text-muted)]">{getStatusDisplay()}</span>

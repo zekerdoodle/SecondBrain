@@ -28,9 +28,9 @@
   --accent-hover: #C4684A;
   --accent-light: #FDF4F1;
 
-  /* User message blue */
-  --user-bg: #2563EB;
-  --user-hover: #1D4ED8;
+  /* User message - matches accent color */
+  --user-bg: var(--accent-primary);
+  --user-hover: var(--accent-hover);
 
   /* Status colors */
   --success: #10B981;
@@ -81,9 +81,9 @@
   /* Accent colors are set dynamically via JS, but provide fallbacks */
   --accent-light: rgba(var(--accent-r, 217), var(--accent-g, 119), var(--accent-b, 87), 0.15);
 
-  /* User message blue - slightly adjusted for dark mode */
-  --user-bg: #3B82F6;
-  --user-hover: #2563EB;
+  /* User message - matches accent color */
+  --user-bg: var(--accent-primary);
+  --user-hover: var(--accent-hover);
 
   /* Status colors - slightly brighter for dark mode */
   --success: #34D399;
@@ -568,8 +568,12 @@ html, body, #root {
 .wmde-markdown table,
 .prose table {
   border-collapse: collapse !important;
-  width: 100% !important;
+  width: max-content !important;
+  min-width: 50% !important;
+  max-width: 100% !important;
   margin: 1em 0 !important;
+  display: block !important;
+  overflow-x: auto !important;
   background-color: var(--bg-secondary) !important;
 }
 
@@ -705,6 +709,19 @@ html, body, #root {
 
 [data-theme="dark"] .chat-markdown .wmde-markdown table th {
   background-color: var(--bg-tertiary) !important;
+}
+
+/* Responsive table cells - tighter on small screens */
+@media (max-width: 640px) {
+  .wmde-markdown table th,
+  .wmde-markdown table td,
+  .prose table th,
+  .prose table td,
+  .chat-markdown .wmde-markdown table th,
+  .chat-markdown .wmde-markdown table td {
+    padding: 0.35em 0.5em !important;
+    font-size: 0.9em !important;
+  }
 }
 
 /* Clickable file path links in chat messages */

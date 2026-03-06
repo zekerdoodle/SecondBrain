@@ -139,6 +139,7 @@ CLAUDE_CODE_SOURCE = DocSource(
         "plugins",
         "plugins-reference",
         "quickstart",
+        "remote-control",
         "sandboxing",
         "security",
         "server-managed-settings",

@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Optional, Union
 # causing CLIConnectionError: ProcessTransport is not ready for writing.
 # Set to 10 minutes — well above any agent's timeout_seconds.
 os.environ.setdefault("CLAUDE_CODE_STREAM_CLOSE_TIMEOUT", "600000")
+os.environ["ENABLE_TOOL_SEARCH"] = "false"
 
 from models import (
     AgentConfig, AgentInvocation, AgentResult, InvocationMode
@@ -687,6 +688,7 @@ async def _run_sdk_agent(config: AgentConfig, invocation: AgentInvocation) -> st
         "setting_sources": [],  # Never load project settings for subagents
         "max_turns": config.max_turns,
         "mcp_servers": mcp_servers if mcp_servers else None,
+        "env": {"ENABLE_TOOL_SEARCH": "false"},  # Disable tool deferral (tengu_defer_all_bn4)
     }
 
     # Preset agents need the tools preset so Claude Code's native tool suite is used
@@ -736,12 +738,25 @@ async def _run_sdk_agent(config: AgentConfig, invocation: AgentInvocation) -> st
             sys.path.insert(0, scripts_dir)
         from contextual_memory import auto_retrieve_context, rewrite_query_for_retrieval
 
-        raw_query = (invocation.prompt or "")[-1000:]
-        retrieval_queries = await rewrite_query_for_retrieval(raw_query)
+        raw_query = invocation.prompt or ""
+        retrieval_queries = await rewrite_query_for_retrieval(
+            raw_query,
+            session_id=invocation.source_chat_id or f"agent:{config.name}",
+        )
         logger.info(f"Agent '{config.name}': query rewrite: '{raw_query[:80]}' -> {retrieval_queries}")
-        ctx_block = auto_retrieve_context(
-            query=retrieval_queries,
-            agent_name=config.name,
+        # Run CPU-bound retrieval in a thread to avoid blocking the event loop
+        import functools
+        loop = asyncio.get_event_loop()
+        ctx_block = await asyncio.wait_for(
+            loop.run_in_executor(
+                None,
+                functools.partial(
+                    auto_retrieve_context,
+                    query=retrieval_queries,
+                    agent_name=config.name,
+                ),
+            ),
+            timeout=15.0,  # 15s max — don't let retrieval stall the agent
         )
         if ctx_block:
             if isinstance(options.system_prompt, dict):
