@@ -250,6 +250,28 @@ def _truncate_output(text: str, max_chars: int = MAX_OUTPUT_CHARS) -> Tuple[str,
     return truncated, True
 
 
+def _cleanup_old_logs(max_age_days: int = 7, max_total_mb: int = 100):
+    """Remove old bash log files to prevent unbounded disk growth."""
+    try:
+        cutoff = time.time() - (max_age_days * 86400)
+        log_files = sorted(LOG_DIR.glob("bash_*.log"), key=lambda p: p.stat().st_mtime)
+
+        # Delete files older than max_age_days
+        for f in log_files:
+            if f.stat().st_mtime < cutoff:
+                f.unlink()
+
+        # If still over budget, delete oldest until under max_total_mb
+        remaining = sorted(LOG_DIR.glob("bash_*.log"), key=lambda p: p.stat().st_mtime)
+        total = sum(f.stat().st_size for f in remaining)
+        while remaining and total > max_total_mb * 1024 * 1024:
+            oldest = remaining.pop(0)
+            total -= oldest.stat().st_size
+            oldest.unlink()
+    except Exception:
+        pass  # Best-effort cleanup
+
+
 async def _save_full_output(command: str, output: str) -> Optional[str]:
     """Save full output to log file and return path."""
     try:
@@ -261,6 +283,9 @@ async def _save_full_output(command: str, output: str) -> Optional[str]:
         # Include command at top of log
         content = f"# Command: {command}\n# Timestamp: {timestamp}\n\n{output}"
         path.write_text(content, encoding="utf-8")
+
+        # Opportunistic cleanup after saving
+        _cleanup_old_logs()
 
         return str(path)
     except Exception as e:

@@ -411,6 +411,62 @@
 
 
   /* ==========================================================
+     Theme — API for querying and reacting to theme changes
+     ========================================================== */
+
+  /**
+   * Theme helper for apps that need to react to theme changes.
+   *
+   * The Brain Bridge script handles theme sync automatically
+   * (sets data-theme attribute + --accent/--accent-hover CSS vars).
+   * This API lets apps hook into changes programmatically.
+   *
+   *   // Get current mode
+   *   BrainKit.theme.mode;  // 'light' or 'dark'
+   *
+   *   // Listen for changes
+   *   const unsub = BrainKit.theme.onChange((detail) => {
+   *     console.log('Theme changed:', detail.mode, detail.accent);
+   *     // Re-render charts, update canvas colors, etc.
+   *   });
+   *   unsub(); // stop listening
+   */
+  var _themeCallbacks = [];
+
+  // Listen for brain:themechange events dispatched by the Bridge
+  window.addEventListener('brain:themechange', function (e) {
+    var detail = e.detail || {};
+    _themeCallbacks.forEach(function (cb) {
+      try { cb(detail); } catch (err) { console.error('[brain-kit] theme callback error:', err); }
+    });
+  });
+
+  var theme = {
+    /** Current mode: 'light' or 'dark' */
+    get mode() {
+      return document.documentElement.getAttribute('data-theme') || 'dark';
+    },
+
+    /** Current accent color (CSS value) */
+    get accent() {
+      return getComputedStyle(document.documentElement).getPropertyValue('--accent').trim();
+    },
+
+    /**
+     * Register a callback for theme changes.
+     * Callback receives { mode, accent, accentHover }.
+     * Returns an unsubscribe function.
+     */
+    onChange: function (callback) {
+      _themeCallbacks.push(callback);
+      return function () {
+        _themeCallbacks = _themeCallbacks.filter(function (cb) { return cb !== callback; });
+      };
+    }
+  };
+
+
+  /* ==========================================================
      Export
      ========================================================== */
 
@@ -421,8 +477,9 @@
     tabs: tabs,
     askClaude: askClaude,
     router: router,
-    version: '1.1.0'
+    theme: theme,
+    version: '2.0.0'
   };
 
-  console.log('[brain-kit v1.1.0] Loaded — BrainKit.store, .toast, .modal, .tabs, .askClaude, .router available');
+  console.log('[brain-kit v2.0.0] Loaded — BrainKit.store, .toast, .modal, .tabs, .askClaude, .router, .theme available');
 })();

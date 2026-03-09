@@ -53,7 +53,7 @@ def _inject_chat_context(tools, chat_id: str):
     from claude_agent_sdk import SdkMcpTool
 
     # Tools that need to know their source chat_id
-    CONTEXT_TOOLS = {"invoke_agent", "invoke_agent_chain", "invoke_agent_parallel"}
+    CONTEXT_TOOLS = {"invoke_agent", "invoke_agent_chain", "invoke_agent_parallel", "message_react"}
 
     wrapped = []
     for t in tools:
@@ -98,7 +98,7 @@ def _inject_agent_context(tools, agent_name: str):
         "working_memory_add", "working_memory_update",
         "working_memory_remove", "working_memory_list",
         "working_memory_snapshot",
-        "message_user",
+        "message_user", "message_react",
     }
 
     wrapped = []
@@ -242,6 +242,7 @@ def _load_all_tools():
     from . import youtube
     from . import spotify
     from . import finance
+    from . import snaptrade
     from . import scheduler
     from . import memory
     from . import utilities

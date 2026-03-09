@@ -19,7 +19,7 @@ updated: 2026-02-24
 
 Call `invoke_agent_chain` with these three steps, `summarize: false`, `on_failure: "alert_and_stop"`:
 
-#### Chain Step 1 → `general_purpose`: Ingest & Clean
+#### Chain Step 1 → `jack`: Ingest & Clean
 
 ```
 Sync Phase 1: Ingest & Clean. You have ONE job.
@@ -87,7 +87,7 @@ If the manifest file doesn't exist or is empty, skip routing and just do steps 5
 Output: What you routed (and WHERE — Google vs agent tasks file) + today's full calendar + pending tasks.
 ```
 
-#### Chain Step 3 → `general_purpose`: Project Pulse
+#### Chain Step 3 → `jack`: Project Pulse
 
 ```
 Sync Phase 3: Project Pulse. You have ONE job.
@@ -116,7 +116,7 @@ After the chain completes, synthesize results into a **concise morning briefing*
 - **📊 Projects:** Health check, flag anything stale or blocked (from chain step 3)
 - **❓ Needs you:** Anything ambiguous that requires the user's input
 
-Also: check 00_Inbox/sync_agent_tasks.md — if it has items, schedule them yourself (via schedule_agent or schedule_self). Don't put them in the briefing as the user actions.
+Also: check 00_Inbox/sync_agent_tasks.md — if it has items, include them in the briefing under a "🤖 Suggested Agent Dispatches" section. Do NOT auto-schedule them. List each item with a one-line description and proposed agent. Character or the user will approve and dispatch.
 
 Keep it scannable. the user reads this with coffee. No essays.
 
@@ -128,7 +128,7 @@ Keep it scannable. the user reads this with coffee. No essays.
 
 Call `invoke_agent_chain` with TWO steps:
 
-#### Chain Step 1 → `general_purpose`: Clean
+#### Chain Step 1 → `jack`: Clean
 
 ```
 Evening cleanup. ONE job.

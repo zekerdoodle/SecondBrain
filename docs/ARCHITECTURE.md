@@ -802,7 +802,7 @@ schedule_self({
 
 # Schedule a subagent for async work
 schedule_agent({
-    "agent": "information_gatherer",
+    "agent": "kestrel",
     "prompt": "Research competitor pricing strategies",
     "schedule": "once at 2026-02-01T03:00:00"
 })

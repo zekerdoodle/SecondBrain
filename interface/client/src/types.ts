@@ -68,6 +68,8 @@ export interface ChatMessage {
   content: string;
   isError?: boolean;
   isStreaming?: boolean;
+  // @mention agent messages — present when message is from a mentioned agent
+  agent?: string;
   // New fields for message persistence
   status?: MessageStatus;  // Track delivery/processing state
   timestamp?: number;      // When message was created (ms since epoch)
@@ -82,6 +84,8 @@ export interface ChatMessage {
   images?: ChatImageRef[];
   // Block-based content (present on streaming/new assistant messages)
   blocks?: ContentBlock[];
+  // Emoji reactions: { "👍": ["user", "character"], "🔥": ["character"] }
+  reactions?: Record<string, string[]>;
 }
 
 /** Persisted tool call message (role: 'tool_call', hidden: true in server data) */

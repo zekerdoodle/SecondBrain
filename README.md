@@ -12,7 +12,7 @@ Second Brain is a self-hosted platform where Claude doesn't just answer question
 A fleet of specialized agents that can be invoked individually, chained sequentially, or fanned out in parallel:
 
 - **Coder** — Full software development with Claude Code SDK (Opus-powered, file I/O, bash, web search)
-- **General Purpose** — Flexible agent for tasks that don't fit a specialist
+- **Jack** — Jack of all trades; flexible agent for tasks that don't fit a specialist
 
 Agents are defined declaratively via `config.yaml` + `prompt.md`, supporting SDK agents (Claude Agent SDK `query()`), CLI agents (Claude `--print` mode), and a primary companion agent.
 

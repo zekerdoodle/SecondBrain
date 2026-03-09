@@ -2,7 +2,8 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import {
   Send, Loader2, Plus, History, ChevronLeft, Pencil, RotateCcw, X,
   File as FileIcon, Trash2, MessageCircle, Clock, Square, Search,
-  Check, CheckCheck, AlertCircle, Crown, ImagePlus, Circle, Copy
+  Check, CheckCheck, AlertCircle, Crown, ImagePlus, Circle, Copy,
+  SmilePlus
 } from 'lucide-react';
 import { ChatSearch } from './ChatSearch';
 import { useClaude, type ClaudeHook, type NotificationData, type ChessGameState } from './useClaude';
@@ -20,10 +21,13 @@ import { ChessGame, useChessGame } from './components/ChessGame';
 import { AgentSelector } from './components/AgentSelector';
 import { ChatTabBar } from './components/ChatTabBar';
 import { getAgentIcon } from './utils/agentIcons';
+import { MentionAutocomplete } from './components/MentionAutocomplete';
 
 import { ToolCallChips, type ToolCallData } from './components/ToolCallChips';
 import { BlockRenderer } from './components/BlockView';
 import type { ChatTab } from './types';
+import EmojiPickerReact, { Theme as EmojiTheme } from 'emoji-picker-react';
+import type { EmojiClickData } from 'emoji-picker-react';
 
 // Accent color is now managed via CSS variables (--accent-primary)
 const CHAT_TABS_KEY = 'second_brain_chat_tabs';
@@ -83,43 +87,63 @@ const toRelativePath = (path: string): string => {
   return path;
 };
 
-// --- Memoized Chat Message Component ---
-// Prevents all messages from re-rendering when only the streaming message changes
-interface ChatMessageProps {
-  msg: ChatMessage;
-  isUser: boolean;
-  isLastAssistant: boolean;
-  isContinuation: boolean;
-  isEditing: boolean;
-  editText: string;
-  onEditTextChange: (text: string) => void;
-  status: string;
-  agentDisplayName: string;
-  onStartEdit: (msg: ChatMessage) => void;
-  onCancelEdit: () => void;
-  onSaveEdit: () => void;
-  onRegenerate: (id: string) => void;
-  onFormSubmit: (formId: string, values: Record<string, any>) => void;
-  onOpenFile?: (path: string) => void;
-}
+// --- Emoji Reaction Components ---
+const EmojiPicker = ({ onSelect, onClose }: { onSelect: (emoji: string) => void; onClose: () => void }) => {
+  const ref = useRef<HTMLDivElement>(null);
 
-const ChatMessageItem = React.memo<ChatMessageProps>(({
-  msg, isUser, isLastAssistant, isContinuation, isEditing,
-  editText, onEditTextChange, status, agentDisplayName,
-  onStartEdit, onCancelEdit, onSaveEdit, onRegenerate, onFormSubmit, onOpenFile
-}) => {
+  const handleEmojiClick = useCallback((emojiData: EmojiClickData) => {
+    onSelect(emojiData.emoji);
+  }, [onSelect]);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30"
+      onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
+      onTouchStart={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div ref={ref} className="rounded-xl overflow-hidden shadow-2xl">
+        <EmojiPickerReact
+          onEmojiClick={handleEmojiClick}
+          theme={EmojiTheme.DARK}
+          height={350}
+          width={300}
+          searchPlaceholder="Search emoji..."
+          skinTonesDisabled={false}
+          lazyLoadEmojis={true}
+        />
+      </div>
+    </div>
+  );
+};
+
+// Extract copyable text from a message — handles both legacy (content) and block-based formats
+const getMessageText = (msg: ChatMessage, isUser: boolean): string => {
+  // For user messages: use content directly (filter out [CONTEXT:] lines)
+  if (isUser) {
+    return msg.content.split('\n').filter(line => !line.startsWith('[CONTEXT:')).join('\n').trim();
+  }
+  // For assistant messages: prefer blocks (content is '' during/after streaming)
+  if (msg.blocks && msg.blocks.length > 0) {
+    return msg.blocks
+      .filter(b => b.type === 'text')
+      .map(b => b.content)
+      .join('\n\n')
+      .trim();
+  }
+  // Fallback to content (legacy messages loaded from disk)
+  return msg.content;
+};
+
+// Small copy button used in the action row beside reactions
+const CopyButton = ({ msg, isUser }: { msg: ChatMessage; isUser: boolean }) => {
   const [copied, setCopied] = useState(false);
-
   const handleCopy = useCallback(async () => {
-    const textToCopy = isUser
-      ? msg.content.split('\n').filter(line => !line.startsWith('[CONTEXT:')).join('\n').trim()
-      : msg.content;
+    const textToCopy = getMessageText(msg, isUser);
     try {
       await navigator.clipboard.writeText(textToCopy);
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } catch {
-      // Fallback for older browsers
       const textarea = document.createElement('textarea');
       textarea.value = textToCopy;
       document.body.appendChild(textarea);
@@ -129,8 +153,93 @@ const ChatMessageItem = React.memo<ChatMessageProps>(({
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     }
-  }, [msg.content, isUser]);
+  }, [msg.content, msg.blocks, isUser]);
 
+  return (
+    <button
+      onClick={handleCopy}
+      className="p-1 rounded-lg text-[var(--text-muted)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] transition-all opacity-0 group-hover:opacity-60 hover:!opacity-100 focus:opacity-100"
+      title={copied ? "Copied!" : "Copy message"}
+    >
+      {copied ? <Check size={14} className="text-emerald-500" /> : <Copy size={14} />}
+    </button>
+  );
+};
+
+const ReactionBar = ({ msg, onToggle, isActive = false, readOnly = false, alignRight = false }: { msg: ChatMessage; onToggle: (emoji: string) => void; isActive?: boolean; readOnly?: boolean; alignRight?: boolean }) => {
+  const [showPicker, setShowPicker] = useState(false);
+  const reactions = msg.reactions;
+  const hasReactions = reactions && Object.keys(reactions).length > 0;
+
+  return (
+    <div className={clsx("flex items-center gap-1 flex-wrap", alignRight && "justify-end")}>
+      {hasReactions && Object.entries(reactions!).map(([emoji, reactors]) => {
+        const isOwn = reactors.includes('user');
+        return (
+          <button
+            key={emoji}
+            onClick={() => !readOnly && onToggle(emoji)}
+            className={clsx(
+              "inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-xs border transition-colors",
+              readOnly ? "cursor-default" : "cursor-pointer",
+              isOwn
+                ? "border-[var(--accent-primary)]/50 bg-[var(--accent-primary)]/10 hover:bg-[var(--accent-primary)]/20"
+                : "border-[var(--border-color)] bg-[var(--bg-tertiary)] hover:border-[var(--accent-primary)]/40"
+            )}
+          >
+            <span>{emoji}</span>
+            {reactors.length > 1 && <span className="text-[var(--text-muted)]">{reactors.length}</span>}
+          </button>
+        );
+      })}
+      {!readOnly && (
+        <div className="relative">
+          <button
+            onClick={() => setShowPicker(!showPicker)}
+            className={clsx(
+              "p-1 rounded-lg text-[var(--text-muted)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] transition-all",
+              // Active (mobile tap) or has reactions: always show. Otherwise: hover-reveal only
+              (isActive || hasReactions) ? "opacity-60 hover:opacity-100" : "opacity-0 group-hover:opacity-60 hover:!opacity-100"
+            )}
+            title="Add reaction"
+          >
+            <SmilePlus size={14} />
+          </button>
+          {showPicker && (
+            <EmojiPicker
+              onSelect={(emoji) => { onToggle(emoji); setShowPicker(false); }}
+              onClose={() => setShowPicker(false)}
+            />
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// --- Memoized Chat Message Component ---
+// Prevents all messages from re-rendering when only the streaming message changes
+interface ChatMessageProps {
+  msg: ChatMessage;
+  isUser: boolean;
+  isContinuation: boolean;
+  isEditing: boolean;
+  editText: string;
+  onEditTextChange: (text: string) => void;
+  status: string;
+  agentDisplayName: string;
+  onStartEdit: (msg: ChatMessage) => void;
+  onCancelEdit: () => void;
+  onSaveEdit: () => void;
+  onFormSubmit: (formId: string, values: Record<string, any>) => void;
+  onOpenFile?: (path: string) => void;
+}
+
+const ChatMessageItem = React.memo<ChatMessageProps>(({
+  msg, isUser, isContinuation, isEditing,
+  editText, onEditTextChange, status, agentDisplayName,
+  onStartEdit, onCancelEdit, onSaveEdit, onFormSubmit, onOpenFile
+}) => {
   return (
     <div className={clsx("flex flex-col w-full group", isContinuation && 'mt-2')}>
       <div className={clsx("flex flex-col", isUser ? "items-end" : "items-start w-full")}>
@@ -315,29 +424,6 @@ const ChatMessageItem = React.memo<ChatMessageProps>(({
           </div>
         )}
 
-        {/* Copy + Regenerate buttons */}
-        {!msg.isStreaming && !msg.formData && status === 'idle' && (
-          <div className={clsx("flex items-center gap-1 mt-1", isUser ? "justify-end" : "justify-start")}>
-            <button
-              onClick={handleCopy}
-              className="p-1.5 hover:bg-[var(--bg-tertiary)] rounded-lg text-[var(--text-muted)] hover:text-[var(--text-secondary)] transition-all flex items-center gap-1 text-xs opacity-0 group-hover:opacity-100 focus:opacity-100"
-              title={copied ? "Copied!" : "Copy message"}
-            >
-              {copied ? <Check size={12} className="text-emerald-500" /> : <Copy size={12} />}
-              {copied && <span className="text-emerald-500">Copied</span>}
-            </button>
-            {isLastAssistant && (
-              <button
-                onClick={() => onRegenerate(msg.id)}
-                className="p-1.5 hover:bg-[var(--bg-tertiary)] rounded-lg text-[var(--text-muted)] hover:text-[var(--text-secondary)] transition-colors flex items-center gap-1 text-xs opacity-0 group-hover:opacity-100 focus:opacity-100"
-                title="Regenerate"
-              >
-                <RotateCcw size={12} />
-                <span>Regenerate</span>
-              </button>
-            )}
-          </div>
-        )}
       </div>
     </div>
   );
@@ -350,7 +436,7 @@ const ChatMessageItem = React.memo<ChatMessageProps>(({
     prev.msg.isError === next.msg.isError &&
     prev.msg.formData?.status === next.msg.formData?.status &&
     prev.msg.blocks === next.msg.blocks &&
-    prev.isLastAssistant === next.isLastAssistant &&
+    prev.msg.reactions === next.msg.reactions &&
     prev.isContinuation === next.isContinuation &&
     prev.isEditing === next.isEditing &&
     prev.editText === next.editText &&
@@ -387,6 +473,7 @@ export const Chat: React.FC<ChatProps> = ({
   const [historyLoading, setHistoryLoading] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editText, setEditText] = useState('');
+  const [reactionMsgId, setReactionMsgId] = useState<string | null>(null);
   const [attachments, setAttachments] = useState<{ name: string, path: string }[]>([]);
   const [imageAttachments, setImageAttachments] = useState<(ChatImageRef & { previewUrl?: string })[]>([]);
   const [showSearch, setShowSearch] = useState(false);
@@ -597,6 +684,7 @@ export const Chat: React.FC<ChatProps> = ({
     sendMessageWithAgent,
     todos,
     streamPhase,
+    toggleReaction,
   } = claude;
 
   // Keep ref updated
@@ -869,6 +957,18 @@ export const Chat: React.FC<ChatProps> = ({
         source?.postMessage({ type: 'brain:unwatchFileResponse', watchId, success: true }, '*');
       }
 
+      // --- Brain Bridge v2: getTheme (send current interface theme to iframe) ---
+      if (event.data.type === 'brain:getTheme') {
+        const root = document.documentElement;
+        const style = getComputedStyle(root);
+        source?.postMessage({
+          type: 'brain:theme',
+          mode: root.getAttribute('data-theme') || 'light',
+          accent: style.getPropertyValue('--accent-primary').trim() || '#D97757',
+          accentHover: style.getPropertyValue('--accent-hover').trim() || '#C4684A',
+        }, '*');
+      }
+
       // --- Brain Bridge v2: getAppInfo ---
       if (event.data.type === 'brain:getAppInfo') {
         console.log('[Brain Bridge v2] Processing getAppInfo');
@@ -1132,6 +1232,24 @@ export const Chat: React.FC<ChatProps> = ({
   const handleInputChange = useCallback((value: string) => {
     setInput(value);
   }, []);
+
+  // Handle @mention autocomplete selection
+  const handleMentionSelect = useCallback((agentName: string, replaceFrom: number) => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    const cursorPos = textarea.selectionStart;
+    const before = input.slice(0, replaceFrom);
+    const after = input.slice(cursorPos);
+    const newValue = `${before}@${agentName} ${after}`;
+    setInput(newValue);
+    // Set cursor position after the inserted mention
+    requestAnimationFrame(() => {
+      const newPos = replaceFrom + agentName.length + 2; // @name + space
+      textarea.selectionStart = newPos;
+      textarea.selectionEnd = newPos;
+      textarea.focus();
+    });
+  }, [input]);
 
   // Upload image files to the server and return image refs
   const uploadImages = useCallback(async (files: File[]): Promise<ChatImageRef[]> => {
@@ -1558,7 +1676,10 @@ export const Chat: React.FC<ChatProps> = ({
       )}
 
       {/* Messages */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto">
+      <div ref={scrollRef} className="flex-1 overflow-y-auto" onClick={(e) => {
+        // Dismiss mobile reaction picker when tapping the scroll background (not a message)
+        if (isMobile && reactionMsgId && e.target === e.currentTarget) setReactionMsgId(null);
+      }}>
         <div className="max-w-5xl mx-auto px-4 py-6 space-y-6">
           {processedMessages.length === 0 && (() => {
             const EmptyIcon = getAgentIcon(selectedAgentObj?.icon);
@@ -1632,38 +1753,142 @@ export const Chat: React.FC<ChatProps> = ({
               <React.Fragment key={msg.id}>
                 {hasBlocks ? (
                   // Block-based rendering (new format)
-                  <div className={clsx("flex flex-col gap-1", isUser ? "items-end" : "items-start w-full")}>
-                    {/* Header — agent name, only if not continuation */}
-                    {!(!isUser && prevMsg?.message.role === 'assistant') && (
+                  (() => {
+                    const mentionAgent = msg.agent;
+                    const mentionAgentObj = mentionAgent ? getAgent(mentionAgent) : null;
+                    const MentionIcon = mentionAgent ? getAgentIcon(mentionAgentObj?.icon) : null;
+                    const mentionDisplayName = mentionAgentObj?.display_name || (mentionAgent ? `@${mentionAgent}` : null);
+                    // Agent messages always show header (never treated as continuation)
+                    const isContinuation = !isUser && !mentionAgent && prevMsg?.message.role === 'assistant' && !prevMsg?.message.agent;
+                    // Typing indicator for @mentioned agents
+                    const isAgentTyping = mentionAgent && msg.isStreaming && msg.status === 'processing';
+
+                    return (
+                      <div
+                        className={clsx(
+                          "group flex flex-col gap-1",
+                          isUser ? "items-end" : "items-start w-full",
+                          mentionAgent && "pl-3 border-l-2 border-[var(--accent-primary)]/40"
+                        )}
+                        onClick={() => { if (isMobile && !isUser) setReactionMsgId(prev => prev === msg.id ? null : msg.id); }}
+                      >
+                        {/* Header — agent name, only if not continuation */}
+                        {!isContinuation && (
+                          <div className="flex items-center gap-2 mb-1">
+                            {mentionAgent && MentionIcon && (
+                              <div className="w-5 h-5 rounded-md flex items-center justify-center" style={{ backgroundColor: 'var(--accent-primary)' }}>
+                                <MentionIcon size={12} className="text-white" />
+                              </div>
+                            )}
+                            <span className={clsx("text-xs font-medium", mentionAgent ? "text-[var(--accent-primary)]" : "text-[var(--text-muted)]")}>
+                              {isUser ? 'You' : (mentionDisplayName || agentDisplayName)}
+                            </span>
+                          </div>
+                        )}
+
+                        {/* Agent typing indicator */}
+                        {isAgentTyping ? (
+                          <div className="flex items-center gap-2 py-2 px-1">
+                            <div className="flex items-center gap-1">
+                              <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent-primary)] animate-bounce" style={{ animationDelay: '0ms' }} />
+                              <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent-primary)] animate-bounce" style={{ animationDelay: '150ms' }} />
+                              <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent-primary)] animate-bounce" style={{ animationDelay: '300ms' }} />
+                            </div>
+                            <span className="text-xs text-[var(--text-muted)]">{mentionDisplayName || `@${mentionAgent}`} is thinking...</span>
+                          </div>
+                        ) : (
+                          /* Render blocks individually with appropriate wrappers */
+                          <BlockRenderer blocks={msg.blocks!} onOpenFile={onOpenFile} />
+                        )}
+
+                        {/* Actions row: reactions, copy, regenerate — all inline */}
+                        {!msg.isStreaming && (
+                          <div className={clsx("flex items-center gap-1 mt-0.5", isUser ? "justify-end" : "justify-start")}>
+                            {(!isUser || (msg.reactions && Object.keys(msg.reactions).length > 0)) && (
+                              <ReactionBar msg={msg} onToggle={(emoji) => { toggleReaction(msg.id, emoji); setReactionMsgId(null); }} isActive={reactionMsgId === msg.id} readOnly={isUser} alignRight={isUser} />
+                            )}
+                            {!msg.formData && status === 'idle' && (
+                              <CopyButton msg={msg} isUser={isUser} />
+                            )}
+                            {!isUser && msg.role === 'assistant' && !mentionAgent && idx === processedMessages.length - 1 && status === 'idle' && (
+                              <button
+                                onClick={() => handleRegenerate(msg.id)}
+                                className="p-1 rounded-lg text-[var(--text-muted)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] transition-all opacity-0 group-hover:opacity-60 hover:!opacity-100 focus:opacity-100 flex items-center gap-1 text-xs"
+                                title="Regenerate"
+                              >
+                                <RotateCcw size={14} />
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()
+                ) : (
+                  // Legacy rendering
+                  (() => {
+                    const legacyMentionAgent = msg.agent;
+                    const legacyMentionObj = legacyMentionAgent ? getAgent(legacyMentionAgent) : null;
+                    const LegacyMentionIcon = legacyMentionAgent ? getAgentIcon(legacyMentionObj?.icon) : null;
+                    const legacyMentionName = legacyMentionObj?.display_name || (legacyMentionAgent ? `@${legacyMentionAgent}` : null);
+                    const legacyIsContinuation = !isUser && !legacyMentionAgent && prevMsg?.message.role === 'assistant' && !prevMsg?.message.agent;
+
+                    return (
+                  <div
+                    className={clsx("group", isUser && "flex flex-col items-end", legacyMentionAgent && "pl-3 border-l-2 border-[var(--accent-primary)]/40")}
+                    onClick={() => { if (isMobile && !isUser) setReactionMsgId(prev => prev === msg.id ? null : msg.id); }}
+                  >
+                    {/* Agent header for @mentioned agents in legacy mode */}
+                    {legacyMentionAgent && !legacyIsContinuation && (
                       <div className="flex items-center gap-2 mb-1">
-                        <span className="text-xs font-medium text-[var(--text-muted)]">
-                          {isUser ? 'You' : agentDisplayName}
+                        {LegacyMentionIcon && (
+                          <div className="w-5 h-5 rounded-md flex items-center justify-center" style={{ backgroundColor: 'var(--accent-primary)' }}>
+                            <LegacyMentionIcon size={12} className="text-white" />
+                          </div>
+                        )}
+                        <span className="text-xs font-medium text-[var(--accent-primary)]">
+                          {legacyMentionName}
                         </span>
                       </div>
                     )}
-
-                    {/* Render blocks individually with appropriate wrappers */}
-                    <BlockRenderer blocks={msg.blocks!} onOpenFile={onOpenFile} />
+                    <ChatMessageItem
+                      msg={msg}
+                      isUser={isUser}
+                      isContinuation={legacyIsContinuation}
+                      isEditing={editingId === msg.id}
+                      editText={editText}
+                      onEditTextChange={setEditText}
+                      status={status}
+                      agentDisplayName={legacyMentionName || agentDisplayName}
+                      onStartEdit={startEdit}
+                      onCancelEdit={cancelEdit}
+                      onSaveEdit={saveEdit}
+                      onFormSubmit={handleFormSubmit}
+                      onOpenFile={onOpenFile}
+                    />
+                    {/* Actions row: copy, regenerate, reactions — all inline */}
+                    {!msg.isStreaming && (
+                      <div className={clsx("flex items-center gap-1 mt-0.5", isUser ? "justify-end" : "justify-start")}>
+                        {(!isUser || (msg.reactions && Object.keys(msg.reactions).length > 0)) && (
+                          <ReactionBar msg={msg} onToggle={(emoji) => { toggleReaction(msg.id, emoji); setReactionMsgId(null); }} isActive={reactionMsgId === msg.id} readOnly={isUser} alignRight={isUser} />
+                        )}
+                        {!msg.formData && status === 'idle' && (
+                          <CopyButton msg={msg} isUser={isUser} />
+                        )}
+                        {!isUser && msg.role === 'assistant' && !legacyMentionAgent && idx === processedMessages.length - 1 && status === 'idle' && (
+                          <button
+                            onClick={() => handleRegenerate(msg.id)}
+                            className="p-1 rounded-lg text-[var(--text-muted)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] transition-all opacity-0 group-hover:opacity-60 hover:!opacity-100 focus:opacity-100 flex items-center gap-1 text-xs"
+                            title="Regenerate"
+                          >
+                            <RotateCcw size={14} />
+                          </button>
+                        )}
+                      </div>
+                    )}
                   </div>
-                ) : (
-                  // Legacy rendering
-                  <ChatMessageItem
-                    msg={msg}
-                    isUser={isUser}
-                    isLastAssistant={msg.role === 'assistant' && idx === processedMessages.length - 1}
-                    isContinuation={!isUser && prevMsg?.message.role === 'assistant'}
-                    isEditing={editingId === msg.id}
-                    editText={editText}
-                    onEditTextChange={setEditText}
-                    status={status}
-                    agentDisplayName={agentDisplayName}
-                    onStartEdit={startEdit}
-                    onCancelEdit={cancelEdit}
-                    onSaveEdit={saveEdit}
-                    onRegenerate={handleRegenerate}
-                    onFormSubmit={handleFormSubmit}
-                    onOpenFile={onOpenFile}
-                  />
+                    );
+                  })()
                 )}
 
                 {/* Legacy tool chips (old format) */}
@@ -1861,6 +2086,14 @@ export const Chat: React.FC<ChatProps> = ({
 
           {/* Input box */}
           <div className="relative">
+            {/* @mention autocomplete dropdown */}
+            <MentionAutocomplete
+              input={input}
+              agents={agents}
+              textareaRef={textareaRef}
+              onSelect={handleMentionSelect}
+            />
+
             <div
               className={clsx(
                 "flex items-end gap-3 bg-[var(--bg-tertiary)] border rounded-2xl p-3 input-focus",

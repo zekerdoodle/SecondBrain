@@ -3,30 +3,25 @@
 <head>
 <meta charset="UTF-8">
 <title>Music Practice Tracker</title>
+<link rel="stylesheet" href="/file/05_App_Data/_shared/theme.css">
 <style>
-* { box-sizing: border-box; margin: 0; padding: 0; }
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  background: #1e1e2e; color: #cdd6f4;
   min-height: 100vh; overflow-x: hidden;
 }
-::-webkit-scrollbar { width: 6px; }
-::-webkit-scrollbar-track { background: #1e1e2e; }
-::-webkit-scrollbar-thumb { background: #45475a; border-radius: 3px; }
 
 /* === TAB NAV === */
 .tab-bar {
-  display: flex; background: #181825; border-bottom: 1px solid #313244;
+  display: flex; background: var(--bg-deep); border-bottom: 1px solid var(--bg-surface);
   position: sticky; top: 0; z-index: 100;
 }
 .tab-btn {
   flex: 1; padding: 14px 8px; text-align: center; cursor: pointer;
-  color: #6c7086; font-size: 13px; font-weight: 600; letter-spacing: 0.3px;
+  color: var(--text-muted); font-size: 13px; font-weight: 600; letter-spacing: 0.3px;
   border: none; background: none; border-bottom: 2px solid transparent;
   transition: color 0.2s, border-color 0.2s;
 }
-.tab-btn:hover { color: #a6adc8; }
-.tab-btn.active { color: #89b4fa; border-bottom-color: #89b4fa; }
+.tab-btn:hover { color: var(--text-secondary); }
+.tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
 
 /* === MAIN CONTENT === */
 main { padding: 16px; max-width: 900px; margin: 0 auto; }
@@ -35,127 +30,127 @@ main { padding: 16px; max-width: 900px; margin: 0 auto; }
 
 /* === CARDS === */
 .card {
-  background: #313244; border-radius: 10px; padding: 16px; margin-bottom: 12px;
-  border: 1px solid #45475a;
+  background: var(--bg-surface); border-radius: 10px; padding: 16px; margin-bottom: 12px;
+  border: 1px solid var(--border);
 }
-.card-header { font-size: 15px; font-weight: 600; margin-bottom: 8px; color: #cdd6f4; }
-.card-sub { font-size: 12px; color: #6c7086; }
+.card-header { font-size: 15px; font-weight: 600; margin-bottom: 8px; color: var(--text); }
+.card-sub { font-size: 12px; color: var(--text-muted); }
 
 /* === BUTTONS === */
 .btn {
   border: none; border-radius: 8px; padding: 10px 18px; cursor: pointer;
   font-weight: 600; font-size: 13px; transition: all 0.15s;
 }
-.btn-primary { background: #89b4fa; color: #1e1e2e; }
-.btn-primary:hover { background: #b4befe; }
-.btn-secondary { background: #45475a; color: #cdd6f4; }
-.btn-secondary:hover { background: #585b70; }
-.btn-success { background: #a6e3a1; color: #1e1e2e; }
-.btn-success:hover { background: #94e2d5; }
-.btn-danger { background: #f38ba8; color: #1e1e2e; }
-.btn-danger:hover { background: #eba0ac; }
+.btn-primary { background: var(--accent); color: var(--bg); }
+.btn-primary:hover { background: var(--accent-hover); }
+.btn-secondary { background: var(--border); color: var(--text); }
+.btn-secondary:hover { background: var(--border-hover); }
+.btn-success { background: var(--success); color: var(--bg); }
+.btn-success:hover { background: var(--ctp-teal); }
+.btn-danger { background: var(--danger); color: var(--bg); }
+.btn-danger:hover { background: var(--ctp-maroon); }
 .btn-small { padding: 6px 12px; font-size: 12px; }
 .btn-large { padding: 14px 28px; font-size: 16px; width: 100%; }
 .btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
 /* === INPUTS === */
 input, textarea, select {
-  background: #1e1e2e; border: 1px solid #45475a; color: #cdd6f4;
+  background: var(--bg); border: 1px solid var(--border); color: var(--text);
   padding: 8px 12px; border-radius: 6px; font-size: 13px; width: 100%;
 }
-input:focus, textarea:focus, select:focus { outline: none; border-color: #89b4fa; }
+input:focus, textarea:focus, select:focus { outline: none; border-color: var(--accent); }
 
 /* === STAT BADGES === */
 .stat-row { display: flex; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
 .stat-badge {
-  flex: 1; min-width: 80px; background: #1e1e2e; border-radius: 8px; padding: 12px;
-  text-align: center; border: 1px solid #45475a;
+  flex: 1; min-width: 80px; background: var(--bg); border-radius: 8px; padding: 12px;
+  text-align: center; border: 1px solid var(--border);
 }
-.stat-value { font-size: 24px; font-weight: 700; color: #89b4fa; }
-.stat-label { font-size: 11px; color: #6c7086; margin-top: 2px; }
+.stat-value { font-size: 24px; font-weight: 700; color: var(--accent); }
+.stat-label { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
 
 /* === HEATMAP === */
 .heatmap { display: flex; gap: 4px; }
 .heatmap-cell {
-  width: 28px; height: 28px; border-radius: 4px; background: #1e1e2e;
-  border: 1px solid #45475a; display: flex; align-items: center; justify-content: center;
-  font-size: 10px; color: #6c7086;
+  width: 28px; height: 28px; border-radius: 4px; background: var(--bg);
+  border: 1px solid var(--border); display: flex; align-items: center; justify-content: center;
+  font-size: 10px; color: var(--text-muted);
 }
-.heatmap-cell.active { background: #a6e3a1; border-color: #a6e3a1; color: #1e1e2e; }
+.heatmap-cell.active { background: var(--success); border-color: var(--success); color: var(--bg); }
 
 /* === PR CARD === */
 .pr-item {
   display: flex; align-items: center; gap: 10px; padding: 8px 0;
-  border-bottom: 1px solid #45475a;
+  border-bottom: 1px solid var(--border);
 }
 .pr-item:last-child { border-bottom: none; }
-.pr-dot { width: 8px; height: 8px; border-radius: 50%; background: #a6e3a1; flex-shrink: 0; }
+.pr-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--success); flex-shrink: 0; }
 .pr-text { font-size: 13px; flex: 1; }
-.pr-date { font-size: 11px; color: #6c7086; }
+.pr-date { font-size: 11px; color: var(--text-muted); }
 
 /* === SESSION === */
 .session-timer-bar {
-  background: #181825; border-radius: 8px; padding: 12px 16px; margin-bottom: 16px;
+  background: var(--bg-deep); border-radius: 8px; padding: 12px 16px; margin-bottom: 16px;
   display: flex; align-items: center; justify-content: space-between;
-  border: 1px solid #45475a;
+  border: 1px solid var(--border);
 }
 .timer-display { font-size: 28px; font-weight: 700; font-family: 'SF Mono', 'Fira Code', monospace; }
-.timer-display.overtime { color: #f9e2af; }
+.timer-display.overtime { color: var(--warning); }
 .phase-label {
   font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px;
-  color: #89b4fa;
+  color: var(--accent);
 }
 
 .exercise-card {
-  background: #313244; border-radius: 10px; padding: 20px; margin-bottom: 12px;
-  border: 1px solid #45475a; transition: border-color 0.2s;
+  background: var(--bg-surface); border-radius: 10px; padding: 20px; margin-bottom: 12px;
+  border: 1px solid var(--border); transition: border-color 0.2s;
 }
-.exercise-card.current { border-color: #89b4fa; }
+.exercise-card.current { border-color: var(--accent); }
 .exercise-name { font-size: 17px; font-weight: 700; margin-bottom: 4px; }
-.exercise-desc { font-size: 12px; color: #a6adc8; margin-bottom: 12px; }
+.exercise-desc { font-size: 12px; color: var(--text-secondary); margin-bottom: 12px; }
 .bpm-display {
-  font-size: 48px; font-weight: 800; text-align: center; color: #89b4fa;
+  font-size: 48px; font-weight: 800; text-align: center; color: var(--accent);
   margin: 16px 0; font-family: 'SF Mono', 'Fira Code', monospace;
 }
 .bpm-controls { display: flex; gap: 8px; justify-content: center; margin-bottom: 16px; }
 .exercise-timer {
-  text-align: center; font-size: 20px; color: #a6adc8; margin-bottom: 12px;
+  text-align: center; font-size: 20px; color: var(--text-secondary); margin-bottom: 12px;
   font-family: 'SF Mono', 'Fira Code', monospace;
 }
-.exercise-timer.done { color: #a6e3a1; }
+.exercise-timer.done { color: var(--success); }
 .exercise-actions { display: flex; gap: 8px; }
 .exercise-actions .btn { flex: 1; }
 
 .exercise-queue {
-  background: #1e1e2e; border-radius: 8px; padding: 12px; margin-bottom: 12px;
+  background: var(--bg); border-radius: 8px; padding: 12px; margin-bottom: 12px;
 }
 .queue-item {
   display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 4px;
-  font-size: 12px; color: #a6adc8;
+  font-size: 12px; color: var(--text-secondary);
 }
-.queue-item.done { color: #6c7086; text-decoration: line-through; }
-.queue-item.current { color: #89b4fa; font-weight: 600; }
-.queue-dot { width: 6px; height: 6px; border-radius: 50%; background: #45475a; flex-shrink: 0; }
-.queue-item.done .queue-dot { background: #a6e3a1; }
-.queue-item.current .queue-dot { background: #89b4fa; }
+.queue-item.done { color: var(--text-muted); text-decoration: line-through; }
+.queue-item.current { color: var(--accent); font-weight: 600; }
+.queue-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--border); flex-shrink: 0; }
+.queue-item.done .queue-dot { background: var(--success); }
+.queue-item.current .queue-dot { background: var(--accent); }
 
 /* === RATING === */
 .rating-row { display: flex; gap: 6px; justify-content: center; margin: 12px 0; }
 .rating-star {
-  width: 36px; height: 36px; border-radius: 50%; background: #1e1e2e; border: 2px solid #45475a;
+  width: 36px; height: 36px; border-radius: 50%; background: var(--bg); border: 2px solid var(--border);
   display: flex; align-items: center; justify-content: center; cursor: pointer;
-  font-size: 14px; font-weight: 700; color: #6c7086; transition: all 0.15s;
+  font-size: 14px; font-weight: 700; color: var(--text-muted); transition: all 0.15s;
 }
 .rating-star:hover, .rating-star.selected {
-  background: #89b4fa; border-color: #89b4fa; color: #1e1e2e;
+  background: var(--accent); border-color: var(--accent); color: var(--bg);
 }
 
 /* === PHASE BANNER === */
 .phase-banner {
-  background: #181825; border: 1px solid #89b4fa; border-radius: 10px;
+  background: var(--bg-deep); border: 1px solid var(--accent); border-radius: 10px;
   padding: 16px; text-align: center; margin-bottom: 16px;
 }
-.phase-banner h3 { color: #89b4fa; margin-bottom: 8px; }
+.phase-banner h3 { color: var(--accent); margin-bottom: 8px; }
 .phase-banner-actions { display: flex; gap: 8px; justify-content: center; margin-top: 12px; }
 
 /* === LIBRARY === */
@@ -164,119 +159,119 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: #89b4fa
 }
 .filter-chip {
   padding: 6px 14px; border-radius: 20px; font-size: 12px; font-weight: 600;
-  cursor: pointer; border: 1px solid #45475a; background: #1e1e2e; color: #a6adc8;
+  cursor: pointer; border: 1px solid var(--border); background: var(--bg); color: var(--text-secondary);
   transition: all 0.15s;
 }
-.filter-chip.active { background: #89b4fa; color: #1e1e2e; border-color: #89b4fa; }
+.filter-chip.active { background: var(--accent); color: var(--bg); border-color: var(--accent); }
 .search-bar { margin-bottom: 12px; }
 
 .lib-card {
-  background: #313244; border-radius: 8px; padding: 12px; margin-bottom: 8px;
-  cursor: pointer; border: 1px solid #45475a; transition: border-color 0.15s;
+  background: var(--bg-surface); border-radius: 8px; padding: 12px; margin-bottom: 8px;
+  cursor: pointer; border: 1px solid var(--border); transition: border-color 0.15s;
 }
-.lib-card:hover { border-color: #89b4fa; }
+.lib-card:hover { border-color: var(--accent); }
 .lib-card-header { display: flex; justify-content: space-between; align-items: center; }
 .lib-card-title { font-size: 14px; font-weight: 600; }
 .lib-card-tags { display: flex; gap: 4px; }
 .lib-tag {
   font-size: 10px; padding: 2px 8px; border-radius: 10px;
-  background: #1e1e2e; color: #6c7086;
+  background: var(--bg); color: var(--text-muted);
 }
 .lib-card-stats {
-  display: flex; gap: 12px; font-size: 11px; color: #6c7086; margin-top: 6px;
+  display: flex; gap: 12px; font-size: 11px; color: var(--text-muted); margin-top: 6px;
 }
 .lib-card-expanded {
-  display: none; margin-top: 12px; padding-top: 12px; border-top: 1px solid #45475a;
+  display: none; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border);
 }
 .lib-card.expanded .lib-card-expanded { display: block; }
-.lib-instructions { font-size: 12px; color: #a6adc8; line-height: 1.5; margin-bottom: 10px; }
+.lib-instructions { font-size: 12px; color: var(--text-secondary); line-height: 1.5; margin-bottom: 10px; }
 .mini-chart { height: 80px; width: 100%; margin-top: 8px; }
 
 /* === PROGRESS === */
-.chart-container { background: #313244; border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+.chart-container { background: var(--bg-surface); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
 .chart-title { font-size: 14px; font-weight: 600; margin-bottom: 8px; }
 canvas { width: 100%; border-radius: 6px; }
 .velocity-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .velocity-table th {
-  text-align: left; padding: 8px; color: #6c7086; font-weight: 600;
-  border-bottom: 1px solid #45475a;
+  text-align: left; padding: 8px; color: var(--text-muted); font-weight: 600;
+  border-bottom: 1px solid var(--border);
 }
-.velocity-table td { padding: 8px; border-bottom: 1px solid #313244; }
-.trend-up { color: #a6e3a1; }
-.trend-down { color: #f38ba8; }
-.trend-flat { color: #f9e2af; }
+.velocity-table td { padding: 8px; border-bottom: 1px solid var(--bg-surface); }
+.trend-up { color: var(--success); }
+.trend-down { color: var(--danger); }
+.trend-flat { color: var(--warning); }
 
 /* === THEORY === */
 .module-tree { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; }
 .module-node {
   padding: 10px 14px; border-radius: 8px; cursor: pointer;
-  display: flex; align-items: center; gap: 10px; border: 1px solid #45475a;
+  display: flex; align-items: center; gap: 10px; border: 1px solid var(--border);
   transition: all 0.15s;
 }
-.module-node:hover { border-color: #89b4fa; }
+.module-node:hover { border-color: var(--accent); }
 .module-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
-.module-dot.completed { background: #a6e3a1; }
-.module-dot.current { background: #89b4fa; }
-.module-dot.locked { background: #45475a; }
+.module-dot.completed { background: var(--success); }
+.module-dot.current { background: var(--accent); }
+.module-dot.locked { background: var(--border); }
 .module-name { font-size: 13px; font-weight: 600; flex: 1; }
-.module-score { font-size: 11px; color: #6c7086; }
+.module-score { font-size: 11px; color: var(--text-muted); }
 
 .quiz-card {
-  background: #313244; border-radius: 10px; padding: 20px; margin-bottom: 16px;
+  background: var(--bg-surface); border-radius: 10px; padding: 20px; margin-bottom: 16px;
 }
 .quiz-question { font-size: 15px; font-weight: 600; margin-bottom: 16px; line-height: 1.4; }
 .quiz-options { display: flex; flex-direction: column; gap: 8px; }
 .quiz-option {
   padding: 12px 16px; border-radius: 8px; cursor: pointer;
-  background: #1e1e2e; border: 1px solid #45475a; font-size: 13px;
+  background: var(--bg); border: 1px solid var(--border); font-size: 13px;
   transition: all 0.15s;
 }
-.quiz-option:hover { border-color: #89b4fa; }
-.quiz-option.selected { border-color: #89b4fa; background: rgba(137,180,250,0.1); }
-.quiz-option.correct { border-color: #a6e3a1; background: rgba(166,227,161,0.15); }
-.quiz-option.incorrect { border-color: #f38ba8; background: rgba(243,139,168,0.15); }
+.quiz-option:hover { border-color: var(--accent); }
+.quiz-option.selected { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.quiz-option.correct { border-color: var(--success); background: color-mix(in srgb, var(--success) 15%, transparent); }
+.quiz-option.incorrect { border-color: var(--danger); background: color-mix(in srgb, var(--danger) 15%, transparent); }
 .quiz-input { margin-top: 8px; }
 .quiz-result { text-align: center; padding: 20px; }
-.quiz-score { font-size: 36px; font-weight: 800; color: #89b4fa; }
+.quiz-score { font-size: 36px; font-weight: 800; color: var(--accent); }
 
 /* === SESSION CONFIG === */
 .session-config { text-align: center; }
 .length-buttons { display: flex; gap: 8px; justify-content: center; margin: 12px 0; }
 .length-btn {
   padding: 10px 20px; border-radius: 8px; cursor: pointer;
-  background: #1e1e2e; border: 2px solid #45475a; color: #a6adc8;
+  background: var(--bg); border: 2px solid var(--border); color: var(--text-secondary);
   font-weight: 600; font-size: 14px; transition: all 0.15s;
 }
-.length-btn:hover { border-color: #89b4fa; }
-.length-btn.active { border-color: #89b4fa; background: rgba(137,180,250,0.1); color: #89b4fa; }
+.length-btn:hover { border-color: var(--accent); }
+.length-btn.active { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--accent); }
 .mode-buttons { display: flex; gap: 8px; justify-content: center; margin-bottom: 16px; }
 
 /* === COMPLETION === */
 .completion-card {
-  background: #313244; border-radius: 12px; padding: 24px; text-align: center;
-  border: 1px solid #a6e3a1;
+  background: var(--bg-surface); border-radius: 12px; padding: 24px; text-align: center;
+  border: 1px solid var(--success);
 }
-.completion-title { font-size: 20px; font-weight: 700; color: #a6e3a1; margin-bottom: 16px; }
+.completion-title { font-size: 20px; font-weight: 700; color: var(--success); margin-bottom: 16px; }
 .completion-stats { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin-bottom: 16px; }
 .pr-callout {
-  background: rgba(166,227,161,0.1); border: 1px solid #a6e3a1;
+  background: color-mix(in srgb, var(--success) 10%, transparent); border: 1px solid var(--success);
   border-radius: 8px; padding: 10px; margin-bottom: 12px;
-  font-size: 13px; color: #a6e3a1; text-align: center;
+  font-size: 13px; color: var(--success); text-align: center;
 }
 
 /* === MISC === */
 .section-title {
-  font-size: 13px; font-weight: 700; color: #6c7086; text-transform: uppercase;
+  font-size: 13px; font-weight: 700; color: var(--text-muted); text-transform: uppercase;
   letter-spacing: 1px; margin-bottom: 8px; margin-top: 16px;
 }
-.empty-state { text-align: center; padding: 40px 20px; color: #6c7086; }
+.empty-state { text-align: center; padding: 40px 20px; color: var(--text-muted); }
 .empty-state p { margin-bottom: 12px; }
 .coach-note {
-  background: rgba(137,180,250,0.05); border-left: 3px solid #89b4fa;
+  background: color-mix(in srgb, var(--accent) 5%, transparent); border-left: 3px solid var(--accent);
   border-radius: 0 8px 8px 0; padding: 12px; margin-bottom: 12px;
-  font-size: 13px; color: #a6adc8; font-style: italic;
+  font-size: 13px; color: var(--text-secondary); font-style: italic;
 }
-.time-since { color: #6c7086; font-size: 12px; }
+.time-since { color: var(--text-muted); font-size: 12px; }
 .hidden { display: none !important; }
 .fade-in { animation: fadeIn 0.2s ease; }
 @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
@@ -291,12 +286,12 @@ canvas { width: 100%; border-radius: 6px; }
   align-items: center; justify-content: center; padding: 20px;
 }
 .modal {
-  background: #313244; border-radius: 12px; padding: 24px;
+  background: var(--bg-surface); border-radius: 12px; padding: 24px;
   max-width: 500px; width: 100%; max-height: 80vh; overflow-y: auto;
 }
 .modal h3 { margin-bottom: 16px; }
 .form-group { margin-bottom: 12px; }
-.form-group label { display: block; font-size: 12px; color: #6c7086; margin-bottom: 4px; }
+.form-group label { display: block; font-size: 12px; color: var(--text-muted); margin-bottom: 4px; }
 </style>
 </head>
 <body>
@@ -641,7 +636,7 @@ function renderDashboard() {
       const cls = v.velocity > 0.5 ? 'trend-up' : v.velocity < -0.5 ? 'trend-down' : 'trend-flat';
       const arrow = v.velocity > 0.5 ? '\u2191' : v.velocity < -0.5 ? '\u2193' : '\u2192';
       const label = v.velocity > 0.5 ? `+${v.velocity} BPM/week` : v.velocity < -0.5 ? `${v.velocity} BPM/week` : 'Plateaued';
-      return `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #45475a;">
+      return `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border);">
         <span style="font-size:13px;">${v.name}</span>
         <span class="${cls}" style="font-size:13px;font-weight:600;">${arrow} ${label}</span>
       </div>`;
@@ -932,7 +927,7 @@ function renderCurrentExercise() {
       <div class="bpm-controls">
         <button class="btn btn-secondary btn-small" onclick="adjustBpm(-5)">-5</button>
         <button class="btn btn-secondary btn-small" onclick="adjustBpm(-1)">-1</button>
-        <span style="padding:6px 12px;font-size:12px;color:#6c7086;">BPM</span>
+        <span style="padding:6px 12px;font-size:12px;color:var(--text-muted);">BPM</span>
         <button class="btn btn-secondary btn-small" onclick="adjustBpm(1)">+1</button>
         <button class="btn btn-secondary btn-small" onclick="adjustBpm(5)">+5</button>
       </div>` : '';
@@ -994,7 +989,7 @@ function showRatingPrompt() {
   const div = document.createElement('div');
   div.className = 'rating-section';
   div.innerHTML = `
-    <div style="text-align:center;margin-top:12px;font-size:12px;color:#6c7086;">How clean was it?</div>
+    <div style="text-align:center;margin-top:12px;font-size:12px;color:var(--text-muted);">How clean was it?</div>
     <div class="rating-row">
       ${[1,2,3,4,5].map(n => `<div class="rating-star" data-r="${n}" onclick="setRating(${n})">${n}</div>`).join('')}
     </div>
@@ -1057,7 +1052,7 @@ function showPhaseBanner(phase) {
   bannerArea.innerHTML = `
     <div class="phase-banner fade-in">
       <h3>${labels[phase] || phase}</h3>
-      <p style="font-size:12px;color:#a6adc8;">Ready to move on?</p>
+      <p style="font-size:12px;color:var(--text-secondary);">Ready to move on?</p>
       <div class="phase-banner-actions">
         <button class="btn btn-primary btn-small" onclick="dismissBanner()">Continue</button>
       </div>
@@ -1227,7 +1222,7 @@ function renderQuizQuestion() {
 
   area.innerHTML = `
     <div class="quiz-card fade-in">
-      <div style="font-size:11px;color:#6c7086;margin-bottom:8px;">Question ${qs.currentQ+1} of ${qs.questions.length}</div>
+      <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px;">Question ${qs.currentQ+1} of ${qs.questions.length}</div>
       <div class="quiz-question">${q.question}</div>
       <div class="quiz-options" id="quiz-options">
         ${allOptions.map((opt,i) => `
@@ -1284,8 +1279,8 @@ function finishQuiz() {
     <div class="quiz-card fade-in">
       <div class="quiz-result">
         <div class="quiz-score">${pct}%</div>
-        <div style="color:#a6adc8;margin-bottom:16px;">${qs.score} of ${qs.questions.length} correct</div>
-        ${pct >= 85 ? '<div style="color:#a6e3a1;font-weight:600;">Excellent!</div>' : pct >= 60 ? '<div style="color:#f9e2af;">Getting there. Keep reviewing.</div>' : '<div style="color:#f38ba8;">Review this module\'s material.</div>'}
+        <div style="color:var(--text-secondary);margin-bottom:16px;">${qs.score} of ${qs.questions.length} correct</div>
+        ${pct >= 85 ? '<div style="color:var(--success);font-weight:600;">Excellent!</div>' : pct >= 60 ? '<div style="color:var(--warning);">Getting there. Keep reviewing.</div>' : '<div style="color:var(--danger);">Review this module\'s material.</div>'}
         <button class="btn btn-primary" onclick="advanceFromTheory()" style="margin-top:16px;">Continue</button>
       </div>
     </div>`;
@@ -1487,7 +1482,7 @@ function renderProgress() {
     const cls = v.velocity > 0.5 ? 'trend-up' : v.velocity < -0.5 ? 'trend-down' : 'trend-flat';
     const arrow = v.velocity > 0.5 ? '\u2191' : v.velocity < -0.5 ? '\u2193' : '\u2192';
     return `<tr><td>${v.name}</td><td>${v.bpm}</td><td>${v.velocity !== null ? (v.velocity > 0 ? '+' : '') + v.velocity + '/wk' : '-'}</td><td class="${cls}">${arrow}</td></tr>`;
-  }).join('') || '<tr><td colspan="4" style="text-align:center;color:#6c7086;">No data yet</td></tr>';
+  }).join('') || '<tr><td colspan="4" style="text-align:center;color:var(--text-muted);">No data yet</td></tr>';
 }
 
 function renderProgressChart() {
@@ -1500,7 +1495,7 @@ function renderProgressChart() {
   ctx.scale(2, 2);
 
   if (!exId) {
-    ctx.fillStyle = '#6c7086';
+    ctx.fillStyle = cssVar('--text-muted');
     ctx.font = '13px -apple-system, sans-serif';
     ctx.textAlign = 'center';
     ctx.fillText('Select an exercise to view progress', canvas.width/4, 100);
@@ -1509,14 +1504,14 @@ function renderProgressChart() {
 
   const prog = getExerciseProgress(exId);
   if (!prog || prog.history.length < 2) {
-    ctx.fillStyle = '#6c7086';
+    ctx.fillStyle = cssVar('--text-muted');
     ctx.font = '13px -apple-system, sans-serif';
     ctx.textAlign = 'center';
     ctx.fillText('Need at least 2 data points', canvas.width/4, 100);
     return;
   }
 
-  drawLineChart(ctx, canvas.width/2, 200, [{ data: prog.history.map(h => h.bpm), color: '#89b4fa', label: 'BPM' }], prog.history.map(h => h.date), prog.personalBest?.bpm);
+  drawLineChart(ctx, canvas.width/2, 200, [{ data: prog.history.map(h => h.bpm), color: cssVar('--accent'), label: 'BPM' }], prog.history.map(h => h.date), prog.personalBest?.bpm);
 }
 
 function renderWeeklyChart() {
@@ -1544,7 +1539,7 @@ function renderWeeklyChart() {
   }
 
   if (weeks.every(w => w.minutes === 0)) {
-    ctx.fillStyle = '#6c7086';
+    ctx.fillStyle = cssVar('--text-muted');
     ctx.font = '13px -apple-system, sans-serif';
     ctx.textAlign = 'center';
     ctx.fillText('No session data yet', canvas.width/4, 60);
@@ -1557,6 +1552,10 @@ function renderWeeklyChart() {
 // ============================================================
 // CANVAS CHART FUNCTIONS
 // ============================================================
+function cssVar(name) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
 function drawLineChart(ctx, w, h, datasets, labels, prValue) {
   const pad = { top: 20, right: 20, bottom: 30, left: 45 };
   const cw = w - pad.left - pad.right;
@@ -1572,14 +1571,14 @@ function drawLineChart(ctx, w, h, datasets, labels, prValue) {
   ctx.clearRect(0, 0, w, h);
 
   // Grid
-  ctx.strokeStyle = '#45475a';
+  ctx.strokeStyle = cssVar('--border');
   ctx.lineWidth = 0.5;
   const gridLines = 5;
   for (let i = 0; i <= gridLines; i++) {
     const y = pad.top + (ch / gridLines) * i;
     ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(w - pad.right, y); ctx.stroke();
     const val = Math.round(maxV - (maxV - minV) * (i / gridLines));
-    ctx.fillStyle = '#6c7086'; ctx.font = '10px sans-serif'; ctx.textAlign = 'right';
+    ctx.fillStyle = cssVar('--text-muted'); ctx.font = '10px sans-serif'; ctx.textAlign = 'right';
     ctx.fillText(val, pad.left - 5, y + 3);
   }
 
@@ -1588,7 +1587,7 @@ function drawLineChart(ctx, w, h, datasets, labels, prValue) {
   ctx.textAlign = 'center';
   for (let i = 0; i < n; i += step) {
     const x = pad.left + (cw / Math.max(n-1, 1)) * i;
-    ctx.fillStyle = '#6c7086'; ctx.font = '9px sans-serif';
+    ctx.fillStyle = cssVar('--text-muted'); ctx.font = '9px sans-serif';
     ctx.fillText(labels[i] || '', x, h - 5);
   }
 
@@ -1608,7 +1607,7 @@ function drawLineChart(ctx, w, h, datasets, labels, prValue) {
     for (let i = 0; i < ds.data.length; i++) {
       const x = pad.left + (cw / Math.max(n-1, 1)) * i;
       const y = pad.top + ch - ((ds.data[i] - minV) / (maxV - minV)) * ch;
-      ctx.fillStyle = ds.data[i] === prValue ? '#a6e3a1' : ds.color;
+      ctx.fillStyle = ds.data[i] === prValue ? cssVar('--success') : ds.color;
       ctx.beginPath(); ctx.arc(x, y, ds.data[i] === prValue ? 5 : 3, 0, Math.PI*2); ctx.fill();
     }
   }
@@ -1617,11 +1616,11 @@ function drawLineChart(ctx, w, h, datasets, labels, prValue) {
   if (prValue && prValue >= minV && prValue <= maxV) {
     const prY = pad.top + ch - ((prValue - minV) / (maxV - minV)) * ch;
     ctx.setLineDash([4, 4]);
-    ctx.strokeStyle = '#a6e3a1';
+    ctx.strokeStyle = cssVar('--success');
     ctx.lineWidth = 1;
     ctx.beginPath(); ctx.moveTo(pad.left, prY); ctx.lineTo(w - pad.right, prY); ctx.stroke();
     ctx.setLineDash([]);
-    ctx.fillStyle = '#a6e3a1'; ctx.font = '10px sans-serif'; ctx.textAlign = 'right';
+    ctx.fillStyle = cssVar('--success'); ctx.font = '10px sans-serif'; ctx.textAlign = 'right';
     ctx.fillText('PR: ' + prValue, w - pad.right, prY - 5);
   }
 }
@@ -1637,12 +1636,12 @@ function drawBarChart(ctx, w, h, data) {
   ctx.clearRect(0, 0, w, h);
 
   // Grid
-  ctx.strokeStyle = '#45475a'; ctx.lineWidth = 0.5;
+  ctx.strokeStyle = cssVar('--border'); ctx.lineWidth = 0.5;
   for (let i = 0; i <= 3; i++) {
     const y = pad.top + (ch / 3) * i;
     ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(w - pad.right, y); ctx.stroke();
     const val = Math.round(maxV - (maxV * (i / 3)));
-    ctx.fillStyle = '#6c7086'; ctx.font = '9px sans-serif'; ctx.textAlign = 'right';
+    ctx.fillStyle = cssVar('--text-muted'); ctx.font = '9px sans-serif'; ctx.textAlign = 'right';
     ctx.fillText(val + 'm', pad.left - 5, y + 3);
   }
 
@@ -1651,13 +1650,13 @@ function drawBarChart(ctx, w, h, data) {
     const x = pad.left + (cw / data.length) * i + gap/2;
     const barH = (data[i].minutes / maxV) * ch;
     const y = pad.top + ch - barH;
-    ctx.fillStyle = data[i].minutes > 0 ? '#89b4fa' : '#45475a';
+    ctx.fillStyle = data[i].minutes > 0 ? cssVar('--accent') : cssVar('--border');
     ctx.beginPath();
     roundRect(ctx, x, y, barW, barH, 3);
     ctx.fill();
 
     // Label
-    ctx.fillStyle = '#6c7086'; ctx.font = '9px sans-serif'; ctx.textAlign = 'center';
+    ctx.fillStyle = cssVar('--text-muted'); ctx.font = '9px sans-serif'; ctx.textAlign = 'center';
     ctx.fillText(data[i].label, x + barW/2, h - 5);
   }
 }
@@ -1676,7 +1675,7 @@ function drawMiniChart(canvas, history) {
   const cw = w - pad.left - pad.right;
   const ch = h - pad.top - pad.bottom;
 
-  ctx.strokeStyle = '#89b4fa'; ctx.lineWidth = 1.5;
+  ctx.strokeStyle = cssVar('--accent'); ctx.lineWidth = 1.5;
   ctx.beginPath();
   for (let i = 0; i < n; i++) {
     const x = pad.left + (cw / Math.max(n-1,1)) * i;
@@ -1751,13 +1750,13 @@ function renderModuleDetail(id) {
       <div class="card-header">${module.name}</div>
       <div class="card-sub">${module.category} ${module.prerequisites.length > 0 ? '| Requires: ' + module.prerequisites.join(', ') : ''}</div>
       <div style="margin-top:12px;">
-        ${module.content.formula ? `<div style="font-size:12px;color:#6c7086;margin-bottom:4px;">Formula</div><div style="font-size:15px;font-weight:600;font-family:monospace;color:#89b4fa;margin-bottom:8px;">${module.content.formula}</div>` : ''}
-        ${module.content.keyCharacteristic ? `<div style="font-size:13px;color:#a6adc8;margin-bottom:8px;">${module.content.keyCharacteristic}</div>` : ''}
-        ${module.content.chordFit && module.content.chordFit.length > 0 ? `<div style="font-size:12px;color:#6c7086;margin-bottom:2px;">Chord Fit</div><div style="font-size:13px;margin-bottom:8px;">${module.content.chordFit.join(', ')}</div>` : ''}
-        ${module.content.genres ? `<div style="font-size:12px;color:#6c7086;margin-bottom:2px;">Used In</div><div style="font-size:13px;margin-bottom:8px;">${module.content.genres}</div>` : ''}
-        ${module.content.notes ? `<div style="font-size:12px;color:#6c7086;margin-bottom:2px;">Key Insight</div><div style="font-size:13px;color:#a6adc8;margin-bottom:8px;">${module.content.notes}</div>` : ''}
+        ${module.content.formula ? `<div style="font-size:12px;color:var(--text-muted);margin-bottom:4px;">Formula</div><div style="font-size:15px;font-weight:600;font-family:monospace;color:var(--accent);margin-bottom:8px;">${module.content.formula}</div>` : ''}
+        ${module.content.keyCharacteristic ? `<div style="font-size:13px;color:var(--text-secondary);margin-bottom:8px;">${module.content.keyCharacteristic}</div>` : ''}
+        ${module.content.chordFit && module.content.chordFit.length > 0 ? `<div style="font-size:12px;color:var(--text-muted);margin-bottom:2px;">Chord Fit</div><div style="font-size:13px;margin-bottom:8px;">${module.content.chordFit.join(', ')}</div>` : ''}
+        ${module.content.genres ? `<div style="font-size:12px;color:var(--text-muted);margin-bottom:2px;">Used In</div><div style="font-size:13px;margin-bottom:8px;">${module.content.genres}</div>` : ''}
+        ${module.content.notes ? `<div style="font-size:12px;color:var(--text-muted);margin-bottom:2px;">Key Insight</div><div style="font-size:13px;color:var(--text-secondary);margin-bottom:8px;">${module.content.notes}</div>` : ''}
       </div>
-      ${scores.length > 0 ? `<div style="font-size:12px;color:#6c7086;margin-top:8px;">Quiz attempts: ${scores.map(s => s + '%').join(', ')}</div>` : ''}
+      ${scores.length > 0 ? `<div style="font-size:12px;color:var(--text-muted);margin-top:8px;">Quiz attempts: ${scores.map(s => s + '%').join(', ')}</div>` : ''}
       <button class="btn btn-primary" style="width:100%;margin-top:12px;" onclick="startStandaloneQuiz('${id}')" ${isLocked ? 'disabled' : ''}>
         ${isLocked ? 'Locked' : 'Take Quiz'}
       </button>
@@ -1807,9 +1806,9 @@ function renderStandaloneQuiz() {
       <div class="quiz-card fade-in">
         <div class="quiz-result">
           <div class="quiz-score">${pct}%</div>
-          <div style="color:#a6adc8;margin-bottom:12px;">${qs.score} of ${qs.questions.length} correct</div>
-          ${pct >= 85 ? '<div style="color:#a6e3a1;font-weight:600;margin-bottom:4px;">Excellent!</div>' : pct >= 60 ? '<div style="color:#f9e2af;margin-bottom:4px;">Getting there. Review and try again.</div>' : '<div style="color:#f38ba8;margin-bottom:4px;">Study the material and retry.</div>'}
-          ${bestScore >= 85 && scores.length >= 2 && state.progress.theoryProgress.modulesCompleted.includes(qs.moduleId) ? '<div style="color:#a6e3a1;font-size:13px;">Module completed!</div>' : ''}
+          <div style="color:var(--text-secondary);margin-bottom:12px;">${qs.score} of ${qs.questions.length} correct</div>
+          ${pct >= 85 ? '<div style="color:var(--success);font-weight:600;margin-bottom:4px;">Excellent!</div>' : pct >= 60 ? '<div style="color:var(--warning);margin-bottom:4px;">Getting there. Review and try again.</div>' : '<div style="color:var(--danger);margin-bottom:4px;">Study the material and retry.</div>'}
+          ${bestScore >= 85 && scores.length >= 2 && state.progress.theoryProgress.modulesCompleted.includes(qs.moduleId) ? '<div style="color:var(--success);font-size:13px;">Module completed!</div>' : ''}
           <button class="btn btn-primary" onclick="backToTheory()" style="margin-top:16px;">Back to Modules</button>
         </div>
       </div>`;
@@ -1821,7 +1820,7 @@ function renderStandaloneQuiz() {
 
   area.innerHTML = `
     <div class="quiz-card fade-in">
-      <div style="font-size:11px;color:#6c7086;margin-bottom:8px;">Question ${qs.currentQ+1} of ${qs.questions.length}</div>
+      <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px;">Question ${qs.currentQ+1} of ${qs.questions.length}</div>
       <div class="quiz-question">${q.question}</div>
       <div class="quiz-options" id="sa-quiz-options">
         ${allOptions.map(opt => `
@@ -1957,5 +1956,6 @@ async function init() {
 
 init();
 </script>
+<script src="/file/05_App_Data/_shared/brain-kit.js"></script>
 </body>
 </html>

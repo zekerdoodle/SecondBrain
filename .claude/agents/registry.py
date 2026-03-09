@@ -42,7 +42,7 @@ class AgentRegistry:
     Usage:
         registry = AgentRegistry(Path(".claude/agents"))
         registry.load_all()
-        config = registry.get("information_gatherer")
+        config = registry.get("kestrel")
     """
 
     def __init__(self, base_dir: Path):

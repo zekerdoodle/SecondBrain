@@ -812,7 +812,8 @@ class ChatManager:
         """Delete a chat from disk and its room metadata."""
         path = self.get_chat_path(session_id)
         if os.path.exists(path):
-            os.remove(path)
+            with FileLock(self._get_lock_path(session_id), timeout=5):
+                os.remove(path)
 
             # Delete room metadata (if available)
             try:

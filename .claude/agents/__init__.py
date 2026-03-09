@@ -10,7 +10,7 @@ Usage:
     from agents import get_registry, invoke_agent
 
     registry = get_registry()
-    result = await invoke_agent("information_gatherer", "Research Python", mode="foreground")
+    result = await invoke_agent("kestrel", "Research Python", mode="foreground")
 """
 
 # Re-export from submodules for package-level access

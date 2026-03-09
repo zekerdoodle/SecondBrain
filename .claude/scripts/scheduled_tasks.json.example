@@ -13,7 +13,7 @@
     "prompt": "Check AI news and summarize key developments",
     "schedule": "daily at 09:00",
     "type": "agent",
-    "agent": "information_gatherer",
+    "agent": "kestrel",
     "silent": true,
     "active": false,
     "description": "Daily AI news scan"

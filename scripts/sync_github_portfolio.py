@@ -158,7 +158,7 @@ ALLOWLIST_FILES = [
 # Only expose generic/utility agents publicly — no personality-bearing agents
 ALLOWLIST_AGENTS = [
     "coder",
-    "general_purpose",
+    "jack",
     "_template",
 ]
 
@@ -409,8 +409,8 @@ def sanitize_readme(content: str) -> str:
         # These are in the Multi-Agent Orchestration section
         if in_agent_list:
             if line.startswith('- **') and '—' in line:
-                # Skip this agent bullet - but keep Coder and General Purpose
-                if '**Coder**' in line or '**General Purpose**' in line:
+                # Skip this agent bullet - but keep Coder and Jack
+                if '**Coder**' in line or '**Jack**' in line:
                     filtered.append(line)
                 i += 1
                 continue
@@ -554,7 +554,7 @@ def generate_scheduled_tasks_example() -> str:
             "prompt": "Check AI news and summarize key developments",
             "schedule": "daily at 09:00",
             "type": "agent",
-            "agent": "information_gatherer",
+            "agent": "kestrel",
             "silent": True,
             "active": False,
             "description": "Daily AI news scan"

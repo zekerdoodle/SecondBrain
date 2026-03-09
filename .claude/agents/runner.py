@@ -541,10 +541,22 @@ async def _run_sdk_agent(config: AgentConfig, invocation: AgentInvocation) -> st
     except Exception as e:
         logger.warning(f"Agent '{config.name}': failed to get agent list: {e}")
 
+    # Load global safety rules (injected into ALL agents)
+    _global_rules = ""
+    global_rules_path = Path(__file__).parent / "global_rules.md"
+    if global_rules_path.exists():
+        try:
+            _global_rules = global_rules_path.read_text().strip()
+        except Exception as e:
+            logger.warning(f"Agent '{config.name}': could not read global_rules.md: {e}")
+
     if config.system_prompt_preset:
         append_parts = []
         if config.prompt:
             append_parts.append(config.prompt)
+        # Global safety rules (above skills and memory)
+        if _global_rules:
+            append_parts.append(_global_rules)
         # Skill menu sits above memory in the system prompt
         if _skill_reminder:
             append_parts.append(_skill_reminder)
@@ -597,6 +609,9 @@ async def _run_sdk_agent(config: AgentConfig, invocation: AgentInvocation) -> st
         parts = []
         if config.prompt:
             parts.append(config.prompt)
+        # Global safety rules (above skills and memory)
+        if _global_rules:
+            parts.append(_global_rules)
         # Skill menu sits above memory in the system prompt
         if _skill_reminder:
             parts.append(_skill_reminder)

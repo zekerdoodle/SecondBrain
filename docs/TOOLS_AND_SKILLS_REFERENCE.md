@@ -13,7 +13,7 @@ Complete inventory of all tools and skills available in the Second Brain system.
 **INPUTS:**
 - `prompt` (string, required): The task for the agent to perform
 - `description` (string, required): Short 3-5 word description
-- `subagent_type` (string, required): Agent type - "Bash", "general-purpose", "Explore", "Plan", "statusline-setup"
+- `subagent_type` (string, required): Agent type - "Bash", "jack", "Explore", "Plan", "statusline-setup"
 - `model` (string, optional): "sonnet", "opus", or "haiku"
 - `run_in_background` (boolean, optional): Run async, returns output_file path
 - `resume` (string, optional): Agent ID to resume from

@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/typescript
 title: Agent SDK reference - TypeScript
-last_fetched: 2026-03-04T10:04:21.294255+00:00
+last_fetched: 2026-03-08T09:03:11.510042+00:00
 ---
 
 Copy page
@@ -97,8 +97,9 @@ function listSessions(options?: ListSessionsOptions): Promise<SDKSessionInfo[]>;
 
 | Parameter | Type | Default | Description |
 | --- | --- | --- | --- |
-| `options.dir` | `string` | `undefined` | Directory to list sessions for. Returns sessions for this project (and its git worktrees). When omitted, returns sessions across all projects |
+| `options.dir` | `string` | `undefined` | Directory to list sessions for. When omitted, returns sessions across all projects |
 | `options.limit` | `number` | `undefined` | Maximum number of sessions to return |
+| `options.includeWorktrees` | `boolean` | `true` | When `dir` is inside a git repository, include sessions from all worktree paths |
 
 #### Return type: `SDKSessionInfo`
 
@@ -115,18 +116,65 @@ function listSessions(options?: ListSessionsOptions): Promise<SDKSessionInfo[]>;
 
 #### Example
 
+Print the 10 most recent sessions for a project. Results are sorted by `lastModified` descending, so the first item is the newest. Omit `dir` to search across all projects.
+
 ```shiki
 import { listSessions } from "@anthropic-ai/claude-agent-sdk";
 
-// List sessions for a specific project
-const sessions = await listSessions({ dir: "/path/to/project" });
+const sessions = await listSessions({ dir: "/path/to/project", limit: 10 });
 
 for (const session of sessions) {
- console.log(`${session.summary} (${new Date(session.lastModified).toLocaleDateString()})`);
+ console.log(`${session.summary} (${session.sessionId})`);
 }
+```
 
-// List all sessions across all projects, limited to 10
-const recent = await listSessions({ limit: 10 });
+### `getSessionMessages()`
+
+Reads user and assistant messages from a past session transcript.
+
+```shiki
+function getSessionMessages(
+ sessionId: string,
+ options?: GetSessionMessagesOptions
+): Promise<SessionMessage[]>;
+```
+
+#### Parameters
+
+| Parameter | Type | Default | Description |
+| --- | --- | --- | --- |
+| `sessionId` | `string` | required | Session UUID to read (see `listSessions()`) |
+| `options.dir` | `string` | `undefined` | Project directory to find the session in. When omitted, searches all projects |
+| `options.limit` | `number` | `undefined` | Maximum number of messages to return |
+| `options.offset` | `number` | `undefined` | Number of messages to skip from the start |
+
+#### Return type: `SessionMessage`
+
+| Property | Type | Description |
+| --- | --- | --- |
+| `type` | `"user" | "assistant"` | Message role |
+| `uuid` | `string` | Unique message identifier |
+| `session_id` | `string` | Session this message belongs to |
+| `message` | `unknown` | Raw message payload from the transcript |
+| `parent_tool_use_id` | `null` | Reserved |
+
+#### Example
+
+```shiki
+import { listSessions, getSessionMessages } from "@anthropic-ai/claude-agent-sdk";
+
+const [latest] = await listSessions({ dir: "/path/to/project", limit: 1 });
+
+if (latest) {
+ const messages = await getSessionMessages(latest.sessionId, {
+ dir: "/path/to/project",
+ limit: 20,
+ });
+
+ for (const msg of messages) {
+ console.log(`[${msg.type}] ${msg.uuid}`);
+ }
+}
 ```
 
 ## Types
@@ -162,7 +210,7 @@ Configuration object for the `query()` function.
 | `includePartialMessages` | `boolean` | `false` | Include partial message events |
 | `maxBudgetUsd` | `number` | `undefined` | Maximum budget in USD for the query |
 | `maxThinkingTokens` | `number` | `undefined` | *Deprecated:* Use `thinking` instead. Maximum tokens for thinking process |
-| `maxTurns` | `number` | `undefined` | Maximum conversation turns |
+| `maxTurns` | `number` | `undefined` | Maximum agentic turns (tool-use round trips) |
 | `mcpServers` | `Record<string, [`McpServerConfig`](#mcpserverconfig)>` | `{}` | MCP server configurations |
 | `model` | `string` | Default from CLI | Claude model to use |
 | `outputFormat` | `{ type: 'json_schema', schema: JSONSchema }` | `undefined` | Define output format for agent results. See [Structured outputs](/docs/en/agent-sdk/structured-outputs) for details |
@@ -182,6 +230,7 @@ Configuration object for the `query()` function.
 | `strictMcpConfig` | `boolean` | `false` | Enforce strict MCP validation |
 | `systemPrompt` | `string | { type: 'preset'; preset: 'claude_code'; append?: string }` | `undefined` (minimal prompt) | System prompt configuration. Pass a string for custom prompt, or `{ type: 'preset', preset: 'claude_code' }` to use Claude Code's system prompt. When using the preset object form, add `append` to extend the system prompt with additional instructions |
 | `thinking` | [`ThinkingConfig`](#thinkingconfig) | `{ type: 'adaptive' }` for supported models | Controls Claude's thinking/reasoning behavior. See [`ThinkingConfig`](#thinkingconfig) for options |
+| `toolConfig` | [`ToolConfig`](#tool-config) | `undefined` | Configuration for built-in tool behavior. See [`ToolConfig`](#tool-config) for details |
 | `tools` | `string[] | { type: 'preset'; preset: 'claude_code' }` | `undefined` | Tool configuration. Pass an array of tool names or use the preset to get Claude Code's default tools |
 
 ### `Query` object
@@ -452,6 +501,22 @@ type PermissionResult =
  toolUseID?: string;
  };
 ```
+
+### `ToolConfig`
+
+Configuration for built-in tool behavior.
+
+```shiki
+type ToolConfig = {
+ askUserQuestion?: {
+ previewFormat?: "markdown" | "html";
+ };
+};
+```
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `askUserQuestion.previewFormat` | `'markdown' | 'html'` | Opts into the `preview` field on [`AskUserQuestion`](/docs/en/agent-sdk/user-input#question-format) options and sets its content format. When unset, Claude does not emit previews |
 
 ### `McpServerConfig`
 
@@ -832,6 +897,8 @@ type BaseHookInput = {
  transcript_path: string;
  cwd: string;
  permission_mode?: string;
+ agent_id?: string;
+ agent_type?: string;
 };
 ```
 
@@ -1147,9 +1214,9 @@ type ToolInputSchemas =
  | WebSearchInput;
 ```
 
-### Task
+### Agent
 
-**Tool name:** `Task`
+**Tool name:** `Agent` (previously `Task`, which is still accepted as an alias)
 
 ```shiki
 type AgentInput = {
@@ -1178,7 +1245,7 @@ type AskUserQuestionInput = {
  questions: Array<{
  question: string;
  header: string;
- options: Array<{ label: string; description: string }>;
+ options: Array<{ label: string; description: string; preview?: string }>;
  multiSelect: boolean;
  }>;
 };
@@ -1464,9 +1531,9 @@ type ToolOutputSchemas =
  | WebSearchOutput;
 ```
 
-### Task
+### Agent
 
-**Tool name:** `Task`
+**Tool name:** `Agent` (previously `Task`, which is still accepted as an alias)
 
 ```shiki
 type AgentOutput =
@@ -1520,7 +1587,7 @@ type AskUserQuestionOutput = {
  questions: Array<{
  question: string;
  header: string;
- options: Array<{ label: string; description: string }>;
+ options: Array<{ label: string; description: string; preview?: string }>;
  multiSelect: boolean;
  }>;
  answers: Record<string, string>;
@@ -1993,19 +2060,20 @@ type ModelInfo = {
  supportsEffort?: boolean;
  supportedEffortLevels?: ("low" | "medium" | "high" | "max")[];
  supportsAdaptiveThinking?: boolean;
+ supportsFastMode?: boolean;
 };
 ```
 
 ### `AgentInfo`
 
-Information about an available subagent that can be invoked via the Task tool.
+Information about an available subagent that can be invoked via the Agent tool.
 
 ```shiki
 type AgentInfo = {
  name: string;
  description: string;
  model?: string;
-}
+};
 ```
 
 | Field | Type | Description |

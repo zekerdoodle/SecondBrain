@@ -21,6 +21,11 @@
   docs/             # Reference documentation
   logs/             # System logs (auto-managed)
   .secrets/         # Credentials (gitignored)
+
+# Accepted system directories (not subject to orphan-folder rules):
+01_Riley/           # Character's journal and personal data
+05_App_Data/        # App-specific data (generated images, ai-character, etc.)
+docs/               # Architecture docs, SDK references, web results
 ```
 
 ## Naming Conventions

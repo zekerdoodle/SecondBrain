@@ -13,8 +13,10 @@ Tools:
 - finance_status: Check Plaid connection status
 """
 
+import json
 import os
 import sys
+import time
 from typing import Any, Dict
 
 from claude_agent_sdk import tool
@@ -25,6 +27,10 @@ from ..registry import register_tool
 SCRIPTS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../.claude/scripts"))
 if SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, SCRIPTS_DIR)
+
+# App data directory for the Plaid Link HTML app
+APP_DATA_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../05_App_Data"))
+PLAID_LINK_DIR = os.path.join(APP_DATA_DIR, "plaid-link")
 
 
 def _import_financial_tools():
@@ -135,18 +141,34 @@ async def finance_spending_analysis(args: Dict[str, Any]) -> Dict[str, Any]:
         return {"content": [{"type": "text", "text": f"Error: {str(e)}"}], "is_error": True}
 
 
+def _write_link_token_file(link_token: str, environment: str = "sandbox") -> None:
+    """Write the Plaid link token to a file the HTML app can read."""
+    os.makedirs(PLAID_LINK_DIR, exist_ok=True)
+    token_file = os.path.join(PLAID_LINK_DIR, "link_token.json")
+    data = {
+        "link_token": link_token,
+        "generated_at": time.time(),
+        "environment": environment,
+    }
+    with open(token_file, "w") as f:
+        json.dump(data, f, indent=2)
+
+
 @register_tool("finance")
 @tool(
     name="finance_connect",
     description="""Connect a bank account via Plaid Link.
 
-Two-step process:
-1. Call without public_token to generate a Plaid Link token (user completes bank login)
-2. Call with public_token after user finishes to complete the connection""",
+Generates a Plaid Link token and writes it to the Plaid Link app.
+Tell the user to open the "Link Bank Account" app from the app drawer (or open the
+file 05_App_Data/plaid-link/index.html). The app handles the full bank login flow
+and automatically completes the connection.
+
+If called with a public_token, exchanges it for an access token (manual fallback).""",
     input_schema={
         "type": "object",
         "properties": {
-            "public_token": {"type": "string", "description": "Public token from Plaid Link (step 2 only, omit for step 1)"}
+            "public_token": {"type": "string", "description": "Public token from Plaid Link (manual fallback only, normally not needed)"}
         }
     }
 )
@@ -157,6 +179,29 @@ async def finance_connect(args: Dict[str, Any]) -> Dict[str, Any]:
         message, metadata = tools["connect"](
             public_token=args.get("public_token")
         )
+
+        # When a link token is generated (step 1), write it for the HTML app
+        if metadata.get("success") and metadata.get("action") == "link_token_created":
+            link_token = metadata.get("link_token")
+            if link_token:
+                env = "sandbox"
+                try:
+                    env = os.getenv("PLAID_ENV", "sandbox")
+                except Exception:
+                    pass
+                _write_link_token_file(link_token, env)
+
+                return {
+                    "content": [{"type": "text", "text": (
+                        "Plaid Link token generated and written to the app.\n\n"
+                        "Tell the user to open the **Link Bank Account** app from the app drawer "
+                        "(or open `05_App_Data/plaid-link/index.html`).\n\n"
+                        "The app will handle the bank login flow and automatically "
+                        "exchange the token when the user completes it.\n\n"
+                        "If the app is already open, it will auto-detect the new token."
+                    )}]
+                }
+
         return _result_to_mcp(message, metadata)
     except Exception as e:
         return {"content": [{"type": "text", "text": f"Error: {str(e)}"}], "is_error": True}

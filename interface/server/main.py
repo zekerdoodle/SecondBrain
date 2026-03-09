@@ -38,6 +38,7 @@ from notifications import should_notify, send_notification, NotificationDecision
 from message_wal import init_wal, get_wal, MessageWAL
 from tool_serializers import serialize_tool_call, format_tool_for_history
 from process_registry import register_process, deregister_by_pid, clear_registry
+from mention_parser import parse_mentions
 
 
 # --- Client Session Tracking (for notifications) ---
@@ -61,13 +62,19 @@ class ClientSession:
         """Check if heartbeat is stale (no updates in timeout period)."""
         return time.time() - self.last_heartbeat > timeout_seconds
 
-# Logging - output to both console and file
+# Logging - output to both console and rotating file
+from logging.handlers import RotatingFileHandler
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler('/home/debian/second_brain/interface/server/server.log')
+        RotatingFileHandler(
+            '/home/debian/second_brain/interface/server/server.log',
+            maxBytes=10 * 1024 * 1024,  # 10 MB per file
+            backupCount=3,              # Keep 3 rotated files (40 MB max total)
+        )
     ]
 )
 logger = logging.getLogger("server")
@@ -1153,6 +1160,34 @@ def get_app_icon(path: str):
     return FileResponse(full_path)
 
 
+# --- Plaid Link Integration ---
+
+class PlaidExchangeRequest(BaseModel):
+    public_token: str
+
+@app.post("/api/plaid/exchange")
+async def plaid_exchange(request: PlaidExchangeRequest):
+    """Exchange a Plaid public token for an access token.
+
+    Called by the Plaid Link HTML app after the user completes bank login.
+    """
+    try:
+        scripts_dir = os.path.join(ROOT_DIR, ".claude", "scripts")
+        if scripts_dir not in sys.path:
+            sys.path.insert(0, scripts_dir)
+
+        from theo_ports.financial_tools import connect_bank_account
+        message, metadata = connect_bank_account(public_token=request.public_token)
+        return {
+            "success": metadata.get("success", False),
+            "message": message,
+            "item_id": metadata.get("item_id"),
+        }
+    except Exception as e:
+        logger.error(f"Plaid exchange error: {e}")
+        return {"success": False, "error": str(e)}
+
+
 # --- Agent API ---
 
 @app.get("/api/agents")
@@ -1690,7 +1725,8 @@ async def make_chess_move(request: ChessMoveRequest):
 
     # If it's Claude's turn and game isn't over, include a prompt
     if not game_state.get("game_over"):
-        current_turn = "white" if "w" in game_state.get("fen", "").split()[1] else "black"
+        fen_parts = game_state.get("fen", "").split()
+        current_turn = "white" if len(fen_parts) > 1 and "w" in fen_parts[1] else "black"
         if current_turn == game_state.get("claude_color"):
             response["claude_prompt"] = f"Current position: {game_state['fen']}. Your turn."
 
@@ -1831,6 +1867,166 @@ async def broadcast_chat_created(chat_id: str, title: str, agent: str = None,
         "chat": {"id": chat_id, "title": title, "updated": time.time(),
                  "is_system": is_system, "scheduled": scheduled, "agent": agent}
     })
+
+
+async def _dispatch_mention_agents(
+    session_id: str,
+    chat_id: str,
+    agent_names: List[str],
+    context_messages: List[dict],
+    trigger_text: str,
+    trigger_role: str,
+    primary_agent: str,
+):
+    """
+    Dispatch @mentioned agents in parallel. Their responses appear directly
+    in the chat timeline — like a group chat, not funneled through the primary agent.
+
+    Each agent runs independently. Messages are appended in completion order.
+    Max 3 agents per invocation. 180-second timeout per agent.
+    """
+    async def _run_single_mention(agent_name: str):
+        # Broadcast typing indicator
+        await broadcast_to_session(session_id, {
+            "type": "agent_typing",
+            "agent": agent_name,
+            "sessionId": session_id
+        })
+
+        # Build context from recent messages
+        context_parts = []
+        for msg in context_messages[-10:]:
+            role = msg.get("role", "user")
+            agent = msg.get("agent")
+            content = msg.get("content", "")
+            if not content or not content.strip():
+                continue
+            if agent:
+                context_parts.append(f"[@{agent}]: {content}")
+            elif role == "user":
+                context_parts.append(f"[the user]: {content}")
+            elif role == "assistant":
+                context_parts.append(f"[{primary_agent}]: {content}")
+
+        context_str = "\n".join(context_parts[-15:])  # Last 15 non-empty messages
+
+        prompt = f"""You were @mentioned in a conversation between the user and {primary_agent}.
+Here's the recent context:
+
+{context_str}
+
+Your response will appear directly in the chat timeline as a message from you.
+Be conversational and concise — this is a group chat, not a report.
+Use tools only if the request clearly requires action (e.g., "fix this bug", "look this up")."""
+
+        # Import and run the agent
+        try:
+            agents_dir = Path(ROOT_DIR) / ".claude" / "agents"
+            if str(agents_dir) not in sys.path:
+                sys.path.insert(0, str(agents_dir))
+            from runner import invoke_agent
+
+            try:
+                result = await asyncio.wait_for(
+                    invoke_agent(name=agent_name, prompt=prompt, mode="foreground"),
+                    timeout=180
+                )
+                response_text = result.response or result.transcript or ""
+                if not response_text.strip():
+                    response_text = f"*@{agent_name} had nothing to say*"
+            except asyncio.TimeoutError:
+                response_text = f"*@{agent_name} timed out after 3 minutes*"
+                logger.warning(f"Mention agent {agent_name} timed out")
+            except Exception as e:
+                response_text = f"*@{agent_name} encountered an error*"
+                logger.error(f"Mention agent {agent_name} failed: {e}", exc_info=True)
+        except Exception as e:
+            response_text = f"*@{agent_name} could not be loaded*"
+            logger.error(f"Failed to import agent runner for mention: {e}")
+
+        # Guard: verify chat still exists before persisting
+        if chat_id not in active_conversations and not chat_manager.load_chat(chat_id):
+            logger.warning(f"Mention agent {agent_name}: chat {chat_id} gone, discarding result")
+            return
+
+        # Build the agent message
+        agent_msg_id = str(uuid.uuid4())
+        agent_msg = {
+            "id": agent_msg_id,
+            "role": "assistant",
+            "agent": agent_name,
+            "content": response_text,
+            "timestamp": time.time(),
+            "status": "complete"
+        }
+
+        # Persist under lock to prevent race conditions
+        async with get_chat_lock(chat_id):
+            conv = active_conversations.get(chat_id)
+            if conv:
+                conv.messages.append(agent_msg)
+
+            # Also update the saved chat on disk
+            existing = chat_manager.load_chat(chat_id)
+            if existing:
+                existing["messages"] = conv.messages if conv else existing.get("messages", []) + [agent_msg]
+                # Also append to display_messages if present
+                display_msg_entry = {
+                    "id": agent_msg_id,
+                    "role": "assistant",
+                    "agent": agent_name,
+                    "content": response_text,
+                    "status": "complete",
+                    "blocks": [{
+                        "id": str(uuid.uuid4()),
+                        "type": "text",
+                        "content": response_text,
+                        "status": "complete"
+                    }]
+                }
+                if "display_messages" in existing:
+                    existing["display_messages"].append(display_msg_entry)
+                chat_manager.save_chat(chat_id, existing)
+
+        # Broadcast the agent message to all clients viewing this session
+        display_msg = {
+            "id": agent_msg_id,
+            "role": "assistant",
+            "agent": agent_name,
+            "blocks": [{
+                "id": str(uuid.uuid4()),
+                "type": "text",
+                "content": response_text,
+                "status": "complete"
+            }],
+            "status": "complete"
+        }
+        await broadcast_to_session(session_id, {
+            "type": "agent_message",
+            "sessionId": session_id,
+            "message": display_msg
+        })
+        logger.info(f"Mention agent @{agent_name} responded in chat {chat_id} ({len(response_text)} chars)")
+
+    # Run all mentioned agents in parallel (capped at 3)
+    tasks = [asyncio.create_task(_run_single_mention(name)) for name in agent_names[:3]]
+    # Don't await here — let them run independently. Errors are handled inside each task.
+    for task in tasks:
+        task.add_done_callback(lambda t: t.exception() if not t.cancelled() and t.exception() else None)
+
+
+def _get_valid_agent_names() -> set:
+    """Get the set of valid agent names from the registry."""
+    try:
+        agents_dir = Path(ROOT_DIR) / ".claude" / "agents"
+        if str(agents_dir) not in sys.path:
+            sys.path.insert(0, str(agents_dir))
+        from registry import get_registry
+        registry = get_registry()
+        return set(registry.list_all())
+    except Exception as e:
+        logger.warning(f"Failed to get agent names for mention parsing: {e}")
+        return set()
 
 
 def register_client(ws: WebSocket, session_id: str):
@@ -2010,6 +2206,8 @@ class SessionStreamingState:
                 }
                 if "created_at" in msg:
                     serialized["created_at"] = msg["created_at"]
+                if "reactions" in msg:
+                    serialized["reactions"] = msg["reactions"]
             else:
                 # User message or legacy message (pass through as-is)
                 serialized = msg
@@ -2099,6 +2297,54 @@ def stop_tool_heartbeat(session_id: str):
 # into the prompt so Claude knows what was discussed. This eliminates "session
 # expired" errors and ensures a single consistent prompt format across all paths
 # (normal messages, edits, regenerates, scheduled tasks, wake-ups).
+def _collect_pending_reactions(messages: List[Dict[str, Any]], display_messages: Optional[List[Dict[str, Any]]] = None) -> List[str]:
+    """Collect reactions on assistant messages since the last user message.
+
+    Checks both messages and display_messages arrays since they may use different
+    IDs. Reactions might only exist in one array depending on which ID format
+    the frontend sent.
+
+    Walks messages backwards, stopping at the previous user message.
+    Returns formatted reaction descriptions like: '👍 to "Here's the fix..."'
+    """
+    lines = []
+
+    def _extract_reactions(msg_list: List[Dict[str, Any]]) -> None:
+        for msg in reversed(msg_list):
+            if msg.get("role") == "user":
+                break
+            if msg.get("role") == "assistant" and msg.get("reactions"):
+                # Get a preview of the message content
+                content = msg.get("content", "")
+                if not content and msg.get("blocks"):
+                    # Try extracting text from blocks — skip thinking blocks
+                    # so the preview shows the actual visible response
+                    for block in msg["blocks"]:
+                        block_type = block.get("type", "") if isinstance(block, dict) else getattr(block, "type", "")
+                        if block_type == "thinking":
+                            continue
+                        block_content = block.get("content", "") if isinstance(block, dict) else getattr(block, "content", "")
+                        if block_content:
+                            content = block_content
+                            break
+                preview = content[:60].replace("\n", " ").strip()
+                if len(content) > 60:
+                    preview += "..."
+
+                for emoji, reactors in msg["reactions"].items():
+                    if "user" in reactors:
+                        line = f'{emoji} to "{preview}"'
+                        if line not in lines:  # Deduplicate across arrays
+                            lines.append(line)
+
+    # Check both arrays — IDs may differ between messages and display_messages
+    _extract_reactions(messages)
+    if display_messages:
+        _extract_reactions(display_messages)
+
+    return lines
+
+
 def _build_history_context(messages: List[Dict[str, Any]], current_message: str, limit: int = 50) -> str:
     """Build a prompt with conversation history prepended.
 
@@ -2144,7 +2390,12 @@ def _build_history_context(messages: List[Dict[str, Any]], current_message: str,
             else:
                 parts.append(f"User: {content}")
         elif role == "assistant":
-            parts.append(f"Assistant: {content}")
+            # Messages from @mentioned agents have an "agent" field
+            agent = m.get("agent")
+            if agent:
+                parts.append(f"[@{agent}]: {content}")
+            else:
+                parts.append(f"Assistant: {content}")
         elif role == "system":
             parts.append(f"System: {content}")
 
@@ -2444,6 +2695,8 @@ async def websocket_endpoint(websocket: WebSocket):
                             active_room.set_active_room(chat_id, context="chat")
                         except Exception:
                             pass
+            elif action == "reaction":
+                await handle_reaction(websocket, data)
             elif action == "subscribe":
                 # Client wants full state for a session - THIS IS THE KEY FOR RECONNECT
                 await handle_subscribe(websocket, data)
@@ -2752,6 +3005,19 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
         prompt = _build_history_context(prior_messages, prompt)
         logger.info(f"MESSAGE: Injecting conversation history ({len(prior_messages)} messages)")
 
+    # Prepend pending reactions (added since last user message) to the prompt
+    # Check both messages and display_messages — they use different ID formats,
+    # so reactions from the frontend may only exist in display_messages
+    display_messages_for_reactions = None
+    reaction_chat_data = chat_manager.load_chat(session_id) if session_id != 'new' else None
+    if reaction_chat_data:
+        display_messages_for_reactions = reaction_chat_data.get("display_messages")
+    reaction_lines = _collect_pending_reactions(conv.messages, display_messages_for_reactions)
+    if reaction_lines:
+        reaction_block = "User reacted " + ", ".join(reaction_lines) + " to previous messages.\n\n---\n\n"
+        prompt = reaction_block + prompt
+        logger.info(f"MESSAGE: Prepended {len(reaction_lines)} reaction(s) to prompt")
+
     # Extract agent name early — needed by EARLY_SAVE below (before full agent routing)
     # For existing chats, the client doesn't send agent — load from stored chat data
     agent_name = data.get("agent")
@@ -2891,6 +3157,25 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
             if session_id == 'new' and not skip_message_add:
                 await broadcast_chat_created(early_save_id, title, agent_name)
                 logger.info(f"BROADCAST: chat_created for new chat {early_save_id}")
+
+            # ========== @MENTION DISPATCH: Scan user message for @agent mentions ==========
+            user_msg_text = data.get("message", "")
+            valid_agents = _get_valid_agent_names()
+            # Don't let users @mention the primary agent of this chat (they're already responding)
+            if agent_name and agent_name in valid_agents:
+                valid_agents.discard(agent_name)
+            mentions = parse_mentions(user_msg_text, valid_agents)
+            if mentions:
+                logger.info(f"MENTION: User message mentions agents: {mentions}")
+                asyncio.create_task(_dispatch_mention_agents(
+                    session_id=early_save_id,
+                    chat_id=early_save_id,
+                    agent_names=mentions[:3],
+                    context_messages=conv.messages.copy(),
+                    trigger_text=user_msg_text,
+                    trigger_role="user",
+                    primary_agent=agent_name or "character",
+                ))
 
         except Exception as e:
             logger.warning(f"EARLY_SAVE failed: {e}")
@@ -3790,9 +4075,45 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
                     display_msgs.insert(insert_idx, fm)
             logger.info(f"DISPLAY_MSGS: Injected {len(completed_form_messages)} form messages into display_messages")
 
+        # Preserve reactions from old display_messages — the rebuild above
+        # creates fresh entries from streaming state, losing any reactions
+        # the user added to previous messages
+        old_chat = chat_manager.load_chat(chat_id_for_storage)
+        if old_chat and old_chat.get("display_messages"):
+            old_reactions = {}
+            for old_msg in old_chat["display_messages"]:
+                if old_msg.get("reactions"):
+                    old_reactions[old_msg.get("id")] = old_msg["reactions"]
+            if old_reactions:
+                for dm in display_msgs:
+                    msg_id = dm.get("id")
+                    if msg_id and msg_id in old_reactions:
+                        dm["reactions"] = old_reactions[msg_id]
+                logger.info(f"SAVE: Preserved {len(old_reactions)} message reaction(s)")
+
         final_save_data["display_messages"] = display_msgs
 
     chat_manager.save_chat(chat_id_for_storage, final_save_data)
+
+    # ========== @MENTION DISPATCH: Scan assistant response for @agent mentions ==========
+    if all_segments:
+        final_text = "".join(all_segments)
+        valid_agents = _get_valid_agent_names()
+        # Don't let the assistant @mention itself
+        if agent_name and agent_name in valid_agents:
+            valid_agents.discard(agent_name)
+        mentions = parse_mentions(final_text, valid_agents)
+        if mentions:
+            logger.info(f"MENTION: Assistant response mentions agents: {mentions}")
+            asyncio.create_task(_dispatch_mention_agents(
+                session_id=chat_id_for_storage,
+                chat_id=chat_id_for_storage,
+                agent_names=mentions[:3],
+                context_messages=conv.messages.copy(),
+                trigger_text=final_text,
+                trigger_role="assistant",
+                primary_agent=agent_name or "character",
+            ))
 
     # ========== WAL: Clean up - message fully processed ==========
     if not is_system_continuation:
@@ -4112,6 +4433,97 @@ async def handle_interrupt(websocket: WebSocket, data: dict):
             "success": interrupted,
             "sessionId": session_id
         })
+
+
+async def handle_reaction(websocket: WebSocket, data: dict):
+    """
+    Handle emoji reaction toggle from a user.
+
+    Adds/removes a reaction on a message, persists to disk, updates
+    in-memory streaming state if active, and broadcasts to all clients.
+    """
+    session_id = data.get("sessionId")
+    message_id = data.get("messageId")
+    emoji = data.get("emoji", "")
+    remove = data.get("remove", False)
+    reactor = "user"
+
+    if not session_id or not message_id or not emoji:
+        logger.warning(f"REACTION: Missing required fields: session={session_id}, msg={message_id}, emoji={emoji}")
+        return
+
+    # Load chat from disk (ChatManager.save_chat uses FileLock for atomicity)
+    chat_data = chat_manager.load_chat(session_id)
+    if not chat_data:
+        logger.warning(f"REACTION: Chat {session_id} not found")
+        return
+
+    def _toggle_reaction(msg: dict) -> bool:
+        """Toggle reaction on a single message dict. Returns True if found."""
+        if msg.get("id") != message_id:
+            return False
+        reactions = msg.setdefault("reactions", {})
+        if remove:
+            reactors = reactions.get(emoji, [])
+            if reactor in reactors:
+                reactors.remove(reactor)
+            if not reactors:
+                reactions.pop(emoji, None)
+        else:
+            reactors = reactions.setdefault(emoji, [])
+            if reactor not in reactors:
+                reactors.append(reactor)
+        # Clean up empty reactions dict
+        if not reactions:
+            msg.pop("reactions", None)
+        return True
+
+    # Update in both messages and display_messages arrays
+    found = False
+    for msg in chat_data.get("messages", []):
+        if _toggle_reaction(msg):
+            found = True
+            break
+    for msg in chat_data.get("display_messages", []):
+        if _toggle_reaction(msg):
+            found = True
+            break
+
+    if not found:
+        logger.warning(f"REACTION: Message {message_id} not found in chat {session_id}")
+        return
+
+    # Persist
+    chat_manager.save_chat(session_id, chat_data)
+
+    # Update in-memory conversation state (used by _collect_pending_reactions)
+    conv = active_conversations.get(session_id)
+    if conv:
+        for msg in conv.messages:
+            _toggle_reaction(msg)
+
+    # Update in-memory streaming state if active
+    ss = session_streaming_states.get(session_id)
+    if ss:
+        for msg in ss.messages:
+            _toggle_reaction(msg)
+
+    # Get final reactions for the message (from the authoritative disk copy)
+    final_reactions = None
+    for msg in chat_data.get("display_messages", chat_data.get("messages", [])):
+        if msg.get("id") == message_id:
+            final_reactions = msg.get("reactions")
+            break
+
+    # Broadcast to all clients viewing this session
+    await broadcast_to_session(session_id, {
+        "type": "reaction_update",
+        "sessionId": session_id,
+        "messageId": message_id,
+        "reactions": final_reactions or {},
+    })
+
+    logger.info(f"REACTION: {'Removed' if remove else 'Added'} {emoji} on {message_id} in {session_id}")
 
 
 async def handle_inject(websocket: WebSocket, data: dict):
@@ -4832,16 +5244,6 @@ async def scheduler_loop():
             # Periodic maintenance: clean up stale chat locks
             _cleanup_chat_locks()
 
-            # Periodic maintenance: clean up stale rewriter sessions
-            try:
-                scripts_dir = str(Path(os.getcwd()) / ".claude" / "scripts")
-                if scripts_dir not in sys.path:
-                    sys.path.insert(0, scripts_dir)
-                from contextual_memory.retrieval import _get_persistent_rewriter
-                await _get_persistent_rewriter().cleanup_stale()
-            except Exception:
-                pass
-
             # Periodic maintenance: chat image garbage collection (once daily)
             await _maybe_run_image_gc()
 
@@ -5442,17 +5844,6 @@ async def shutdown_event():
     logger.info("Server shutting down, saving state...")
     save_server_state()
     save_continuation_on_shutdown()
-
-    # Disconnect persistent query rewriter
-    try:
-        scripts_dir = str(Path(os.getcwd()) / ".claude" / "scripts")
-        if scripts_dir not in sys.path:
-            sys.path.insert(0, scripts_dir)
-        from contextual_memory import shutdown_rewriter
-        await shutdown_rewriter()
-        logger.info("Disconnected persistent query rewriter")
-    except Exception as e:
-        logger.debug(f"Query rewriter shutdown (non-critical): {e}")
 
     # Deregister all processes owned by this server PID
     try:

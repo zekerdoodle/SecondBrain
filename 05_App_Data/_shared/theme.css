@@ -1,23 +1,28 @@
 /*
- * Second Brain Shared Theme — Catppuccin Mocha
+ * Second Brain Shared Theme — Light/Dark with accent sync
  *
  * Usage in any app:
  *   <link rel="stylesheet" href="/file/05_App_Data/_shared/theme.css">
  *
  * This provides:
- *   1. CSS custom properties (design tokens) for the full Catppuccin Mocha palette
+ *   1. CSS custom properties (design tokens) with light + dark mode
  *   2. Base reset and typography
  *   3. Common component styles: cards, buttons, inputs, modals, toasts, alerts, tabs
  *
- * Apps can override any variable at :root or component level.
+ * Theme syncs automatically from the Second Brain interface via Brain Bridge:
+ *   - Mode (light/dark) is set via data-theme attribute on <html>
+ *   - Accent color is overridden via inline style from the bridge
+ *   - Apps can override any variable at :root or component level
+ *
+ * Standalone usage (outside the interface): defaults to dark mode.
  */
 
 /* ============================================================
-   DESIGN TOKENS
+   DESIGN TOKENS — Dark Mode (default)
    ============================================================ */
 
 :root {
-  /* --- Catppuccin Mocha Base --- */
+  /* --- Dark Palette (neutral greys, matching Second Brain interface) --- */
   --ctp-rosewater: #f5e0dc;
   --ctp-flamingo:  #f2cdcd;
   --ctp-pink:      #f5c2e7;
@@ -33,20 +38,20 @@
   --ctp-blue:      #89b4fa;
   --ctp-lavender:  #b4befe;
 
-  --ctp-text:      #cdd6f4;
-  --ctp-subtext1:  #bac2de;
-  --ctp-subtext0:  #a6adc8;
-  --ctp-overlay2:  #9399b2;
-  --ctp-overlay1:  #7f849c;
-  --ctp-overlay0:  #6c7086;
-  --ctp-surface2:  #585b70;
-  --ctp-surface1:  #45475a;
-  --ctp-surface0:  #313244;
-  --ctp-base:      #1e1e2e;
-  --ctp-mantle:    #181825;
-  --ctp-crust:     #11111b;
+  --ctp-text:      #f5f5f5;
+  --ctp-subtext1:  #c0c0c0;
+  --ctp-subtext0:  #a0a0a0;
+  --ctp-overlay2:  #909090;
+  --ctp-overlay1:  #808080;
+  --ctp-overlay0:  #6b6b6b;
+  --ctp-surface2:  #3d3d3d;
+  --ctp-surface1:  #2d2d2d;
+  --ctp-surface0:  #242424;
+  --ctp-base:      #1a1a1a;
+  --ctp-mantle:    #151515;
+  --ctp-crust:     #0f0f0f;
 
-  /* --- Semantic Aliases --- */
+  /* --- Semantic Aliases (auto-update when palette changes) --- */
   --bg:            var(--ctp-base);
   --bg-surface:    var(--ctp-surface0);
   --bg-deep:       var(--ctp-mantle);
@@ -103,6 +108,49 @@
   --z-sticky: 50;
   --z-modal: 200;
   --z-toast: 300;
+}
+
+
+/* ============================================================
+   DESIGN TOKENS — Light Mode
+   Matches the Second Brain interface warm light palette.
+   Activated by data-theme="light" on <html> (set by Brain Bridge).
+   ============================================================ */
+
+[data-theme="light"] {
+  /* --- Light Palette (warm, matches interface) --- */
+  --ctp-rosewater: #dc8a78;
+  --ctp-flamingo:  #dd7878;
+  --ctp-pink:      #ea76cb;
+  --ctp-mauve:     #8839ef;
+  --ctp-red:       #EF4444;
+  --ctp-maroon:    #e64553;
+  --ctp-peach:     #F97316;
+  --ctp-yellow:    #F59E0B;
+  --ctp-green:     #10B981;
+  --ctp-teal:      #14B8A6;
+  --ctp-sky:       #06B6D4;
+  --ctp-sapphire:  #0EA5E9;
+  --ctp-blue:      #3B82F6;
+  --ctp-lavender:  #6366F1;
+
+  --ctp-text:      #1a1a1a;
+  --ctp-subtext1:  #4A4A5A;
+  --ctp-subtext0:  #6B6B6B;
+  --ctp-overlay2:  #7A7F8E;
+  --ctp-overlay1:  #8A8F9E;
+  --ctp-overlay0:  #9CA3AF;
+  --ctp-surface2:  #D4D2CF;
+  --ctp-surface1:  #E8E6E3;
+  --ctp-surface0:  #FFFFFF;
+  --ctp-base:      #FAF9F7;
+  --ctp-mantle:    #F5F4F2;
+  --ctp-crust:     #EEEDEB;
+
+  /* Status colors — slightly adjusted for light background contrast */
+  --success:       #059669;
+  --warning:       #D97706;
+  --danger:        #DC2626;
 }
 
 
@@ -380,10 +428,10 @@ textarea {
   border: 1px solid;
 }
 
-.alert-info    { background: rgba(137,180,250,0.1); border-color: rgba(137,180,250,0.3); color: var(--ctp-blue); }
-.alert-success { background: rgba(166,227,161,0.1); border-color: rgba(166,227,161,0.3); color: var(--ctp-green); }
-.alert-warning { background: rgba(249,226,175,0.1); border-color: rgba(249,226,175,0.3); color: var(--ctp-yellow); }
-.alert-danger  { background: rgba(243,139,168,0.1); border-color: rgba(243,139,168,0.3); color: var(--ctp-red); }
+.alert-info    { background: color-mix(in srgb, var(--ctp-blue) 10%, transparent); border-color: color-mix(in srgb, var(--ctp-blue) 25%, transparent); color: var(--ctp-blue); }
+.alert-success { background: color-mix(in srgb, var(--ctp-green) 10%, transparent); border-color: color-mix(in srgb, var(--ctp-green) 25%, transparent); color: var(--ctp-green); }
+.alert-warning { background: color-mix(in srgb, var(--ctp-yellow) 10%, transparent); border-color: color-mix(in srgb, var(--ctp-yellow) 25%, transparent); color: var(--ctp-yellow); }
+.alert-danger  { background: color-mix(in srgb, var(--ctp-red) 10%, transparent); border-color: color-mix(in srgb, var(--ctp-red) 25%, transparent); color: var(--ctp-red); }
 
 
 /* ============================================================

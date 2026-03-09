@@ -238,6 +238,26 @@ export function applyTheme(prefs: ThemePreferences): void {
     root.style.setProperty('--accent-g', String(rgb.g));
     root.style.setProperty('--accent-b', String(rgb.b));
   }
+
+  // Broadcast theme to all embedded app iframes
+  broadcastThemeToApps(effectiveMode, prefs);
+}
+
+/** Send current theme to all app iframes so they stay in sync */
+function broadcastThemeToApps(mode: string, prefs: ThemePreferences): void {
+  const message = {
+    type: 'brain:theme',
+    mode,
+    accent: prefs.accentColor,
+    accentHover: prefs.accentHover,
+  };
+  document.querySelectorAll('iframe').forEach((iframe) => {
+    try {
+      (iframe as HTMLIFrameElement).contentWindow?.postMessage(message, '*');
+    } catch {
+      // Ignore cross-origin errors for iframes that don't allow messaging
+    }
+  });
 }
 
 interface SettingsModalProps {

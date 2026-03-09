@@ -55,7 +55,7 @@ Do the task described in the prompt. This might involve:
 
 Example:
 ```
-invoke_agent(name="information_gatherer", prompt="...", project="job-search-2026")
+invoke_agent(name="kestrel", prompt="...", project="job-search-2026")
 schedule_agent(agent="deep_think", prompt="...", schedule="once at ...", project="job-search-2026")
 ```
 

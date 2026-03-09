@@ -142,7 +142,29 @@ const BRAIN_BRIDGE_SCRIPT = `
     }
   };
 
-  console.log('[Brain App Bridge v2] Initialized — askClaude, listFiles, deleteFile, getAppInfo, watchFile, unwatchFile available');
+  // --- Theme sync: inherit theme from Second Brain interface ---
+  // Listen for theme messages from parent
+  window.addEventListener('message', function(event) {
+    if (event.data && event.data.type === 'brain:theme') {
+      var d = event.data;
+      var root = document.documentElement;
+      // Set light/dark mode — activates [data-theme="light"] in theme.css
+      root.setAttribute('data-theme', d.mode || 'dark');
+      // Override accent color (theme.css defaults to --ctp-blue)
+      if (d.accent) {
+        root.style.setProperty('--accent', d.accent);
+        root.style.setProperty('--accent-hover', d.accentHover || d.accent);
+      }
+      // Dispatch custom event so apps can react programmatically
+      window.dispatchEvent(new CustomEvent('brain:themechange', { detail: d }));
+      console.log('[Brain Bridge] Theme applied:', d.mode, d.accent);
+    }
+  });
+
+  // Request initial theme from parent on load
+  window.parent.postMessage({ type: 'brain:getTheme' }, '*');
+
+  console.log('[Brain App Bridge v2] Initialized — askClaude, listFiles, deleteFile, getAppInfo, watchFile, unwatchFile, themeSync available');
 })();
 </script>
 `;
@@ -300,9 +322,9 @@ export const HtmlIframe: React.FC<{ html: string }> = ({ html }) => {
   return (
     <iframe
       ref={iframeRef}
-      sandbox="allow-scripts allow-forms allow-modals allow-pointer-lock allow-same-origin"
+      sandbox="allow-scripts allow-forms allow-modals allow-popups allow-pointer-lock allow-same-origin"
       title="HTML Preview"
-      className="w-full h-full border-0 bg-white"
+      className="w-full h-full border-0 bg-[var(--bg-primary)]"
     />
   );
 };

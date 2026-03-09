@@ -150,7 +150,7 @@ def add_agent_task(agent, prompt, schedule_text, room_id=None, silent=True, proj
     """
     Schedule an agent task.
 
-    agent: Agent name (claude_code, information_gatherer, general_purpose, deep_think, librarian, gardener)
+    agent: Agent name (claude_code, kestrel, jack, deep_think, librarian, gardener)
     prompt: Task description for the agent.
     schedule_text: "every X minutes/hours", "daily at HH:MM", or "once at YYYY-MM-DDTHH:MM:SS"
     room_id: Optional room ID to target. If specified, agent output will be delivered to this room.

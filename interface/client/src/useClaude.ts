@@ -79,6 +79,8 @@ export interface ClaudeHook {
   todos: TodoItem[];
   // Stream phase for UI phrase selection
   streamPhase: StreamPhase;
+  // Emoji reactions
+  toggleReaction: (messageId: string, emoji: string) => void;
 }
 
 export interface NotificationData {
@@ -455,7 +457,8 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
         'content_delta', 'tool_start', 'tool_end',
         'status', 'done', 'todo_update',
         'message_accepted', 'session_init', 'message_received',
-        'truncate', 'interrupted'
+        'truncate', 'interrupted',
+        'agent_typing', 'agent_message'
       ]);
       if (streamingEventTypes.has(data.type) && data.sessionId &&
           sessionIdRef.current !== 'new' && data.sessionId !== sessionIdRef.current) {
@@ -990,6 +993,55 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
           setStatusText('');
           pendingDeltas.current.clear();
           break;
+
+        case 'reaction_update': {
+          const { messageId: reactMsgId, reactions: newReactions } = data;
+          setMessages(prev => prev.map(msg =>
+            msg.id === reactMsgId
+              ? { ...msg, reactions: Object.keys(newReactions || {}).length ? newReactions : undefined }
+              : msg
+          ));
+          break;
+        }
+
+        case 'agent_typing': {
+          // Show a typing indicator for a @mentioned agent
+          const typingAgent = data.agent;
+          setMessages(prev => {
+            // Don't add duplicate typing indicators
+            if (prev.some(m => m.id === `typing-${typingAgent}`)) return prev;
+            return [...prev, {
+              id: `typing-${typingAgent}`,
+              role: 'assistant' as const,
+              agent: typingAgent,
+              content: '',
+              isStreaming: true,
+              status: 'processing' as const,
+              blocks: [{
+                id: `typing-block-${typingAgent}`,
+                type: 'text' as const,
+                content: '',
+                status: 'in_progress' as const,
+              }],
+            }];
+          });
+          break;
+        }
+
+        case 'agent_message': {
+          // @mentioned agent response arrived — replace typing indicator with real message
+          const agentMsg = data.message;
+          setMessages(prev => {
+            const filtered = prev.filter(m => m.id !== `typing-${agentMsg.agent}`);
+            // Don't add duplicate messages
+            if (filtered.some(m => m.id === agentMsg.id)) return filtered;
+            return [...filtered, {
+              ...agentMsg,
+              status: 'complete' as const,
+            }];
+          });
+          break;
+        }
 
         case 'result_meta':
           // Usage data received but not displayed (SDK reports cumulative, not per-turn)
@@ -1903,6 +1955,42 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
     setQueuedMessages(prev => prev.filter(m => m.id !== id));
   }, []);
 
+  // Toggle an emoji reaction on a message (optimistic update + WS send)
+  const toggleReaction = useCallback((messageId: string, emoji: string) => {
+    // Check if user already reacted with this emoji
+    let alreadyReacted = false;
+    setMessages(prev => {
+      const msg = prev.find(m => m.id === messageId);
+      alreadyReacted = msg?.reactions?.[emoji]?.includes('user') ?? false;
+
+      return prev.map(m => {
+        if (m.id !== messageId) return m;
+        const reactions = { ...(m.reactions || {}) };
+        if (alreadyReacted) {
+          const filtered = (reactions[emoji] || []).filter(r => r !== 'user');
+          if (filtered.length === 0) delete reactions[emoji];
+          else reactions[emoji] = filtered;
+        } else {
+          reactions[emoji] = [...(reactions[emoji] || []), 'user'];
+        }
+        return { ...m, reactions: Object.keys(reactions).length ? reactions : undefined };
+      });
+    });
+
+    // Send to server (alreadyReacted is captured from the setMessages read above,
+    // but we need it outside — re-derive from current state)
+    const currentMsg = messages.find(m => m.id === messageId);
+    const wasReacted = currentMsg?.reactions?.[emoji]?.includes('user') ?? false;
+
+    ws.current?.send(JSON.stringify({
+      action: 'reaction',
+      sessionId: sessionIdRef.current,
+      messageId,
+      emoji,
+      remove: wasReacted,
+    }));
+  }, [messages]);
+
   return {
     messages,
     sendMessage,
@@ -1926,5 +2014,6 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
     sendMessageWithAgent,
     todos,
     streamPhase,
+    toggleReaction,
   };
 };

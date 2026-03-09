@@ -52,7 +52,7 @@ def should_notify(
     user_is_viewing = False
     has_active_connection = False
 
-    for ws, session in client_sessions.items():
+    for ws, session in list(client_sessions.items()):
         # Skip stale connections
         if current_time - session.last_heartbeat > stale_timeout:
             continue
@@ -130,7 +130,7 @@ async def send_notification(
         "playSound": play_sound
     }
 
-    for ws in client_sessions:
+    for ws in list(client_sessions):
         try:
             await ws.send_json(notification_data)
         except Exception:

@@ -104,22 +104,36 @@ class MessageWAL:
             logger.error(f"WAL: Failed to load streaming responses: {e}")
 
     def _save_pending(self):
-        """Persist pending messages to disk."""
+        """Persist pending messages to disk atomically (write-to-temp + rename)."""
+        tmp = self.pending_file.with_suffix(".tmp")
         try:
-            with open(self.pending_file, 'w') as f:
-                data = {msg_id: asdict(msg) for msg_id, msg in self._pending.items()}
+            data = {msg_id: asdict(msg) for msg_id, msg in self._pending.items()}
+            with open(tmp, 'w') as f:
                 json.dump(data, f, indent=2)
+            tmp.rename(self.pending_file)
         except Exception as e:
             logger.error(f"WAL: Failed to save pending messages: {e}")
+            # Clean up temp file on failure
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     def _save_streaming(self):
-        """Persist streaming responses to disk."""
+        """Persist streaming responses to disk atomically (write-to-temp + rename)."""
+        tmp = self.streaming_file.with_suffix(".tmp")
         try:
-            with open(self.streaming_file, 'w') as f:
-                data = {session_id: asdict(resp) for session_id, resp in self._streaming.items()}
+            data = {session_id: asdict(resp) for session_id, resp in self._streaming.items()}
+            with open(tmp, 'w') as f:
                 json.dump(data, f, indent=2)
+            tmp.rename(self.streaming_file)
         except Exception as e:
             logger.error(f"WAL: Failed to save streaming responses: {e}")
+            # Clean up temp file on failure
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     # --- Pending Message Operations ---
 

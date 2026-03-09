@@ -76,6 +76,21 @@ FINANCE_TOOLS = [
     "finance_status",
 ]
 
+SNAPTRADE_TOOLS = [
+    "snaptrade_register",
+    "snaptrade_connect",
+    "snaptrade_accounts",
+    "snaptrade_holdings",
+    "snaptrade_orders",
+    "snaptrade_activities",
+    "snaptrade_performance",
+    "snaptrade_connections",
+    "snaptrade_search_symbol",
+    "snaptrade_preview_order",
+    "snaptrade_execute_order",
+    "snaptrade_status",
+]
+
 SCHEDULER_TOOLS = [
     "schedule_self",
     "scheduler_list",
@@ -170,6 +185,7 @@ SKILLS_TOOLS = [
 MESSAGING_TOOLS = [
     "message_user",
     "scan_rooms",
+    "message_react",
 ]
 
 
@@ -183,6 +199,7 @@ TOOL_CATEGORIES = {
     "youtube": YOUTUBE_TOOLS,
     "spotify": SPOTIFY_TOOLS,
     "finance": FINANCE_TOOLS,
+    "snaptrade": SNAPTRADE_TOOLS,
     "scheduler": SCHEDULER_TOOLS,
     "memory": MEMORY_TOOLS,
     "unified_memory": UNIFIED_MEMORY_TOOLS,       # Subcategory of memory
@@ -211,6 +228,7 @@ ALL_TOOL_NAMES = (
     YOUTUBE_TOOLS +
     SPOTIFY_TOOLS +
     FINANCE_TOOLS +
+    SNAPTRADE_TOOLS +
     SCHEDULER_TOOLS +
     MEMORY_TOOLS +
     UTILITY_TOOLS +

@@ -174,7 +174,7 @@ Call this proactively when the conversation exceeds ~15 exchanges, or when the u
                 "type": "integer",
                 "description": "Number of recent exchanges to keep verbatim (default: 5)",
                 "default": 5,
-                "minimum": 2,
+                "minimum": 0,
                 "maximum": 20,
             },
             "reason": {
@@ -232,20 +232,10 @@ async def compact_conversation(args: Dict[str, Any]) -> Dict[str, Any]:
         f"reason={reason}"
     )
 
-    # Guard: not enough exchanges to compact
-    if total_exchanges <= keep_n + 2:
-        return {
-            "content": [
-                {
-                    "type": "text",
-                    "text": (
-                        f"Only {total_exchanges} exchanges in this conversation — "
-                        f"not enough to compact (need at least {keep_n + 3}). "
-                        f"No changes made."
-                    ),
-                }
-            ],
-        }
+    # Auto-adjust keep_n so there's always at least 1 exchange to compact
+    if total_exchanges > 0 and keep_n >= total_exchanges:
+        keep_n = max(total_exchanges - 1, 0)
+        logger.info(f"Auto-adjusted keep_exchanges to {keep_n} (only {total_exchanges} total)")
 
     # Split into older (to compact) and recent (to keep verbatim)
     older, recent = _split_at_exchange_boundary(conv.messages, keep_n)

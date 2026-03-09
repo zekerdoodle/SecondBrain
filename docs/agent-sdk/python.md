@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/python
 title: Agent SDK reference - Python
-last_fetched: 2026-03-04T10:03:18.133515+00:00
+last_fetched: 2026-03-08T09:02:09.838869+00:00
 ---
 
 Copy page
@@ -202,6 +202,94 @@ options = ClaudeAgentOptions(
 )
 ```
 
+### `list_sessions()`
+
+Lists past sessions with metadata. Filter by project directory or list sessions across all projects. Synchronous; returns immediately.
+
+```shiki
+def list_sessions(
+ directory: str | None = None,
+ limit: int | None = None,
+ include_worktrees: bool = True
+) -> list[SDKSessionInfo]
+```
+
+#### Parameters
+
+| Parameter | Type | Default | Description |
+| --- | --- | --- | --- |
+| `directory` | `str | None` | `None` | Directory to list sessions for. When omitted, returns sessions across all projects |
+| `limit` | `int | None` | `None` | Maximum number of sessions to return |
+| `include_worktrees` | `bool` | `True` | When `directory` is inside a git repository, include sessions from all worktree paths |
+
+#### Return type: `SDKSessionInfo`
+
+| Property | Type | Description |
+| --- | --- | --- |
+| `session_id` | `str` | Unique session identifier |
+| `summary` | `str` | Display title: custom title, auto-generated summary, or first prompt |
+| `last_modified` | `int` | Last modified time in milliseconds since epoch |
+| `file_size` | `int` | Session file size in bytes |
+| `custom_title` | `str | None` | User-set session title |
+| `first_prompt` | `str | None` | First meaningful user prompt in the session |
+| `git_branch` | `str | None` | Git branch at the end of the session |
+| `cwd` | `str | None` | Working directory for the session |
+
+#### Example
+
+Print the 10 most recent sessions for a project. Results are sorted by `last_modified` descending, so the first item is the newest. Omit `directory` to search across all projects.
+
+```shiki
+from claude_agent_sdk import list_sessions
+
+for session in list_sessions(directory="/path/to/project", limit=10):
+ print(f"{session.summary} ({session.session_id})")
+```
+
+### `get_session_messages()`
+
+Retrieves messages from a past session. Synchronous; returns immediately.
+
+```shiki
+def get_session_messages(
+ session_id: str,
+ directory: str | None = None,
+ limit: int | None = None,
+ offset: int = 0
+) -> list[SessionMessage]
+```
+
+#### Parameters
+
+| Parameter | Type | Default | Description |
+| --- | --- | --- | --- |
+| `session_id` | `str` | required | The session ID to retrieve messages for |
+| `directory` | `str | None` | `None` | Project directory to look in. When omitted, searches all projects |
+| `limit` | `int | None` | `None` | Maximum number of messages to return |
+| `offset` | `int` | `0` | Number of messages to skip from the start |
+
+#### Return type: `SessionMessage`
+
+| Property | Type | Description |
+| --- | --- | --- |
+| `type` | `Literal["user", "assistant"]` | Message role |
+| `uuid` | `str` | Unique message identifier |
+| `session_id` | `str` | Session identifier |
+| `message` | `Any` | Raw message content |
+| `parent_tool_use_id` | `None` | Reserved for future use |
+
+#### Example
+
+```shiki
+from claude_agent_sdk import list_sessions, get_session_messages
+
+sessions = list_sessions(limit=1)
+if sessions:
+ messages = get_session_messages(sessions[0].session_id)
+ for msg in messages:
+ print(f"[{msg.type}] {msg.uuid}")
+```
+
 ## Classes
 
 ### `ClaudeSDKClient`
@@ -228,7 +316,9 @@ class ClaudeSDKClient:
  async def set_permission_mode(self, mode: str) -> None
  async def set_model(self, model: str | None = None) -> None
  async def rewind_files(self, user_message_id: str) -> None
- async def get_mcp_status(self) -> dict[str, Any]
+ async def get_mcp_status(self) -> list[McpServerStatus]
+ async def add_mcp_server(self, name: str, config: McpServerConfig) -> None
+ async def remove_mcp_server(self, name: str) -> None
  async def get_server_info(self) -> dict[str, Any] | None
  async def disconnect(self) -> None
 ```
@@ -247,6 +337,8 @@ class ClaudeSDKClient:
 | `set_model(model)` | Change the model for the current session. Pass `None` to reset to default |
 | `rewind_files(user_message_id)` | Restore files to their state at the specified user message. Requires `enable_file_checkpointing=True`. See [File checkpointing](/docs/en/agent-sdk/file-checkpointing) |
 | `get_mcp_status()` | Get the status of all configured MCP servers |
+| `add_mcp_server(name, config)` | Add an MCP server to the running session |
+| `remove_mcp_server(name)` | Remove an MCP server from the running session |
 | `get_server_info()` | Get server information including session ID and capabilities |
 | `disconnect()` | Disconnect from Claude |
 
@@ -540,7 +632,7 @@ class ClaudeAgentOptions:
 | `permission_mode` | `PermissionMode | None` | `None` | Permission mode for tool usage |
 | `continue_conversation` | `bool` | `False` | Continue the most recent conversation |
 | `resume` | `str | None` | `None` | Session ID to resume |
-| `max_turns` | `int | None` | `None` | Maximum conversation turns |
+| `max_turns` | `int | None` | `None` | Maximum agentic turns (tool-use round trips) |
 | `max_budget_usd` | `float | None` | `None` | Maximum budget in USD for the session |
 | `disallowed_tools` | `list[str]` | `[]` | Tools to always deny. Deny rules are checked first and override `allowed_tools` and `permission_mode` (including `bypassPermissions`) |
 | `enable_file_checkpointing` | `bool` | `False` | Enable file change tracking for rewinding. See [File checkpointing](/docs/en/agent-sdk/file-checkpointing) |
@@ -960,6 +1052,31 @@ class McpHttpServerConfig(TypedDict):
  headers: NotRequired[dict[str, str]]
 ```
 
+### `McpServerStatus`
+
+Status of a connected MCP server, returned by `get_mcp_status()`.
+
+```shiki
+class McpServerStatus(TypedDict):
+ name: str
+ status: McpServerConnectionStatus # "connected" | "failed" | "needs-auth" | "pending" | "disabled"
+ serverInfo: NotRequired[McpServerInfo]
+ error: NotRequired[str]
+ config: NotRequired[dict[str, Any]]
+ scope: NotRequired[str]
+ tools: NotRequired[list[McpToolInfo]]
+```
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `name` | `str` | Server name |
+| `status` | `str` | One of `"connected"`, `"failed"`, `"needs-auth"`, `"pending"`, or `"disabled"` |
+| `serverInfo` | `dict` (optional) | Server name and version (`{"name": str, "version": str}`) |
+| `error` | `str` (optional) | Error message if the server failed to connect |
+| `config` | `dict` (optional) | Server configuration |
+| `scope` | `str` (optional) | Configuration scope |
+| `tools` | `list` (optional) | Tools provided by this server, each with `name`, `description`, and `annotations` fields |
+
 ### `SdkPluginConfig`
 
 Configuration for loading plugins in the SDK.
@@ -1078,6 +1195,7 @@ class ResultMessage:
  total_cost_usd: float | None = None
  usage: dict[str, Any] | None = None
  result: str | None = None
+ stop_reason: str | None = None
  structured_output: Any = None
 ```
 
@@ -1109,6 +1227,95 @@ class StreamEvent:
 | `session_id` | `str` | Session identifier |
 | `event` | `dict[str, Any]` | The raw Claude API stream event data |
 | `parent_tool_use_id` | `str | None` | Parent tool use ID if this event is from a subagent |
+
+### `TaskStartedMessage`
+
+Emitted when a background task starts. A background task is anything tracked outside the main turn: a backgrounded Bash command, a subagent spawned via the Agent tool, or a remote agent. The `task_type` field tells you which. This naming is unrelated to the `Task`-to-`Agent` tool rename.
+
+```shiki
+@dataclass
+class TaskStartedMessage(SystemMessage):
+ task_id: str
+ description: str
+ uuid: str
+ session_id: str
+ tool_use_id: str | None = None
+ task_type: str | None = None
+```
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `task_id` | `str` | Unique identifier for the task |
+| `description` | `str` | Description of the task |
+| `uuid` | `str` | Unique message identifier |
+| `session_id` | `str` | Session identifier |
+| `tool_use_id` | `str | None` | Associated tool use ID |
+| `task_type` | `str | None` | Which kind of background task: `"local_bash"`, `"local_agent"`, `"remote_agent"` |
+
+### `TaskUsage`
+
+Token and timing data for a background task.
+
+```shiki
+class TaskUsage(TypedDict):
+ total_tokens: int
+ tool_uses: int
+ duration_ms: int
+```
+
+### `TaskProgressMessage`
+
+Emitted periodically with progress updates for a running background task.
+
+```shiki
+@dataclass
+class TaskProgressMessage(SystemMessage):
+ task_id: str
+ description: str
+ usage: TaskUsage
+ uuid: str
+ session_id: str
+ tool_use_id: str | None = None
+ last_tool_name: str | None = None
+```
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `task_id` | `str` | Unique identifier for the task |
+| `description` | `str` | Current status description |
+| `usage` | `TaskUsage` | Token usage for this task so far |
+| `uuid` | `str` | Unique message identifier |
+| `session_id` | `str` | Session identifier |
+| `tool_use_id` | `str | None` | Associated tool use ID |
+| `last_tool_name` | `str | None` | Name of the last tool the task used |
+
+### `TaskNotificationMessage`
+
+Emitted when a task completes, fails, or is stopped.
+
+```shiki
+@dataclass
+class TaskNotificationMessage(SystemMessage):
+ task_id: str
+ status: TaskNotificationStatus # "completed" | "failed" | "stopped"
+ output_file: str
+ summary: str
+ uuid: str
+ session_id: str
+ tool_use_id: str | None = None
+ usage: TaskUsage | None = None
+```
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `task_id` | `str` | Unique identifier for the task |
+| `status` | `TaskNotificationStatus` | One of `"completed"`, `"failed"`, or `"stopped"` |
+| `output_file` | `str` | Path to the task output file |
+| `summary` | `str` | Summary of the task result |
+| `uuid` | `str` | Unique message identifier |
+| `session_id` | `str` | Session identifier |
+| `tool_use_id` | `str | None` | Associated tool use ID |
+| `usage` | `TaskUsage | None` | Final token usage for the task |
 
 ## Content Block Types
 
@@ -1348,6 +1555,8 @@ class PreToolUseHookInput(BaseHookInput):
  tool_name: str
  tool_input: dict[str, Any]
  tool_use_id: str
+ agent_id: NotRequired[str]
+ agent_type: NotRequired[str]
 ```
 
 | Field | Type | Description |
@@ -1356,6 +1565,8 @@ class PreToolUseHookInput(BaseHookInput):
 | `tool_name` | `str` | Name of the tool about to be executed |
 | `tool_input` | `dict[str, Any]` | Input parameters for the tool |
 | `tool_use_id` | `str` | Unique identifier for this tool use |
+| `agent_id` | `str` (optional) | Subagent identifier, present when the hook fires inside a subagent |
+| `agent_type` | `str` (optional) | Subagent type, present when the hook fires inside a subagent |
 
 ### `PostToolUseHookInput`
 
@@ -1368,6 +1579,8 @@ class PostToolUseHookInput(BaseHookInput):
  tool_input: dict[str, Any]
  tool_response: Any
  tool_use_id: str
+ agent_id: NotRequired[str]
+ agent_type: NotRequired[str]
 ```
 
 | Field | Type | Description |
@@ -1377,6 +1590,8 @@ class PostToolUseHookInput(BaseHookInput):
 | `tool_input` | `dict[str, Any]` | Input parameters that were used |
 | `tool_response` | `Any` | Response from the tool execution |
 | `tool_use_id` | `str` | Unique identifier for this tool use |
+| `agent_id` | `str` (optional) | Subagent identifier, present when the hook fires inside a subagent |
+| `agent_type` | `str` (optional) | Subagent type, present when the hook fires inside a subagent |
 
 ### `PostToolUseFailureHookInput`
 
@@ -1390,6 +1605,8 @@ class PostToolUseFailureHookInput(BaseHookInput):
  tool_use_id: str
  error: str
  is_interrupt: NotRequired[bool]
+ agent_id: NotRequired[str]
+ agent_type: NotRequired[str]
 ```
 
 | Field | Type | Description |
@@ -1400,6 +1617,8 @@ class PostToolUseFailureHookInput(BaseHookInput):
 | `tool_use_id` | `str` | Unique identifier for this tool use |
 | `error` | `str` | Error message from the failed execution |
 | `is_interrupt` | `bool` (optional) | Whether the failure was caused by an interrupt |
+| `agent_id` | `str` (optional) | Subagent identifier, present when the hook fires inside a subagent |
+| `agent_type` | `str` (optional) | Subagent type, present when the hook fires inside a subagent |
 
 ### `UserPromptSubmitHookInput`
 
@@ -1669,9 +1888,9 @@ async for message in query(prompt="Analyze this codebase", options=options):
 
 Documentation of input/output schemas for all built-in Claude Code tools. While the Python SDK doesn't export these as types, they represent the structure of tool inputs and outputs in messages.
 
-### Task
+### Agent
 
-**Tool name:** `Task`
+**Tool name:** `Agent` (previously `Task`, which is still accepted as an alias)
 
 **Input:**
 
