@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/python
 title: Agent SDK reference - Python
-last_fetched: 2026-03-08T09:02:09.838869+00:00
+last_fetched: 2026-03-11T09:02:40.294157+00:00
 ---
 
 Copy page
@@ -638,7 +638,7 @@ class ClaudeAgentOptions:
 | `enable_file_checkpointing` | `bool` | `False` | Enable file change tracking for rewinding. See [File checkpointing](/docs/en/agent-sdk/file-checkpointing) |
 | `model` | `str | None` | `None` | Claude model to use |
 | `fallback_model` | `str | None` | `None` | Fallback model to use if the primary model fails |
-| `betas` | `list[SdkBeta]` | `[]` | Beta features to enable. See [`SdkBeta`](#sdkbeta) for available options |
+| `betas` | `list[SdkBeta]` | `[]` | Beta features to enable. See [`SdkBeta`](#sdk-beta) for available options |
 | `output_format` | `dict[str, Any] | None` | `None` | Output format for structured responses (e.g., `{"type": "json_schema", "schema": {...}}`). See [Structured outputs](/docs/en/agent-sdk/structured-outputs) for details |
 | `permission_prompt_tool_name` | `str | None` | `None` | MCP tool name for permission prompts |
 | `cwd` | `str | Path | None` | `None` | Current working directory |
@@ -650,17 +650,17 @@ class ClaudeAgentOptions:
 | `max_buffer_size` | `int | None` | `None` | Maximum bytes when buffering CLI stdout |
 | `debug_stderr` | `Any` | `sys.stderr` | *Deprecated* - File-like object for debug output. Use `stderr` callback instead |
 | `stderr` | `Callable[[str], None] | None` | `None` | Callback function for stderr output from CLI |
-| `can_use_tool` | [`CanUseTool`](#canusetool) `| None` | `None` | Tool permission callback function. See [Permission types](#canusetool) for details |
+| `can_use_tool` | [`CanUseTool`](#can-use-tool) `| None` | `None` | Tool permission callback function. See [Permission types](#can-use-tool) for details |
 | `hooks` | `dict[HookEvent, list[HookMatcher]] | None` | `None` | Hook configurations for intercepting events |
 | `user` | `str | None` | `None` | User identifier |
-| `include_partial_messages` | `bool` | `False` | Include partial message streaming events. When enabled, [`StreamEvent`](#streamevent) messages are yielded |
+| `include_partial_messages` | `bool` | `False` | Include partial message streaming events. When enabled, [`StreamEvent`](#stream-event) messages are yielded |
 | `fork_session` | `bool` | `False` | When resuming with `resume`, fork to a new session ID instead of continuing the original session |
 | `agents` | `dict[str, AgentDefinition] | None` | `None` | Programmatically defined subagents |
 | `plugins` | `list[SdkPluginConfig]` | `[]` | Load custom plugins from local paths. See [Plugins](/docs/en/agent-sdk/plugins) for details |
-| `sandbox` | [`SandboxSettings`](#sandboxsettings) `| None` | `None` | Configure sandbox behavior programmatically. See [Sandbox settings](#sandboxsettings) for details |
+| `sandbox` | [`SandboxSettings`](#sandbox-settings) `| None` | `None` | Configure sandbox behavior programmatically. See [Sandbox settings](#sandbox-settings) for details |
 | `setting_sources` | `list[SettingSource] | None` | `None` (no settings) | Control which filesystem settings to load. When omitted, no settings are loaded. **Note:** Must include `"project"` to load CLAUDE.md files |
 | `max_thinking_tokens` | `int | None` | `None` | *Deprecated* - Maximum tokens for thinking blocks. Use `thinking` instead |
-| `thinking` | [`ThinkingConfig`](#thinkingconfig) `| None` | `None` | Controls extended thinking behavior. Takes precedence over `max_thinking_tokens` |
+| `thinking` | [`ThinkingConfig`](#thinking-config) `| None` | `None` | Controls extended thinking behavior. Takes precedence over `max_thinking_tokens` |
 | `effort` | `Literal["low", "medium", "high", "max"] | None` | `None` | Effort level for thinking depth |
 
 ### `OutputFormat`
@@ -1151,7 +1151,7 @@ class AssistantMessage:
 | `content` | `list[ContentBlock]` | List of content blocks in the response |
 | `model` | `str` | Model that generated the response |
 | `parent_tool_use_id` | `str | None` | Tool use ID if this is a nested response |
-| `error` | [`AssistantMessageError`](#assistantmessageerror) `| None` | Error type if the response encountered an error |
+| `error` | [`AssistantMessageError`](#assistant-message-error) `| None` | Error type if the response encountered an error |
 
 ### `AssistantMessageError`
 
@@ -1474,7 +1474,7 @@ Parameters:
 - `tool_use_id`: Optional tool use identifier (for tool-related hooks)
 - `context`: Hook context with additional information
 
-Returns a [`HookJSONOutput`](#hookjsonoutput) that may contain:
+Returns a [`HookJSONOutput`](#hook-json-output) that may contain:
 
 - `decision`: `"block"` to block the action
 - `systemMessage`: System message to add to the transcript
@@ -2713,8 +2713,8 @@ class SandboxSettings(TypedDict, total=False):
 | `autoAllowBashIfSandboxed` | `bool` | `True` | Auto-approve bash commands when sandbox is enabled |
 | `excludedCommands` | `list[str]` | `[]` | Commands that always bypass sandbox restrictions (e.g., `["docker"]`). These run unsandboxed automatically without model involvement |
 | `allowUnsandboxedCommands` | `bool` | `True` | Allow the model to request running commands outside the sandbox. When `True`, the model can set `dangerouslyDisableSandbox` in tool input, which falls back to the [permissions system](#permissions-fallback-for-unsandboxed-commands) |
-| `network` | [`SandboxNetworkConfig`](#sandboxnetworkconfig) | `None` | Network-specific sandbox configuration |
-| `ignoreViolations` | [`SandboxIgnoreViolations`](#sandboxignoreviolations) | `None` | Configure which sandbox violations to ignore |
+| `network` | [`SandboxNetworkConfig`](#sandbox-network-config) | `None` | Network-specific sandbox configuration |
+| `ignoreViolations` | [`SandboxIgnoreViolations`](#sandbox-ignore-violations) | `None` | Configure which sandbox violations to ignore |
 | `enableWeakerNestedSandbox` | `bool` | `False` | Enable a weaker nested sandbox for compatibility |
 
 **Filesystem and network access restrictions** are NOT configured via sandbox settings. Instead, they are derived from [permission rules](https://code.claude.com/docs/en/settings#permission-settings):

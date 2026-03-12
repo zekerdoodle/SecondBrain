@@ -13,7 +13,7 @@
   },
   {
     "name": "Agent Builder",
-    "icon": "agent-builder/icon2.png",
+    "icon": "agent-builder/icon.png",
     "entry": "agent-builder/index.html",
     "description": "Create and edit chat agents with custom prompts, tools, and personality"
   },
@@ -31,7 +31,7 @@
   },
   {
     "name": "Link Bank Account",
-    "icon": "plaid-link/icon.svg",
+    "icon": "plaid-link/icon.png",
     "entry": "plaid-link/index.html",
     "description": "Connect your bank account securely through Plaid"
   },

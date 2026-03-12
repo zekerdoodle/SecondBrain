@@ -22,8 +22,8 @@ from typing import Any, Dict, List, Optional, Union
 # use page_parser with summary subagents can take 90-120 seconds, which hits the
 # default 60s timeout and closes stdin while Claude is still mid-conversation,
 # causing CLIConnectionError: ProcessTransport is not ready for writing.
-# Set to 10 minutes — well above any agent's timeout_seconds.
-os.environ.setdefault("CLAUDE_CODE_STREAM_CLOSE_TIMEOUT", "600000")
+# Set to 40 minutes — well above any agent's timeout_seconds (30 min).
+os.environ.setdefault("CLAUDE_CODE_STREAM_CLOSE_TIMEOUT", "2400000")
 os.environ["ENABLE_TOOL_SEARCH"] = "false"
 
 from models import (

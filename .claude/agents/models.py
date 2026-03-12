@@ -49,7 +49,7 @@ class AgentConfig:
     description: str
     display_name: Optional[str] = None  # Human-friendly name (e.g., "Patch"). Falls back to title-cased `name`.
     tools: List[str] = field(default_factory=list)
-    timeout_seconds: int = 300
+    timeout_seconds: int = 1800
     max_turns: int = 200
     output_format: Optional[Dict[str, Any]] = None
     prompt: Optional[str] = None
@@ -73,7 +73,7 @@ class AgentConfig:
             description=data.get("description", f"Agent: {data['name']}"),
             display_name=data.get("display_name"),
             tools=data.get("tools", []),
-            timeout_seconds=data.get("timeout_seconds") or data.get("timeout") or 300,
+            timeout_seconds=data.get("timeout_seconds") or data.get("timeout") or 1800,
             max_turns=data.get("max_turns", 200),
             output_format=data.get("output_format"),
             prompt=prompt,

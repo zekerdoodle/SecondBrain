@@ -344,8 +344,8 @@ async def invoke_agent_parallel(args: Dict[str, Any]) -> Dict[str, Any]:
         # Hardcoded semaphore for system safety — not a user parameter
         semaphore = asyncio.Semaphore(5)
 
-        # Per-agent timeout: 20 minutes (research/deep_think can legitimately take a while)
-        AGENT_TIMEOUT = 1200
+        # Per-agent timeout: 40 minutes (agents do advanced multi-step workflows)
+        AGENT_TIMEOUT = 2400
 
         total_start = time.monotonic()
 

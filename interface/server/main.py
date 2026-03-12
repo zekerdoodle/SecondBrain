@@ -2412,6 +2412,12 @@ def _build_history_context(messages: List[Dict[str, Any]], current_message: str,
 # occur when two prompt tasks race to create SDK sessions simultaneously.
 scheduled_prompt_lock = asyncio.Lock()
 
+# Timeout limits to prevent hung tasks from blocking all scheduled work.
+# Agent tasks can be long-running (tool use, web fetches), so 15 min is generous.
+# Notification batches process wake-up events and should complete faster.
+SCHEDULED_TASK_TIMEOUT = 900   # 15 minutes
+NOTIFICATION_BATCH_TIMEOUT = 600  # 10 minutes
+
 # Per-chat locks to serialize message processing and prevent race conditions
 # This ensures concurrent messages to the same chat are processed sequentially
 chat_processing_locks: Dict[str, asyncio.Lock] = {}
@@ -5221,6 +5227,17 @@ You are running as a scheduled task. Your output will be shown to the user in a 
         logger.error(f"Scheduled task execution error: {e}")
 
 
+async def _execute_scheduled_task_with_timeout(task_info):
+    """Wrapper that enforces a timeout on scheduled task execution."""
+    task_id = task_info.get("id") if isinstance(task_info, dict) else None
+    task_desc = (task_info.get("prompt", "") if isinstance(task_info, dict) else str(task_info))[:80]
+    try:
+        async with asyncio.timeout(SCHEDULED_TASK_TIMEOUT):
+            await _execute_scheduled_task(task_info)
+    except TimeoutError:
+        logger.error(f"Scheduled task timed out after {SCHEDULED_TASK_TIMEOUT}s (task_id={task_id}): {task_desc}")
+
+
 async def scheduler_loop():
     """Background task to check and execute scheduled tasks.
 
@@ -5239,7 +5256,7 @@ async def scheduler_loop():
             due_tasks = scheduler_tool.check_due_tasks()
 
             for task_info in due_tasks:
-                asyncio.create_task(_execute_scheduled_task(task_info))
+                asyncio.create_task(_execute_scheduled_task_with_timeout(task_info))
 
             # Periodic maintenance: clean up stale chat locks
             _cleanup_chat_locks()
@@ -5423,7 +5440,11 @@ async def agent_notification_wakeup_loop():
             # Process each chat's batch of notifications
             for chat_id, notifications in by_chat.items():
                 try:
-                    await _process_notification_batch(chat_id, notifications, queue)
+                    async with asyncio.timeout(NOTIFICATION_BATCH_TIMEOUT):
+                        await _process_notification_batch(chat_id, notifications, queue)
+                except TimeoutError:
+                    agent_names = [n.agent for n in notifications]
+                    logger.error(f"Notification batch timed out after {NOTIFICATION_BATCH_TIMEOUT}s for chat {chat_id} (agents: {agent_names})")
                 except Exception as e:
                     logger.error(f"Error processing notification batch for chat {chat_id}: {e}", exc_info=True)
 
