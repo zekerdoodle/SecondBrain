@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/typescript
 title: Agent SDK reference - TypeScript
-last_fetched: 2026-03-11T09:03:47.680074+00:00
+last_fetched: 2026-03-14T09:04:11.014379+00:00
 ---
 
 Copy page
@@ -2034,7 +2034,9 @@ type SdkBeta = "context-1m-2025-08-07";
 
 | Value | Description | Compatible Models |
 | --- | --- | --- |
-| `'context-1m-2025-08-07'` | Enables 1 million token [context window](/docs/en/build-with-claude/context-windows) | Claude Opus 4.6, Claude Sonnet 4.5, Claude Sonnet 4 |
+| `'context-1m-2025-08-07'` | Enables the 1 million token [context window](/docs/en/build-with-claude/context-windows). | Claude Sonnet 4.5, Claude Sonnet 4 |
+
+Claude Opus 4.6 and Sonnet 4.6 have a 1M token context window. Including `context-1m-2025-08-07` has no effect on those models.
 
 ### `SlashCommand`
 

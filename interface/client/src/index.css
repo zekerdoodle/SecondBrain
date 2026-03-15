@@ -814,3 +814,21 @@ html, body, #root {
   animation: command-palette-in 0.15s ease-out forwards;
 }
 
+/* Chat search result highlights */
+.search-result-preview mark {
+  background-color: rgba(var(--accent-r, 217), var(--accent-g, 119), var(--accent-b, 87), 0.2);
+  color: var(--text-primary);
+  padding: 0.05em 0.2em;
+  border-radius: 2px;
+}
+
+[data-theme="dark"] .search-result-preview mark {
+  background-color: rgba(var(--accent-r, 217), var(--accent-g, 119), var(--accent-b, 87), 0.3);
+  color: var(--text-primary);
+}
+
+/* Date input styling for dark mode */
+[data-theme="dark"] input[type="date"]::-webkit-calendar-picker-indicator {
+  filter: invert(1);
+}
+

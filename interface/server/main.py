@@ -2102,7 +2102,7 @@ class SessionStreamingState:
     """
     status: str = "idle"  # "idle", "streaming"
     messages: List[Dict[str, Any]] = field(default_factory=list)
-    pending_form: Optional[Dict[str, Any]] = None
+    pending_forms: List[Dict[str, Any]] = field(default_factory=list)
     todos: Optional[list] = None
     seq: int = 0
     last_updated: float = field(default_factory=time.time)
@@ -2219,7 +2219,7 @@ class SessionStreamingState:
             "status": self.status,
             "messages": serialized_messages,
             "isProcessing": self.status != "idle",
-            "pending_form": self.pending_form,
+            "pending_form": None,  # Legacy compat (client uses form_request events)
             "todos": self.todos,
         }
 
@@ -2846,6 +2846,30 @@ async def handle_subscribe(websocket: WebSocket, data: dict):
                 cumulative_usage = chat_data.get("cumulative_usage", cumulative_usage)
                 chat_agent = chat_data.get("agent")
                 logger.info(f"SUBSCRIBE: Loaded {len(messages)} messages from disk for {effective_session_id} (display_messages={'display_messages' in chat_data})")
+
+                # Safety net: ensure form messages from conv.messages aren't
+                # missing from display_messages (forms can be lost during
+                # display_messages rebuild across turns).
+                conv_msgs = chat_data.get("messages", [])
+                form_msgs_from_conv = [m for m in conv_msgs if m.get("formData")]
+                if form_msgs_from_conv:
+                    existing_form_ids = {
+                        m.get("formData", {}).get("formId")
+                        for m in messages if m.get("formData")
+                    }
+                    for fm in form_msgs_from_conv:
+                        fm_id = fm.get("formData", {}).get("formId")
+                        if fm_id and fm_id not in existing_form_ids:
+                            # Insert before the last assistant message
+                            insert_idx = len(messages)
+                            for i in range(len(messages) - 1, -1, -1):
+                                if messages[i].get("role") == "assistant":
+                                    insert_idx = i
+                                    break
+                            messages.insert(insert_idx, fm)
+                            existing_form_ids.add(fm_id)
+                            logger.info(f"SUBSCRIBE: Restored missing form '{fm_id}' into display messages")
+
             state_response = {
                 "type": "state",
                 "seq": 0,
@@ -2880,11 +2904,12 @@ async def handle_subscribe(websocket: WebSocket, data: dict):
     if effective_session_id and effective_session_id != "new":
         register_client(websocket, effective_session_id)
 
-    # If there's a pending form, send it to this reconnecting client
+    # If there are pending forms, send them all to this reconnecting client
     # This handles mobile clients who missed the initial form_request broadcast
-    if streaming_state and streaming_state.pending_form:
-        logger.info(f"SUBSCRIBE: Sending pending form to reconnecting client for {effective_session_id}")
-        await websocket.send_json(streaming_state.pending_form)
+    if streaming_state and streaming_state.pending_forms:
+        logger.info(f"SUBSCRIBE: Sending {len(streaming_state.pending_forms)} pending form(s) to reconnecting client for {effective_session_id}")
+        for pf in streaming_state.pending_forms:
+            await websocket.send_json(pf)
 
 
 async def handle_message(websocket: WebSocket, data: dict):
@@ -3771,8 +3796,9 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
                                 logger.info(f"Broadcasting form_request for '{form_id}' to session {state_key}")
 
                                 # Store in streaming state for reconnecting clients
+                                # Append to list so multiple forms can coexist
                                 if state_key in session_streaming_states:
-                                    session_streaming_states[state_key].pending_form = form_payload
+                                    session_streaming_states[state_key].pending_forms.append(form_payload)
 
                                 await broadcast_to_session(state_key, form_payload)
 
@@ -4062,12 +4088,19 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
 
         # Inject form messages — they're persisted in conv.messages but not
         # tracked in SS, so they'd be lost from display_messages on reload.
-        if completed_form_messages:
+        # Always cross-check conv.messages for ALL form messages (not just
+        # current turn's completed_form_messages) to prevent forms from being
+        # lost across subsequent turns.
+        all_form_msgs_from_conv = [
+            m for m in conv.messages if m.get("formData")
+        ]
+        if all_form_msgs_from_conv:
             existing_form_ids = {
                 m.get("formData", {}).get("formId")
                 for m in display_msgs if m.get("formData")
             }
-            for _, fm in completed_form_messages:
+            injected_count = 0
+            for fm in all_form_msgs_from_conv:
                 fm_id = fm.get("formData", {}).get("formId")
                 if fm_id and fm_id not in existing_form_ids:
                     # Insert before the final assistant message so the form
@@ -4079,7 +4112,10 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
                             insert_idx = i
                             break
                     display_msgs.insert(insert_idx, fm)
-            logger.info(f"DISPLAY_MSGS: Injected {len(completed_form_messages)} form messages into display_messages")
+                    existing_form_ids.add(fm_id)
+                    injected_count += 1
+            if injected_count:
+                logger.info(f"DISPLAY_MSGS: Injected {injected_count} form messages into display_messages (from conv.messages)")
 
         # Preserve reactions from old display_messages — the rebuild above
         # creates fresh entries from streaming state, losing any reactions

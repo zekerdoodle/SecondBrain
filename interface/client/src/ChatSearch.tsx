@@ -44,11 +44,13 @@ export const ChatSearch: React.FC<ChatSearchProps> = ({ onSelectResult, onClose 
   const [isLoading, setIsLoading] = useState(false);
   const [semanticPending, setSemanticPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [totalTime, setTotalTime] = useState<number | null>(null);
 
   // Filters
   const [roleFilter, setRoleFilter] = useState<'all' | 'user' | 'assistant'>('all');
   const [dateFrom, setDateFrom] = useState<string>('');
   const [dateTo, setDateTo] = useState<string>('');
+  const [showFilters, setShowFilters] = useState(false);
 
   const inputRef = useRef<HTMLInputElement>(null);
   const debouncedQuery = useDebounce(query, 300);
@@ -110,6 +112,7 @@ export const ChatSearch: React.FC<ChatSearchProps> = ({ onSelectResult, onClose 
     if (!debouncedQuery.trim()) {
       setResults([]);
       setSemanticPending(false);
+      setTotalTime(null);
       return;
     }
 
@@ -123,6 +126,7 @@ export const ChatSearch: React.FC<ChatSearchProps> = ({ onSelectResult, onClose 
 
       setResults(keywordData.results);
       setSemanticPending(keywordData.semantic_pending);
+      setTotalTime(keywordData.query_time_ms);
 
       // Phase 2: Async semantic enrichment
       if (keywordData.semantic_pending) {
@@ -173,75 +177,99 @@ export const ChatSearch: React.FC<ChatSearchProps> = ({ onSelectResult, onClose 
     });
   };
 
+  const hasActiveFilters = roleFilter !== 'all' || dateFrom || dateTo;
+
   return (
-    <div className="absolute inset-0 bg-white z-50 flex flex-col">
+    <div className="absolute inset-0 bg-[var(--bg-primary)] z-50 flex flex-col">
       {/* Search Header */}
-      <div className="border-b border-[#E8E6E3] p-4">
+      <div className="border-b border-[var(--border-color)] p-4">
         <div className="flex items-center gap-3 max-w-2xl mx-auto">
-          <Search size={20} className="text-gray-400 shrink-0" />
+          <Search size={20} className="text-[var(--text-muted)] shrink-0" />
           <input
             ref={inputRef}
             type="text"
             value={query}
             onChange={e => setQuery(e.target.value)}
             placeholder="Search conversations..."
-            className="flex-1 outline-none text-gray-800 placeholder-gray-400"
+            className="flex-1 outline-none bg-transparent text-[var(--text-primary)] placeholder-[var(--text-muted)]"
           />
           {isLoading && <Loader2 size={18} className="animate-spin text-[var(--accent-primary)]" />}
           <button
+            onClick={() => setShowFilters(f => !f)}
+            className={clsx(
+              "p-1.5 rounded-lg transition-colors",
+              hasActiveFilters
+                ? "bg-[var(--accent-primary)]/10 text-[var(--accent-primary)]"
+                : "hover:bg-[var(--bg-tertiary)] text-[var(--text-muted)]"
+            )}
+            title="Filters"
+          >
+            <Calendar size={16} />
+          </button>
+          <button
             onClick={onClose}
-            className="p-1.5 hover:bg-[#F5F4F2] rounded-lg text-gray-500 transition-colors"
+            className="p-1.5 hover:bg-[var(--bg-tertiary)] rounded-lg text-[var(--text-muted)] transition-colors"
           >
             <X size={18} />
           </button>
         </div>
 
-        {/* Filters */}
-        <div className="flex items-center gap-4 mt-3 max-w-2xl mx-auto">
-          {/* Role Filter */}
-          <div className="flex items-center gap-1 text-sm">
-            <span className="text-gray-500">From:</span>
-            <select
-              value={roleFilter}
-              onChange={e => setRoleFilter(e.target.value as 'all' | 'user' | 'assistant')}
-              className="border-none bg-[#F5F4F2] rounded px-2 py-1 text-gray-700 text-sm focus:outline-none focus:ring-1 focus:ring-[var(--accent-primary)]"
-            >
-              <option value="all">All</option>
-              <option value="user">Me</option>
-              <option value="assistant">Assistant</option>
-            </select>
-          </div>
+        {/* Filters - collapsible */}
+        {showFilters && (
+          <div className="flex items-center gap-4 mt-3 max-w-2xl mx-auto animate-in">
+            {/* Role Filter */}
+            <div className="flex items-center gap-1.5 text-sm">
+              <span className="text-[var(--text-muted)]">From:</span>
+              <select
+                value={roleFilter}
+                onChange={e => setRoleFilter(e.target.value as 'all' | 'user' | 'assistant')}
+                className="border border-[var(--border-color)] bg-[var(--bg-tertiary)] rounded-lg px-2 py-1 text-[var(--text-primary)] text-sm focus:outline-none focus:ring-1 focus:ring-[var(--accent-primary)] appearance-none cursor-pointer"
+              >
+                <option value="all">All</option>
+                <option value="user">Me</option>
+                <option value="assistant">Assistant</option>
+              </select>
+            </div>
 
-          {/* Date Filters */}
-          <div className="flex items-center gap-1 text-sm">
-            <Calendar size={14} className="text-gray-400" />
-            <input
-              type="date"
-              value={dateFrom}
-              onChange={e => setDateFrom(e.target.value)}
-              className="border-none bg-[#F5F4F2] rounded px-2 py-1 text-gray-700 text-sm focus:outline-none focus:ring-1 focus:ring-[var(--accent-primary)]"
-              placeholder="From"
-            />
-            <span className="text-gray-400">-</span>
-            <input
-              type="date"
-              value={dateTo}
-              onChange={e => setDateTo(e.target.value)}
-              className="border-none bg-[#F5F4F2] rounded px-2 py-1 text-gray-700 text-sm focus:outline-none focus:ring-1 focus:ring-[var(--accent-primary)]"
-              placeholder="To"
-            />
+            {/* Date Filters */}
+            <div className="flex items-center gap-1.5 text-sm">
+              <Calendar size={14} className="text-[var(--text-muted)]" />
+              <input
+                type="date"
+                value={dateFrom}
+                onChange={e => setDateFrom(e.target.value)}
+                className="border border-[var(--border-color)] bg-[var(--bg-tertiary)] rounded-lg px-2 py-1 text-[var(--text-primary)] text-sm focus:outline-none focus:ring-1 focus:ring-[var(--accent-primary)]"
+              />
+              <span className="text-[var(--text-muted)]">→</span>
+              <input
+                type="date"
+                value={dateTo}
+                onChange={e => setDateTo(e.target.value)}
+                className="border border-[var(--border-color)] bg-[var(--bg-tertiary)] rounded-lg px-2 py-1 text-[var(--text-primary)] text-sm focus:outline-none focus:ring-1 focus:ring-[var(--accent-primary)]"
+              />
+            </div>
+
+            {/* Clear filters */}
+            {hasActiveFilters && (
+              <button
+                onClick={() => { setRoleFilter('all'); setDateFrom(''); setDateTo(''); }}
+                className="text-xs text-[var(--accent-primary)] hover:underline"
+              >
+                Clear
+              </button>
+            )}
           </div>
-        </div>
+        )}
       </div>
 
       {/* Results */}
       <div className="flex-1 overflow-y-auto p-4">
         {error && (
-          <div className="text-red-500 text-center py-4">{error}</div>
+          <div className="text-[var(--error)] text-center py-4 text-sm">{error}</div>
         )}
 
         {semanticPending && (
-          <div className="flex items-center gap-2 text-sm text-gray-500 mb-4 max-w-2xl mx-auto">
+          <div className="flex items-center gap-2 text-sm text-[var(--text-muted)] mb-4 max-w-2xl mx-auto">
             <Sparkles size={14} className="text-[var(--accent-primary)]" />
             <span>Finding similar conversations...</span>
             <Loader2 size={14} className="animate-spin" />
@@ -249,15 +277,24 @@ export const ChatSearch: React.FC<ChatSearchProps> = ({ onSelectResult, onClose 
         )}
 
         {!query && (
-          <div className="text-center text-gray-400 py-8">
-            <Search size={32} className="mx-auto mb-2 opacity-50" />
-            <p>Search by keywords, dates, or meaning</p>
+          <div className="text-center text-[var(--text-muted)] py-12">
+            <Search size={36} className="mx-auto mb-3 opacity-40" />
+            <p className="text-sm">Search by keywords or meaning</p>
+            <p className="text-xs mt-1 opacity-60">Results include keyword matches and semantic similarity</p>
           </div>
         )}
 
         {query && results.length === 0 && !isLoading && (
-          <div className="text-center text-gray-400 py-8">
-            <p>No results found for "{query}"</p>
+          <div className="text-center text-[var(--text-muted)] py-12">
+            <p className="text-sm">No results found for "<span className="text-[var(--text-secondary)]">{query}</span>"</p>
+          </div>
+        )}
+
+        {/* Results count */}
+        {results.length > 0 && (
+          <div className="text-xs text-[var(--text-muted)] mb-3 max-w-2xl mx-auto">
+            {results.length} result{results.length !== 1 ? 's' : ''}
+            {totalTime !== null && ` · ${totalTime < 1000 ? `${Math.round(totalTime)}ms` : `${(totalTime / 1000).toFixed(1)}s`}`}
           </div>
         )}
 
@@ -267,23 +304,38 @@ export const ChatSearch: React.FC<ChatSearchProps> = ({ onSelectResult, onClose 
               key={result.message_id}
               onClick={() => onSelectResult(result.chat_id, result.message_id)}
               className={clsx(
-                "p-4 bg-white rounded-xl border cursor-pointer transition-all",
+                "p-4 bg-[var(--bg-secondary)] rounded-xl border cursor-pointer transition-all",
                 result.match_type === 'both'
-                  ? "border-[var(--accent-primary)]/30 hover:border-[var(--accent-primary)] shadow-sm"
+                  ? "border-[var(--accent-primary)]/40 hover:border-[var(--accent-primary)]"
                   : result.match_type === 'semantic'
-                  ? "border-purple-200 hover:border-purple-400"
-                  : "border-[#E8E6E3] hover:border-[var(--accent-primary)]",
+                  ? "border-[var(--border-color)] hover:border-[var(--accent-primary)]/60"
+                  : "border-[var(--border-color)] hover:border-[var(--accent-primary)]",
                 "hover:shadow-warm-lg"
               )}
             >
               {/* Header */}
               <div className="flex items-center justify-between mb-2">
-                <span className="font-medium text-gray-800 truncate">
+                <span className="font-medium text-[var(--text-primary)] truncate text-sm">
                   {result.chat_title}
                 </span>
-                <span className="text-xs text-gray-400 shrink-0 ml-2">
-                  {formatDate(result.timestamp)}
-                </span>
+                <div className="flex items-center gap-2 shrink-0 ml-2">
+                  {/* Match type badge */}
+                  {result.match_type === 'semantic' && (
+                    <span className="flex items-center gap-1 text-[10px] text-[var(--accent-primary)] opacity-70">
+                      <Sparkles size={10} />
+                      similar
+                    </span>
+                  )}
+                  {result.match_type === 'both' && (
+                    <span className="flex items-center gap-1 text-[10px] text-[var(--accent-primary)]">
+                      <Sparkles size={10} />
+                      exact + similar
+                    </span>
+                  )}
+                  <span className="text-[11px] text-[var(--text-muted)]">
+                    {formatDate(result.timestamp)}
+                  </span>
+                </div>
               </div>
 
               {/* Content */}
@@ -291,30 +343,16 @@ export const ChatSearch: React.FC<ChatSearchProps> = ({ onSelectResult, onClose 
                 <span className={clsx(
                   "shrink-0 mt-0.5 p-1 rounded",
                   result.role === 'user'
-                    ? "bg-blue-50 text-blue-600"
-                    : "bg-[var(--accent-primary)]/10 text-[var(--accent-primary)]"
+                    ? "bg-[var(--accent-primary)]/15 text-[var(--accent-primary)]"
+                    : "bg-[var(--bg-tertiary)] text-[var(--text-secondary)]"
                 )}>
                   {result.role === 'user' ? <User size={12} /> : <Bot size={12} />}
                 </span>
                 <p
-                  className="text-sm text-gray-600 line-clamp-2"
+                  className="text-sm text-[var(--text-secondary)] line-clamp-2 search-result-preview"
                   dangerouslySetInnerHTML={{ __html: result.content_preview }}
                 />
               </div>
-
-              {/* Match type indicator */}
-              {result.match_type === 'semantic' && (
-                <div className="flex items-center gap-1 mt-2 text-xs text-purple-500">
-                  <Sparkles size={10} />
-                  <span>Similar meaning</span>
-                </div>
-              )}
-              {result.match_type === 'both' && (
-                <div className="flex items-center gap-1 mt-2 text-xs text-[var(--accent-primary)]">
-                  <Sparkles size={10} />
-                  <span>Keyword + semantic match</span>
-                </div>
-              )}
             </div>
           ))}
         </div>
