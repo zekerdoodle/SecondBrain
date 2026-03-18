@@ -60,7 +60,7 @@ class AgentConfig:
     color: Optional[str] = None
     icon: Optional[str] = None
     default: bool = False  # The default agent for chat (replaces PRIMARY concept)
-    effort: Optional[str] = None  # Override thinking effort: 'low', 'medium', 'high'
+    effort: Optional[str] = None  # Override thinking effort: 'low', 'medium', 'high', 'max'
     thinking_budget: Optional[int] = None  # Override: explicit budget_tokens for ThinkingConfigEnabled
 
     @classmethod
@@ -110,6 +110,7 @@ class AgentInvocation:
     model_override: Optional[str] = None
     invoked_at: datetime = field(default_factory=datetime.utcnow)
     project: Optional[Union[str, List[str]]] = None
+    is_visible: bool = False  # True for @mentions / chat-facing agents
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""

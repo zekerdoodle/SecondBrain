@@ -215,12 +215,14 @@ async def _download_image(url: str, output_path: str) -> str:
 
 
 async def _upload_to_fal_cdn(file_path: str) -> str:
-    """Upload a local file to fal's CDN (v3) and return the access URL.
+    """Upload a local file to fal's CDN and return the access URL.
 
-    Flow (fal-cdn-v3):
-    1. POST to rest.alpha.fal.ai/storage/auth/token to get {token, base_url}
-    2. POST file bytes to {base_url}/files/upload with Bearer token
-    Returns the CDN access_url (e.g. https://v3.fal.media/files/...)
+    Flow (current as of March 2026):
+    1. POST to rest.alpha.fal.ai/storage/upload/initiate to get {file_url, upload_url}
+    2. PUT file bytes to upload_url (signed URL, no extra auth needed)
+    Returns the file_url (e.g. https://v3b.fal.media/files/...)
+
+    Falls back to legacy CDN token flow if initiate endpoint fails.
     """
     resolved = _resolve_path(file_path)
     if not os.path.isfile(resolved):
@@ -234,50 +236,72 @@ async def _upload_to_fal_cdn(file_path: str) -> str:
         file_bytes = f.read()
 
     async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
-        # Step 1: Get CDN auth token
-        token_resp = await client.post(
-            FAL_CDN_TOKEN_URL,
+        # Primary flow: initiate upload to get signed URL
+        initiate_resp = await client.post(
+            "https://rest.alpha.fal.ai/storage/upload/initiate",
             headers={
                 "Authorization": f"Key {fal_key}",
                 "Content-Type": "application/json",
             },
-            json={"storage_type": "fal-cdn-v3"},
+            json={"file_name": filename, "content_type": mime_type},
         )
 
-        if token_resp.status_code == 200:
-            token_data = token_resp.json()
-            cdn_token = token_data["token"]
-            # Always use v3 CDN — the token response may return v2 which has issues
-            upload_url = FAL_CDN_DIRECT_URL
-            auth_header = f"Bearer {cdn_token}"
+        if initiate_resp.status_code == 200:
+            initiate_data = initiate_resp.json()
+            upload_url = initiate_data["upload_url"]
+            file_url = initiate_data["file_url"]
+
+            # PUT file bytes to the signed upload URL
+            upload_resp = await client.put(
+                upload_url,
+                headers={"Content-Type": mime_type},
+                content=file_bytes,
+            )
+            upload_resp.raise_for_status()
+            logger.info(f"Uploaded {filename} to CDN: {file_url}")
+            return file_url
         else:
-            # Fallback: upload directly with API key auth
+            # Fallback: legacy CDN token flow
             logger.warning(
-                f"CDN token request failed ({token_resp.status_code}), "
-                "falling back to direct upload"
+                f"Initiate upload failed ({initiate_resp.status_code}), "
+                "falling back to legacy CDN token flow"
             )
-            upload_url = FAL_CDN_DIRECT_URL
-            auth_header = f"Key {fal_key}"
+            token_resp = await client.post(
+                FAL_CDN_TOKEN_URL,
+                headers={
+                    "Authorization": f"Key {fal_key}",
+                    "Content-Type": "application/json",
+                },
+                json={"storage_type": "fal-cdn-v3"},
+            )
 
-        # Step 2: Upload the file
-        upload_resp = await client.post(
-            upload_url,
-            headers={
-                "Authorization": auth_header,
-                "Content-Type": mime_type,
-                "X-Fal-File-Name": filename,
-            },
-            content=file_bytes,
-        )
-        upload_resp.raise_for_status()
-        upload_data = upload_resp.json()
-        access_url = upload_data.get("access_url") or upload_data.get("url")
-        if not access_url:
-            raise RuntimeError(
-                f"CDN upload response missing access_url. Keys: {list(upload_data.keys())}"
+            if token_resp.status_code == 200:
+                token_data = token_resp.json()
+                cdn_token = token_data["token"]
+                upload_url = FAL_CDN_DIRECT_URL
+                auth_header = f"Bearer {cdn_token}"
+            else:
+                upload_url = FAL_CDN_DIRECT_URL
+                auth_header = f"Key {fal_key}"
+
+            upload_resp = await client.post(
+                upload_url,
+                headers={
+                    "Authorization": auth_header,
+                    "Content-Type": mime_type,
+                    "X-Fal-File-Name": filename,
+                },
+                content=file_bytes,
             )
-        logger.info(f"Uploaded {filename} to CDN: {access_url}")
-        return access_url
+            upload_resp.raise_for_status()
+            upload_data = upload_resp.json()
+            access_url = upload_data.get("access_url") or upload_data.get("url")
+            if not access_url:
+                raise RuntimeError(
+                    f"CDN upload response missing access_url. Keys: {list(upload_data.keys())}"
+                )
+            logger.info(f"Uploaded {filename} to CDN: {access_url}")
+            return access_url
 
 
 async def _fal_run(model: str, payload: dict, use_queue: bool = False) -> dict:

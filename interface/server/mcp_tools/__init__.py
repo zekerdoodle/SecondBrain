@@ -99,6 +99,8 @@ def _inject_agent_context(tools, agent_name: str):
         "working_memory_remove", "working_memory_list",
         "working_memory_snapshot",
         "message_user", "message_react",
+        "leave_on_desk",
+        "set_mood",
     }
 
     wrapped = []
@@ -255,6 +257,7 @@ def _load_all_tools():
     from . import image
     from . import skills
     from . import messaging
+    from . import mood
 
 
 # Auto-load tools when module is imported

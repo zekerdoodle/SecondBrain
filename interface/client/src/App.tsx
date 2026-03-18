@@ -403,6 +403,26 @@ function App() {
   // Keep ref in sync so handleCloseTab can call it
   handleFileSelectRef.current = handleFileSelect;
 
+  // Listen for "leave on desk" events — an agent left a file for the user to find
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const { filePath, reason } = (e as CustomEvent).detail;
+      if (filePath) {
+        handleFileSelectRef.current(filePath);
+        if (reason) {
+          showToast({
+            type: 'info',
+            title: 'Left on your desk',
+            message: reason,
+            duration: 6000,
+          });
+        }
+      }
+    };
+    window.addEventListener('leave-on-desk', handler);
+    return () => window.removeEventListener('leave-on-desk', handler);
+  }, [showToast]);
+
   const handleCloseTab = useCallback((path: string) => {
     setOpenTabs(prev => {
       const idx = prev.indexOf(path);

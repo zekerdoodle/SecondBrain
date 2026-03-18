@@ -39,3 +39,5 @@ tools:
 - mcp__brain__working_memory_list
 - mcp__brain__working_memory_snapshot
 - mcp__brain__fetch_skill
+- mcp__playwright__*
+- mcp__brave_search__*

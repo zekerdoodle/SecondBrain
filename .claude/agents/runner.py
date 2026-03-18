@@ -74,6 +74,72 @@ EXECUTIONS_LOG = Path(__file__).parent / "executions.json"
 # Default working directory for agents
 WORKING_DIR = "/home/debian/second_brain"
 
+# External MCP servers config file (alongside this file)
+EXTERNAL_MCP_CONFIG = Path(__file__).parent / "external_mcp_servers.json"
+
+# Cache for external MCP config (loaded once per process)
+_external_mcp_cache: Optional[Dict[str, Any]] = None
+
+
+def _resolve_env_vars(value: str) -> str:
+    """Resolve ${VAR_NAME} patterns in a string from os.environ."""
+    import re as _re
+    def _replacer(m):
+        var_name = m.group(1)
+        resolved = os.environ.get(var_name, "")
+        if not resolved:
+            logger.warning(f"External MCP config references ${{{var_name}}} but it is not set in environment")
+        return resolved
+    return _re.sub(r'\$\{([^}]+)\}', _replacer, value)
+
+
+def _resolve_config_env_vars(config: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Deep-resolve ${VAR_NAME} patterns in external MCP server configs.
+
+    Resolves env var references in 'args' lists and 'env' dicts so that
+    secrets (API keys) don't need to be hardcoded in the JSON config file.
+    """
+    resolved = {}
+    for server_name, server_config in config.items():
+        sc = dict(server_config)
+        # Resolve in args list
+        if "args" in sc and isinstance(sc["args"], list):
+            sc["args"] = [_resolve_env_vars(a) if isinstance(a, str) else a for a in sc["args"]]
+        # Resolve in env dict
+        if "env" in sc and isinstance(sc["env"], dict):
+            sc["env"] = {k: _resolve_env_vars(v) if isinstance(v, str) else v for k, v in sc["env"].items()}
+        resolved[server_name] = sc
+    return resolved
+
+
+def _load_external_mcp_servers() -> Dict[str, Any]:
+    """
+    Load external MCP server configs from external_mcp_servers.json.
+
+    Returns a dict of server_name -> McpStdioServerConfig (command/args/env).
+    Supports ${VAR_NAME} interpolation in args and env values from os.environ.
+    Cached after first load. Returns empty dict on missing/invalid file.
+    """
+    global _external_mcp_cache
+    if _external_mcp_cache is not None:
+        return _external_mcp_cache
+
+    if not EXTERNAL_MCP_CONFIG.exists():
+        _external_mcp_cache = {}
+        return _external_mcp_cache
+
+    try:
+        with open(EXTERNAL_MCP_CONFIG, "r") as f:
+            raw_config = json.load(f)
+        _external_mcp_cache = _resolve_config_env_vars(raw_config)
+        logger.info(f"Loaded {len(_external_mcp_cache)} external MCP server(s) from {EXTERNAL_MCP_CONFIG.name}")
+    except Exception as e:
+        logger.error(f"Failed to load external MCP servers config: {e}")
+        _external_mcp_cache = {}
+
+    return _external_mcp_cache
+
 
 def _build_project_metadata_block(
     agent_name: str,
@@ -122,7 +188,8 @@ async def invoke_agent(
     mode: Union[str, InvocationMode] = "foreground",
     source_chat_id: Optional[str] = None,
     model_override: Optional[str] = None,
-    project: Optional[Union[str, List[str]]] = None
+    project: Optional[Union[str, List[str]]] = None,
+    is_visible: bool = False,
 ) -> Union[AgentResult, Dict[str, str]]:
     """
     Invoke an agent with the specified mode.
@@ -194,6 +261,7 @@ async def invoke_agent(
         source_chat_id=source_chat_id,
         model_override=model_override,
         project=project,
+        is_visible=is_visible,
     )
 
     logger.info(f"Invoking agent '{name}' in {mode.value} mode" + (f" [project: {project}]" if project else ""))
@@ -550,6 +618,21 @@ async def _run_sdk_agent(config: AgentConfig, invocation: AgentInvocation) -> st
         except Exception as e:
             logger.warning(f"Agent '{config.name}': could not read global_rules.md: {e}")
 
+    # Load mode-specific global instructions based on visibility flag
+    _global_mode_instructions = ""
+    if invocation.is_visible:
+        _mode_file = "global_visible.md"
+    else:
+        _mode_file = "global_silent.md"
+    _mode_path = Path(__file__).parent / _mode_file
+    if _mode_path.exists():
+        try:
+            _global_mode_instructions = _mode_path.read_text().strip()
+            if _global_mode_instructions:
+                logger.info(f"Agent '{config.name}': loaded {_mode_file} (is_visible={invocation.is_visible})")
+        except Exception as e:
+            logger.warning(f"Agent '{config.name}': could not read {_mode_file}: {e}")
+
     if config.system_prompt_preset:
         append_parts = []
         if config.prompt:
@@ -557,6 +640,9 @@ async def _run_sdk_agent(config: AgentConfig, invocation: AgentInvocation) -> st
         # Global safety rules (above skills and memory)
         if _global_rules:
             append_parts.append(_global_rules)
+        # Mode-specific global instructions (visible for @mentions, silent for background)
+        if _global_mode_instructions:
+            append_parts.append(_global_mode_instructions)
         # Skill menu sits above memory in the system prompt
         if _skill_reminder:
             append_parts.append(_skill_reminder)
@@ -612,6 +698,9 @@ async def _run_sdk_agent(config: AgentConfig, invocation: AgentInvocation) -> st
         # Global safety rules (above skills and memory)
         if _global_rules:
             parts.append(_global_rules)
+        # Mode-specific global instructions (visible for @mentions, silent for background)
+        if _global_mode_instructions:
+            parts.append(_global_mode_instructions)
         # Skill menu sits above memory in the system prompt
         if _skill_reminder:
             parts.append(_skill_reminder)
@@ -656,9 +745,11 @@ async def _run_sdk_agent(config: AgentConfig, invocation: AgentInvocation) -> st
             parts.append(wm_block)
         system_prompt = "\n".join(parts) if parts else ""
 
-    # Build MCP server if the agent uses any mcp__brain__ tools.
-    # Without this, the SDK subprocess has no MCP server to resolve those tool names.
+    # Build MCP servers for the agent.
+    # Internal "brain" server provides Second Brain tools (memory, scheduler, etc.).
+    # External servers (Playwright, etc.) are loaded from external_mcp_servers.json.
     MCP_PREFIX = "mcp__brain__"
+    MCP_ANY_PREFIX = "mcp__"
     mcp_servers = {}
 
     # Config is the sole source of truth — no auto-injection.
@@ -670,10 +761,11 @@ async def _run_sdk_agent(config: AgentConfig, invocation: AgentInvocation) -> st
     # to restrict them. Without this, every agent gets ALL native tools regardless
     # of what's in config.yaml.
     from registry import VALID_NATIVE_TOOLS
-    native_tool_names = [t for t in effective_tools if not t.startswith(MCP_PREFIX)]
+    native_tool_names = [t for t in effective_tools if not t.startswith(MCP_ANY_PREFIX)]
     disallowed_native = [t for t in VALID_NATIVE_TOOLS if t not in native_tool_names]
 
     if config.tools:
+        # Internal "brain" MCP server
         mcp_tool_names = [t for t in config.tools if t.startswith(MCP_PREFIX)]
 
         if mcp_tool_names:
@@ -694,6 +786,19 @@ async def _run_sdk_agent(config: AgentConfig, invocation: AgentInvocation) -> st
                 )
             except Exception as e:
                 logger.error(f"Failed to create MCP server for agent '{config.name}': {e}")
+
+        # External MCP servers (stdio-based: Playwright, etc.)
+        # Load config from external_mcp_servers.json alongside this file.
+        external_config = _load_external_mcp_servers()
+        for server_name, server_config in external_config.items():
+            prefix = f"mcp__{server_name}__"
+            # Include server if any agent tool matches this server's prefix
+            if any(t.startswith(prefix) for t in config.tools):
+                mcp_servers[server_name] = server_config
+                logger.info(
+                    f"Added external MCP server '{server_name}' for agent '{config.name}' "
+                    f"(command: {server_config.get('command', 'N/A')})"
+                )
 
     options_kwargs = {
         "model": config.model,

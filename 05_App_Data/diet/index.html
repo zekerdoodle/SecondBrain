@@ -256,6 +256,77 @@ textarea { resize: vertical; min-height: 60px; font-family: inherit; }
 }
 .browse-option-items.open { display: block; }
 
+/* === SUPPLEMENTARY SECTIONS (sides, add-ons) === */
+.browse-supplement {
+  margin-top: var(--sp-md); padding-top: var(--sp-md);
+  border-top: 1px dashed var(--border);
+}
+.browse-supplement-header {
+  font-size: var(--font-size-sm); font-weight: 600; color: var(--text-muted);
+  margin-bottom: var(--sp-sm); letter-spacing: 0.3px; text-transform: uppercase;
+}
+.browse-supplement-item {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 6px var(--sp-md); margin-bottom: 4px;
+  background: var(--bg-deep); border-radius: var(--radius-md);
+  font-size: var(--font-size-sm);
+}
+.browse-supplement-item-name { font-weight: 500; color: var(--text-secondary); }
+.browse-supplement-item-macros { color: var(--text-muted); white-space: nowrap; }
+.browse-supplement-item-note {
+  font-size: var(--font-size-xs); color: var(--text-muted); font-style: italic;
+  margin-left: var(--sp-sm);
+}
+
+/* === SWEET FIX CARD === */
+.sweet-fix-card {
+  background: color-mix(in srgb, var(--warning) 6%, var(--bg-surface));
+  border-radius: var(--radius-xl); padding: var(--sp-lg);
+  margin-bottom: var(--sp-md); border: 1px solid color-mix(in srgb, var(--warning) 20%, var(--border));
+}
+.sweet-fix-title {
+  font-size: var(--font-size-md); font-weight: 700; margin-bottom: 2px;
+}
+.sweet-fix-subtitle {
+  font-size: var(--font-size-sm); color: var(--text-muted); margin-bottom: var(--sp-md);
+}
+.sweet-fix-item {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 8px var(--sp-md); margin-bottom: 4px;
+  background: color-mix(in srgb, var(--warning) 4%, var(--bg));
+  border-radius: var(--radius-md); font-size: var(--font-size-sm);
+}
+.sweet-fix-item-name { font-weight: 500; color: var(--text); flex: 1; }
+.sweet-fix-item-meta {
+  display: flex; align-items: center; gap: var(--sp-sm);
+  color: var(--text-muted); white-space: nowrap;
+}
+.sweet-fix-item-when {
+  font-size: var(--font-size-xs); color: var(--text-muted); font-style: italic;
+}
+
+/* === OCCASIONAL SECTION === */
+.occasional-card {
+  background: var(--bg-surface); border-radius: var(--radius-xl); padding: var(--sp-lg);
+  margin-bottom: var(--sp-md); border: 1px solid var(--border); opacity: 0.85;
+}
+.occasional-title {
+  font-size: var(--font-size-sm); font-weight: 600; color: var(--text-muted);
+  margin-bottom: var(--sp-sm); text-transform: uppercase; letter-spacing: 0.3px;
+}
+.occasional-item {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 5px var(--sp-md); font-size: var(--font-size-sm);
+}
+.occasional-item-name { color: var(--text-secondary); }
+.occasional-item-macros { color: var(--text-muted); }
+
+/* === OPTION NOTE (logging flow) === */
+.meal-card-note {
+  font-size: var(--font-size-xs); color: var(--text-muted); font-style: italic;
+  margin-top: 4px;
+}
+
 /* === SETTINGS === */
 .settings-section { margin-bottom: 20px; }
 .settings-label { font-size: var(--font-size-sm); color: var(--text-muted); margin-bottom: 6px; font-weight: 600; }
@@ -767,6 +838,7 @@ function renderMealProgress(container, today, headerHtml) {
             <div class="meal-card-label">${opt.label}</div>
           </div>
           <div class="meal-card-macros">${opt.total_cal} cal &middot; ${opt.total_protein}g protein</div>
+          ${opt.note ? `<div class="meal-card-note">${opt.note}</div>` : ''}
           <div class="meal-card-items" id="items-${opt.id}">
             ${opt.items.map(it => `
               <div class="meal-card-item">
@@ -1377,6 +1449,7 @@ function renderMeals() {
             </span>
             <span class="browse-option-macros">${opt.total_cal} cal / ${opt.total_protein}g</span>
           </div>
+          ${opt.note ? `<div style="font-size:var(--font-size-xs);color:var(--text-muted);font-style:italic;margin-top:4px;">${opt.note}</div>` : ''}
           <div class="browse-option-items">
             ${opt.items.map(it => `
               <div style="display:flex;justify-content:space-between;padding:3px 0;">
@@ -1389,7 +1462,77 @@ function renderMeals() {
       `;
     }
 
+    // Interchangeable Sides (Meal 4)
+    if (meal.interchangeable_sides && meal.interchangeable_sides.length) {
+      html += `
+        <div class="browse-supplement">
+          <div class="browse-supplement-header">&#x1F504; Mix &amp; Match Sides</div>
+          ${meal.interchangeable_sides.map(s => `
+            <div class="browse-supplement-item">
+              <span class="browse-supplement-item-name">${s.name}</span>
+              <span class="browse-supplement-item-macros">
+                ${s.cal} cal / ${s.protein}g
+                ${s.note ? `<span class="browse-supplement-item-note">${s.note}</span>` : ''}
+              </span>
+            </div>
+          `).join('')}
+        </div>
+      `;
+    }
+
+    // Add-ons (Meal 5)
+    if (meal.add_ons && meal.add_ons.length) {
+      html += `
+        <div class="browse-supplement">
+          <div class="browse-supplement-header">&#x2795; Add-ons</div>
+          ${meal.add_ons.map(a => `
+            <div class="browse-supplement-item">
+              <span class="browse-supplement-item-name">${a.name}</span>
+              <span class="browse-supplement-item-macros">
+                +${a.cal} cal${a.protein ? ` / ${a.protein}g` : ''}
+                ${a.note ? `<span class="browse-supplement-item-note">${a.note}</span>` : ''}
+              </span>
+            </div>
+          `).join('')}
+        </div>
+      `;
+    }
+
     html += '</div>';
+  }
+
+  // Sweet Fix Menu
+  if (mealPlan.sweet_fix && mealPlan.sweet_fix.length) {
+    html += `
+      <div class="sweet-fix-card">
+        <div class="sweet-fix-title">&#x1F36C; Sweet Fix Menu</div>
+        <div class="sweet-fix-subtitle">Always have 2&ndash;3 of these stocked.</div>
+        ${mealPlan.sweet_fix.map(s => `
+          <div class="sweet-fix-item">
+            <span class="sweet-fix-item-name">${s.name}</span>
+            <span class="sweet-fix-item-meta">
+              ${s.cal} cal${s.protein ? ` / ${s.protein}g` : ''}
+              ${s.note ? `<span class="sweet-fix-item-when">&middot; ${s.note}</span>` : ''}
+            </span>
+          </div>
+        `).join('')}
+      </div>
+    `;
+  }
+
+  // Occasional
+  if (mealPlan.occasional && mealPlan.occasional.length) {
+    html += `
+      <div class="occasional-card">
+        <div class="occasional-title">Occasional</div>
+        ${mealPlan.occasional.map(o => `
+          <div class="occasional-item">
+            <span class="occasional-item-name">${o.name}</span>
+            <span class="occasional-item-macros">${o.cal} cal / ${o.protein}g</span>
+          </div>
+        `).join('')}
+      </div>
+    `;
   }
 
   container.innerHTML = html;

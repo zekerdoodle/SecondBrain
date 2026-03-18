@@ -588,7 +588,7 @@ select {
       </div>
       <div class="field">
         <label>Model</label>
-        <select id="f-model">
+        <select id="f-model" onchange="updateThinkingInfo()">
           <option value="haiku">Haiku (fastest, cheapest)</option>
           <option value="sonnet" selected>Sonnet (balanced)</option>
           <option value="opus">Opus (most capable)</option>
@@ -636,20 +636,31 @@ select {
     <!-- Thinking -->
     <div class="card">
       <div class="card-header">Thinking</div>
+      <div class="banner banner-info" id="thinking-info" style="margin-bottom:14px; font-size: var(--font-size-xs); line-height: 1.5"></div>
       <div class="field">
-        <label>Effort</label>
-        <select id="f-effort">
-          <option value="">Default (model-level)</option>
-          <option value="low">Low</option>
-          <option value="medium">Medium</option>
-          <option value="high">High</option>
+        <label>Thinking Mode</label>
+        <select id="f-thinking-mode" onchange="updateThinkingUI()">
+          <option value="default">Default (model-level)</option>
+          <option value="adaptive">Adaptive</option>
+          <option value="budget">Fixed Budget</option>
         </select>
-        <div class="hint">Override thinking effort. Leave at default unless you have a reason.</div>
+        <div class="hint">Adaptive: Claude decides when and how deeply to think. Fixed Budget: always allocates a set token budget for reasoning chains.</div>
       </div>
-      <div class="field">
-        <label>Thinking Budget (tokens)</label>
+      <div class="field" id="effort-field">
+        <label>Reasoning Effort</label>
+        <select id="f-effort">
+          <option value="">Default (high)</option>
+          <option value="low">Low — fast, minimal reasoning</option>
+          <option value="medium">Medium — balanced</option>
+          <option value="high">High — thorough analysis</option>
+          <option value="max">Max — deepest reasoning</option>
+        </select>
+        <div class="hint">Trades latency and cost for reasoning depth within each response.</div>
+      </div>
+      <div class="field" id="budget-field" style="display:none">
+        <label>Budget Tokens</label>
         <input type="number" id="f-thinking-budget" placeholder="e.g. 16384" min="1024" max="100000" />
-        <div class="hint">Explicit budget_tokens. Overrides effort when set. 16384 is typical for Haiku.</div>
+        <div class="hint">Token budget for extended thinking. Typical: 16,384 (Haiku) · 32,768+ (Sonnet/Opus). Must be ≥ 1,024.</div>
       </div>
     </div>
 
@@ -742,6 +753,10 @@ const MCP_PREFIX = 'mcp__brain__';
 const DEFAULT_CATEGORIES = ['agents', 'scheduler', 'bash'];
 
 const SKIP_CATEGORIES = new Set(['memory', 'gardener']);
+// Categories that only appear when their prerequisite tools are selected
+const CONDITIONAL_CATEGORIES = {
+  presence: { requires: 'working_memory' },  // leave_on_desk needs working memory context
+};
 
 const CATEGORY_LABELS = {
   agents: 'Agent Orchestration',
@@ -751,6 +766,7 @@ const CATEGORY_LABELS = {
   unified_memory: 'Persistent Memory',
   working_memory: 'Working Memory',
   conversation_search: 'Conversation Search',
+  presence: 'Presence',
   forms: 'Forms',
   messaging: 'Messaging',
   skills: 'Skills',
@@ -767,7 +783,7 @@ const CATEGORY_LABELS = {
 
 const MCP_SECTIONS = [
   { label: 'Core Platform',    cats: ['agents', 'scheduler', 'bash', 'utilities'] },
-  { label: 'Memory',           cats: ['unified_memory', 'working_memory', 'conversation_search'] },
+  { label: 'Memory',           cats: ['unified_memory', 'working_memory', 'conversation_search', 'presence'] },
   { label: 'Communication',    cats: ['forms', 'messaging', 'skills'] },
   { label: 'Google Services',  cats: ['google', 'gmail'] },
   { label: 'Media & Content',  cats: ['youtube', 'spotify', 'image'] },
@@ -782,6 +798,7 @@ async function init() {
   renderIconGrid();
   updateIconPreview();
   renderNativeTools();
+  updateThinkingUI();
   await Promise.all([fetchAgents(), fetchToolCategories(), fetchSkills()]);
   renderMcpCategories();
   renderSkillChips();
@@ -846,6 +863,7 @@ function resetForm() {
   document.getElementById('f-timeout').value = '300';
   document.getElementById('f-max-turns').value = '200';
   document.getElementById('f-prompt').value = '';
+  document.getElementById('f-thinking-mode').value = 'default';
   document.getElementById('f-effort').value = '';
   document.getElementById('f-thinking-budget').value = '';
   document.getElementById('icon-search').value = '';
@@ -871,6 +889,7 @@ function resetForm() {
   renderSkillChips();
   updateChattableUI();
   updateRestrictSkillsUI();
+  updateThinkingUI();
   document.getElementById('warn-primary').style.display = 'none';
   document.getElementById('save-status').style.display = 'none';
 }
@@ -909,6 +928,16 @@ async function loadAgentForEdit() {
     document.getElementById('f-prompt').value = data.prompt || '';
     document.getElementById('f-effort').value = config.effort || '';
     document.getElementById('f-thinking-budget').value = config.thinking_budget || '';
+
+    // Determine thinking mode from config
+    if (config.thinking_budget) {
+      document.getElementById('f-thinking-mode').value = 'budget';
+    } else if (config.effort) {
+      document.getElementById('f-thinking-mode').value = 'adaptive';
+    } else {
+      document.getElementById('f-thinking-mode').value = 'default';
+    }
+    updateThinkingUI();
 
     isChattable = config.chattable === true;
     selectedIcon = config.icon || 'sparkles';
@@ -1064,6 +1093,16 @@ function renderMcpCategories() {
   function renderCat(catName) {
     const cat = catMap[catName];
     if (!cat || SKIP_CATEGORIES.has(catName)) return;
+
+    // Conditional categories: only show if prerequisite tools are selected
+    const cond = CONDITIONAL_CATEGORIES[catName];
+    if (cond) {
+      const reqCat = catMap[cond.requires];
+      if (!reqCat) return;
+      const hasAny = reqCat.tools.some(t => selectedMcpTools.has(MCP_PREFIX + t));
+      if (!hasAny) return;
+    }
+
     renderedCats.add(catName);
 
     const uniqueTools = cat.tools.filter(t => !seenTools.has(t));
@@ -1170,6 +1209,47 @@ function renderSkillChips() {
 }
 
 // =============================================================================
+// Thinking Mode
+// =============================================================================
+const THINKING_MODEL_DEFAULTS = {
+  opus:   { mode: 'Adaptive thinking', effort: 'High' },
+  sonnet: { mode: 'Adaptive thinking', effort: 'High' },
+  haiku:  { mode: 'Fixed budget', effort: '16,384 tokens' },
+};
+
+function updateThinkingUI() {
+  const mode = document.getElementById('f-thinking-mode').value;
+  document.getElementById('effort-field').style.display = (mode === 'default' || mode === 'adaptive') ? 'block' : 'none';
+  document.getElementById('budget-field').style.display = mode === 'budget' ? 'block' : 'none';
+
+  // Clear inactive fields to prevent accidental config conflicts
+  if (mode !== 'budget') document.getElementById('f-thinking-budget').value = '';
+  if (mode === 'budget') document.getElementById('f-effort').value = '';
+
+  updateThinkingInfo();
+}
+
+function updateThinkingInfo() {
+  const model = document.getElementById('f-model').value;
+  const mode = document.getElementById('f-thinking-mode').value;
+  const el = document.getElementById('thinking-info');
+  const defaults = THINKING_MODEL_DEFAULTS[model];
+
+  if (mode === 'default' && defaults) {
+    el.innerHTML = `<strong>Model default (${model}):</strong> ${defaults.mode} · ${defaults.effort} effort`;
+    el.style.display = 'block';
+  } else if (mode === 'adaptive') {
+    el.innerHTML = '<strong>Adaptive:</strong> Claude decides when extended thinking is beneficial. Effort controls reasoning depth per response.';
+    el.style.display = 'block';
+  } else if (mode === 'budget') {
+    el.innerHTML = '<strong>Fixed Budget:</strong> Always allocates the specified token budget for internal reasoning chains.';
+    el.style.display = 'block';
+  } else {
+    el.style.display = 'none';
+  }
+}
+
+// =============================================================================
 // Save
 // =============================================================================
 async function saveAgent() {
@@ -1180,6 +1260,7 @@ async function saveAgent() {
   const timeout = parseInt(document.getElementById('f-timeout').value) || 300;
   const maxTurns = parseInt(document.getElementById('f-max-turns').value) || 200;
   const prompt = document.getElementById('f-prompt').value;
+  const thinkingMode = document.getElementById('f-thinking-mode').value;
   const effort = document.getElementById('f-effort').value;
   const thinkingBudget = parseInt(document.getElementById('f-thinking-budget').value) || null;
 
@@ -1214,8 +1295,15 @@ async function saveAgent() {
   };
 
   if (displayName) config.display_name = displayName;
-  if (effort) config.effort = effort;
-  if (thinkingBudget) config.thinking_budget = thinkingBudget;
+
+  // Set thinking config based on mode
+  if (thinkingMode === 'adaptive' && effort) {
+    config.effort = effort;
+  } else if (thinkingMode === 'budget' && thinkingBudget) {
+    config.thinking_budget = thinkingBudget;
+  } else if (thinkingMode === 'default') {
+    // Neither set — uses model-level defaults
+  }
 
   if (restrictSkills) {
     config.skills = [...selectedSkills].sort();

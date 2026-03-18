@@ -296,6 +296,22 @@ class ClaudeWrapper:
             logger.warning(f"Skill menu generation failed for agent '{agent_config.name}': {e}")
             return ""
 
+    def _load_global_instructions(self, filename: str) -> str:
+        """Load a global instructions file from .claude/agents/.
+
+        Returns the file content as a string, or empty string if not found.
+        """
+        global_path = Path(self.cwd) / ".claude" / "agents" / filename
+        if global_path.exists():
+            try:
+                content = global_path.read_text().strip()
+                if content:
+                    logger.info(f"Loaded global instructions from {filename}")
+                    return content
+            except Exception as e:
+                logger.warning(f"Could not read {filename}: {e}")
+        return ""
+
     def _build_system_prompt(self, agent_config, agent_list_block: str = "") -> str:
         """Build system prompt for a chattable agent (prompt.md + always_load memories).
 
@@ -305,6 +321,10 @@ class ClaudeWrapper:
         parts = []
         if agent_config.prompt:
             parts.append(agent_config.prompt)
+        # Global visible-mode instructions (for chat agents)
+        global_visible = self._load_global_instructions("global_visible.md")
+        if global_visible:
+            parts.append(global_visible)
         # Skill menu sits above memory in the system prompt
         skill_reminder = self._get_skill_reminder(agent_config)
         if skill_reminder:
@@ -359,6 +379,10 @@ class ClaudeWrapper:
         append_parts = []
         if agent_config.prompt:
             append_parts.append(agent_config.prompt)
+        # Global visible-mode instructions (for chat agents)
+        global_visible = self._load_global_instructions("global_visible.md")
+        if global_visible:
+            append_parts.append(global_visible)
         # Skill menu sits above memory in the system prompt
         skill_reminder = self._get_skill_reminder(agent_config)
         if skill_reminder:

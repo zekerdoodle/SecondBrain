@@ -9,6 +9,7 @@ from . import consult_llm as consult_module
 from . import process_list as pl_module
 from . import compact_conversation as compact_module
 from . import set_theme as set_theme_module
+from . import leave_on_desk as leave_on_desk_module
 
 # Re-export for direct access
 from .page_parser import page_parser
@@ -19,6 +20,7 @@ from .consult_llm import consult_llm
 from .process_list import process_list
 from .compact_conversation import compact_conversation
 from .set_theme import set_theme
+from .leave_on_desk import leave_on_desk
 
 __all__ = [
     "page_parser",
@@ -29,4 +31,5 @@ __all__ = [
     "process_list",
     "compact_conversation",
     "set_theme",
+    "leave_on_desk",
 ]

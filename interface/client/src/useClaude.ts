@@ -1143,6 +1143,16 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
           }
           break;
 
+        case 'leave_on_desk':
+          // Agent left a file on the user's desk — dispatch custom event for App to handle
+          if (data.file_path) {
+            console.log('Leave on desk:', data.file_path, data.reason);
+            window.dispatchEvent(new CustomEvent('leave-on-desk', {
+              detail: { filePath: data.file_path, reason: data.reason || '' }
+            }));
+          }
+          break;
+
         case 'server_restarted':
           // Only primary instance handles reload — secondary instances will be cleaned up by the reload
           if (suppressGlobalEventsRef.current) break;

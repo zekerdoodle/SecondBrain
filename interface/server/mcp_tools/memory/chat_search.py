@@ -190,11 +190,14 @@ def build_context_windows(
                 "score": score,
                 "match_indices": [meta.message_index],
                 "timestamp": meta.timestamp,
+                "chat_agent": meta.chat_agent,
+                "hit_count": 1,
             }
         else:
             if score > chat_groups[cid]["score"]:
                 chat_groups[cid]["score"] = score
             chat_groups[cid]["match_indices"].append(meta.message_index)
+            chat_groups[cid]["hit_count"] += 1
 
     # Sort by score, take top N
     sorted_groups = sorted(
@@ -308,6 +311,8 @@ def build_context_windows(
                         "title": group["title"],
                         "score": group["score"],
                         "timestamp": group.get("timestamp"),
+                        "chat_agent": group.get("chat_agent"),
+                        "hit_count": group.get("hit_count", 1),
                         "messages": window_messages,
                     })
                     total_tokens += window_tokens
@@ -1078,6 +1083,7 @@ def format_embedding_fallback(
                 "score": score,
                 "previews": [],
                 "timestamp": meta.timestamp,
+                "chat_agent": meta.chat_agent,
             }
         if len(seen_chats[cid]["previews"]) < 2:
             seen_chats[cid]["previews"].append({
@@ -1102,7 +1108,8 @@ def format_embedding_fallback(
             except (OSError, ValueError):
                 pass
 
-        lines.append(f"### {i}. {info['title']}{date_str}")
+        agent_label = f" [{info['chat_agent']}]" if info.get("chat_agent") else ""
+        lines.append(f"### {i}. {info['title']}{date_str}{agent_label}")
         lines.append(f"Relevance score: {info['score']:.3f}")
         lines.append("")
 
@@ -1171,7 +1178,16 @@ Search modes:
             },
             "agent": {
                 "type": "string",
-                "description": "Filter by agent. Defaults to your own chats only. Use 'all' to search across all agents, or specify another agent's name (e.g. 'character', 'ops', 'coder').",
+                "description": (
+                    "Filter by agent. Defaults to your own chats only. "
+                    "Use 'all' to search across all agents, or specify an agent name. "
+                    "Available agents: character, patch, coder, kestrel, jack, ops, "
+                    "chat_research, deep_research, deep_think, research_critic, "
+                    "life_admin, finance, cortex, running_coach, nutrition_coach, "
+                    "lifting_coach, moltbook. "
+                    "Legacy names (zeke_coder, information_gatherer, general_purpose, "
+                    "chat_coder, ren, zeke_research) are automatically aliased."
+                ),
             },
         },
     },
@@ -1264,10 +1280,31 @@ async def search_conversation_history(args: Dict[str, Any]) -> Dict[str, Any]:
 
         if not hits:
             mode_label = {"semantic": "semantic", "keyword": "keyword", "hybrid": "hybrid"}[search_mode]
-            scope_hint = f' Scope: {agent_scope_label}.' if agent_filter else ''
+            suggestions = []
+
+            # Suggest widening agent scope
+            if agent_filter:
+                suggestions.append(f'Use `agent: "all"` to search across all agents (currently filtered to {agent_scope_label})')
+
+            # Suggest changing search mode
+            if search_mode == "semantic":
+                suggestions.append('Try `keyword` search for exact term matching')
+            elif search_mode == "keyword":
+                suggestions.append('Try `query` (semantic search) for conceptual/topical matching')
+            else:
+                suggestions.append('Try keyword-only or semantic-only search separately')
+
+            # Suggest removing date filter
+            if date_range:
+                suggestions.append('Remove the date filter to search all time periods')
+
+            # Always suggest different terms
+            suggestions.append('Try different or broader search terms')
+
+            suggestion_text = "\n".join(f"- {s}" for s in suggestions)
             return {"content": [{"type": "text", "text": (
-                f'No conversations found matching "{display_query}" ({mode_label} search).{scope_hint} '
-                f"Try different search terms, broaden your query, or use agent: \"all\" to search across all agents."
+                f'No conversations found matching "{display_query}" ({mode_label} search).\n\n'
+                f"**Suggestions:**\n{suggestion_text}"
             )}]}
 
         search_time = time.time() - start_time
@@ -1337,7 +1374,17 @@ def _format_extraction_response(
 
     for i, result in enumerate(extraction.results, 1):
         date_str = f" ({result.date})" if result.date else ""
-        lines.append(f"### {i}. {result.conversation_title}{date_str}")
+
+        # Find agent label from the window associated with first selection
+        agent_label = ""
+        if result.selections:
+            first_sel = result.selections[0]
+            if 0 <= first_sel.window_idx < len(windows):
+                w_agent = windows[first_sel.window_idx].get("chat_agent")
+                if w_agent:
+                    agent_label = f" [{w_agent}]"
+
+        lines.append(f"### {i}. {result.conversation_title}{date_str}{agent_label}")
         lines.append(f"*{result.relevance}*")
         lines.append("")
 

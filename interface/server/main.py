@@ -187,8 +187,18 @@ def save_continuation_on_shutdown():
     continuation saved by the MCP restart_server tool or the Settings UI endpoint.
     """
     if os.path.exists(RESTART_CONTINUATION_FILE):
-        logger.info("Shutdown: continuation file already exists (restart tool or API saved it), skipping")
-        return
+        # Check staleness: if the file is more than 2 minutes old, it's likely
+        # a leftover from a failed wakeup (deferred deletion). Overwrite it.
+        try:
+            file_age = time.time() - os.path.getmtime(RESTART_CONTINUATION_FILE)
+            if file_age < 120:  # Less than 2 minutes — fresh, from restart_server tool
+                logger.info("Shutdown: continuation file already exists (restart tool or API saved it), skipping")
+                return
+            else:
+                logger.info(f"Shutdown: continuation file is stale ({file_age:.0f}s old), overwriting")
+        except Exception:
+            logger.info("Shutdown: continuation file already exists (restart tool or API saved it), skipping")
+            return
 
     if not active_processing_sessions:
         logger.info("Shutdown: no active processing sessions, no continuation needed")
@@ -278,8 +288,10 @@ def load_restart_continuation() -> Optional[Dict]:
     try:
         with open(RESTART_CONTINUATION_FILE, 'r') as f:
             continuation = json.load(f)
-        # Remove the file after reading
-        os.remove(RESTART_CONTINUATION_FILE)
+        # NOTE: We intentionally do NOT delete the file here. The wakeup task
+        # deletes it after successfully resuming sessions. If the wakeup fails
+        # (e.g. no stable WebSocket), the file persists so the next restart
+        # can retry. See restart_continuation_wakeup().
 
         # Normalize legacy format (single session_id) to new format (sessions list)
         if "sessions" not in continuation:
@@ -1520,20 +1532,63 @@ def get_room_history(room_id: str):
 
 # --- Chat Search API ---
 
-# Initialize chat search (lazy loaded)
-_chat_searcher = None
+# Initialize chat search using Qwen3 embedding index (lazy loaded)
+_chat_index = None
 
-def get_chat_searcher():
-    """Get or create the chat searcher instance."""
-    global _chat_searcher
-    if _chat_searcher is None:
+def _get_chat_index():
+    """Get or create the Qwen3 chat embedding index."""
+    global _chat_index
+    if _chat_index is None:
         import sys
         scripts_dir = os.path.join(ROOT_DIR, ".claude", "scripts")
         if scripts_dir not in sys.path:
             sys.path.insert(0, scripts_dir)
-        from chat_search.searcher import get_searcher
-        _chat_searcher = get_searcher()
-    return _chat_searcher
+        from contextual_memory.chat_embedding_index import load_index
+        _chat_index = load_index()
+        if _chat_index is None:
+            logger.warning("Chat embedding index not found — search will return empty results")
+    return _chat_index
+
+
+def _highlight_matches(text: str, query: str, max_length: int = 200) -> str:
+    """Create a preview with highlighted search terms using <mark> tags."""
+    import html as html_mod
+    import re as re_mod
+
+    # Tokenize query (simple word extraction)
+    query_tokens = set(re_mod.findall(r'[a-z0-9_]+', query.lower()))
+    if not query_tokens:
+        escaped = html_mod.escape(text[:max_length])
+        return escaped + ("..." if len(text) > max_length else "")
+
+    # Find the best snippet containing query terms
+    words = text.split()
+    best_start = 0
+    best_score = 0
+
+    for i in range(len(words)):
+        window = words[i:i + 30]
+        window_text = " ".join(window).lower()
+        score = sum(1 for t in query_tokens if t in window_text)
+        if score > best_score:
+            best_score = score
+            best_start = i
+
+    # Extract snippet
+    snippet_words = words[best_start:best_start + 30]
+    snippet = " ".join(snippet_words)
+
+    if len(snippet) > max_length:
+        snippet = snippet[:max_length].rsplit(" ", 1)[0] + "..."
+
+    # Escape HTML first, then wrap matches in <mark> tags
+    snippet = html_mod.escape(snippet)
+    for token in query_tokens:
+        escaped_token = html_mod.escape(token)
+        pattern = re_mod.compile(f'({re_mod.escape(escaped_token)})', re_mod.IGNORECASE)
+        snippet = pattern.sub(r'<mark>\1</mark>', snippet)
+
+    return snippet
 
 
 class ChatSearchResult(BaseModel):
@@ -1566,69 +1621,95 @@ def search_chats(
 ):
     """
     Search chat history with keyword and/or semantic search.
-
-    Args:
-        q: Search query
-        date_from: ISO date string for start filter
-        date_to: ISO date string for end filter
-        roles: Comma-separated roles to filter (e.g., "user,assistant")
-        exclude_system: Exclude system/scheduled chats
-        semantic_only: If True, only return semantic results (for progressive loading)
-        limit: Maximum results to return
-
-    Returns:
-        Search results with scores and match types
+    Uses the Qwen3 embedding index for both keyword and semantic search.
     """
-    import time
-    start_time = time.time()
+    import time as time_mod
+    start_time = time_mod.time()
 
-    searcher = get_chat_searcher()
+    index = _get_chat_index()
+    if index is None:
+        return ChatSearchResponse(results=[], total_count=0, semantic_pending=False, query_time_ms=0)
 
-    # Build filters
-    from chat_search.searcher import SearchFilters
-    from datetime import datetime as dt
+    from contextual_memory.chat_embedding_index import keyword_search, search as semantic_search
 
-    filters = SearchFilters(
-        exclude_system=exclude_system,
-        roles=roles.split(",") if roles else None,
-        date_from=dt.fromisoformat(date_from).timestamp() if date_from else None,
-        date_to=dt.fromisoformat(date_to).timestamp() if date_to else None,
-    )
+    # Build date range filter
+    date_range = None
+    if date_from or date_to:
+        from datetime import datetime as dt
+        date_range = {}
+        if date_from:
+            date_range["start"] = dt.fromisoformat(date_from).timestamp()
+        if date_to:
+            date_range["end"] = dt.fromisoformat(date_to).timestamp()
 
-    # Perform search
+    # Role filtering: we'll filter results after the search since the Qwen3 index
+    # doesn't have a built-in role filter
+    role_set = set(roles.split(",")) if roles else None
+
     if semantic_only:
-        results = searcher.semantic_search(q, filters, k=limit)
+        # Phase 2: Semantic search using Qwen3 embeddings
+        # This requires the embedding model to be loaded — may fail on first call
+        try:
+            raw_results = semantic_search(index, q, k=limit * 2, date_range=date_range)
+            match_type = "semantic"
+        except Exception as e:
+            logger.warning(f"Semantic search failed (model may not be loaded): {e}")
+            return ChatSearchResponse(results=[], total_count=0, semantic_pending=False, query_time_ms=0)
     else:
-        results = searcher.keyword_search(q, filters, limit=limit)
+        # Phase 1: Fast keyword search (no model needed)
+        raw_results = keyword_search(index, q, k=limit * 2, date_range=date_range)
+        match_type = "keyword"
 
-    query_time = (time.time() - start_time) * 1000
+    # Convert to API response format
+    results = []
+    for meta, score in raw_results:
+        # Role filter
+        if role_set and meta.role not in role_set:
+            continue
+
+        # Exclude system/scheduled chats (agent-only chats without user messages)
+        # We keep all results for now since the index already filters short messages
+
+        # Get full text for highlighting if available
+        if index.texts and meta.doc_idx < len(index.texts):
+            full_text = index.texts[meta.doc_idx]
+        else:
+            full_text = meta.content_preview
+
+        preview = _highlight_matches(full_text, q)
+
+        results.append(ChatSearchResult(
+            message_id=meta.message_id,
+            chat_id=meta.chat_id,
+            chat_title=meta.chat_title,
+            role=meta.role,
+            content_preview=preview,
+            timestamp=meta.timestamp or 0.0,
+            score=score,
+            match_type=match_type,
+        ))
+
+        if len(results) >= limit:
+            break
+
+    query_time = (time_mod.time() - start_time) * 1000
 
     return ChatSearchResponse(
-        results=[
-            ChatSearchResult(
-                message_id=r.message_id,
-                chat_id=r.chat_id,
-                chat_title=r.chat_title,
-                role=r.role,
-                content_preview=r.content_preview,
-                timestamp=r.timestamp,
-                score=r.score,
-                match_type=r.match_type
-            )
-            for r in results
-        ],
+        results=results,
         total_count=len(results),
         semantic_pending=not semantic_only,  # Semantic still pending if this was keyword-only
-        query_time_ms=query_time
+        query_time_ms=query_time,
     )
 
 
 @app.post("/api/chat/search/refresh")
 def refresh_search_index():
-    """Manually refresh the search index."""
-    searcher = get_chat_searcher()
-    searcher.refresh()
-    return {"status": "ok", "message": "Index refreshed"}
+    """Reload the chat embedding index from disk."""
+    global _chat_index
+    from contextual_memory.chat_embedding_index import load_index
+    _chat_index = load_index()
+    msg_count = len(_chat_index.metadata) if _chat_index else 0
+    return {"status": "ok", "message": f"Index reloaded: {msg_count} messages"}
 
 
 
@@ -1883,7 +1964,7 @@ async def _dispatch_mention_agents(
     in the chat timeline — like a group chat, not funneled through the primary agent.
 
     Each agent runs independently. Messages are appended in completion order.
-    Max 3 agents per invocation. 180-second timeout per agent.
+    Max 3 agents per invocation. 45-minute timeout per agent.
     """
     async def _run_single_mention(agent_name: str):
         # Broadcast typing indicator
@@ -1928,14 +2009,14 @@ Use tools only if the request clearly requires action (e.g., "fix this bug", "lo
 
             try:
                 result = await asyncio.wait_for(
-                    invoke_agent(name=agent_name, prompt=prompt, mode="foreground"),
-                    timeout=180
+                    invoke_agent(name=agent_name, prompt=prompt, mode="foreground", is_visible=True),
+                    timeout=2700
                 )
                 response_text = result.response or result.transcript or ""
                 if not response_text.strip():
                     response_text = f"*@{agent_name} had nothing to say*"
             except asyncio.TimeoutError:
-                response_text = f"*@{agent_name} timed out after 3 minutes*"
+                response_text = f"*@{agent_name} timed out after 45 minutes*"
                 logger.warning(f"Mention agent {agent_name} timed out")
             except Exception as e:
                 response_text = f"*@{agent_name} encountered an error*"
@@ -3654,6 +3735,22 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
                     except Exception as e:
                         logger.warning(f"THEME_UPDATE: Failed to broadcast: {e}")
 
+                # ========== leave_on_desk: Broadcast file open to ALL connected clients ==========
+                if current_tool_name and current_tool_name.endswith("leave_on_desk"):
+                    try:
+                        desk_args = json.loads(tool_args) if isinstance(tool_args, str) else tool_args
+                        file_path = desk_args.get("file_path", "")
+                        reason = desk_args.get("reason", "")
+                        if file_path:
+                            await broadcast_to_all_clients({
+                                "type": "leave_on_desk",
+                                "file_path": file_path,
+                                "reason": reason,
+                            })
+                            logger.info(f"LEAVE_ON_DESK: Broadcast to {len(client_sessions)} clients: {file_path}")
+                    except Exception as e:
+                        logger.warning(f"LEAVE_ON_DESK: Failed to broadcast: {e}")
+
                 # ========== Block model: update existing tool_use block with args ==========
                 ss = session_streaming_states.get(state_key)
                 if ss and tool_id:
@@ -5308,7 +5405,7 @@ async def restart_continuation_wakeup():
     """Background task that runs once after server startup to resume ALL sessions
     that were active when a restart was triggered.
 
-    Waits for at least one WebSocket connection (so there's a client to send messages to),
+    Waits for a STABLE WebSocket connection (survives a brief delay without disconnecting),
     then triggers continuation for every session in the restart_continuation marker.
     """
     global restart_continuation
@@ -5333,23 +5430,39 @@ async def restart_continuation_wakeup():
         f"{len(sessions)} session(s) (source={source}, reason={reason})"
     )
 
-    # Wait for at least one WebSocket client to connect (max 30 seconds)
-    for _ in range(60):
+    # Wait for a STABLE WebSocket connection (max 60 seconds).
+    # The browser may connect/disconnect during page reload, so we need to
+    # find a connection that persists through a brief stability check.
+    ws = None
+    max_wait_seconds = 60
+    elapsed = 0.0
+    transient_connects = 0
+    while elapsed < max_wait_seconds:
         if client_sessions:
-            break
+            # Found a connection — verify it survives a brief delay
+            await asyncio.sleep(1.5)
+            elapsed += 1.5
+            ws = next(iter(client_sessions.keys()), None)
+            if ws:
+                # Connection survived the stability check — use it
+                break
+            else:
+                # Connection disappeared (browser reload, etc.) — keep waiting
+                transient_connects += 1
+                logger.info(
+                    f"Restart continuation: WebSocket connected then disconnected "
+                    f"(transient #{transient_connects}), waiting for stable connection..."
+                )
+                ws = None
+                continue
         await asyncio.sleep(0.5)
-    else:
-        logger.warning("Restart continuation: no WebSocket client connected within 30s, aborting")
-        return
+        elapsed += 0.5
 
-    # Brief additional delay to let the client fully initialize
-    await asyncio.sleep(1.0)
-
-    # Pick any connected WebSocket to use for sending messages
-    # (all clients in this system share the same view)
-    ws = next(iter(client_sessions.keys()), None)
     if not ws:
-        logger.warning("Restart continuation: WebSocket client disconnected before we could resume")
+        logger.warning(
+            f"Restart continuation: no stable WebSocket client within {max_wait_seconds}s "
+            f"({transient_connects} transient connection(s) seen), aborting"
+        )
         return
 
     # Send a restart_continuation notification to the client for EACH session
@@ -5420,6 +5533,16 @@ async def restart_continuation_wakeup():
             logger.error(f"Failed to auto-continue session {session_id} after restart: {e}")
 
     logger.info(f"Restart continuation complete: resumed {len(sessions)} session(s)")
+
+    # Clean up the continuation file now that all sessions have been resumed.
+    # (We deferred deletion from load_restart_continuation() so that a failed
+    # wakeup leaves the file intact for the next server restart to retry.)
+    try:
+        if os.path.exists(RESTART_CONTINUATION_FILE):
+            os.remove(RESTART_CONTINUATION_FILE)
+            logger.info("Restart continuation: cleaned up continuation file after successful resume")
+    except Exception as e:
+        logger.warning(f"Restart continuation: failed to remove continuation file: {e}")
 
 
 async def agent_notification_wakeup_loop():
@@ -5817,6 +5940,10 @@ async def startup_event():
 
     # Setup signal handlers for graceful shutdown
     setup_signal_handlers()
+
+    # ========== Register desk broker for leave_on_desk broadcasts ==========
+    from desk_broker import register_broadcast
+    register_broadcast(broadcast_to_all_clients)
 
     # ========== WAL Recovery: Check for unfinished work ==========
     wal = get_wal()

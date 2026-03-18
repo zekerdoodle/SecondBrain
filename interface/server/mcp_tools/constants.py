@@ -188,6 +188,14 @@ MESSAGING_TOOLS = [
     "message_react",
 ]
 
+PRESENCE_TOOLS = [
+    "leave_on_desk",
+]
+
+MOOD_TOOLS = [
+    "set_mood",
+]
+
 
 # =============================================================================
 # Category Mapping - Maps category names to tool lists
@@ -215,6 +223,8 @@ TOOL_CATEGORIES = {
     "image": IMAGE_TOOLS,
     "skills": SKILLS_TOOLS,
     "messaging": MESSAGING_TOOLS,
+    "presence": PRESENCE_TOOLS,
+    "mood": MOOD_TOOLS,
 }
 
 
@@ -239,7 +249,9 @@ ALL_TOOL_NAMES = (
     CHESS_TOOLS +
     IMAGE_TOOLS +
     SKILLS_TOOLS +
-    MESSAGING_TOOLS
+    MESSAGING_TOOLS +
+    PRESENCE_TOOLS +
+    MOOD_TOOLS
 )
 
 # Set for O(1) lookup
