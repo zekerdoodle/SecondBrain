@@ -854,6 +854,39 @@ export const Chat: React.FC<ChatProps> = ({
         }
       }
 
+      // --- Brain Bridge v2: askAgent (route through named agent) ---
+      if (event.data.type === 'brain:askAgent') {
+        const { agent, prompt, requestId } = event.data;
+        console.log('[Brain Bridge v2] Processing askAgent:', agent, requestId);
+        try {
+          const res = await fetch(`${API_URL}/app-bridge/ask-agent`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ agent, prompt }),
+          });
+          if (!res.ok) {
+            const errorText = await res.text();
+            throw new Error(`askAgent failed: ${res.status} - ${errorText}`);
+          }
+          const data = await res.json();
+          source?.postMessage({
+            type: 'brain:askAgentResponse',
+            requestId,
+            success: true,
+            response: data.response
+          }, '*');
+          console.log('[Brain Bridge v2] askAgent success, response length:', data.response?.length);
+        } catch (err) {
+          console.error('[Brain Bridge v2] askAgent error:', err);
+          source?.postMessage({
+            type: 'brain:askAgentResponse',
+            requestId,
+            success: false,
+            error: err instanceof Error ? err.message : 'askAgent failed'
+          }, '*');
+        }
+      }
+
       // --- Brain Bridge v2: listFiles ---
       if (event.data.type === 'brain:listFiles') {
         const { dirPath } = event.data;

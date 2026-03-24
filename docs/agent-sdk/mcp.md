@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/mcp
 title: Connect to external tools with MCP
-last_fetched: 2026-03-08T09:01:23.998410+00:00
+last_fetched: 2026-03-24T09:01:34.481518+00:00
 ---
 
 Copy page
@@ -112,23 +112,7 @@ options: {
 
 Wildcards (`*`) let you allow all tools from a server without listing each one individually.
 
-### Alternative: Change the permission mode
-
-Instead of listing allowed tools, you can change the permission mode to grant broader access:
-
-- `permissionMode: "acceptEdits"`: Automatically approves tool usage (still prompts for destructive operations)
-- `permissionMode: "bypassPermissions"`: Skips all safety prompts, including for destructive operations like file deletion or running shell commands. Use with caution, especially in production. This mode propagates to subagents spawned by the Agent tool.
-
-```shiki
-options: {
- mcpServers: {
- // your servers
- },
- permissionMode: "acceptEdits" // No need for allowedTools
-}
-```
-
-See [Permissions](/docs/en/agent-sdk/permissions) for more details on permission modes.
+**Prefer `allowedTools` over permission modes for MCP access.** `permissionMode: "acceptEdits"` does not auto-approve MCP tools (only file edits and filesystem Bash commands). `permissionMode: "bypassPermissions"` does auto-approve MCP tools but also disables all other safety prompts, which is broader than necessary. A wildcard in `allowedTools` grants exactly the MCP server you want and nothing more. See [Permission modes](/docs/en/agent-sdk/permissions#permission-modes) for a full comparison.
 
 ### Discover available tools
 
@@ -216,43 +200,11 @@ Define custom tools directly in your application code instead of running a separ
 
 ## MCP tool search
 
-When you have many MCP tools configured, tool definitions can consume a significant portion of your context window. MCP tool search solves this by dynamically loading tools on-demand instead of preloading all of them.
+When you have many MCP tools configured, tool definitions can consume a significant portion of your context window. Tool search solves this by withholding tool definitions from context and loading only the ones Claude needs for each turn.
 
-### How it works
+Tool search is enabled by default. See [Tool search](/docs/en/agent-sdk/tool-search) for configuration options and details.
 
-Tool search runs in auto mode by default. It activates when your MCP tool descriptions would consume more than 10% of the context window. When triggered:
-
-1. MCP tools are marked with `defer_loading: true` rather than loaded into context upfront
-2. Claude uses a search tool to discover relevant MCP tools when needed
-3. Only the tools Claude actually needs are loaded into context
-
-Tool search requires models that support `tool_reference` blocks: Sonnet 4 and later, or Opus 4 and later. Haiku models do not support tool search.
-
-### Configure tool search
-
-Control tool search behavior with the `ENABLE_TOOL_SEARCH` environment variable:
-
-| Value | Behavior |
-| --- | --- |
-| `auto` | Activates when MCP tools exceed 10% of context (default) |
-| `auto:5` | Activates at 5% threshold (customize the percentage) |
-| `true` | Always enabled |
-| `false` | Disabled, all MCP tools loaded upfront |
-
-Set the value in the `env` option:
-
-TypeScript
-
-```shiki
-const options = {
- mcpServers: {
- // your MCP servers
- },
- env: {
- ENABLE_TOOL_SEARCH: "auto:5" // Enable at 5% threshold
- }
-};
-```
+For more detail, including best practices and using tool search with custom SDK tools, see the [tool search guide](/docs/en/agent-sdk/tool-search).
 
 ## Authentication
 
@@ -381,7 +333,7 @@ for await (const message of query({
 
  // Log when Claude calls an MCP tool
  if (message.type === "assistant") {
- for (const block of message.content) {
+ for (const block of message.message.content) {
  if (block.type === "tool_use" && block.name.startsWith("mcp__")) {
  console.log("MCP tool called:", block.name);
  }
@@ -486,7 +438,7 @@ Common causes:
 
 ### Tools not being called
 
-If Claude sees tools but doesn't use them, check that you've granted permission with `allowedTools` or by [changing the permission mode](#alternative-change-the-permission-mode):
+If Claude sees tools but doesn't use them, check that you've granted permission with `allowedTools`:
 
 ```shiki
 options: {

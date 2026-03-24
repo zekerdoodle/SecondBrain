@@ -320,6 +320,34 @@
 
 
   /* ==========================================================
+     askAgent — route through a named agent with full tool access
+     ========================================================== */
+
+  /**
+   * Route a request through a named agent with full tool access.
+   *
+   *   const result = await BrainKit.askAgent('nutrition_coach', 'Estimate macros: chicken 6oz with rice');
+   *
+   * @param {string} agent - Agent name (e.g., 'nutrition_coach', 'running_coach')
+   * @param {string} prompt
+   * @param {Object} [opts]
+   * @param {boolean} [opts.json] - If true, parse response as JSON
+   * @returns {Promise<string|Object>}
+   */
+  async function askAgent(agent, prompt, opts) {
+    if (!window.brain || !window.brain.askAgent) {
+      throw new Error('askAgent requires Brain Bridge v2 with agent support');
+    }
+    var response = await window.brain.askAgent(agent, prompt);
+    if (opts && opts.json) {
+      var cleaned = response.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim();
+      return JSON.parse(cleaned);
+    }
+    return response;
+  }
+
+
+  /* ==========================================================
      Router — lightweight hash-based page router
      ========================================================== */
 
@@ -476,10 +504,11 @@
     modal: modal,
     tabs: tabs,
     askClaude: askClaude,
+    askAgent: askAgent,
     router: router,
     theme: theme,
     version: '2.0.0'
   };
 
-  console.log('[brain-kit v2.0.0] Loaded — BrainKit.store, .toast, .modal, .tabs, .askClaude, .router, .theme available');
+  console.log('[brain-kit v2.0.0] Loaded — BrainKit.store, .toast, .modal, .tabs, .askClaude, .askAgent, .router, .theme available');
 })();

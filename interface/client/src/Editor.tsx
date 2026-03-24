@@ -80,6 +80,16 @@ const BRAIN_BRIDGE_SCRIPT = `
       ).then((d) => d.response);
     },
 
+    askAgent: (agent, prompt) => {
+      var reqId = nextRequestId();
+      return requestResponse(
+        'brain:askAgent',
+        'brain:askAgentResponse',
+        { agent: agent, prompt: prompt, requestId: reqId },
+        (d) => d.requestId === reqId
+      ).then((d) => d.response);
+    },
+
     listFiles: (dirPath) => {
       return requestResponse(
         'brain:listFiles',
@@ -164,7 +174,7 @@ const BRAIN_BRIDGE_SCRIPT = `
   // Request initial theme from parent on load
   window.parent.postMessage({ type: 'brain:getTheme' }, '*');
 
-  console.log('[Brain App Bridge v2] Initialized — askClaude, listFiles, deleteFile, getAppInfo, watchFile, unwatchFile, themeSync available');
+  console.log('[Brain App Bridge v2] Initialized — askClaude, askAgent, listFiles, deleteFile, getAppInfo, watchFile, unwatchFile, themeSync available');
 })();
 </script>
 `;

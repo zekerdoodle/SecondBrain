@@ -402,6 +402,33 @@ textarea { resize: vertical; min-height: 60px; font-family: inherit; }
   width: 8px; height: 8px; border-radius: 50%; background: var(--accent);
   animation: pulse 1s ease-in-out infinite;
 }
+
+/* === YOUR MEALS (Library) === */
+.your-meals-toggle {
+  text-align: center;
+  padding: 12px;
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-md);
+  margin-top: var(--sp-sm);
+  transition: all var(--ease-fast);
+}
+.your-meals-toggle:hover {
+  color: var(--text-primary);
+  border-color: var(--accent);
+}
+.your-meals-section {
+  display: none;
+  margin-top: var(--sp-sm);
+}
+.your-meals-section.expanded {
+  display: block;
+}
+.library-card {
+  border-left: 3px solid var(--accent);
+}
 </style>
 </head>
 <body>
@@ -476,6 +503,7 @@ textarea { resize: vertical; min-height: 60px; font-family: inherit; }
 // ============================================================
 let mealPlan = null;
 let dailyLog = {};
+let customMealLibrary = null;
 let todayKey = '';
 let weightChart = null;
 let currentCustomSlot = 0;
@@ -532,8 +560,13 @@ function getTodayTotals() {
   let cal = 0, protein = 0;
   if (today.meals) {
     for (const m of today.meals) {
-      const opt = getOptionById(m.option_id);
-      if (opt) { cal += opt.total_cal; protein += opt.total_protein; }
+      if (m.option_id) {
+        const opt = getOptionById(m.option_id);
+        if (opt) { cal += opt.total_cal; protein += opt.total_protein; }
+      } else if (m.library_id) {
+        const libMeal = getLibraryMealById(m.library_id);
+        if (libMeal) { cal += libMeal.total_cal; protein += libMeal.total_protein; }
+      }
     }
   }
   if (today.custom_meals) {
@@ -567,8 +600,13 @@ function getDayTotals(dayData) {
   let cal = 0, protein = 0;
   if (dayData.meals) {
     for (const m of dayData.meals) {
-      const opt = getOptionById(m.option_id);
-      if (opt) { cal += opt.total_cal; protein += opt.total_protein; }
+      if (m.option_id) {
+        const opt = getOptionById(m.option_id);
+        if (opt) { cal += opt.total_cal; protein += opt.total_protein; }
+      } else if (m.library_id) {
+        const libMeal = getLibraryMealById(m.library_id);
+        if (libMeal) { cal += libMeal.total_cal; protein += libMeal.total_protein; }
+      }
     }
   }
   if (dayData.custom_meals) {
@@ -583,13 +621,16 @@ function getDayTotals(dayData) {
 
 function getCustomMealMacros(cm) {
   return {
-    cal: cm.estimated_cal || cm.cal || 0,
-    protein: cm.estimated_protein || cm.protein || 0
+    cal: cm.total_cal || cm.estimated_cal || cm.cal || 0,
+    protein: cm.total_protein || cm.estimated_protein || cm.protein || 0
   };
 }
 
 function getCustomMealItemsLabel(cm) {
-  if (cm.items && cm.items.length) return cm.items.join(', ');
+  if (cm.items && cm.items.length) {
+    if (typeof cm.items[0] === 'string') return cm.items.join(', ');
+    return cm.items.map(i => i.name).join(', ');
+  }
   return cm.description || 'Custom';
 }
 
@@ -618,6 +659,63 @@ function getYesterdayWeight() {
 }
 
 // ============================================================
+// LIBRARY HELPERS
+// ============================================================
+function getLibraryMealById(id) {
+  if (!customMealLibrary) return null;
+  for (const slot of Object.keys(customMealLibrary.meals)) {
+    for (const entry of customMealLibrary.meals[slot]) {
+      if (entry.id === id) return entry;
+    }
+  }
+  return null;
+}
+
+function generateLabel(items) {
+  if (!items || !items.length) return 'Custom Meal';
+  const names = items.slice(0, 3).map(i => typeof i === 'string' ? i : i.name);
+  let label = names.join(' + ');
+  if (label.length > 40) {
+    label = names.slice(0, 2).join(' + ');
+    if (label.length > 40) label = label.substring(0, 37) + '...';
+  }
+  return label;
+}
+
+function getLibraryCountForSlot(slot) {
+  if (!customMealLibrary) return 0;
+  const entries = customMealLibrary.meals[String(slot)];
+  return entries ? entries.length : 0;
+}
+
+function toggleYourMeals(slot) {
+  const section = document.getElementById('your-meals-' + slot);
+  if (section) section.classList.toggle('expanded');
+  const toggle = document.querySelector(`[data-ym-slot="${slot}"]`);
+  if (toggle) {
+    const isExpanded = section && section.classList.contains('expanded');
+    toggle.innerHTML = `Your Meals (${getLibraryCountForSlot(slot)}) ${isExpanded ? '&#9652;' : '&#9662;'}`;
+  }
+}
+
+async function selectLibraryMeal(slot, cmId) {
+  const libMeal = getLibraryMealById(cmId);
+  if (!libMeal) return;
+  const today = getTodayData();
+  if (!today) return;
+  const now = new Date();
+  const time = String(now.getHours()).padStart(2,'0') + ':' + String(now.getMinutes()).padStart(2,'0');
+  today.meals.push({ slot, library_id: cmId, time });
+  // Update library stats
+  libMeal.times_used = (libMeal.times_used || 0) + 1;
+  libMeal.last_used = todayKey;
+  await saveLog();
+  await saveLibrary();
+  BrainKit.toast('Meal logged', 'success');
+  renderToday();
+}
+
+// ============================================================
 // PERSISTENCE (BrainKit.store)
 // ============================================================
 const store = BrainKit.store('diet');
@@ -625,6 +723,10 @@ const store = BrainKit.store('diet');
 async function loadData() {
   mealPlan = await store.read('meal_plan.json', null);
   dailyLog = await store.read('daily_log.json', {});
+  customMealLibrary = await store.read('custom_meal_library.json', null);
+  if (!customMealLibrary) {
+    customMealLibrary = { phase: "cut", phase_start: "2026-02-09", next_id: 1, meals: { "1": [], "2": [], "3": [], "4": [], "5": [] } };
+  }
 }
 
 async function saveLog() {
@@ -633,6 +735,15 @@ async function saveLog() {
   } catch (e) {
     console.error('Failed to save log:', e);
     BrainKit.toast('Failed to save', 'error');
+  }
+}
+
+async function saveLibrary() {
+  try {
+    await store.write('custom_meal_library.json', customMealLibrary);
+  } catch (e) {
+    console.error('Failed to save library:', e);
+    BrainKit.toast('Failed to save library', 'error');
   }
 }
 
@@ -685,8 +796,8 @@ function renderToday() {
     return;
   }
 
-  // State: No weight logged
-  if (!today || !today.weight) {
+  // State: No weight logged (and not explicitly skipped)
+  if (!today || (!today.weight && !today.weight_skipped)) {
     renderWeightInput(container);
     return;
   }
@@ -710,6 +821,12 @@ function renderWeightInput(container) {
       </div>
       <button class="btn btn-primary btn-large" style="max-width:200px;margin:16px auto 0;"
               onclick="logWeight()">Log Weight</button>
+      <div style="margin-top:12px;">
+        <a href="#" onclick="event.preventDefault();skipWeight()"
+           style="color:var(--text-muted);font-size:var(--font-size-sm);text-decoration:none;">
+          Skip for today
+        </a>
+      </div>
     </div>
   `;
   setTimeout(() => document.getElementById('weight-input')?.focus(), 100);
@@ -730,6 +847,16 @@ function logWeight() {
   dailyLog[todayKey].weight_time = String(now.getHours()).padStart(2,'0') + ':' + String(now.getMinutes()).padStart(2,'0');
   saveLog();
   BrainKit.toast('Weight logged', 'success');
+  renderToday();
+}
+
+function skipWeight() {
+  if (!dailyLog[todayKey]) {
+    dailyLog[todayKey] = { weight: null, weight_time: null, meals: [], custom_meals: [] };
+  }
+  dailyLog[todayKey].weight_skipped = true;
+  saveLog();
+  BrainKit.toast('Weight skipped — you can log it later from Progress', 'success');
   renderToday();
 }
 
@@ -772,7 +899,8 @@ function renderMealProgress(container, today, headerHtml) {
     if (!loggedSlots.has(s) || s >= nextSlot) continue;
     const meal = getMealBySlot(s);
     const logged = today.meals.find(m => m.slot === s);
-    const opt = logged ? getOptionById(logged.option_id) : null;
+    const opt = logged?.option_id ? getOptionById(logged.option_id) : null;
+    const libMeal = logged?.library_id ? getLibraryMealById(logged.library_id) : null;
     // Check custom
     const customLogged = today.custom_meals ? today.custom_meals.find(m => m.slot === s) : null;
 
@@ -782,6 +910,15 @@ function renderMealProgress(container, today, headerHtml) {
           <span class="meal-done-check">&#10003;</span>
           <span class="meal-done-label">${meal ? meal.name : 'Meal ' + s}: ${opt.label}</span>
           <span class="meal-done-macros">${opt.total_cal} cal / ${opt.total_protein}g</span>
+          <button class="undo-btn" onclick="undoMeal(${s})" title="Undo">&#8630;</button>
+        </div>
+      `;
+    } else if (libMeal) {
+      html += `
+        <div class="meal-done animate-in">
+          <span class="meal-done-check">&#10003;</span>
+          <span class="meal-done-label">${meal ? meal.name : 'Meal ' + s}: ${libMeal.label}</span>
+          <span class="meal-done-macros">${libMeal.total_cal} cal / ${libMeal.total_protein}g</span>
           <button class="undo-btn" onclick="undoMeal(${s})" title="Undo">&#8630;</button>
         </div>
       `;
@@ -855,8 +992,49 @@ function renderMealProgress(container, today, headerHtml) {
       `;
     }
 
-    html += `
+    // Your Meals library section
+    const libCount = getLibraryCountForSlot(nextSlot);
+    if (libCount > 0) {
+      const libEntries = [...(customMealLibrary.meals[String(nextSlot)] || [])].sort((a, b) => (b.times_used || 0) - (a.times_used || 0));
+      html += `
+        <div class="your-meals-toggle" data-ym-slot="${nextSlot}" onclick="toggleYourMeals(${nextSlot})">
+          Your Meals (${libCount}) &#9662;
+        </div>
+        <div class="your-meals-section" id="your-meals-${nextSlot}">
+      `;
+      for (const lib of libEntries) {
+        html += `
+          <div class="meal-card library-card" onclick="toggleMealDetails('${lib.id}')">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+              <div class="meal-card-label">${lib.label}</div>
+            </div>
+            <div class="meal-card-macros">${lib.total_cal} cal &middot; ${lib.total_protein}g protein</div>
+            <div class="meal-card-items" id="items-${lib.id}">
+              ${lib.items.map(it => `
+                <div class="meal-card-item">
+                  <span class="meal-card-item-name">${it.name}</span>
+                  <span class="meal-card-item-amount">${it.amount} &middot; ${it.cal} cal</span>
+                </div>
+              `).join('')}
+              <button class="btn btn-success" style="margin-top:10px;width:100%;"
+                      onclick="event.stopPropagation();selectLibraryMeal(${nextSlot},'${lib.id}')">
+                Select This
+              </button>
+            </div>
+          </div>
+        `;
+      }
+      html += `
+          <div class="meal-custom-card" onclick="openCustomModal(${nextSlot})">+ New Custom Meal</div>
+        </div>
+      `;
+    } else {
+      html += `
         <div class="meal-custom-card" onclick="openCustomModal(${nextSlot})">+ Custom Meal</div>
+      `;
+    }
+
+    html += `
       </div>
     `;
   }
@@ -991,14 +1169,20 @@ async function submitEndOfDay() {
       const totals = getTodayTotals();
       const targets = mealPlan.daily_targets;
       const mealLabels = today.meals.map(m => {
-        const opt = getOptionById(m.option_id);
         const meal = getMealBySlot(m.slot);
-        return `${meal?.name || 'Slot ' + m.slot}: ${opt?.label || m.option_id}`;
+        if (m.option_id) {
+          const opt = getOptionById(m.option_id);
+          return `${meal?.name || 'Slot ' + m.slot}: ${opt?.label || m.option_id}`;
+        } else if (m.library_id) {
+          const libMeal = getLibraryMealById(m.library_id);
+          return `${meal?.name || 'Slot ' + m.slot}: ${libMeal?.label || m.library_id}`;
+        }
+        return `${meal?.name || 'Slot ' + m.slot}: unknown`;
       }).join(', ');
 
       const prompt = `Diet tracker end-of-day check-in:
 Date: ${todayKey}
-Weight: ${today.weight} lbs
+Weight: ${today.weight ? today.weight + ' lbs' : 'skipped'}
 Feel: ${selectedFeel}/5
 Steps: ${steps}
 Notes: ${notes || 'none'}
@@ -1036,9 +1220,14 @@ function renderDaySummary(container, today, headerHtml) {
   let mealsHtml = '';
   if (today.meals) {
     for (const m of today.meals) {
-      const opt = getOptionById(m.option_id);
       const meal = getMealBySlot(m.slot);
-      mealsHtml += `<div style="padding:3px 0;font-size:var(--font-size-sm);color:var(--text-secondary);">${meal?.name || 'Slot ' + m.slot}: ${opt?.label || m.option_id}</div>`;
+      if (m.option_id) {
+        const opt = getOptionById(m.option_id);
+        mealsHtml += `<div style="padding:3px 0;font-size:var(--font-size-sm);color:var(--text-secondary);">${meal?.name || 'Slot ' + m.slot}: ${opt?.label || m.option_id}</div>`;
+      } else if (m.library_id) {
+        const libMeal = getLibraryMealById(m.library_id);
+        mealsHtml += `<div style="padding:3px 0;font-size:var(--font-size-sm);color:var(--text-secondary);">${meal?.name || 'Slot ' + m.slot}: ${libMeal?.label || m.library_id}</div>`;
+      }
     }
   }
   if (today.custom_meals) {
@@ -1054,7 +1243,7 @@ function renderDaySummary(container, today, headerHtml) {
       <div class="summary-title">Day Complete</div>
       <div class="summary-grid">
         <div class="summary-item">
-          <div class="summary-value">${today.weight}</div>
+          <div class="summary-value">${today.weight || (today.weight_skipped ? '—' : '?')}</div>
           <div class="summary-label">Weight (lbs)</div>
         </div>
         <div class="summary-item">
@@ -1130,25 +1319,51 @@ async function submitCustomMeal() {
     const now = new Date();
     const time = String(now.getHours()).padStart(2,'0') + ':' + String(now.getMinutes()).padStart(2,'0');
 
-    const result = await BrainKit.askClaude(
-      `Estimate the calories and protein for this meal: "${text}"
+    const result = await BrainKit.askAgent('nutrition_coach',
+      `A user logged a custom meal in the diet tracker app. Estimate the macros and return structured data.
 
-Return JSON only, no explanation:
+Meal slot: ${slot} (${meal?.name || 'Meal ' + slot})
+Date: ${todayKey}
+Description: "${text}"
+
+Return ONLY valid JSON, no explanation or markdown:
 {
-  "items": ["item 1 (portion)", "item 2 (portion)"],
-  "estimated_cal": number,
-  "estimated_protein": number
-}`,
+  "items": [
+    {"name": "Item name", "amount": "portion description", "cal": number, "protein": number}
+  ],
+  "total_cal": number,
+  "total_protein": number
+}
+
+Be precise with portions. Use USDA data where possible. Round calories to nearest 5, protein to nearest 1g.`,
       { json: true }
     );
 
-    // Build the custom meal entry
+    // Save to custom meal library
+    const libId = `cm_m${slot}_${String(customMealLibrary.next_id).padStart(3, '0')}`;
+    const libEntry = {
+      id: libId,
+      label: generateLabel(result.items),
+      items: result.items || [{ name: text, amount: "1 serving", cal: result.total_cal || 0, protein: result.total_protein || 0 }],
+      total_cal: result.total_cal || 0,
+      total_protein: result.total_protein || 0,
+      times_used: 1,
+      last_used: todayKey,
+      source: "logged"
+    };
+    if (!customMealLibrary.meals[String(slot)]) customMealLibrary.meals[String(slot)] = [];
+    customMealLibrary.meals[String(slot)].push(libEntry);
+    customMealLibrary.next_id++;
+    await saveLibrary();
+
+    // Build the custom meal entry with structured items
     const entry = {
       slot,
       description: text,
-      items: result.items || [text],
-      estimated_cal: result.estimated_cal || 0,
-      estimated_protein: result.estimated_protein || 0,
+      items: result.items || [{ name: text, amount: "1 serving", cal: result.total_cal || 0, protein: result.total_protein || 0 }],
+      total_cal: result.total_cal || 0,
+      total_protein: result.total_protein || 0,
+      library_id: libId,
       time
     };
 
@@ -1160,7 +1375,6 @@ Return JSON only, no explanation:
       await saveLog();
 
       const macros = getCustomMealMacros(entry);
-      const label = getCustomMealItemsLabel(entry);
       BrainKit.toast(`Logged: ~${macros.cal} cal, ${macros.protein}g protein`, 'success');
     }
   } catch (e) {
@@ -1572,14 +1786,24 @@ function renderHistory() {
 
     if (day.meals) {
       for (const m of day.meals) {
-        const opt = getOptionById(m.option_id);
         const meal = getMealBySlot(m.slot);
-        html += `
-          <div class="history-meal-line">
-            <span>${meal?.name || 'Slot ' + m.slot}</span>
-            <span style="color:var(--text-muted);">${opt?.label || m.option_id} (${opt?.total_cal || '?'} cal)</span>
-          </div>
-        `;
+        if (m.option_id) {
+          const opt = getOptionById(m.option_id);
+          html += `
+            <div class="history-meal-line">
+              <span>${meal?.name || 'Slot ' + m.slot}</span>
+              <span style="color:var(--text-muted);">${opt?.label || m.option_id} (${opt?.total_cal || '?'} cal)</span>
+            </div>
+          `;
+        } else if (m.library_id) {
+          const libMeal = getLibraryMealById(m.library_id);
+          html += `
+            <div class="history-meal-line">
+              <span>${meal?.name || 'Slot ' + m.slot}</span>
+              <span style="color:var(--text-muted);">${libMeal?.label || m.library_id} (${libMeal?.total_cal || '?'} cal)</span>
+            </div>
+          `;
+        }
       }
     }
     if (day.custom_meals) {

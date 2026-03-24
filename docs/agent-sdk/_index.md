@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/
 title: Anthropic Agent SDK Documentation Index
-last_fetched: 2026-03-21T09:04:45.508023+00:00
+last_fetched: 2026-03-24T09:03:42.474814+00:00
 ---
 
 # Anthropic Agent SDK Documentation
@@ -16,8 +16,8 @@ This is a local mirror of the [Anthropic Agent SDK documentation](https://platfo
 - [Agent Skills in the SDK](./skills.md)
 - [Configure permissions](./permissions.md)
 - [Connect to external tools with MCP](./mcp.md)
-- [Custom Tools](./custom-tools.md)
 - [Get structured output from agents](./structured-outputs.md)
+- [Give Claude custom tools](./custom-tools.md)
 - [Handle approvals and user input](./user-input.md)
 - [Hosting the Agent SDK](./hosting.md)
 - [How the agent loop works](./agent-loop.md)
@@ -39,7 +39,7 @@ This is a local mirror of the [Anthropic Agent SDK documentation](https://platfo
 This documentation mirror is automatically synced from the official Anthropic documentation.
 Claude Code agents can reference these files directly for up-to-date information.
 
-**Last sync:** 2026-03-21T09:04:45.508023+00:00
+**Last sync:** 2026-03-24T09:03:42.474814+00:00
 
 To manually sync, run:
 ```bash

@@ -40,5 +40,11 @@
     "icon": "hypertrophy/icon.png",
     "entry": "hypertrophy/index.html",
     "description": "Strength & hypertrophy training tracker with auto-progression"
+  },
+  {
+    "name": "Sit",
+    "icon": "meditation/icon.svg",
+    "entry": "meditation/index.html",
+    "description": "Daily meditation with guided focus progression"
   }
 ]

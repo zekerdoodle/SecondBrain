@@ -1086,6 +1086,38 @@ async def app_bridge_ask_claude(req: AskClaudeRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+class AskAgentRequest(BaseModel):
+    agent: str
+    prompt: str
+
+
+@app.post("/api/app-bridge/ask-agent")
+async def app_bridge_ask_agent(req: AskAgentRequest):
+    """
+    Brain Bridge v2: Route app requests through a named agent.
+    Agent runs with full system prompt and tool access.
+    """
+    agents_dir = Path(ROOT_DIR) / ".claude" / "agents"
+    if str(agents_dir) not in sys.path:
+        sys.path.insert(0, str(agents_dir))
+    from runner import invoke_agent
+
+    try:
+        result = await asyncio.wait_for(
+            invoke_agent(name=req.agent, prompt=req.prompt, mode="foreground"),
+            timeout=120
+        )
+        response_text = result.response or result.transcript or ""
+        logger.info(f"App Bridge askAgent: agent={req.agent} prompt={req.prompt[:80]}... response_len={len(response_text)}")
+        return {"response": response_text}
+    except asyncio.TimeoutError:
+        logger.warning(f"App Bridge askAgent timed out: agent={req.agent}")
+        raise HTTPException(status_code=504, detail=f"Agent '{req.agent}' timed out")
+    except Exception as e:
+        logger.error(f"App Bridge askAgent error: agent={req.agent} {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 class AppBridgeDeleteRequest(BaseModel):
     path: str
 
