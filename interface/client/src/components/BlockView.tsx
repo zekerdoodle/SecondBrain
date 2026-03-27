@@ -133,23 +133,8 @@ function TextBlockView({ block, onOpenFile }: TextBlockViewProps) {
   );
 }
 
-// File path helpers (duplicated from Chat.tsx to avoid circular deps)
-const FILE_PATH_REGEX = /^(?:\/home\/debian\/second_brain\/)?(?:(?:interface|\.claude|0[0-5]_\w+|docs|20_Areas|10_Active_Projects|30_Incubator|40_Archive|05_App_Data)\/)[\w./_-]+\.\w{1,10}$/;
-
-function looksLikeFilePath(text: string): boolean {
-  if (!text.includes('/') || !text.includes('.')) return false;
-  if (text.includes(' ')) return false;
-  if (/^https?:\/\//.test(text)) return false;
-  return FILE_PATH_REGEX.test(text) || /^[\w./_-]+\/[\w./_-]+\.\w{1,10}$/.test(text);
-}
-
-function toRelativePath(path: string): string {
-  const prefix = '/home/debian/second_brain/';
-  if (path.startsWith(prefix)) {
-    return path.slice(prefix.length);
-  }
-  return path;
-}
+// File path detection — shared utility (no more duplication!)
+import { looksLikeFilePath, toRelativePath } from '../utils/filePaths';
 
 // --- ToolChipBlock (combined tool_use + tool_result) ---
 

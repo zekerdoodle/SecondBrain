@@ -681,6 +681,38 @@ select {
       </div>
     </div>
 
+    <!-- Background Processing -->
+    <div class="card">
+      <div class="card-header">Background Processing</div>
+      <div class="banner banner-info" style="margin-bottom:14px; font-size: var(--font-size-xs); line-height: 1.5">
+        When enabled, the agent is silently invoked after every N exchanges to review the conversation and maintain its memories. Same agent, same model, all configured tools.
+      </div>
+      <div class="toggle-row">
+        <div>
+          <div class="toggle-label">Enabled</div>
+          <div class="toggle-sub">Silently invoke agent between conversations to maintain context</div>
+        </div>
+        <button class="toggle on" id="f-bg-enabled" onclick="toggleBgEnabled()"></button>
+      </div>
+      <div id="bg-settings">
+        <div class="field">
+          <label>Trigger Every N Exchanges</label>
+          <input type="number" id="f-bg-trigger" value="3" min="1" max="20" />
+          <div class="hint">How many completed exchanges before background processing fires. Default: 3</div>
+        </div>
+        <div class="field">
+          <label>Idle Timeout (minutes)</label>
+          <input type="number" id="f-bg-idle" value="30" min="5" max="120" />
+          <div class="hint">If the conversation goes idle for this long, trigger a final background sweep. Default: 30</div>
+        </div>
+        <div class="field">
+          <label>Background Prompt</label>
+          <textarea id="f-bg-prompt" placeholder="Instructions for what the agent should do during background processing..." style="min-height:160px"></textarea>
+          <div class="hint">Customise what the agent does in the background. Falls back to shared default if empty.</div>
+        </div>
+      </div>
+    </div>
+
     <!-- Tools -->
     <div class="card">
       <div class="card-header">Tools</div>
@@ -729,6 +761,7 @@ let selectedMcpTools = new Set();
 let selectedSkills = new Set();
 let restrictSkills = false;
 let isChattable = true;
+let bgEnabled = true;
 let editOriginalType = null;
 let activeIconCategory = 'all';
 let iconSearchQuery = '';
@@ -881,6 +914,10 @@ function resetForm() {
       catData.tools.forEach(t => selectedMcpTools.add(MCP_PREFIX + t));
     }
   }
+  bgEnabled = true;
+  document.getElementById('f-bg-trigger').value = '3';
+  document.getElementById('f-bg-idle').value = '30';
+  document.getElementById('f-bg-prompt').value = '';
   renderIconCategories();
   renderIconGrid();
   updateIconPreview();
@@ -889,6 +926,7 @@ function resetForm() {
   renderSkillChips();
   updateChattableUI();
   updateRestrictSkillsUI();
+  updateBgEnabledUI();
   updateThinkingUI();
   document.getElementById('warn-primary').style.display = 'none';
   document.getElementById('save-status').style.display = 'none';
@@ -965,6 +1003,13 @@ async function loadAgentForEdit() {
       selectedMcpTools = new Set(tools.filter(t => t.startsWith(MCP_PREFIX)));
     }
 
+    // Background processing
+    const bg = config.background_processing || {};
+    bgEnabled = bg.enabled !== false; // default true
+    document.getElementById('f-bg-trigger').value = bg.trigger_exchanges || 3;
+    document.getElementById('f-bg-idle').value = bg.idle_timeout_minutes || 30;
+    document.getElementById('f-bg-prompt').value = data.background_prompt || '';
+
     renderIconCategories();
     renderIconGrid();
     updateIconPreview();
@@ -973,6 +1018,7 @@ async function loadAgentForEdit() {
     renderSkillChips();
     updateChattableUI();
     updateRestrictSkillsUI();
+    updateBgEnabledUI();
 
     document.getElementById('warn-primary').style.display =
       CORE_AGENTS.includes(name) ? 'block' : 'none';
@@ -1174,6 +1220,19 @@ function updateChattableUI() {
 }
 
 // =============================================================================
+// Background Processing
+// =============================================================================
+function toggleBgEnabled() {
+  bgEnabled = !bgEnabled;
+  updateBgEnabledUI();
+}
+
+function updateBgEnabledUI() {
+  document.getElementById('f-bg-enabled').classList.toggle('on', bgEnabled);
+  document.getElementById('bg-settings').style.display = bgEnabled ? 'block' : 'none';
+}
+
+// =============================================================================
 // Skills
 // =============================================================================
 function toggleRestrictSkills() {
@@ -1305,6 +1364,13 @@ async function saveAgent() {
     // Neither set — uses model-level defaults
   }
 
+  // Background processing config
+  config.background_processing = {
+    enabled: bgEnabled,
+    trigger_exchanges: parseInt(document.getElementById('f-bg-trigger').value) || 3,
+    idle_timeout_minutes: parseInt(document.getElementById('f-bg-idle').value) || 30,
+  };
+
   if (restrictSkills) {
     config.skills = [...selectedSkills].sort();
   }
@@ -1316,7 +1382,8 @@ async function saveAgent() {
     config.tools = [...nativeToolsList, ...mcpToolsList];
   }
 
-  const body = { name, config, prompt };
+  const bgPrompt = document.getElementById('f-bg-prompt').value;
+  const body = { name, config, prompt, background_prompt: bgPrompt };
 
   try {
     document.getElementById('save-btn').disabled = true;

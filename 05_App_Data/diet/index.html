@@ -600,6 +600,7 @@ function getDayTotals(dayData) {
   let cal = 0, protein = 0;
   if (dayData.meals) {
     for (const m of dayData.meals) {
+      if (m.skipped) continue;
       if (m.option_id) {
         const opt = getOptionById(m.option_id);
         if (opt) { cal += opt.total_cal; protein += opt.total_protein; }
@@ -904,7 +905,16 @@ function renderMealProgress(container, today, headerHtml) {
     // Check custom
     const customLogged = today.custom_meals ? today.custom_meals.find(m => m.slot === s) : null;
 
-    if (opt) {
+    if (logged && logged.skipped) {
+      html += `
+        <div class="meal-done animate-in" style="opacity:0.5;">
+          <span class="meal-done-check" style="color:var(--text-muted);">—</span>
+          <span class="meal-done-label" style="color:var(--text-muted);">${meal ? meal.name : 'Meal ' + s}: Skipped</span>
+          <span class="meal-done-macros" style="color:var(--text-muted);">0 cal / 0g</span>
+          <button class="undo-btn" onclick="undoMeal(${s})" title="Undo">&#8630;</button>
+        </div>
+      `;
+    } else if (opt) {
       html += `
         <div class="meal-done animate-in">
           <span class="meal-done-check">&#10003;</span>
@@ -1035,6 +1045,7 @@ function renderMealProgress(container, today, headerHtml) {
     }
 
     html += `
+      <button class="btn btn-ghost" onclick="skipMeal(${nextSlot})" style="width:100%;margin-top:var(--sp-sm);color:var(--text-muted);">Skip this meal</button>
       </div>
     `;
   }
@@ -1069,6 +1080,17 @@ async function selectMeal(slot, optionId) {
   today.meals.push({ slot, option_id: optionId, time });
   await saveLog();
   BrainKit.toast('Meal logged', 'success');
+  renderToday();
+}
+
+async function skipMeal(slot) {
+  const today = getTodayData();
+  if (!today) return;
+  const now = new Date();
+  const time = String(now.getHours()).padStart(2,'0') + ':' + String(now.getMinutes()).padStart(2,'0');
+  today.meals.push({ slot, skipped: true, time });
+  await saveLog();
+  BrainKit.toast('Meal skipped', 'success');
   renderToday();
 }
 
@@ -1221,7 +1243,9 @@ function renderDaySummary(container, today, headerHtml) {
   if (today.meals) {
     for (const m of today.meals) {
       const meal = getMealBySlot(m.slot);
-      if (m.option_id) {
+      if (m.skipped) {
+        mealsHtml += `<div style="padding:3px 0;font-size:var(--font-size-sm);color:var(--text-muted);">${meal?.name || 'Slot ' + m.slot}: Skipped</div>`;
+      } else if (m.option_id) {
         const opt = getOptionById(m.option_id);
         mealsHtml += `<div style="padding:3px 0;font-size:var(--font-size-sm);color:var(--text-secondary);">${meal?.name || 'Slot ' + m.slot}: ${opt?.label || m.option_id}</div>`;
       } else if (m.library_id) {
@@ -1319,14 +1343,18 @@ async function submitCustomMeal() {
     const now = new Date();
     const time = String(now.getHours()).padStart(2,'0') + ':' + String(now.getMinutes()).padStart(2,'0');
 
-    const result = await BrainKit.askAgent('nutrition_coach',
-      `A user logged a custom meal in the diet tracker app. Estimate the macros and return structured data.
+    // Call nutrition_coach agent with full tooling — agent writes result to _estimate.json
+    await BrainKit.askAgent('nutrition_coach',
+      `Custom meal estimate request from the diet tracker app.
 
-Meal slot: ${slot} (${meal?.name || 'Meal ' + slot})
+Slot: ${slot} (${meal?.name || 'Meal ' + slot})
 Date: ${todayKey}
 Description: "${text}"
 
-Return ONLY valid JSON, no explanation or markdown:
+Estimate the macros using your full context (meal plan, food preferences, portion patterns).
+Write the result as JSON to file path: 05_App_Data/diet/_estimate.json
+
+Required JSON structure (write ONLY this JSON to the file, nothing else):
 {
   "items": [
     {"name": "Item name", "amount": "portion description", "cal": number, "protein": number}
@@ -1335,9 +1363,12 @@ Return ONLY valid JSON, no explanation or markdown:
   "total_protein": number
 }
 
-Be precise with portions. Use USDA data where possible. Round calories to nearest 5, protein to nearest 1g.`,
-      { json: true }
+Be precise with portions. Use USDA data where possible. Round calories to nearest 5, protein to nearest 1g.`
     );
+
+    // Read the result from the file the agent wrote
+    const resultStr = await BrainKit.readFile('diet/_estimate.json');
+    const result = JSON.parse(resultStr);
 
     // Save to custom meal library
     const libId = `cm_m${slot}_${String(customMealLibrary.next_id).padStart(3, '0')}`;
@@ -1787,7 +1818,14 @@ function renderHistory() {
     if (day.meals) {
       for (const m of day.meals) {
         const meal = getMealBySlot(m.slot);
-        if (m.option_id) {
+        if (m.skipped) {
+          html += `
+            <div class="history-meal-line">
+              <span>${meal?.name || 'Slot ' + m.slot}</span>
+              <span style="color:var(--text-muted);">Skipped</span>
+            </div>
+          `;
+        } else if (m.option_id) {
           const opt = getOptionById(m.option_id);
           html += `
             <div class="history-meal-line">

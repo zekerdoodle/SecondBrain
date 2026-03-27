@@ -311,9 +311,15 @@
     }
     var response = await window.brain.askClaude(prompt, opts);
     if (opts && opts.json) {
-      // Strip markdown fences if present
+      // Try 1: Strip markdown fences
       var cleaned = response.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim();
-      return JSON.parse(cleaned);
+      try { return JSON.parse(cleaned); } catch (e) { /* fall through */ }
+      // Try 2: Find first { ... } or [ ... ] in response
+      var match = response.match(/(\{[\s\S]*\}|\[[\s\S]*\])/);
+      if (match) {
+        try { return JSON.parse(match[1]); } catch (e2) { /* fall through */ }
+      }
+      throw new Error('Could not parse JSON from response: ' + response.substring(0, 100));
     }
     return response;
   }
@@ -340,10 +346,37 @@
     }
     var response = await window.brain.askAgent(agent, prompt);
     if (opts && opts.json) {
+      // Try 1: Strip markdown fences
       var cleaned = response.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim();
-      return JSON.parse(cleaned);
+      try { return JSON.parse(cleaned); } catch (e) { /* fall through */ }
+      // Try 2: Find first { ... } or [ ... ] in response
+      var match = response.match(/(\{[\s\S]*\}|\[[\s\S]*\])/);
+      if (match) {
+        try { return JSON.parse(match[1]); } catch (e2) { /* fall through */ }
+      }
+      throw new Error('Could not parse JSON from response: ' + response.substring(0, 100));
     }
     return response;
+  }
+
+
+  /* ==========================================================
+     readFile — thin wrapper around window.brain.readFile
+     ========================================================== */
+
+  /**
+   * Read a raw file by path (relative to 05_App_Data/).
+   *
+   *   const json = await BrainKit.readFile('diet/_estimate.json');
+   *
+   * @param {string} path - File path relative to 05_App_Data/
+   * @returns {Promise<string>} Raw file contents
+   */
+  async function readFile(path) {
+    if (!window.brain || !window.brain.readFile) {
+      throw new Error('readFile requires Brain Bridge v2');
+    }
+    return await window.brain.readFile(path);
   }
 
 
@@ -505,10 +538,11 @@
     tabs: tabs,
     askClaude: askClaude,
     askAgent: askAgent,
+    readFile: readFile,
     router: router,
     theme: theme,
-    version: '2.0.0'
+    version: '2.1.0'
   };
 
-  console.log('[brain-kit v2.0.0] Loaded — BrainKit.store, .toast, .modal, .tabs, .askClaude, .askAgent, .router, .theme available');
+  console.log('[brain-kit v2.1.0] Loaded — BrainKit.store, .toast, .modal, .tabs, .askClaude, .askAgent, .readFile, .router, .theme available');
 })();

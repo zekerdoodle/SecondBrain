@@ -412,6 +412,195 @@ async def _run_titler_background(
         logger.error(f"Titler: Background task failed: {e}")
 
 
+# --- Background Processing ---
+
+# Track active bg processing tasks to prevent overlapping runs
+_bg_processing_active: Set[str] = set()
+
+
+def _format_conversation_history(messages: List[Dict[str, Any]]) -> str:
+    """Format entire conversation history into readable text for background processing."""
+    parts = []
+    for msg in messages:
+        role = msg.get("role", "unknown").upper()
+        content = msg.get("content", "")
+        if not content:
+            continue
+        # Skip form data entries
+        if msg.get("formData"):
+            continue
+        parts.append(f"[{role}]\n{content}")
+    return "\n\n".join(parts)
+
+
+def _get_bg_config(agent_name: str) -> Optional[Dict[str, Any]]:
+    """Get background processing config for an agent, with defaults applied."""
+    agents_dir = Path(ROOT_DIR) / ".claude" / "agents"
+    if str(agents_dir) not in sys.path:
+        sys.path.insert(0, str(agents_dir))
+    from registry import get_registry
+
+    registry = get_registry()
+    config = registry.get(agent_name)
+    if not config:
+        return None
+
+    # Apply defaults
+    bg = config.background_processing or {}
+    return {
+        "enabled": bg.get("enabled", True),
+        "trigger_exchanges": bg.get("trigger_exchanges", 3),
+        "idle_timeout_minutes": bg.get("idle_timeout_minutes", 30),
+        "prompt": config.background_prompt or "",
+    }
+
+
+def _maybe_trigger_background_processing(
+    chat_id: str,
+    conv: ConversationState,
+    agent_name: Optional[str],
+):
+    """Check if background processing should fire after an exchange."""
+    if not agent_name:
+        return
+
+    bg_config = _get_bg_config(agent_name)
+    if not bg_config or not bg_config["enabled"] or not bg_config["prompt"]:
+        return
+
+    trigger_exchanges = bg_config["trigger_exchanges"]
+    exchanges_since_last = conv.exchange_count - conv.last_bg_exchange
+
+    if exchanges_since_last >= trigger_exchanges:
+        # Prevent overlapping runs for the same chat
+        if chat_id in _bg_processing_active:
+            logger.info(f"BG_PROCESSING: Already running for {chat_id}, skipping")
+            return
+
+        logger.info(
+            f"BG_PROCESSING: Triggering for {agent_name} in chat {chat_id} "
+            f"(exchange {conv.exchange_count}, last bg at {conv.last_bg_exchange})"
+        )
+        conv.last_bg_exchange = conv.exchange_count
+        asyncio.create_task(_run_background_processing(
+            chat_id=chat_id,
+            agent_name=agent_name,
+            messages=list(conv.messages),  # Snapshot current messages
+            bg_prompt=bg_config["prompt"],
+        ))
+
+
+async def _run_background_processing(
+    chat_id: str,
+    agent_name: str,
+    messages: List[Dict[str, Any]],
+    bg_prompt: str,
+):
+    """Run background processing for an agent — full history + bg prompt via invoke_agent."""
+    _bg_processing_active.add(chat_id)
+    try:
+        agents_dir = Path(ROOT_DIR) / ".claude" / "agents"
+        if str(agents_dir) not in sys.path:
+            sys.path.insert(0, str(agents_dir))
+        from runner import invoke_agent
+
+        # Format the entire conversation history
+        history = _format_conversation_history(messages)
+        if not history.strip():
+            logger.info(f"BG_PROCESSING: No meaningful history for {chat_id}, skipping")
+            return
+
+        # Build the combined prompt
+        combined_prompt = (
+            f"[CONVERSATION HISTORY]\n{history}\n\n"
+            f"[BACKGROUND PROCESSING INSTRUCTIONS]\n{bg_prompt}"
+        )
+
+        logger.info(
+            f"BG_PROCESSING: Starting for {agent_name} in chat {chat_id} "
+            f"({len(messages)} messages, {len(combined_prompt)} chars)"
+        )
+
+        result = await invoke_agent(
+            name=agent_name,
+            prompt=combined_prompt,
+            mode="trust",
+        )
+
+        status = result.get("status") if isinstance(result, dict) else getattr(result, "status", "unknown")
+        logger.info(
+            f"BG_PROCESSING: Completed for {agent_name} in chat {chat_id} "
+            f"(status={status if result else 'no_result'})"
+        )
+
+    except Exception as e:
+        logger.error(f"BG_PROCESSING: Failed for {agent_name} in chat {chat_id}: {e}")
+    finally:
+        _bg_processing_active.discard(chat_id)
+
+
+async def _background_processing_idle_watcher():
+    """Periodic task that checks for idle conversations and triggers background processing."""
+    logger.info("BG_PROCESSING: Idle watcher started (30 min interval)")
+    while True:
+        try:
+            await asyncio.sleep(1800)  # 30 minutes
+
+            now = time.time()
+            for chat_id, conv in list(active_conversations.items()):
+                # Skip if no exchanges yet
+                if conv.exchange_count == 0:
+                    continue
+                # Skip if already processed since last exchange
+                if conv.last_bg_exchange >= conv.exchange_count:
+                    continue
+                # Skip if no last_exchange_time set
+                if conv.last_exchange_time == 0:
+                    continue
+                # Check if idle long enough (30 min default)
+                idle_seconds = now - conv.last_exchange_time
+                if idle_seconds < 1800:
+                    continue
+
+                # Look up agent name from stored chat data
+                stored = chat_manager.load_chat(chat_id)
+                if not stored:
+                    continue
+                agent_name = stored.get("agent")
+                if not agent_name:
+                    continue
+
+                bg_config = _get_bg_config(agent_name)
+                if not bg_config or not bg_config["enabled"] or not bg_config["prompt"]:
+                    continue
+
+                idle_timeout = bg_config["idle_timeout_minutes"] * 60
+                if idle_seconds < idle_timeout:
+                    continue
+
+                # Prevent overlapping runs
+                if chat_id in _bg_processing_active:
+                    continue
+
+                logger.info(
+                    f"BG_PROCESSING: Idle trigger for {agent_name} in chat {chat_id} "
+                    f"(idle {idle_seconds:.0f}s, threshold {idle_timeout}s)"
+                )
+                conv.last_bg_exchange = conv.exchange_count
+                asyncio.create_task(_run_background_processing(
+                    chat_id=chat_id,
+                    agent_name=agent_name,
+                    messages=list(conv.messages),
+                    bg_prompt=bg_config["prompt"],
+                ))
+
+        except asyncio.CancelledError:
+            logger.info("BG_PROCESSING: Idle watcher cancelled")
+            break
+        except Exception as e:
+            logger.error(f"BG_PROCESSING: Idle watcher error: {e}")
+
+
 # --- Pydantic Models ---
 
 class FileRequest(BaseModel):
@@ -1289,7 +1478,19 @@ def get_agent_detail(name: str):
     prompt_path = agent_dir / "prompt.md"
     if prompt_path.exists():
         prompt_content = prompt_path.read_text()
-    return {"name": name, "config": config_yaml, "prompt": prompt_content}
+
+    # Load background processing prompt
+    bg_prompt_content = ""
+    bg_prompt_path = agent_dir / "background_processing.md"
+    if bg_prompt_path.exists():
+        bg_prompt_content = bg_prompt_path.read_text()
+    else:
+        # Fall back to default template
+        default_bg_path = agents_dir / "_default" / "background_processing.md"
+        if default_bg_path.exists():
+            bg_prompt_content = default_bg_path.read_text()
+
+    return {"name": name, "config": config_yaml, "prompt": prompt_content, "background_prompt": bg_prompt_content}
 
 
 @app.get("/api/tools/categories")
@@ -1330,6 +1531,7 @@ class AgentCreateRequest(BaseModel):
     name: str
     config: dict
     prompt: str = ""
+    background_prompt: str = ""
 
 
 @app.post("/api/agents")
@@ -1358,6 +1560,13 @@ def create_agent(req: AgentCreateRequest):
     (agent_dir / "config.yaml").write_text(_yaml.dump(config, default_flow_style=False, sort_keys=False))
     (agent_dir / "prompt.md").write_text(req.prompt)
 
+    # Save background processing prompt if provided (and different from default)
+    if req.background_prompt.strip():
+        default_bg_path = agents_dir / "_default" / "background_processing.md"
+        default_bg = default_bg_path.read_text() if default_bg_path.exists() else ""
+        if req.background_prompt.strip() != default_bg.strip():
+            (agent_dir / "background_processing.md").write_text(req.background_prompt)
+
     # Reload registry
     if str(agents_dir) not in sys.path:
         sys.path.insert(0, str(agents_dir))
@@ -1381,6 +1590,20 @@ def update_agent(name: str, req: AgentCreateRequest):
     config["name"] = name
     (agent_dir / "config.yaml").write_text(_yaml.dump(config, default_flow_style=False, sort_keys=False))
     (agent_dir / "prompt.md").write_text(req.prompt)
+
+    # Save background processing prompt
+    if req.background_prompt is not None:
+        bg_prompt_text = req.background_prompt.strip()
+        bg_prompt_path = agent_dir / "background_processing.md"
+        default_bg_path = agents_dir / "_default" / "background_processing.md"
+        default_bg = default_bg_path.read_text().strip() if default_bg_path.exists() else ""
+
+        if bg_prompt_text and bg_prompt_text != default_bg:
+            # Custom prompt — save it
+            bg_prompt_path.write_text(req.background_prompt)
+        elif bg_prompt_path.exists() and (not bg_prompt_text or bg_prompt_text == default_bg):
+            # Reverted to default or cleared — remove custom file so default is used
+            bg_prompt_path.unlink()
 
     # Reload registry
     if str(agents_dir) not in sys.path:
@@ -1996,7 +2219,7 @@ async def _dispatch_mention_agents(
     in the chat timeline — like a group chat, not funneled through the primary agent.
 
     Each agent runs independently. Messages are appended in completion order.
-    Max 3 agents per invocation. 45-minute timeout per agent.
+    Max 3 agents per invocation. 4-hour timeout per agent.
     """
     async def _run_single_mention(agent_name: str):
         # Broadcast typing indicator
@@ -2042,13 +2265,13 @@ Use tools only if the request clearly requires action (e.g., "fix this bug", "lo
             try:
                 result = await asyncio.wait_for(
                     invoke_agent(name=agent_name, prompt=prompt, mode="foreground", is_visible=True),
-                    timeout=2700
+                    timeout=14400
                 )
                 response_text = result.response or result.transcript or ""
                 if not response_text.strip():
                     response_text = f"*@{agent_name} had nothing to say*"
             except asyncio.TimeoutError:
-                response_text = f"*@{agent_name} timed out after 45 minutes*"
+                response_text = f"*@{agent_name} timed out after 4 hours*"
                 logger.warning(f"Mention agent {agent_name} timed out")
             except Exception as e:
                 response_text = f"*@{agent_name} encountered an error*"
@@ -4343,6 +4566,18 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
         except Exception as e:
             logger.debug(f"Titler trigger failed: {e}")
 
+    # ========== Background processing trigger ==========
+    if not is_system_continuation and all_segments and not had_error:
+        conv.last_exchange_time = time.time()
+        try:
+            _maybe_trigger_background_processing(
+                chat_id=chat_id_for_storage,
+                conv=conv,
+                agent_name=agent_name,
+            )
+        except Exception as e:
+            logger.debug(f"BG_PROCESSING: Trigger check failed: {e}")
+
     # ========== Clear streaming state - processing complete ==========
     state_key = chat_id_for_storage
     # Stop any running heartbeat for this session
@@ -6041,6 +6276,7 @@ async def startup_event():
 
     asyncio.create_task(scheduler_loop())
     asyncio.create_task(agent_notification_wakeup_loop())
+    asyncio.create_task(_background_processing_idle_watcher())
 
     # If there's a restart continuation, launch the wakeup task
     if restart_continuation:
@@ -6105,7 +6341,8 @@ def sync_chat_state(req: SyncRequest):
             has_pending=False
         )
 
-    messages = chat_data.get("messages", [])
+    # Prefer display_messages (has blocks/thinking) over flat messages
+    messages = chat_data.get("display_messages") or chat_data.get("messages", [])
 
     # Check if there's a pending message in the WAL for this session
     wal = get_wal()

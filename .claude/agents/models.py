@@ -49,7 +49,7 @@ class AgentConfig:
     description: str
     display_name: Optional[str] = None  # Human-friendly name (e.g., "Patch"). Falls back to title-cased `name`.
     tools: List[str] = field(default_factory=list)
-    timeout_seconds: int = 1800
+    timeout_seconds: int = 14400
     max_turns: int = 200
     output_format: Optional[Dict[str, Any]] = None
     prompt: Optional[str] = None
@@ -62,9 +62,12 @@ class AgentConfig:
     default: bool = False  # The default agent for chat (replaces PRIMARY concept)
     effort: Optional[str] = None  # Override thinking effort: 'low', 'medium', 'high', 'max'
     thinking_budget: Optional[int] = None  # Override: explicit budget_tokens for ThinkingConfigEnabled
+    background_processing: Optional[Dict[str, Any]] = None  # Background processing config (enabled, trigger_exchanges, idle_timeout_minutes)
+    background_prompt: Optional[str] = None  # Content of background_processing.md
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any], prompt: Optional[str] = None) -> "AgentConfig":
+    def from_dict(cls, data: Dict[str, Any], prompt: Optional[str] = None,
+                  background_prompt: Optional[str] = None) -> "AgentConfig":
         """Create AgentConfig from a dictionary (parsed YAML)."""
         return cls(
             name=data["name"],
@@ -73,7 +76,7 @@ class AgentConfig:
             description=data.get("description", f"Agent: {data['name']}"),
             display_name=data.get("display_name"),
             tools=data.get("tools", []),
-            timeout_seconds=data.get("timeout_seconds") or data.get("timeout") or 1800,
+            timeout_seconds=data.get("timeout_seconds") or data.get("timeout") or 14400,
             max_turns=data.get("max_turns", 200),
             output_format=data.get("output_format"),
             prompt=prompt,
@@ -86,6 +89,8 @@ class AgentConfig:
             default=data.get("default", False),
             effort=data.get("effort"),
             thinking_budget=data.get("thinking_budget"),
+            background_processing=data.get("background_processing"),
+            background_prompt=background_prompt,
         )
 
 

@@ -144,6 +144,17 @@ class AgentRegistry:
                 if not config_data.get("chattable", False) and not config_data.get("system_prompt_preset"):
                     prompt = self._add_subagent_header(prompt)
 
+            # Load background processing prompt
+            background_prompt = None
+            bg_prompt_path = agent_dir / "background_processing.md"
+            if bg_prompt_path.exists():
+                background_prompt = bg_prompt_path.read_text()
+            else:
+                # Fall back to shared default template
+                default_bg_path = self.base_dir / "_default" / "background_processing.md"
+                if default_bg_path.exists():
+                    background_prompt = default_bg_path.read_text()
+
             # Validate config
             if "name" not in config_data:
                 config_data["name"] = agent_dir.name
@@ -161,7 +172,7 @@ class AgentRegistry:
                     config_data["name"]
                 )
 
-            return AgentConfig.from_dict(config_data, prompt=prompt)
+            return AgentConfig.from_dict(config_data, prompt=prompt, background_prompt=background_prompt)
 
         except Exception as e:
             logger.error(f"Failed to load agent {agent_dir.name}: {e}")

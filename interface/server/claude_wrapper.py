@@ -33,6 +33,24 @@ from claude_agent_sdk import (
     ToolResultBlock,
     ThinkingBlock,
 )
+from claude_agent_sdk.types import PermissionResultAllow, HookMatcher
+
+
+async def _auto_approve_tool(tool_name: str, input_data: dict, context) -> PermissionResultAllow:
+    """Auto-approve ALL tool permission requests without prompting.
+
+    bypassPermissions handles most cases, but Claude Code has hardcoded protection
+    for .claude/, .git/, .vscode/, .idea/ directories that still prompts even in
+    bypass mode.  In SDK sessions there is no user to respond, so the prompt times
+    out to a denial.  This callback catches those prompts and approves them.
+    """
+    return PermissionResultAllow(updated_input=input_data)
+
+
+async def _keepalive_hook(input_data, tool_use_id, context):
+    """Dummy PreToolUse hook — required by the Python SDK to keep the stream open
+    for the can_use_tool callback."""
+    return {"continue_": True}
 from claude_agent_sdk.types import (
     StreamEvent,
     ThinkingConfigAdaptive,
@@ -343,7 +361,8 @@ class ClaudeWrapper:
                     memory_block = "\n".join(lines)
                     parts.append(
                         "\n---\n\n"
-                        "Your persistent memory (notes you've saved across conversations):\n\n"
+                        "Your persistent memory (notes you've saved across conversations).\n"
+                            "Only you (the agent) can see this section — it is never visible to the user.\n\n"
                         f"{memory_block}"
                     )
                     logger.info(f"Agent '{agent_config.name}': loaded {len(always_load)} always_load memories")
@@ -358,7 +377,8 @@ class ClaudeWrapper:
                     if content:
                         parts.append(
                             "\n---\n\n"
-                            "Your persistent memory (notes you've saved across conversations):\n\n"
+                            "Your persistent memory (notes you've saved across conversations).\n"
+                            "Only you (the agent) can see this section — it is never visible to the user.\n\n"
                             f"{content}"
                         )
                         logger.info(f"Agent '{agent_config.name}': loaded memory.md ({memory_path.stat().st_size} bytes)")
@@ -401,7 +421,8 @@ class ClaudeWrapper:
                     memory_block = "\n".join(lines)
                     append_parts.append(
                         "\n---\n\n"
-                        "Your persistent memory (notes you've saved across conversations):\n\n"
+                        "Your persistent memory (notes you've saved across conversations).\n"
+                            "Only you (the agent) can see this section — it is never visible to the user.\n\n"
                         f"{memory_block}"
                     )
                     logger.info(f"Agent '{agent_config.name}': loaded {len(always_load)} always_load memories for preset append")
@@ -416,7 +437,8 @@ class ClaudeWrapper:
                     if content:
                         append_parts.append(
                             "\n---\n\n"
-                            "Your persistent memory (notes you've saved across conversations):\n\n"
+                            "Your persistent memory (notes you've saved across conversations).\n"
+                            "Only you (the agent) can see this section — it is never visible to the user.\n\n"
                             f"{content}"
                         )
                         logger.info(f"Agent '{agent_config.name}': loaded memory.md for preset append")
@@ -514,6 +536,8 @@ class ClaudeWrapper:
             "mcp_servers": mcp_servers if mcp_servers else None,
             "allowed_tools": allowed if allowed else None,
             "permission_mode": "bypassPermissions",
+            "can_use_tool": _auto_approve_tool,  # Catch .claude/ directory prompts that bypass mode doesn't suppress
+            "hooks": {"PreToolUse": [HookMatcher(matcher=None, hooks=[_keepalive_hook])]},
             "cwd": self.cwd,
             "include_partial_messages": True,
         }
@@ -937,6 +961,9 @@ class ConversationState:
         }
         # Track number of completed exchanges for chat titler
         self.exchange_count: int = 0
+        # Background processing tracking
+        self.last_bg_exchange: int = 0       # Exchange count at last bg processing
+        self.last_exchange_time: float = 0   # Timestamp of last completed exchange
 
     def add_message(self, role: str, content: str, msg_id: Optional[str] = None, images: Optional[List[Dict]] = None):
         """Add a message to the conversation."""

@@ -237,7 +237,20 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
 
   // User message queue - messages sent while Claude is responding
   // These will be sent automatically when the current turn completes
-  const [queuedMessages, setQueuedMessages] = useState<UserQueuedMessage[]>([]);
+  // Restore from sessionStorage on mount so queued messages survive refresh
+  const queuedMsgKey = `brain_queued_msgs${keySuffix}`;
+  const [queuedMessages, setQueuedMessages] = useState<UserQueuedMessage[]>(() => {
+    try {
+      const stored = sessionStorage.getItem(queuedMsgKey);
+      if (stored) {
+        const parsed = JSON.parse(stored) as UserQueuedMessage[];
+        // Only restore messages that are still relevant (< 5 minutes old)
+        const now = Date.now();
+        return parsed.filter(m => now - m.timestamp < 300000);
+      }
+    } catch { /* ignore */ }
+    return [];
+  });
   // Flag to trigger queue processing after turn completion
   const shouldProcessQueue = useRef(false);
   // Store injected messages confirmed by server, with their injection position
@@ -252,6 +265,17 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
   useEffect(() => {
     localStorage.setItem(sessionKey, sessionId);
   }, [sessionId, sessionKey]);
+
+  // Persist queued messages to sessionStorage so they survive refresh
+  useEffect(() => {
+    try {
+      if (queuedMessages.length > 0) {
+        sessionStorage.setItem(queuedMsgKey, JSON.stringify(queuedMessages));
+      } else {
+        sessionStorage.removeItem(queuedMsgKey);
+      }
+    } catch { /* ignore */ }
+  }, [queuedMessages, queuedMsgKey]);
 
 
   // Recover pending message on mount (if component unmounted during send)
@@ -358,6 +382,9 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
             .then(data => {
               // Only apply if we're STILL waiting (state could have arrived in the meantime)
               const msgs = data.display_messages || data.messages;
+              const hasDisplayMsgs = !!data.display_messages;
+              const blockCount = (msgs || []).filter((m: ChatMessage) => m.blocks && m.blocks.length > 0).length;
+              console.log(`[FALLBACK] REST loaded: ${(msgs || []).length} messages, display_messages=${hasDisplayMsgs}, withBlocks=${blockCount}`);
               if (awaitingStateResponse.current && msgs && Array.isArray(msgs)) {
                 awaitingStateResponse.current = false;
                 setMessages(msgs);
@@ -484,6 +511,20 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
             }
             if (data.agent !== undefined) {
               setCurrentAgent(data.agent || null);
+            }
+
+            // Diagnostic logging: track block presence on state load for debugging
+            if (data.messages && data.messages.length > 0) {
+              const blockStats = data.messages.reduce((acc: { withBlocks: number; withoutBlocks: number; blockTypes: Set<string> }, m: ChatMessage) => {
+                if (m.blocks && m.blocks.length > 0) {
+                  acc.withBlocks++;
+                  m.blocks.forEach((b: { type: string }) => acc.blockTypes.add(b.type));
+                } else if (m.role === 'assistant') {
+                  acc.withoutBlocks++;
+                }
+                return acc;
+              }, { withBlocks: 0, withoutBlocks: 0, blockTypes: new Set<string>() });
+              console.log(`[STATE] Received ${data.messages.length} messages: ${blockStats.withBlocks} with blocks (types: ${[...blockStats.blockTypes].join(',')}), ${blockStats.withoutBlocks} assistant without blocks, isProcessing=${data.isProcessing}`);
             }
 
             // During streaming: filter out injected messages from state data BEFORE

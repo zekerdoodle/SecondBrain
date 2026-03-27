@@ -61,31 +61,8 @@ const STALL_PHRASES = [
 ];
 
 
-// --- File path detection for clickable links ---
-// Matches paths that look like files in the Second Brain project tree
-// Detects: absolute paths (/home/debian/...), relative project paths (interface/..., .claude/..., 00_Inbox/..., etc.)
-const FILE_PATH_REGEX = /^(?:\/home\/debian\/second_brain\/)?(?:(?:interface|\.claude|0[0-5]_\w+|docs|20_Areas|10_Active_Projects|30_Incubator|40_Archive|05_App_Data)\/)[\w./_-]+\.\w{1,10}$/;
-
-// Check if an inline code string looks like a file path
-const looksLikeFilePath = (text: string): boolean => {
-  // Must contain at least one slash and a file extension
-  if (!text.includes('/') || !text.includes('.')) return false;
-  // Must not contain spaces (paths in backticks shouldn't)
-  if (text.includes(' ')) return false;
-  // Must not be a URL
-  if (/^https?:\/\//.test(text)) return false;
-  // Match known project paths or relative paths with extensions
-  return FILE_PATH_REGEX.test(text) || /^[\w./_-]+\/[\w./_-]+\.\w{1,10}$/.test(text);
-};
-
-// Strip the absolute prefix to get a relative project path
-const toRelativePath = (path: string): string => {
-  const prefix = '/home/debian/second_brain/';
-  if (path.startsWith(prefix)) {
-    return path.slice(prefix.length);
-  }
-  return path;
-};
+// File path detection for clickable links — shared utility
+import { looksLikeFilePath, toRelativePath } from './utils/filePaths';
 
 // --- Emoji Reaction Components ---
 const EmojiPicker = ({ onSelect, onClose }: { onSelect: (emoji: string) => void; onClose: () => void }) => {
@@ -1477,6 +1454,9 @@ export const Chat: React.FC<ChatProps> = ({
 
   const processedMessages = useMemo<ProcessedMessage[]>(() => {
     const result: ProcessedMessage[] = [];
+    // Buffer for tool_calls that couldn't attach to a preceding assistant.
+    // These will attach to the NEXT assistant message instead.
+    let pendingToolCalls: ToolCallData[] = [];
 
     for (let i = 0; i < messages.length; i++) {
       const msg = messages[i];
@@ -1484,23 +1464,35 @@ export const Chat: React.FC<ChatProps> = ({
 
       // New format: has blocks — render directly, no grouping needed
       if (msg.blocks && msg.blocks.length > 0) {
-        result.push({ message: msg, legacyToolCalls: [] });
+        // Attach any buffered legacy tool_calls to this block-based message
+        // (unlikely but handles mixed formats gracefully)
+        if (pendingToolCalls.length > 0) {
+          result.push({ message: msg, legacyToolCalls: pendingToolCalls });
+          pendingToolCalls = [];
+        } else {
+          result.push({ message: msg, legacyToolCalls: [] });
+        }
         continue;
       }
 
-      // Old format: group tool_call messages with preceding assistant
+      // Old format: group tool_call messages with nearest assistant
       if ((msg as any).role === 'tool_call') {
         const tc = msg as unknown as ToolCallMessage;
+        const toolCallData: ToolCallData = {
+          id: tc.id,
+          tool_name: tc.tool_name,
+          tool_id: tc.tool_id,
+          args: tc.args || {},
+          output_summary: tc.output_summary,
+          is_error: tc.is_error,
+        };
+        // Try to attach to preceding assistant message
         const last = result[result.length - 1];
         if (last && last.message.role === 'assistant') {
-          last.legacyToolCalls.push({
-            id: tc.id,
-            tool_name: tc.tool_name,
-            tool_id: tc.tool_id,
-            args: tc.args || {},
-            output_summary: tc.output_summary,
-            is_error: tc.is_error,
-          });
+          last.legacyToolCalls.push(toolCallData);
+        } else {
+          // Buffer for the next assistant message
+          pendingToolCalls.push(toolCallData);
         }
         continue;
       }
@@ -1508,7 +1500,13 @@ export const Chat: React.FC<ChatProps> = ({
       // Skip hidden non-tool messages (ping mode wake-up triggers)
       if (msg.hidden) continue;
 
-      result.push({ message: msg, legacyToolCalls: [] });
+      // If this is an assistant message and we have buffered tool_calls, attach them
+      if (msg.role === 'assistant' && pendingToolCalls.length > 0) {
+        result.push({ message: msg, legacyToolCalls: pendingToolCalls });
+        pendingToolCalls = [];
+      } else {
+        result.push({ message: msg, legacyToolCalls: [] });
+      }
     }
 
     return result;

@@ -12,7 +12,8 @@ _HEADER = (
     "Your active scratchpad. These are notes you have set for yourself during\n"
     "recent conversations. They auto-expire after a set number of exchanges\n"
     "unless pinned. Use them to track tasks, reminders, and context you need\n"
-    "to carry across turns. Review and prune regularly."
+    "to carry across turns. Review and prune regularly.\n"
+    "Only you (the agent) can see this section — it is never visible to the user."
 )
 _MAX_PREVIEW_CHARS = 160
 
