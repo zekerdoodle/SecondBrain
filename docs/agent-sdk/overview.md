@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/overview
 title: Agent SDK overview
-last_fetched: 2026-03-04T10:02:54.131520+00:00
+last_fetched: 2026-03-28T09:03:02.858244+00:00
 ---
 
 Copy page
@@ -162,14 +162,14 @@ The SDK also supports Claude Code's filesystem-based configuration. To use these
 
 | Feature | Description | Location |
 | --- | --- | --- |
-| [Skills](/docs/en/agent-sdk/skills) | Specialized capabilities defined in Markdown | `.claude/skills/SKILL.md` |
+| [Skills](/docs/en/agent-sdk/skills) | Specialized capabilities defined in Markdown | `.claude/skills/*/SKILL.md` |
 | [Slash commands](/docs/en/agent-sdk/slash-commands) | Custom commands for common tasks | `.claude/commands/*.md` |
 | [Memory](/docs/en/agent-sdk/modifying-system-prompts) | Project context and instructions | `CLAUDE.md` or `.claude/CLAUDE.md` |
 | [Plugins](/docs/en/agent-sdk/plugins) | Extend with custom commands, agents, and MCP servers | Programmatic via `plugins` option |
 
 ## Compare the Agent SDK to other Claude tools
 
-The Claude platform offers multiple ways to build with Claude. Here's how the Agent SDK fits in:
+The Claude Platform offers multiple ways to build with Claude. Here's how the Agent SDK fits in:
 
 Agent SDK vs Client SDK
 

@@ -1882,6 +1882,10 @@ export const Chat: React.FC<ChatProps> = ({
                         </span>
                       </div>
                     )}
+                    {/* Legacy tool chips ABOVE message text (chronological order: tools ran before response) */}
+                    {legacyToolCalls.length > 0 && !msg.isStreaming && (
+                      <ToolCallChips toolCalls={legacyToolCalls} />
+                    )}
                     <ChatMessageItem
                       msg={msg}
                       isUser={isUser}
@@ -1922,10 +1926,6 @@ export const Chat: React.FC<ChatProps> = ({
                   })()
                 )}
 
-                {/* Legacy tool chips (old format) */}
-                {legacyToolCalls.length > 0 && !msg.isStreaming && (
-                  <ToolCallChips toolCalls={legacyToolCalls} />
-                )}
               </React.Fragment>
             );
           })}

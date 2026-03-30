@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/typescript
 title: Agent SDK reference - TypeScript
-last_fetched: 2026-03-24T09:03:24.655556+00:00
+last_fetched: 2026-03-28T09:04:26.978036+00:00
 ---
 
 Copy page
@@ -135,11 +135,13 @@ function listSessions(options?: ListSessionsOptions): Promise<SDKSessionInfo[]>;
 | `sessionId` | `string` | Unique session identifier (UUID) |
 | `summary` | `string` | Display title: custom title, auto-generated summary, or first prompt |
 | `lastModified` | `number` | Last modified time in milliseconds since epoch |
-| `fileSize` | `number` | Session file size in bytes |
+| `fileSize` | `number | undefined` | Session file size in bytes. Only populated for local JSONL storage |
 | `customTitle` | `string | undefined` | User-set session title (via `/rename`) |
 | `firstPrompt` | `string | undefined` | First meaningful user prompt in the session |
 | `gitBranch` | `string | undefined` | Git branch at the end of the session |
 | `cwd` | `string | undefined` | Working directory for the session |
+| `tag` | `string | undefined` | User-set session tag (see [`tagSession()`](#tag-session)) |
+| `createdAt` | `number | undefined` | Creation time in milliseconds since epoch, from the first entry's timestamp |
 
 #### Example
 
@@ -203,6 +205,66 @@ if (latest) {
  }
 }
 ```
+
+### `getSessionInfo()`
+
+Reads metadata for a single session by ID without scanning the full project directory.
+
+```shiki
+function getSessionInfo(
+ sessionId: string,
+ options?: GetSessionInfoOptions
+): Promise<SDKSessionInfo | undefined>;
+```
+
+#### Parameters
+
+| Parameter | Type | Default | Description |
+| --- | --- | --- | --- |
+| `sessionId` | `string` | required | UUID of the session to look up |
+| `options.dir` | `string` | `undefined` | Project directory path. When omitted, searches all project directories |
+
+Returns [`SDKSessionInfo`](#return-type-sdk-session-info), or `undefined` if the session is not found.
+
+### `renameSession()`
+
+Renames a session by appending a custom-title entry. Repeated calls are safe; the most recent title wins.
+
+```shiki
+function renameSession(
+ sessionId: string,
+ title: string,
+ options?: SessionMutationOptions
+): Promise<void>;
+```
+
+#### Parameters
+
+| Parameter | Type | Default | Description |
+| --- | --- | --- | --- |
+| `sessionId` | `string` | required | UUID of the session to rename |
+| `title` | `string` | required | New title. Must be non-empty after trimming whitespace |
+| `options.dir` | `string` | `undefined` | Project directory path. When omitted, searches all project directories |
+
+### `tagSession()`
+
+Tags a session. Pass `null` to clear the tag. Repeated calls are safe; the most recent tag wins.
+
+```shiki
+function tagSession(
+ sessionId: string,
+ tag: string | null,
+ options?: SessionMutationOptions
+): Promise<void>;
+```
+
+#### Parameters
+
+| Parameter | Type | Default | Description |
+| --- | --- | --- | --- |
+| `sessionId` | `string` | required | UUID of the session to tag |
+| `tag` | `string | null` | required | Tag string, or `null` to clear |
+| `options.dir` | `string` | `undefined` | Project directory path. When omitted, searches all project directories |
 
 ## Types
 

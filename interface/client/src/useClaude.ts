@@ -9,6 +9,12 @@ const SESSION_KEY = 'second_brain_session_id';
 const PENDING_MSG_KEY = 'second_brain_pending_message';
 const LAST_SYNC_KEY = 'second_brain_last_sync';
 
+// Dedup state for broadcast events (broker + streaming handler + retry can send duplicates)
+let _lastThemeKey = '';
+let _lastThemeTime = 0;
+let _lastDeskFilePath = '';
+let _lastDeskTime = 0;
+
 // Default base overhead (fetched dynamically on load)
 
 // Message queue entry for reliability
@@ -1166,9 +1172,19 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
           }
           break;
 
-        case 'theme_update':
+        case 'theme_update': {
           // Agent set_theme tool fired - apply theme changes to all clients
+          // Dedup: theme application is idempotent, but skip redundant processing
           if (data.theme) {
+            const themeKey = JSON.stringify(data.theme);
+            const now = Date.now();
+            if (themeKey === _lastThemeKey && now - _lastThemeTime < 3000) {
+              console.log('Theme update dedup: skipped duplicate within 3s window');
+              break;
+            }
+            _lastThemeKey = themeKey;
+            _lastThemeTime = now;
+
             console.log('Theme update from agent:', data.theme);
             // Merge with current preferences (partial update)
             const current = loadThemePreferences();
@@ -1183,16 +1199,27 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
             }
           }
           break;
+        }
 
-        case 'leave_on_desk':
+        case 'leave_on_desk': {
           // Agent left a file on the user's desk — dispatch custom event for App to handle
+          // Dedup: prevent duplicate toasts from broker + streaming handler + retry broadcasts
           if (data.file_path) {
+            const now = Date.now();
+            if (data.file_path === _lastDeskFilePath && now - _lastDeskTime < 3000) {
+              console.log('Leave on desk dedup: skipped duplicate within 3s window');
+              break;
+            }
+            _lastDeskFilePath = data.file_path;
+            _lastDeskTime = now;
+
             console.log('Leave on desk:', data.file_path, data.reason);
             window.dispatchEvent(new CustomEvent('leave-on-desk', {
               detail: { filePath: data.file_path, reason: data.reason || '' }
             }));
           }
           break;
+        }
 
         case 'server_restarted':
           // Only primary instance handles reload — secondary instances will be cleaned up by the reload

@@ -1,8 +1,8 @@
 """
 Set Theme tool - allows agents to change the UI theme color and mode.
 
-Updates the server-side preferences file. The server-side streaming handler
-detects this tool and broadcasts a theme_update to all connected clients.
+Updates the server-side preferences file and broadcasts directly to all
+connected clients via the broadcast broker (with retry for reliability).
 """
 
 import json
@@ -135,6 +135,22 @@ async def set_theme(args: Dict[str, Any]) -> Dict[str, Any]:
         with open(PREFERENCES_FILE, "w") as f:
             json.dump(existing, f, indent=2)
 
+        # Broadcast directly to all connected clients via broker (with retry)
+        broadcast_ok = False
+        try:
+            from desk_broker import broadcast_theme_event
+            theme_payload = {}
+            if accent_color_input:
+                theme_payload["accentColor"] = theme["accentColor"]
+                theme_payload["accentHover"] = theme["accentHover"]
+            if mode:
+                theme_payload["mode"] = mode
+            if theme_payload:
+                broadcast_ok = await broadcast_theme_event(theme_payload)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).warning("SET_THEME: Broker broadcast failed", exc_info=True)
+
         # Build description for the response
         parts = []
         if accent_color_input:
@@ -146,8 +162,9 @@ async def set_theme(args: Dict[str, Any]) -> Dict[str, Any]:
         if mode:
             parts.append(f"mode to {mode}")
 
+        broadcast_note = "" if broadcast_ok else " (Broadcast may not have reached all clients.)"
         return {
-            "content": [{"type": "text", "text": f"Theme updated: {', '.join(parts)}. Applied to all connected clients."}]
+            "content": [{"type": "text", "text": f"Theme updated: {', '.join(parts)}. Applied to all connected clients.{broadcast_note}"}]
         }
 
     except ValueError as e:

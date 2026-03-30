@@ -2448,6 +2448,11 @@ class SessionStreamingState:
     # Internal tracking (not sent to clients)
     _current_blocks: List[ContentBlock] = field(default_factory=list)
     _current_msg_id: Optional[str] = None
+    # Whether this SS was initialized with full message history from disk.
+    # If True, serialized SS messages are the complete display_messages (no merge needed).
+    # If False (late init / empty init), SS only has current-turn messages and needs
+    # previous display_messages prepended from disk.
+    _has_full_history: bool = False
 
     def _next_seq(self) -> int:
         self.seq += 1
@@ -2934,6 +2939,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 session_streaming_states[state_key] = SessionStreamingState(
                     status="streaming",
                     messages=_init_messages,
+                    _has_full_history=bool(_init_messages),
                     turn_id=turn_id,
                 )
                 data["turnId"] = turn_id
@@ -3760,6 +3766,7 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
                             session_streaming_states[actual_state_key] = SessionStreamingState(
                                 status="streaming",
                                 messages=_fallback_msgs,
+                                _has_full_history=bool(_fallback_msgs),
                             )
                             logger.info(f"STREAMING_STATE: Created for {actual_state_key}")
                     # Update active session tracking to the actual ID
@@ -4397,10 +4404,11 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
     # This preserves thinking blocks, tool call metadata, and per-block rendering
     # across page reloads and server restarts.
     #
-    # Strategy: SS messages have block-level detail (thinking, tool_use, etc.) but may
-    # only cover the current turn (e.g. after restart). conv.messages has the complete
-    # history but as flat text. Combine them: use SS where available, conv.messages for
-    # older history that SS doesn't cover.
+    # IMPORTANT: SS uses a block model (1 assistant message per turn with multiple
+    # blocks for thinking/text/tool_use/tool_result), while conv.messages uses a flat
+    # model (multiple assistant messages per turn, one per tool cycle). These counts
+    # CANNOT be compared — SS will always have fewer messages than conv.messages for
+    # conversations with tool use. Instead, we use the _has_full_history flag to decide.
     _save_ss_key = preserve_chat_id or new_session_id or streaming_state_key
     _save_ss = session_streaming_states.get(_save_ss_key)
     if _save_ss and _save_ss.messages:
@@ -4423,20 +4431,20 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
                 # User messages and other non-block messages pass through as-is
                 serialized_ss.append(_dm)
 
-        n_ss = len(serialized_ss)
-        # Count only user/assistant messages in conv.messages, excluding form
-        # entries. Form messages have role="assistant" but are separate entries
-        # not tracked in SS, so including them inflates n_conv and incorrectly
-        # triggers the merge branch.
-        n_conv_meaningful = sum(1 for m in conv.messages if m.get("role") in ("user", "assistant") and not m.get("formData"))
-
-        if n_ss >= n_conv_meaningful:
-            # SS has full history (normal flow with disk-init) - use it directly
+        if _save_ss._has_full_history:
+            # SS was initialized with full display_messages from disk + current turn.
+            # Use it directly — it IS the complete history.
             display_msgs = serialized_ss
+            logger.info(f"DISPLAY_MSGS: Using full SS history ({len(serialized_ss)} msgs, "
+                        f"{sum(1 for m in serialized_ss if m.get('blocks'))} with blocks)")
         else:
-            # SS is partial (e.g. restart continuation) - prepend older conv history
-            conv_meaningful = [m for m in conv.messages if m.get("role") in ("user", "assistant")]
-            display_msgs = conv_meaningful[:n_conv_meaningful - n_ss] + serialized_ss
+            # SS is partial (late init / restart continuation) — only has current turn.
+            # Prepend previous display_messages from disk to get full history.
+            old_chat_for_merge = chat_manager.load_chat(chat_id_for_storage)
+            old_display = old_chat_for_merge.get("display_messages", []) if old_chat_for_merge else []
+            display_msgs = old_display + serialized_ss
+            logger.info(f"DISPLAY_MSGS: Merged {len(old_display)} old + {len(serialized_ss)} new SS msgs "
+                        f"({sum(1 for m in display_msgs if m.get('blocks'))} with blocks)")
 
         # Inject form messages — they're persisted in conv.messages but not
         # tracked in SS, so they'd be lost from display_messages on reload.
@@ -4681,6 +4689,9 @@ async def handle_edit(websocket: WebSocket, data: dict):
     ss = session_streaming_states.get(chat_id)
     if ss is not None:
         ss.messages = list(context_messages)
+        # Mark as full history: the context messages + new response IS the complete
+        # conversation after edit. Don't merge with pre-edit display_messages from disk.
+        ss._has_full_history = True
 
     # BROADCAST truncation to ALL clients viewing this session
     # This ensures multi-device consistency during edits
@@ -4758,6 +4769,9 @@ async def handle_regenerate(websocket: WebSocket, data: dict):
     ss = session_streaming_states.get(session_id)
     if ss is not None:
         ss.messages = list(context_messages)
+        # Mark as full history: context + new response IS the complete conversation
+        # after regeneration. Don't merge with pre-regenerate display_messages from disk.
+        ss._has_full_history = True
 
     # BROADCAST truncation to ALL clients viewing this session
     # Show context + the user message we're regenerating from
