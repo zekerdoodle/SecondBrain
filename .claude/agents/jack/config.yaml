@@ -8,6 +8,10 @@ max_turns: 200
 chattable: true
 icon: lightning
 display_name: Jack
+background_processing:
+  enabled: true
+  trigger_exchanges: 3
+  idle_timeout_minutes: 30
 tools:
 - Read
 - Write
@@ -56,3 +60,4 @@ tools:
 - mcp__brain__fal_multi_ref_image
 - mcp__brain__fal_list_models
 - mcp__brain__bash
+- mcp__brain__process_list

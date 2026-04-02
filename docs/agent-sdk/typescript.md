@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/typescript
 title: Agent SDK reference - TypeScript
-last_fetched: 2026-03-28T09:04:26.978036+00:00
+last_fetched: 2026-04-01T09:04:33.382260+00:00
 ---
 
 Copy page
@@ -280,7 +280,7 @@ Configuration object for the `query()` function.
 | `agents` | `Record<string, [`AgentDefinition`](#agent-definition)>` | `undefined` | Programmatically define subagents |
 | `allowDangerouslySkipPermissions` | `boolean` | `false` | Enable bypassing permissions. Required when using `permissionMode: 'bypassPermissions'` |
 | `allowedTools` | `string[]` | `[]` | Tools to auto-approve without prompting. This does not restrict Claude to only these tools; unlisted tools fall through to `permissionMode` and `canUseTool`. Use `disallowedTools` to block tools. See [Permissions](/docs/en/agent-sdk/permissions#allow-and-deny-rules) |
-| `betas` | [`SdkBeta`](#sdk-beta)`[]` | `[]` | Enable beta features (e.g., `['context-1m-2025-08-07']`) |
+| `betas` | [`SdkBeta`](#sdk-beta)`[]` | `[]` | Enable beta features |
 | `canUseTool` | [`CanUseTool`](#can-use-tool) | `undefined` | Custom permission function for tool usage |
 | `continue` | `boolean` | `false` | Continue the most recent conversation |
 | `cwd` | `string` | `process.cwd()` | Current working directory |
@@ -2123,11 +2123,7 @@ Available beta features that can be enabled via the `betas` option. See [Beta he
 type SdkBeta = "context-1m-2025-08-07";
 ```
 
-| Value | Description | Compatible Models |
-| --- | --- | --- |
-| `'context-1m-2025-08-07'` | Enables the 1 million token [context window](/docs/en/build-with-claude/context-windows). | Claude Sonnet 4.5, Claude Sonnet 4 |
-
-Claude Opus 4.6 and Sonnet 4.6 have a 1M token context window. Including `context-1m-2025-08-07` has no effect on those models.
+The `context-1m-2025-08-07` beta is retired as of April 30, 2026. Passing this value with Claude Sonnet 4.5 or Sonnet 4 has no effect, and requests that exceed the standard 200k-token context window return an error. To use a 1M-token context window, migrate to [Claude Sonnet 4.6 or Claude Opus 4.6](/docs/en/about-claude/models/overview), which include 1M context at standard pricing with no beta header required.
 
 ### `SlashCommand`
 
