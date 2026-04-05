@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/typescript
 title: Agent SDK reference - TypeScript
-last_fetched: 2026-04-01T09:04:33.382260+00:00
+last_fetched: 2026-04-03T09:03:19.437825+00:00
 ---
 
 Copy page
@@ -541,7 +541,8 @@ type PermissionMode =
  | "acceptEdits" // Auto-accept file edits
  | "bypassPermissions" // Bypass all permission checks
  | "plan" // Planning mode - no execution
- | "dontAsk"; // Don't prompt for permissions, deny if not pre-approved
+ | "dontAsk" // Don't prompt for permissions, deny if not pre-approved
+ | "auto"; // Use a model classifier to approve or deny each tool call
 ```
 
 ### `CanUseTool`

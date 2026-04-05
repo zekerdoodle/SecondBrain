@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/mcp
 title: Connect to external tools with MCP
-last_fetched: 2026-03-24T09:01:34.481518+00:00
+last_fetched: 2026-04-03T09:01:20.755652+00:00
 ---
 
 Copy page
@@ -41,7 +41,7 @@ The agent connects to the documentation server, searches for information about h
 
 ## Add an MCP server
 
-You can configure MCP servers in code when calling `query()`, or in a `.mcp.json` file that the SDK loads automatically.
+You can configure MCP servers in code when calling `query()`, or in a `.mcp.json` file loaded via [`settingSources`](#from-a-config-file).
 
 ### In code
 
@@ -72,7 +72,7 @@ for await (const message of query({
 
 ### From a config file
 
-Create a `.mcp.json` file at your project root. The SDK loads this automatically:
+Create a `.mcp.json` file at your project root. The SDK does not load filesystem settings by default, so set `settingSources: ["project"]` (Python: `setting_sources=["project"]`) in your options for the file to be picked up:
 
 ```shiki
 {

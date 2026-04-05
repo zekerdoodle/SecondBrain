@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/plugins
 title: Plugins in the SDK
-last_fetched: 2026-03-13T09:02:34.936992+00:00
+last_fetched: 2026-04-03T09:02:00.613393+00:00
 ---
 
 Copy page
@@ -97,7 +97,7 @@ for await (const message of query({
 })) {
  // Claude executes the custom greeting skill from the plugin
  if (message.type === "assistant") {
- console.log(message.content);
+ console.log(message.message.content);
  }
 }
 ```
@@ -132,7 +132,7 @@ async function runWithPlugin() {
  }
 
  if (message.type === "assistant") {
- console.log("Assistant:", message.content);
+ console.log("Assistant:", message.message.content);
  }
  }
 }

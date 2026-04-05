@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/quickstart
 title: Quickstart
-last_fetched: 2026-03-11T09:02:47.659428+00:00
+last_fetched: 2026-04-03T09:02:19.872581+00:00
 ---
 
 Copy page
@@ -224,7 +224,8 @@ With `Bash` enabled, try: `"Write unit tests for utils.py, run them, and fix any
 | Mode | Behavior | Use case |
 | --- | --- | --- |
 | `acceptEdits` | Auto-approves file edits, asks for other actions | Trusted development workflows |
-| `dontAsk` (TypeScript only) | Denies anything not in `allowedTools` | Locked-down headless agents |
+| `dontAsk` | Denies anything not in `allowedTools` | Locked-down headless agents |
+| `auto` (TypeScript only) | A model classifier approves or denies each tool call | Autonomous agents with safety guardrails |
 | `bypassPermissions` | Runs every tool without prompts | Sandboxed CI, fully trusted environments |
 | `default` | Requires a `canUseTool` callback to handle approval | Custom approval flows |
 

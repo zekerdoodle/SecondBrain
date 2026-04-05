@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/file-checkpointing
 title: Rewind file changes with checkpointing
-last_fetched: 2026-03-03T10:01:23.904947+00:00
+last_fetched: 2026-04-03T09:00:52.053837+00:00
 ---
 
 Copy page
@@ -161,7 +161,7 @@ asyncio.run(main())
  If you capture the session ID and checkpoint ID, you can also rewind from the CLI:
 
  ```shiki
- claude --resume <session-id> --rewind-files <checkpoint-uuid>
+ claude -p --resume <session-id> --rewind-files <checkpoint-uuid>
  ```
 
 ## Common patterns

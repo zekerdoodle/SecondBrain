@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/structured-outputs
 title: Get structured output from agents
-last_fetched: 2026-02-26T10:03:11.807554+00:00
+last_fetched: 2026-04-03T09:02:58.632522+00:00
 ---
 
 Copy page
@@ -52,7 +52,7 @@ for await (const message of query({
  }
 })) {
  // The result message contains structured_output with validated data
- if (message.type === "result" && message.structured_output) {
+ if (message.type === "result" && message.subtype === "success" && message.structured_output) {
  console.log(message.structured_output);
  // { company_name: "Anthropic", founded_year: 2021, headquarters: "San Francisco, CA" }
  }
@@ -101,7 +101,7 @@ for await (const message of query({
  }
  }
 })) {
- if (message.type === "result" && message.structured_output) {
+ if (message.type === "result" && message.subtype === "success" && message.structured_output) {
  // Validate and get fully typed result
  const parsed = FeaturePlan.safeParse(message.structured_output);
  if (parsed.success) {
@@ -176,8 +176,8 @@ for await (const message of query({
  }
  }
 })) {
- if (message.type === "result" && message.structured_output) {
- const data = message.structured_output;
+ if (message.type === "result" && message.subtype === "success" && message.structured_output) {
+ const data = message.structured_output as { total_count: number; todos: Array<{ file: string; line: number; text: string; author?: string; date?: string }> };
  console.log(`Found ${data.total_count} TODOs`);
  data.todos.forEach((todo) => {
  console.log(`${todo.file}:${todo.line} - ${todo.text}`);

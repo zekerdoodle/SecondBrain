@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/typescript-v2-preview
 title: TypeScript SDK V2 interface (preview)
-last_fetched: 2026-02-26T10:03:38.076944+00:00
+last_fetched: 2026-04-03T09:03:27.997852+00:00
 ---
 
 Copy page
@@ -50,7 +50,7 @@ const q = query({
 });
 
 for await (const msg of q) {
- if (msg.type === "result") {
+ if (msg.type === "result" && msg.subtype === "success") {
  console.log(msg.result);
  }
 }
