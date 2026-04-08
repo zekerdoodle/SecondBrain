@@ -1676,7 +1676,7 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
       return false;
     }
 
-    const msgId = crypto.randomUUID();
+    const msgId = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
     // Add to pending messages queue with status tracking
     const queuedMsg: QueuedMessage = {

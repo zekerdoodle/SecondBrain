@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/permissions
 title: Configure permissions
-last_fetched: 2026-04-03T09:01:52.195957+00:00
+last_fetched: 2026-04-08T09:02:47.772114+00:00
 ---
 
 Copy page
@@ -28,7 +28,7 @@ When Claude requests a tool, the SDK checks permissions in this order:
 
  Permission mode
 
- Apply the active [permission mode](#permission-modes). `bypassPermissions` approves everything that reaches this step. `acceptEdits` approves file operations. Other modes fall through.
+ Apply the active [permission mode](#permission-modes). `bypassPermissions` approves everything that reaches this step. `acceptEdits` approves file operations. `plan` approves read-only tools and blocks tools that make changes. Other modes fall through.
 4. 4
 
  Allow rules
@@ -83,7 +83,7 @@ The SDK supports these permission modes:
 | `dontAsk` | Deny instead of prompting | Anything not pre-approved by `allowed_tools` or rules is denied; `canUseTool` is never called |
 | `acceptEdits` | Auto-accept file edits | File edits and [filesystem operations](#accept-edits-mode-acceptedits) (`mkdir`, `rm`, `mv`, etc.) are automatically approved |
 | `bypassPermissions` | Bypass all permission checks | All tools run without permission prompts (use with caution) |
-| `plan` | Planning mode | No tool execution; Claude plans without making changes |
+| `plan` | Planning mode | Read-only tools run; tools that make changes are blocked while Claude produces a plan |
 | `auto` (TypeScript only) | Model-classified approvals | A model classifier approves or denies each tool call. See [Auto mode](https://code.claude.com/docs/en/permission-modes#eliminate-prompts-with-auto-mode) for availability |
 
 **Subagent inheritance:** When using `bypassPermissions`, all subagents inherit this mode and it cannot be overridden. Subagents may have different system prompts and less constrained behavior than your main agent. Enabling `bypassPermissions` grants them full, autonomous system access without any approval prompts.
@@ -150,7 +150,7 @@ Use with extreme caution. Claude has full system access in this mode. Only use i
 
 #### Plan mode (`plan`)
 
-Prevents tool execution entirely. Claude can analyze code and create plans but cannot make changes. Claude may use `AskUserQuestion` to clarify requirements before finalizing the plan. See [Handle approvals and user input](/docs/en/agent-sdk/user-input#handle-clarifying-questions) for handling these prompts.
+Blocks tools that make changes. Read-only tools like `Read`, `Grep`, `Glob`, and `WebFetch` still run so Claude can analyze code and create plans, but file edits, Bash commands, and other tools that modify state are denied. Claude may use `AskUserQuestion` to clarify requirements before finalizing the plan. See [Handle approvals and user input](/docs/en/agent-sdk/user-input#handle-clarifying-questions) for handling these prompts.
 
 **Use when:** you want Claude to propose changes without executing them, such as during code review or when you need to approve changes before they're made.
 

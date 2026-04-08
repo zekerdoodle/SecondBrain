@@ -18,7 +18,8 @@ import json
 import logging
 import os
 import sys
-from datetime import datetime
+import uuid
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
@@ -94,6 +95,9 @@ THINKING_DEFAULTS = {
 
 # Execution log file
 EXECUTIONS_LOG = Path(__file__).parent / "executions.json"
+
+# Chain checkpoint directory
+CHAIN_CHECKPOINTS_DIR = Path(__file__).parent / "chain_checkpoints"
 
 # Default working directory for agents
 WORKING_DIR = "/home/debian/second_brain"
@@ -408,13 +412,31 @@ async def invoke_agent_chain(
     if not source_chat_id:
         return {"error": "source_chat_id required for chain notifications"}
 
+    chain_id = str(uuid.uuid4())[:8]  # Short ID for readability
     invoked_at = datetime.utcnow()
+
+    # Create initial checkpoint
+    checkpoint = {
+        "chain_id": chain_id,
+        "created_at": invoked_at.isoformat(),
+        "updated_at": invoked_at.isoformat(),
+        "chain": chain,
+        "on_failure": on_failure,
+        "summarize": summarize,
+        "source_chat_id": source_chat_id,
+        "status": "running",
+        "current_step": 0,
+        "results": [],
+    }
+    _save_chain_checkpoint(checkpoint)
+
     asyncio.create_task(_run_chain_agent(
         chain=chain,
         on_failure=on_failure,
         summarize=summarize,
         source_chat_id=source_chat_id,
         invoked_at=invoked_at,
+        chain_id=chain_id,
     ))
 
     agent_names = [step["agent"] for step in chain]
@@ -422,7 +444,93 @@ async def invoke_agent_chain(
     return {
         "status": "accepted",
         "mode": "chain",
-        "message": f"Agent chain started: {chain_str}\n\nYou'll be notified when the chain completes."
+        "chain_id": chain_id,
+        "message": f"Agent chain started: {chain_str}\nChain ID: {chain_id} (use to resume if interrupted)\n\nYou'll be notified when the chain completes."
+    }
+
+
+async def resume_agent_chain(
+    chain_id: str,
+    source_chat_id: Optional[str] = None,
+) -> Dict[str, str]:
+    """
+    Resume a previously failed/stopped agent chain from its last checkpoint.
+
+    Loads the checkpoint, identifies completed steps, and resumes from the
+    next incomplete step. Already-completed steps are skipped.
+
+    Args:
+        chain_id: ID of the chain to resume
+        source_chat_id: Override chat ID for notifications (uses original if not provided)
+
+    Returns:
+        Acknowledgment dict (chain runs in background)
+    """
+    checkpoint = _load_chain_checkpoint(chain_id)
+    if not checkpoint:
+        return {"error": f"No checkpoint found for chain ID: {chain_id}"}
+
+    if checkpoint["status"] == "running":
+        return {"error": f"Chain {chain_id} is still running. Wait for it to finish or check logs."}
+
+    if checkpoint["status"] == "completed":
+        return {"error": f"Chain {chain_id} already completed successfully. No resume needed."}
+
+    chain = checkpoint["chain"]
+    on_failure = checkpoint.get("on_failure", "alert_and_stop")
+    summarize = checkpoint.get("summarize", False)
+    chat_id = source_chat_id or checkpoint.get("source_chat_id")
+
+    if not chat_id:
+        return {"error": "source_chat_id required for chain notifications"}
+
+    # Determine resume point: count successful results
+    completed_results = checkpoint.get("results", [])
+    # Find the first non-success result or the end of results
+    resume_from = 0
+    prior_results = []
+    for r in completed_results:
+        if r["status"] == "success":
+            prior_results.append((r["agent"], "success", r.get("response", "")))
+            resume_from += 1
+        else:
+            # Stop at the first failure — we'll re-run from here
+            break
+
+    if resume_from >= len(chain):
+        return {"error": f"All {len(chain)} steps already completed. Nothing to resume."}
+
+    remaining_agents = [step["agent"] for step in chain[resume_from:]]
+    remaining_str = " → ".join(remaining_agents)
+
+    # Update checkpoint status
+    checkpoint["status"] = "running"
+    checkpoint["source_chat_id"] = chat_id
+    # Trim results to only successful ones (we'll re-run from the failure point)
+    checkpoint["results"] = checkpoint["results"][:resume_from]
+    checkpoint["current_step"] = resume_from
+    _save_chain_checkpoint(checkpoint)
+
+    invoked_at = datetime.fromisoformat(checkpoint["created_at"])
+
+    asyncio.create_task(_run_chain_agent(
+        chain=chain,
+        on_failure=on_failure,
+        summarize=summarize,
+        source_chat_id=chat_id,
+        invoked_at=invoked_at,
+        chain_id=chain_id,
+        resume_from=resume_from,
+        prior_results=prior_results,
+    ))
+
+    return {
+        "status": "accepted",
+        "mode": "chain_resume",
+        "chain_id": chain_id,
+        "resumed_from_step": resume_from + 1,
+        "total_steps": len(chain),
+        "message": f"Chain {chain_id} resumed from step {resume_from + 1}/{len(chain)}.\nRemaining: {remaining_str}\n\nYou'll be notified when the chain completes."
     }
 
 
@@ -432,29 +540,70 @@ async def _run_chain_agent(
     summarize: bool,
     source_chat_id: str,
     invoked_at: datetime,
+    chain_id: Optional[str] = None,
+    resume_from: int = 0,
+    prior_results: Optional[List[tuple]] = None,
 ) -> None:
     """Execute an agent chain sequentially and send notification on completion.
 
     Follows the same pattern as _run_ping_agent: run work, add notification,
     log execution. Top-level try/except ensures errors are always logged.
+
+    Supports resume: if resume_from > 0, skips already-completed steps
+    and uses prior_results for the notification.
+
+    Args:
+        chain: List of {"agent": name, "prompt": task} dicts
+        on_failure: "alert_and_stop" or "skip_and_continue"
+        summarize: Whether to summarize outputs
+        source_chat_id: Chat ID for notification
+        invoked_at: Original invocation time
+        chain_id: Checkpoint ID (for persistence)
+        resume_from: Step index to resume from (0 = start)
+        prior_results: Results from prior steps (for resume)
     """
     from registry import get_registry
 
     try:
         registry = get_registry()
-        results = []  # List of (agent_name, status, response/error)
+        results = list(prior_results) if prior_results else []  # List of (agent_name, status, response/error)
         chain_failed = False
         failed_agent = None
 
         for i, step in enumerate(chain):
+            # Skip already-completed steps on resume
+            if i < resume_from:
+                logger.info(f"Chain step {i+1}/{len(chain)}: Skipping '{step['agent']}' (already completed)")
+                continue
+
             agent_name = step["agent"]
             prompt = step["prompt"]
 
             logger.info(f"Chain step {i+1}/{len(chain)}: Running agent '{agent_name}'")
 
+            # Update checkpoint: mark current step
+            if chain_id:
+                checkpoint = _load_chain_checkpoint(chain_id)
+                if checkpoint:
+                    checkpoint["current_step"] = i
+                    checkpoint["status"] = "running"
+                    _save_chain_checkpoint(checkpoint)
+
             config = registry.get(agent_name)
             if not config:
                 results.append((agent_name, "error", f"Unknown agent: {agent_name}"))
+
+                # Save checkpoint with error
+                if chain_id:
+                    checkpoint = _load_chain_checkpoint(chain_id)
+                    if checkpoint:
+                        checkpoint["results"].append({
+                            "agent": agent_name, "status": "error",
+                            "response": f"Unknown agent: {agent_name}",
+                            "completed_at": datetime.utcnow().isoformat(),
+                        })
+                        _save_chain_checkpoint(checkpoint)
+
                 if on_failure == "alert_and_stop":
                     chain_failed = True
                     failed_agent = agent_name
@@ -473,12 +622,36 @@ async def _run_chain_agent(
                 _log_execution(invocation, result)
 
                 if result.status == "success":
-                    results.append((agent_name, "success", result.transcript or result.response))
+                    response_text = result.transcript or result.response
+                    results.append((agent_name, "success", response_text))
                     logger.info(f"Chain step {i+1}: Agent '{agent_name}' succeeded")
+
+                    # Save checkpoint with success
+                    if chain_id:
+                        checkpoint = _load_chain_checkpoint(chain_id)
+                        if checkpoint:
+                            checkpoint["results"].append({
+                                "agent": agent_name, "status": "success",
+                                "response": response_text[:10000],  # Cap per-step to avoid huge files
+                                "completed_at": datetime.utcnow().isoformat(),
+                            })
+                            checkpoint["current_step"] = i + 1
+                            _save_chain_checkpoint(checkpoint)
                 else:
                     error_msg = result.error or result.status
                     results.append((agent_name, "error", error_msg))
                     logger.warning(f"Chain step {i+1}: Agent '{agent_name}' failed: {error_msg}")
+
+                    # Save checkpoint with failure
+                    if chain_id:
+                        checkpoint = _load_chain_checkpoint(chain_id)
+                        if checkpoint:
+                            checkpoint["results"].append({
+                                "agent": agent_name, "status": "error",
+                                "response": error_msg,
+                                "completed_at": datetime.utcnow().isoformat(),
+                            })
+                            _save_chain_checkpoint(checkpoint)
 
                     if on_failure == "alert_and_stop":
                         chain_failed = True
@@ -489,10 +662,28 @@ async def _run_chain_agent(
                 logger.error(f"Chain step {i+1}: Agent '{agent_name}' exception: {e}")
                 results.append((agent_name, "exception", str(e)))
 
+                # Save checkpoint with exception
+                if chain_id:
+                    checkpoint = _load_chain_checkpoint(chain_id)
+                    if checkpoint:
+                        checkpoint["results"].append({
+                            "agent": agent_name, "status": "exception",
+                            "response": str(e),
+                            "completed_at": datetime.utcnow().isoformat(),
+                        })
+                        _save_chain_checkpoint(checkpoint)
+
                 if on_failure == "alert_and_stop":
                     chain_failed = True
                     failed_agent = agent_name
                     break
+
+        # Update final checkpoint status
+        if chain_id:
+            checkpoint = _load_chain_checkpoint(chain_id)
+            if checkpoint:
+                checkpoint["status"] = "failed" if chain_failed else "completed"
+                _save_chain_checkpoint(checkpoint)
 
         # Build notification response
         response = _format_chain_results(
@@ -564,6 +755,110 @@ def _format_chain_results(
             parts.append("")
 
     return "\n".join(parts)
+
+
+# =============================================================================
+# Chain Checkpointing — persist state after each step, enable resume
+# =============================================================================
+
+def _save_chain_checkpoint(checkpoint: Dict[str, Any]) -> None:
+    """Save chain checkpoint to disk (atomic write)."""
+    CHAIN_CHECKPOINTS_DIR.mkdir(parents=True, exist_ok=True)
+    chain_id = checkpoint["chain_id"]
+    path = CHAIN_CHECKPOINTS_DIR / f"{chain_id}.json"
+    tmp_path = path.with_suffix(".tmp")
+    checkpoint["updated_at"] = datetime.utcnow().isoformat()
+    try:
+        with open(tmp_path, "w") as f:
+            json.dump(checkpoint, f, indent=2)
+        tmp_path.rename(path)
+    except Exception as e:
+        logger.error(f"Failed to save chain checkpoint {chain_id}: {e}")
+        if tmp_path.exists():
+            tmp_path.unlink()
+
+
+def _load_chain_checkpoint(chain_id: str) -> Optional[Dict[str, Any]]:
+    """Load chain checkpoint from disk. Returns None if not found."""
+    path = CHAIN_CHECKPOINTS_DIR / f"{chain_id}.json"
+    if not path.exists():
+        return None
+    try:
+        with open(path, "r") as f:
+            return json.load(f)
+    except Exception as e:
+        logger.error(f"Failed to load chain checkpoint {chain_id}: {e}")
+        return None
+
+
+def _delete_chain_checkpoint(chain_id: str) -> None:
+    """Delete a chain checkpoint file."""
+    path = CHAIN_CHECKPOINTS_DIR / f"{chain_id}.json"
+    try:
+        if path.exists():
+            path.unlink()
+    except Exception as e:
+        logger.error(f"Failed to delete chain checkpoint {chain_id}: {e}")
+
+
+def _cleanup_stale_checkpoints(max_age_hours: int = 48) -> int:
+    """Remove checkpoint files older than max_age_hours. Returns count removed."""
+    if not CHAIN_CHECKPOINTS_DIR.exists():
+        return 0
+    cutoff = datetime.utcnow() - timedelta(hours=max_age_hours)
+    removed = 0
+    for path in CHAIN_CHECKPOINTS_DIR.glob("*.json"):
+        try:
+            with open(path, "r") as f:
+                data = json.load(f)
+            updated = datetime.fromisoformat(data.get("updated_at", data.get("created_at", "")))
+            if updated < cutoff:
+                path.unlink()
+                removed += 1
+                logger.info(f"Cleaned up stale checkpoint: {path.name}")
+        except Exception:
+            # If we can't parse it, it's probably corrupt — remove it
+            try:
+                path.unlink()
+                removed += 1
+            except Exception:
+                pass
+    return removed
+
+
+def list_chain_checkpoints() -> List[Dict[str, Any]]:
+    """List all active chain checkpoints (for UI/tools).
+
+    Returns list of checkpoint summaries (without full response data).
+    """
+    if not CHAIN_CHECKPOINTS_DIR.exists():
+        return []
+
+    # Clean up stale checkpoints first
+    _cleanup_stale_checkpoints()
+
+    checkpoints = []
+    for path in sorted(CHAIN_CHECKPOINTS_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+        try:
+            with open(path, "r") as f:
+                data = json.load(f)
+            # Return summary without full responses
+            agent_names = [step["agent"] for step in data.get("chain", [])]
+            completed_count = len([r for r in data.get("results", []) if r.get("status") == "success"])
+            checkpoints.append({
+                "chain_id": data["chain_id"],
+                "status": data.get("status", "unknown"),
+                "agents": agent_names,
+                "total_steps": len(data.get("chain", [])),
+                "completed_steps": completed_count,
+                "current_step": data.get("current_step", 0),
+                "created_at": data.get("created_at"),
+                "updated_at": data.get("updated_at"),
+                "source_chat_id": data.get("source_chat_id"),
+            })
+        except Exception:
+            continue
+    return checkpoints
 
 
 async def _run_background_agent(config: AgentConfig, invocation: AgentInvocation) -> None:

@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/subagents
 title: Subagents in the SDK
-last_fetched: 2026-03-28T09:04:16.574556+00:00
+last_fetched: 2026-04-08T09:03:56.848160+00:00
 ---
 
 Copy page
@@ -372,10 +372,6 @@ If Claude completes tasks directly instead of delegating to your subagent:
 ### Filesystem-based agents not loading
 
 Agents defined in `.claude/agents/` are loaded at startup only. If you create a new agent file while Claude Code is running, restart the session to load it.
-
-### Windows: long prompt failures
-
-On Windows, subagents with very long prompts may fail due to command line length limits (8191 chars). Keep prompts concise or use filesystem-based agents for complex instructions.
 
 ## Related documentation
 

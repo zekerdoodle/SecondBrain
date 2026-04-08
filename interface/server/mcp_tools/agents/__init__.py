@@ -20,7 +20,7 @@ if AGENTS_DIR not in sys.path:
 
 
 # Agent tool names that signal "this agent has access to other agents"
-AGENT_TOOL_NAMES = {"invoke_agent", "invoke_agent_chain", "invoke_agent_parallel", "schedule_agent"}
+AGENT_TOOL_NAMES = {"invoke_agent", "invoke_agent_chain", "invoke_agent_parallel", "resume_agent_chain", "list_chain_checkpoints", "schedule_agent"}
 
 # MCP-prefixed versions (mcp__brain__invoke_agent etc.)
 AGENT_MCP_TOOL_NAMES = {f"mcp__brain__{t}" for t in AGENT_TOOL_NAMES}
@@ -81,13 +81,15 @@ def get_agent_list_for_prompt(tool_names: list[str]) -> str:
     return f"\n\n{block}"
 
 
-from .invoke import invoke_agent, invoke_agent_chain, invoke_agent_parallel
+from .invoke import invoke_agent, invoke_agent_chain, invoke_agent_parallel, resume_agent_chain, list_chain_checkpoints_tool
 from .scheduler import schedule_agent
 
 __all__ = [
     "invoke_agent",
     "invoke_agent_chain",
     "invoke_agent_parallel",
+    "resume_agent_chain",
+    "list_chain_checkpoints_tool",
     "schedule_agent",
     "build_agent_list_block",
     "get_agent_list_for_prompt",

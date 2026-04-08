@@ -136,6 +136,8 @@ AGENT_TOOLS = [
     "invoke_agent",
     "invoke_agent_chain",
     "invoke_agent_parallel",
+    "resume_agent_chain",
+    "list_chain_checkpoints",
     "schedule_agent",
 ]
 

@@ -267,6 +267,110 @@ async def invoke_agent_chain(args: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # =============================================================================
+# resume_agent_chain — Resume a failed/stopped chain from checkpoint
+# =============================================================================
+
+@register_tool("agents")
+@tool(
+    name="resume_agent_chain",
+    description="""Resume a previously failed or stopped agent chain from its last checkpoint.
+
+When an agent chain fails mid-way, its state is automatically checkpointed. Use this tool
+to resume from the last successful step instead of re-running the entire chain.
+
+Use list_chain_checkpoints to find available chain IDs.""",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "chain_id": {
+                "type": "string",
+                "description": "The chain ID to resume (returned by invoke_agent_chain or from list_chain_checkpoints)"
+            }
+        },
+        "required": ["chain_id"]
+    }
+)
+async def resume_agent_chain(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Resume a failed/stopped agent chain from checkpoint."""
+    try:
+        from runner import resume_agent_chain as _resume_chain
+
+        chain_id = args.get("chain_id", "")
+        if not chain_id:
+            return {"content": [{"type": "text", "text": "Error: chain_id is required"}], "is_error": True}
+
+        # Get source chat ID
+        source_chat_id = args.pop("_source_chat_id", None) or os.environ.get("CURRENT_CHAT_ID")
+
+        result = await _resume_chain(
+            chain_id=chain_id,
+            source_chat_id=source_chat_id,
+        )
+
+        if "error" in result:
+            return {"content": [{"type": "text", "text": result["error"]}], "is_error": True}
+
+        return {"content": [{"type": "text", "text": result["message"]}]}
+
+    except Exception as e:
+        import traceback
+        return {
+            "content": [{"type": "text", "text": f"Error resuming chain: {str(e)}\n{traceback.format_exc()}"}],
+            "is_error": True
+        }
+
+
+# =============================================================================
+# list_chain_checkpoints — View resumable chains
+# =============================================================================
+
+@register_tool("agents")
+@tool(
+    name="list_chain_checkpoints",
+    description="""List all agent chain checkpoints (resumable chains).
+
+Shows chains that were interrupted, failed, or completed, with their status and progress.
+Use the chain_id from the results with resume_agent_chain to resume a failed chain.""",
+    input_schema={
+        "type": "object",
+        "properties": {},
+    }
+)
+async def list_chain_checkpoints_tool(args: Dict[str, Any]) -> Dict[str, Any]:
+    """List all chain checkpoints."""
+    try:
+        from runner import list_chain_checkpoints as _list_checkpoints
+
+        checkpoints = _list_checkpoints()
+
+        if not checkpoints:
+            return {"content": [{"type": "text", "text": "No chain checkpoints found."}]}
+
+        lines = [f"## Chain Checkpoints ({len(checkpoints)} found)\n"]
+        for cp in checkpoints:
+            chain_str = " → ".join(cp["agents"])
+            status_icon = {"running": "🔄", "completed": "✅", "failed": "❌", "stopped": "⏹️"}.get(cp["status"], "❓")
+            lines.append(f"### {status_icon} {cp['chain_id']}")
+            lines.append(f"- **Status**: {cp['status']}")
+            lines.append(f"- **Progress**: {cp['completed_steps']}/{cp['total_steps']} steps completed")
+            lines.append(f"- **Chain**: {chain_str}")
+            lines.append(f"- **Created**: {cp['created_at']}")
+            lines.append(f"- **Updated**: {cp['updated_at']}")
+            if cp["status"] in ("failed", "stopped"):
+                lines.append(f"- **Resume**: Use `resume_agent_chain` with chain_id `{cp['chain_id']}`")
+            lines.append("")
+
+        return {"content": [{"type": "text", "text": "\n".join(lines)}]}
+
+    except Exception as e:
+        import traceback
+        return {
+            "content": [{"type": "text", "text": f"Error listing checkpoints: {str(e)}\n{traceback.format_exc()}"}],
+            "is_error": True
+        }
+
+
+# =============================================================================
 # invoke_agent_parallel — Run multiple agents concurrently
 # =============================================================================
 
