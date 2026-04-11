@@ -17,8 +17,8 @@ export default defineConfig({
         name: 'Second Brain',
         short_name: 'Second Brain',
         description: 'Your personal knowledge management system',
-        theme_color: '#0d1117',
-        background_color: '#0d1117',
+        theme_color: '#000000',
+        background_color: '#000000',
         display: 'standalone',
         icons: [
           { src: '/icons/icon-192.png', sizes: '192x192', type: 'image/png' },

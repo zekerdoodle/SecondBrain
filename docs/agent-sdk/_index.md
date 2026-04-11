@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/
 title: Anthropic Agent SDK Documentation Index
-last_fetched: 2026-04-08T09:04:23.248864+00:00
+last_fetched: 2026-04-11T09:04:29.174090+00:00
 ---
 
 # Anthropic Agent SDK Documentation
@@ -10,6 +10,7 @@ This is a local mirror of the [Anthropic Agent SDK documentation](https://platfo
 
 ## Available Pages
 
+- [Agent SDK overview](./observability.md)
 - [Agent SDK overview](./overview.md)
 - [Agent SDK reference - Python](./python.md)
 - [Agent SDK reference - TypeScript](./typescript.md)
@@ -27,11 +28,16 @@ This is a local mirror of the [Anthropic Agent SDK documentation](https://platfo
 - [Plugins in the SDK](./plugins.md)
 - [Quickstart](./quickstart.md)
 - [Rewind file changes with checkpointing](./file-checkpointing.md)
+- [Scale to many tools with tool search](./tool-search.md)
 - [Securely deploying AI agents](./secure-deployment.md)
 - [Slash Commands in the SDK](./slash-commands.md)
+- [Stream responses in real-time](./streaming-output.md)
+- [Streaming Input](./streaming-vs-single-mode.md)
 - [Subagents in the SDK](./subagents.md)
+- [Todo Lists](./todo-tracking.md)
 - [Track cost and usage](./cost-tracking.md)
 - [TypeScript SDK V2 interface (preview)](./typescript-v2-preview.md)
+- [Use Claude Code features in the SDK](./claude-code-features.md)
 - [Work with sessions](./sessions.md)
 
 ## About This Mirror
@@ -39,7 +45,7 @@ This is a local mirror of the [Anthropic Agent SDK documentation](https://platfo
 This documentation mirror is automatically synced from the official Anthropic documentation.
 Claude Code agents can reference these files directly for up-to-date information.
 
-**Last sync:** 2026-04-08T09:04:23.248864+00:00
+**Last sync:** 2026-04-11T09:04:29.174090+00:00
 
 To manually sync, run:
 ```bash

@@ -68,7 +68,7 @@
 }
 
 [data-theme="dark"] {
-  /* Dark Mode Palette */
+  /* Dark Mode Palette (defaults — overridden by theme presets via JS) */
   --bg-primary: #1a1a1a;
   --bg-secondary: #242424;
   --bg-tertiary: #2d2d2d;
@@ -113,6 +113,9 @@
   color-scheme: dark;
 }
 
+/* Light mode palette defaults — overridden by theme presets via JS */
+/* All background/text/border colors are now set via applyTheme() for preset support */
+
 /* Text selection - uses accent color from settings */
 ::selection {
   background-color: rgba(var(--accent-r, 217), var(--accent-g, 119), var(--accent-b, 87), 0.3);
@@ -138,6 +141,11 @@ html, body, #root {
   overflow: hidden;
   background-color: var(--bg-primary);
   color: var(--text-primary);
+}
+
+/* Safe area utility — extends an element's padding into the gesture bar / home indicator */
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
 }
 
 /* Ensure flex parents grow */

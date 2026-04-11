@@ -2686,24 +2686,25 @@ def _collect_pending_reactions(messages: List[Dict[str, Any]], display_messages:
     return lines
 
 
-def _build_history_context(messages: List[Dict[str, Any]], current_message: str, limit: int = 50) -> str:
+def _build_history_context(messages: List[Dict[str, Any]], current_message: str) -> str:
     """Build a prompt with conversation history prepended.
 
     Args:
         messages: Prior messages from chat storage (excluding the current message).
         current_message: The new user message to append.
-        limit: Max number of prior messages to include (most recent).
 
     Returns:
         A single prompt string with history context + current message.
         If no prior messages, returns just the current message.
+
+    Note: No message limit — all history is included. Use compact_conversation
+    tool to manage context window size in long conversations.
     """
     if not messages:
         return current_message
 
-    recent = messages[-limit:]
     parts = []
-    for m in recent:
+    for m in messages:
         role = m.get("role", "user")
 
         # Tool call entries — format as compact one-liners
@@ -4735,26 +4736,49 @@ async def handle_regenerate(websocket: WebSocket, data: dict):
         return
 
     old_messages = chat_data.get("messages", [])
+    # display_messages may have different IDs than messages (e.g. msg-timestamp-hash
+    # vs UUIDs) since they're built from streaming state. The client renders
+    # display_messages, so the messageId it sends comes from there.
+    display_msgs = chat_data.get("display_messages", [])
 
-    # Find the assistant message to regenerate and the user message before it
+    # Find the assistant message to regenerate and the user message before it.
+    # Search display_messages first (client IDs come from there), fall back to messages.
     user_message = None
+    user_message_id = None
     context_messages = []
 
-    for i, msg in enumerate(old_messages):
-        if msg.get("id") == message_id:
-            # This is the assistant message to regenerate
-            # Context is everything before it, excluding the last user message
-            # Find the user message that triggered this response
-            for j in range(i - 1, -1, -1):
-                if old_messages[j].get("role") == "user":
-                    user_message = old_messages[j].get("content")
-                    context_messages = old_messages[:j]  # Everything before that user message
-                    break
+    search_arrays = [(display_msgs, "display_messages"), (old_messages, "messages")]
+    for search_arr, arr_name in search_arrays:
+        if user_message:
             break
+        for i, msg in enumerate(search_arr):
+            if msg.get("id") == message_id:
+                # Found the assistant message — walk backward to find the user message
+                for j in range(i - 1, -1, -1):
+                    if search_arr[j].get("role") == "user":
+                        user_message = search_arr[j].get("content")
+                        user_message_id = search_arr[j].get("id")
+                        logger.info(f"REGENERATE: Found user message in {arr_name} (id={user_message_id})")
+                        break
+                break
 
     if not user_message:
         await broadcast_to_session(session_id, {"type": "error", "text": "Could not find user message to regenerate from"})
         return
+
+    # Build context from messages (API format) using the user message ID.
+    # User message IDs are consistent across both arrays.
+    for i, msg in enumerate(old_messages):
+        if msg.get("id") == user_message_id:
+            context_messages = old_messages[:i]
+            break
+    else:
+        # Fallback: if user_message_id not found in messages (shouldn't happen),
+        # use content matching as last resort
+        for i, msg in enumerate(old_messages):
+            if msg.get("role") == "user" and msg.get("content") == user_message:
+                context_messages = old_messages[:i]
+                break
 
     logger.info(f"REGENERATE: Keeping {len(context_messages)} context messages")
 

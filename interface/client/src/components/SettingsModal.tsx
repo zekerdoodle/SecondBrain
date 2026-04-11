@@ -8,34 +8,49 @@ import ColorPicker from './ColorPicker';
 // Font options for each category
 const UI_FONTS = [
   { name: 'Inter', value: "'Inter', -apple-system, BlinkMacSystemFont, sans-serif", category: 'Sans-serif' },
+  { name: 'DM Sans', value: "'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif", category: 'Sans-serif' },
+  { name: 'Plus Jakarta Sans', value: "'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif", category: 'Sans-serif' },
   { name: 'Source Sans', value: "'Source Sans 3', -apple-system, BlinkMacSystemFont, sans-serif", category: 'Sans-serif' },
+  { name: 'Nunito', value: "'Nunito', -apple-system, BlinkMacSystemFont, sans-serif", category: 'Sans-serif' },
+  { name: 'Space Grotesk', value: "'Space Grotesk', -apple-system, BlinkMacSystemFont, sans-serif", category: 'Sans-serif' },
   { name: 'System Default', value: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif", category: 'Sans-serif' },
   { name: 'JetBrains Mono', value: "'JetBrains Mono', 'Fira Code', Consolas, monospace", category: 'Monospace' },
 ];
 
 const CHAT_FONTS = [
   { name: 'Inter', value: "'Inter', -apple-system, BlinkMacSystemFont, sans-serif", category: 'Sans-serif' },
+  { name: 'DM Sans', value: "'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif", category: 'Sans-serif' },
+  { name: 'Plus Jakarta Sans', value: "'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif", category: 'Sans-serif' },
   { name: 'Source Sans', value: "'Source Sans 3', -apple-system, BlinkMacSystemFont, sans-serif", category: 'Sans-serif' },
+  { name: 'Nunito', value: "'Nunito', -apple-system, BlinkMacSystemFont, sans-serif", category: 'Sans-serif' },
   { name: 'Atkinson Hyperlegible', value: "'Atkinson Hyperlegible', -apple-system, BlinkMacSystemFont, sans-serif", category: 'Accessible' },
   { name: 'OpenDyslexic', value: "'OpenDyslexic', -apple-system, BlinkMacSystemFont, sans-serif", category: 'Accessible' },
   { name: 'Merriweather', value: "'Merriweather', Georgia, serif", category: 'Serif' },
   { name: 'Lora', value: "'Lora', Georgia, serif", category: 'Serif' },
   { name: 'Crimson Pro', value: "'Crimson Pro', Georgia, serif", category: 'Serif' },
+  { name: 'Literata', value: "'Literata', Georgia, serif", category: 'Serif' },
+  { name: 'Spectral', value: "'Spectral', Georgia, serif", category: 'Serif' },
   { name: 'Georgia', value: "Georgia, 'Times New Roman', serif", category: 'Serif' },
   { name: 'JetBrains Mono', value: "'JetBrains Mono', 'Fira Code', Consolas, monospace", category: 'Monospace' },
   { name: 'Fira Code', value: "'Fira Code', Consolas, Monaco, monospace", category: 'Monospace' },
+  { name: 'IBM Plex Mono', value: "'IBM Plex Mono', Consolas, Monaco, monospace", category: 'Monospace' },
 ];
 
 const EDITOR_FONTS = [
   { name: 'Merriweather', value: "'Merriweather', Georgia, serif", category: 'Serif' },
   { name: 'Lora', value: "'Lora', Georgia, serif", category: 'Serif' },
   { name: 'Crimson Pro', value: "'Crimson Pro', Georgia, serif", category: 'Serif' },
+  { name: 'Literata', value: "'Literata', Georgia, serif", category: 'Serif' },
+  { name: 'Spectral', value: "'Spectral', Georgia, serif", category: 'Serif' },
   { name: 'Georgia', value: "Georgia, 'Times New Roman', serif", category: 'Serif' },
   { name: 'Inter', value: "'Inter', -apple-system, BlinkMacSystemFont, sans-serif", category: 'Sans-serif' },
+  { name: 'DM Sans', value: "'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif", category: 'Sans-serif' },
+  { name: 'Plus Jakarta Sans', value: "'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif", category: 'Sans-serif' },
   { name: 'Source Sans', value: "'Source Sans 3', -apple-system, BlinkMacSystemFont, sans-serif", category: 'Sans-serif' },
   { name: 'Atkinson Hyperlegible', value: "'Atkinson Hyperlegible', -apple-system, BlinkMacSystemFont, sans-serif", category: 'Accessible' },
   { name: 'OpenDyslexic', value: "'OpenDyslexic', -apple-system, BlinkMacSystemFont, sans-serif", category: 'Accessible' },
   { name: 'JetBrains Mono', value: "'JetBrains Mono', 'Fira Code', Consolas, monospace", category: 'Monospace' },
+  { name: 'IBM Plex Mono', value: "'IBM Plex Mono', Consolas, Monaco, monospace", category: 'Monospace' },
 ];
 
 const FONT_SIZES = [
@@ -45,17 +60,157 @@ const FONT_SIZES = [
   { name: 'Extra Large', value: '20px', scale: 1.25 },
 ];
 
-// Accent color presets
+// Accent color presets — organized warm → cool
 const ACCENT_COLORS = [
   { name: 'Terracotta', value: '#D97757', hover: '#C4684A' },
-  { name: 'Blue', value: '#3B82F6', hover: '#2563EB' },
-  { name: 'Green', value: '#10B981', hover: '#059669' },
-  { name: 'Purple', value: '#8B5CF6', hover: '#7C3AED' },
-  { name: 'Pink', value: '#EC4899', hover: '#DB2777' },
-  { name: 'Orange', value: '#F97316', hover: '#EA580C' },
-  { name: 'Teal', value: '#14B8A6', hover: '#0D9488' },
   { name: 'Rose', value: '#F43F5E', hover: '#E11D48' },
+  { name: 'Pink', value: '#EC4899', hover: '#DB2777' },
+  { name: 'Crimson', value: '#DC2626', hover: '#B91C1C' },
+  { name: 'Orange', value: '#F97316', hover: '#EA580C' },
+  { name: 'Amber', value: '#F59E0B', hover: '#D97706' },
+  { name: 'Green', value: '#10B981', hover: '#059669' },
+  { name: 'Teal', value: '#14B8A6', hover: '#0D9488' },
+  { name: 'Cyan', value: '#06B6D4', hover: '#0891B2' },
+  { name: 'Blue', value: '#3B82F6', hover: '#2563EB' },
+  { name: 'Indigo', value: '#6366F1', hover: '#4F46E5' },
+  { name: 'Purple', value: '#8B5CF6', hover: '#7C3AED' },
 ];
+
+// ─── Theme Preset System ────────────────────────────────────────────────────
+interface ThemePresetColors {
+  bgPrimary: string;
+  bgSecondary: string;
+  bgTertiary: string;
+  textPrimary: string;
+  textSecondary: string;
+  textMuted: string;
+  borderColor: string;
+  borderHover: string;
+  codeBg: string;
+  preBg: string;
+  preText: string;
+  scrollbarThumb: string;
+  scrollbarThumbHover: string;
+}
+
+interface ThemePreset {
+  id: string;
+  name: string;
+  mode: 'light' | 'dark';
+  colors: ThemePresetColors;
+  defaultAccent: { color: string; hover: string };
+}
+
+export const THEME_PRESETS: ThemePreset[] = [
+  // ── Light Themes ──────────────────────────────
+  {
+    id: 'parchment',
+    name: 'Parchment',
+    mode: 'light',
+    colors: {
+      bgPrimary: '#FAF9F7', bgSecondary: '#FFFFFF', bgTertiary: '#F5F4F2',
+      textPrimary: '#1a1a1a', textSecondary: '#6B6B6B', textMuted: '#9CA3AF',
+      borderColor: '#E8E6E3', borderHover: '#D4D2CF',
+      codeBg: '#F3F4F6', preBg: '#1F2937', preText: '#E5E7EB',
+      scrollbarThumb: '#D4D2CF', scrollbarThumbHover: '#B8B6B3',
+    },
+    defaultAccent: { color: '#D97757', hover: '#C4684A' },
+  },
+  {
+    id: 'paper',
+    name: 'Paper',
+    mode: 'light',
+    colors: {
+      bgPrimary: '#FFFFFF', bgSecondary: '#FAFAFA', bgTertiary: '#F5F5F5',
+      textPrimary: '#18181B', textSecondary: '#71717A', textMuted: '#A1A1AA',
+      borderColor: '#E4E4E7', borderHover: '#D4D4D8',
+      codeBg: '#F4F4F5', preBg: '#18181B', preText: '#E4E4E7',
+      scrollbarThumb: '#D4D4D8', scrollbarThumbHover: '#A1A1AA',
+    },
+    defaultAccent: { color: '#3B82F6', hover: '#2563EB' },
+  },
+  {
+    id: 'latte',
+    name: 'Latte',
+    mode: 'light',
+    colors: {
+      bgPrimary: '#F8F4EE', bgSecondary: '#FFF9F3', bgTertiary: '#F1EADE',
+      textPrimary: '#2C1810', textSecondary: '#7A6352', textMuted: '#A89484',
+      borderColor: '#E6DDD0', borderHover: '#D4C8B8',
+      codeBg: '#EDE5D8', preBg: '#2C1810', preText: '#E8DED4',
+      scrollbarThumb: '#D4C8B8', scrollbarThumbHover: '#B8A898',
+    },
+    defaultAccent: { color: '#D97757', hover: '#C4684A' },
+  },
+  {
+    id: 'frost',
+    name: 'Frost',
+    mode: 'light',
+    colors: {
+      bgPrimary: '#F4F7FA', bgSecondary: '#FAFBFD', bgTertiary: '#EDF1F5',
+      textPrimary: '#1B2332', textSecondary: '#64748B', textMuted: '#94A3B8',
+      borderColor: '#E2E8F0', borderHover: '#CBD5E1',
+      codeBg: '#E2E8F0', preBg: '#1E293B', preText: '#E2E8F0',
+      scrollbarThumb: '#CBD5E1', scrollbarThumbHover: '#94A3B8',
+    },
+    defaultAccent: { color: '#6366F1', hover: '#4F46E5' },
+  },
+  // ── Dark Themes ───────────────────────────────
+  {
+    id: 'charcoal',
+    name: 'Charcoal',
+    mode: 'dark',
+    colors: {
+      bgPrimary: '#1a1a1a', bgSecondary: '#242424', bgTertiary: '#2d2d2d',
+      textPrimary: '#f5f5f5', textSecondary: '#a0a0a0', textMuted: '#6b6b6b',
+      borderColor: '#3d3d3d', borderHover: '#4d4d4d',
+      codeBg: '#2d2d2d', preBg: '#0d0d0d', preText: '#E5E7EB',
+      scrollbarThumb: '#4d4d4d', scrollbarThumbHover: '#5d5d5d',
+    },
+    defaultAccent: { color: '#D97757', hover: '#C4684A' },
+  },
+  {
+    id: 'midnight',
+    name: 'Midnight',
+    mode: 'dark',
+    colors: {
+      bgPrimary: '#0F172A', bgSecondary: '#1E293B', bgTertiary: '#273548',
+      textPrimary: '#F1F5F9', textSecondary: '#94A3B8', textMuted: '#64748B',
+      borderColor: '#334155', borderHover: '#475569',
+      codeBg: '#1E293B', preBg: '#0B1120', preText: '#CBD5E1',
+      scrollbarThumb: '#475569', scrollbarThumbHover: '#64748B',
+    },
+    defaultAccent: { color: '#3B82F6', hover: '#2563EB' },
+  },
+  {
+    id: 'ember',
+    name: 'Ember',
+    mode: 'dark',
+    colors: {
+      bgPrimary: '#1C1412', bgSecondary: '#271E1A', bgTertiary: '#322723',
+      textPrimary: '#F5ECE6', textSecondary: '#B09888', textMuted: '#7A6A5C',
+      borderColor: '#3E332C', borderHover: '#524539',
+      codeBg: '#322723', preBg: '#160F0D', preText: '#D4C4B8',
+      scrollbarThumb: '#524539', scrollbarThumbHover: '#6B5A4C',
+    },
+    defaultAccent: { color: '#F97316', hover: '#EA580C' },
+  },
+  {
+    id: 'abyss',
+    name: 'Abyss',
+    mode: 'dark',
+    colors: {
+      bgPrimary: '#000000', bgSecondary: '#0A0A0A', bgTertiary: '#141414',
+      textPrimary: '#ECECEC', textSecondary: '#888888', textMuted: '#555555',
+      borderColor: '#2A2A2A', borderHover: '#383838',
+      codeBg: '#141414', preBg: '#050505', preText: '#CCCCCC',
+      scrollbarThumb: '#383838', scrollbarThumbHover: '#4A4A4A',
+    },
+    defaultAccent: { color: '#8B5CF6', hover: '#7C3AED' },
+  },
+];
+
+export type { ThemePreset, ThemePresetColors };
 
 export type ThemeMode = 'light' | 'dark' | 'system';
 export type SettingsTab = 'appearance' | 'typography' | 'exclusions' | 'editor' | 'system';
@@ -64,6 +219,8 @@ export interface ThemePreferences {
   mode: ThemeMode;
   accentColor: string;
   accentHover: string;
+  lightPreset?: string;  // preset id for light mode (default: 'parchment')
+  darkPreset?: string;   // preset id for dark mode (default: 'charcoal')
 }
 
 export interface TypographyPreferences {
@@ -88,6 +245,8 @@ const DEFAULT_THEME: ThemePreferences = {
   mode: 'light',
   accentColor: '#D97757',
   accentHover: '#C4684A',
+  lightPreset: 'parchment',
+  darkPreset: 'charcoal',
 };
 
 const DEFAULT_TYPOGRAPHY: TypographyPreferences = {
@@ -211,6 +370,14 @@ function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
   } : null;
 }
 
+// Resolve which preset is active given preferences and effective mode
+function getActivePreset(prefs: ThemePreferences, effectiveMode: 'light' | 'dark'): ThemePreset | undefined {
+  const presetId = effectiveMode === 'light'
+    ? (prefs.lightPreset || 'parchment')
+    : (prefs.darkPreset || 'charcoal');
+  return THEME_PRESETS.find(p => p.id === presetId);
+}
+
 // Apply theme to document
 export function applyTheme(prefs: ThemePreferences): void {
   const root = document.documentElement;
@@ -218,6 +385,25 @@ export function applyTheme(prefs: ThemePreferences): void {
 
   // Set color mode attribute
   root.setAttribute('data-theme', effectiveMode);
+
+  // Apply preset palette colors (overrides CSS defaults with curated palette)
+  const preset = getActivePreset(prefs, effectiveMode);
+  if (preset) {
+    const c = preset.colors;
+    root.style.setProperty('--bg-primary', c.bgPrimary);
+    root.style.setProperty('--bg-secondary', c.bgSecondary);
+    root.style.setProperty('--bg-tertiary', c.bgTertiary);
+    root.style.setProperty('--text-primary', c.textPrimary);
+    root.style.setProperty('--text-secondary', c.textSecondary);
+    root.style.setProperty('--text-muted', c.textMuted);
+    root.style.setProperty('--border-color', c.borderColor);
+    root.style.setProperty('--border-hover', c.borderHover);
+    root.style.setProperty('--code-bg', c.codeBg);
+    root.style.setProperty('--pre-bg', c.preBg);
+    root.style.setProperty('--pre-text', c.preText);
+    root.style.setProperty('--scrollbar-thumb', c.scrollbarThumb);
+    root.style.setProperty('--scrollbar-thumb-hover', c.scrollbarThumbHover);
+  }
 
   // Set accent color CSS variables
   root.style.setProperty('--accent-primary', prefs.accentColor);
@@ -238,6 +424,18 @@ export function applyTheme(prefs: ThemePreferences): void {
     root.style.setProperty('--accent-g', String(rgb.g));
     root.style.setProperty('--accent-b', String(rgb.b));
   }
+
+  // Update mobile browser chrome (status bar + navigation bar)
+  // Chrome 93+ on Android uses the theme-color meta tag for BOTH the
+  // status bar (top) and gesture navigation bar (bottom).
+  const bgColor = preset ? preset.colors.bgPrimary : (effectiveMode === 'dark' ? '#000000' : '#FAF8F5');
+  // Update the plain (no-media) meta tag — this is the one Android Chrome reads
+  const plainMeta = document.querySelector('meta[name="theme-color"]:not([media])');
+  if (plainMeta) plainMeta.setAttribute('content', bgColor);
+  // Also update media-query variants for browsers that support them
+  document.querySelectorAll('meta[name="theme-color"][media]').forEach(meta => {
+    meta.setAttribute('content', bgColor);
+  });
 
   // Broadcast theme to all embedded app iframes
   broadcastThemeToApps(effectiveMode, prefs);
@@ -545,112 +743,178 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
 
         {/* Content */}
         <div className="p-5 space-y-6 overflow-y-auto flex-1">
-          {activeTab === 'appearance' && (
-            <>
-              {/* Color Mode */}
-              <div>
-                <label className="block text-sm font-medium text-[var(--text-primary)] mb-3">
-                  Appearance
-                </label>
-                <div className="flex gap-2">
-                  {[
-                    { mode: 'light' as ThemeMode, icon: Sun, label: 'Light' },
-                    { mode: 'dark' as ThemeMode, icon: Moon, label: 'Dark' },
-                    { mode: 'system' as ThemeMode, icon: null, label: 'System' },
-                  ].map(({ mode, icon: Icon, label }) => (
-                    <button
-                      key={mode}
-                      onClick={() => setMode(mode)}
-                      className={clsx(
-                        "flex-1 py-3 md:py-2.5 px-3 rounded-lg text-sm font-medium transition-all flex items-center justify-center gap-2 touch-manipulation active:scale-95",
-                        preferences.mode === mode
-                          ? "text-white shadow-md"
-                          : "bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--border-color)]"
-                      )}
-                      style={preferences.mode === mode ? { backgroundColor: preferences.accentColor } : undefined}
-                    >
-                      {Icon && <Icon size={16} />}
-                      {label}
-                    </button>
-                  ))}
-                </div>
-              </div>
+          {activeTab === 'appearance' && (() => {
+            const effectiveMode = getEffectiveMode(preferences.mode);
+            const activePresetId = effectiveMode === 'light'
+              ? (preferences.lightPreset || 'parchment')
+              : (preferences.darkPreset || 'charcoal');
 
-              {/* Accent Color */}
-              <div>
-                <label className="block text-sm font-medium text-[var(--text-primary)] mb-3">
-                  Accent Color
-                </label>
-                <div className="grid grid-cols-4 gap-2 md:gap-2 gap-3">
-                  {ACCENT_COLORS.map(({ name, value, hover }) => (
-                    <button
-                      key={name}
-                      onClick={() => setAccentColor(value, hover)}
-                      className={clsx(
-                        "relative h-11 md:h-10 rounded-lg transition-all hover:scale-105 active:scale-95 focus:outline-none touch-manipulation",
-                        isPresetSelected(value) && "ring-2 ring-offset-2"
-                      )}
-                      style={{
-                        backgroundColor: value,
-                        // @ts-expect-error ringColor is a valid CSS property but not in React.CSSProperties
-                        '--tw-ring-color': value,
-                      }}
-                      title={name}
-                    >
-                      {isPresetSelected(value) && (
-                        <Check size={18} className="absolute inset-0 m-auto text-white drop-shadow-sm" />
-                      )}
-                    </button>
-                  ))}
-                </div>
+            const selectPreset = (preset: ThemePreset) => {
+              setPreferences(prev => {
+                const updated = { ...prev };
+                if (preset.mode === 'light') {
+                  updated.lightPreset = preset.id;
+                  if (prev.mode === 'dark') updated.mode = 'light';
+                } else {
+                  updated.darkPreset = preset.id;
+                  if (prev.mode === 'light') updated.mode = 'dark';
+                }
+                // Apply preset's suggested accent color
+                updated.accentColor = preset.defaultAccent.color;
+                updated.accentHover = preset.defaultAccent.hover;
+                return updated;
+              });
+            };
 
-                {/* Custom Color Picker */}
-                <div className="mt-4">
-                  <label className="block text-sm text-[var(--text-secondary)] mb-2">Custom</label>
-                  <ColorPicker
-                    color={customColor}
-                    onChange={(hex) => {
-                      setCustomColor(hex);
-                      const hover = adjustBrightness(hex, -15);
-                      setPreferences(prev => ({ ...prev, accentColor: hex, accentHover: hover }));
-                    }}
-                  />
-                </div>
-              </div>
-
-              {/* Preview */}
-              <div>
-                <label className="block text-sm font-medium text-[var(--text-primary)] mb-3">
-                  Preview
-                </label>
-                <div className="p-4 rounded-xl border border-[var(--border-color)] bg-[var(--bg-primary)]">
-                  <div className="flex items-center gap-3 mb-3">
-                    <div
-                      className="w-10 h-10 rounded-lg flex items-center justify-center text-white"
-                      style={{ backgroundColor: preferences.accentColor }}
-                    >
-                      <Palette size={20} />
-                    </div>
-                    <div>
-                      <div className="text-sm font-medium text-[var(--text-primary)]">Second Brain</div>
-                      <div className="text-xs text-[var(--text-secondary)]">Your personal knowledge base</div>
-                    </div>
+            const renderPresetCard = (preset: ThemePreset) => {
+              const isActive = activePresetId === preset.id;
+              return (
+                <button
+                  key={preset.id}
+                  onClick={() => selectPreset(preset)}
+                  className={clsx(
+                    "rounded-xl overflow-hidden border-2 transition-all hover:scale-[1.03] active:scale-[0.97] focus:outline-none touch-manipulation",
+                    isActive
+                      ? "ring-1 ring-offset-1 ring-offset-[var(--bg-secondary)] shadow-lg"
+                      : "border-[var(--border-color)] hover:border-[var(--border-hover)] hover:shadow-md"
+                  )}
+                  style={isActive ? { borderColor: preferences.accentColor, '--tw-ring-color': preferences.accentColor } as React.CSSProperties : undefined}
+                  title={preset.name}
+                >
+                  {/* Mini palette preview */}
+                  <div className="h-[52px] relative overflow-hidden">
+                    {/* Primary background */}
+                    <div className="absolute inset-0" style={{ backgroundColor: preset.colors.bgPrimary }} />
+                    {/* Secondary background strip */}
+                    <div className="absolute bottom-0 left-0 right-0 h-[18px]" style={{ backgroundColor: preset.colors.bgSecondary }} />
+                    {/* Border line between */}
+                    <div className="absolute bottom-[18px] left-0 right-0 h-px" style={{ backgroundColor: preset.colors.borderColor }} />
+                    {/* Text sample */}
+                    <div className="absolute top-2 left-2.5 text-[11px] font-bold tracking-tight" style={{ color: preset.colors.textPrimary }}>Aa</div>
+                    {/* Muted text sample */}
+                    <div className="absolute top-[18px] left-2.5 text-[8px]" style={{ color: preset.colors.textSecondary }}>Preview</div>
+                    {/* Accent dot */}
+                    <div className="absolute top-2.5 right-2.5 w-3 h-3 rounded-full shadow-sm" style={{ backgroundColor: preset.defaultAccent.color }} />
+                    {/* Check indicator for active */}
+                    {isActive && (
+                      <div className="absolute bottom-1.5 right-1.5 w-4 h-4 rounded-full flex items-center justify-center" style={{ backgroundColor: preferences.accentColor }}>
+                        <Check size={10} className="text-white" />
+                      </div>
+                    )}
                   </div>
+                  {/* Name */}
+                  <div className="px-2 py-1.5 text-center" style={{ backgroundColor: preset.colors.bgTertiary }}>
+                    <span className="text-[11px] font-medium" style={{ color: preset.colors.textPrimary }}>
+                      {preset.name}
+                    </span>
+                  </div>
+                </button>
+              );
+            };
+
+            return (
+              <>
+                {/* Color Mode */}
+                <div>
+                  <label className="block text-sm font-medium text-[var(--text-primary)] mb-3">
+                    Mode
+                  </label>
                   <div className="flex gap-2">
-                    <button
-                      className="px-3 py-1.5 text-xs font-medium rounded-lg text-white transition-colors"
-                      style={{ backgroundColor: preferences.accentColor }}
-                    >
-                      Primary Button
-                    </button>
-                    <button className="px-3 py-1.5 text-xs font-medium rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-secondary)] border border-[var(--border-color)]">
-                      Secondary
-                    </button>
+                    {[
+                      { mode: 'light' as ThemeMode, icon: Sun, label: 'Light' },
+                      { mode: 'dark' as ThemeMode, icon: Moon, label: 'Dark' },
+                      { mode: 'system' as ThemeMode, icon: Monitor, label: 'Auto' },
+                    ].map(({ mode, icon: Icon, label }) => (
+                      <button
+                        key={mode}
+                        onClick={() => setMode(mode)}
+                        className={clsx(
+                          "flex-1 py-3 md:py-2.5 px-3 rounded-lg text-sm font-medium transition-all flex items-center justify-center gap-2 touch-manipulation active:scale-95",
+                          preferences.mode === mode
+                            ? "text-white shadow-md"
+                            : "bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--border-color)]"
+                        )}
+                        style={preferences.mode === mode ? { backgroundColor: preferences.accentColor } : undefined}
+                      >
+                        <Icon size={16} />
+                        {label}
+                      </button>
+                    ))}
                   </div>
                 </div>
-              </div>
-            </>
-          )}
+
+                {/* Theme Presets */}
+                <div>
+                  <label className="block text-sm font-medium text-[var(--text-primary)] mb-3">
+                    Theme
+                  </label>
+
+                  {/* Light Themes */}
+                  <div className="mb-3">
+                    <span className="text-[10px] font-semibold text-[var(--text-muted)] uppercase tracking-widest mb-2 block flex items-center gap-1.5">
+                      <Sun size={10} />
+                      Light
+                    </span>
+                    <div className="grid grid-cols-4 gap-2">
+                      {THEME_PRESETS.filter(p => p.mode === 'light').map(renderPresetCard)}
+                    </div>
+                  </div>
+
+                  {/* Dark Themes */}
+                  <div>
+                    <span className="text-[10px] font-semibold text-[var(--text-muted)] uppercase tracking-widest mb-2 block flex items-center gap-1.5">
+                      <Moon size={10} />
+                      Dark
+                    </span>
+                    <div className="grid grid-cols-4 gap-2">
+                      {THEME_PRESETS.filter(p => p.mode === 'dark').map(renderPresetCard)}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Accent Color */}
+                <div>
+                  <label className="block text-sm font-medium text-[var(--text-primary)] mb-3">
+                    Accent Color
+                  </label>
+                  <div className="grid grid-cols-6 gap-2">
+                    {ACCENT_COLORS.map(({ name, value, hover }) => (
+                      <button
+                        key={name}
+                        onClick={() => setAccentColor(value, hover)}
+                        className={clsx(
+                          "relative h-9 rounded-lg transition-all hover:scale-110 active:scale-95 focus:outline-none touch-manipulation",
+                          isPresetSelected(value) && "ring-2 ring-offset-2 ring-offset-[var(--bg-secondary)]"
+                        )}
+                        style={{
+                          backgroundColor: value,
+                          '--tw-ring-color': value,
+                        } as React.CSSProperties}
+                        title={name}
+                      >
+                        {isPresetSelected(value) && (
+                          <Check size={14} className="absolute inset-0 m-auto text-white drop-shadow-sm" />
+                        )}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* Custom Color Picker */}
+                  <div className="mt-3">
+                    <label className="block text-xs text-[var(--text-muted)] mb-2">Custom color</label>
+                    <ColorPicker
+                      color={customColor}
+                      onChange={(hex) => {
+                        setCustomColor(hex);
+                        const hover = adjustBrightness(hex, -15);
+                        setPreferences(prev => ({ ...prev, accentColor: hex, accentHover: hover }));
+                      }}
+                    />
+                  </div>
+                </div>
+              </>
+            );
+          })()}
 
           {activeTab === 'typography' && (
             <>
@@ -1087,7 +1351,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
             <>
               <button
                 onClick={() => {
-                  setPreferences(DEFAULT_THEME);
+                  setPreferences({ ...DEFAULT_THEME });
                   setCustomColor(DEFAULT_THEME.accentColor);
                 }}
                 className="text-sm text-[var(--text-secondary)] hover:text-[var(--text-primary)] active:text-[var(--text-primary)] transition-colors py-2 touch-manipulation"

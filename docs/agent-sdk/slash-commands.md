@@ -1,18 +1,93 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/slash-commands
 title: Slash Commands in the SDK
-last_fetched: 2026-03-13T09:03:22.739994+00:00
+last_fetched: 2026-04-09T09:03:34.321492+00:00
 ---
 
-Copy page
+[Claude Code Docs home page![light logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/light.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=78fd01ff4f4340295a4f66e2ea54903c)![dark logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/dark.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=1298a0c3b3a1da603b190d0de0e31712)](/docs/en/overview)
+
+![US](https://d3gk2c5xim1je2.cloudfront.net/flags/US.svg)
+
+English
+
+Search...
+
+Ctrl KAsk AI
+
+Search...
+
+Navigation
+
+Customize behavior
+
+Slash Commands in the SDK
+
+[Getting started](/docs/en/overview)[Build with Claude Code](/docs/en/sub-agents)[Deployment](/docs/en/third-party-integrations)[Administration](/docs/en/setup)[Configuration](/docs/en/settings)[Reference](/docs/en/cli-reference)[Agent SDK](/docs/en/agent-sdk/overview)[What's New](/docs/en/whats-new)[Resources](/docs/en/legal-and-compliance)
+
+##### Agent SDK
+
+- [Overview](/docs/en/agent-sdk/overview)
+- [Quickstart](/docs/en/agent-sdk/quickstart)
+
+##### Core concepts
+
+- [How the agent loop works](/docs/en/agent-sdk/agent-loop)
+- [Use Claude Code features](/docs/en/agent-sdk/claude-code-features)
+- [Work with sessions](/docs/en/agent-sdk/sessions)
+
+##### Input and output
+
+- [Streaming Input](/docs/en/agent-sdk/streaming-vs-single-mode)
+- [Handle approvals and user input](/docs/en/agent-sdk/user-input)
+- [Stream responses in real-time](/docs/en/agent-sdk/streaming-output)
+- [Get structured output from agents](/docs/en/agent-sdk/structured-outputs)
+
+##### Extend with tools
+
+- [Give Claude custom tools](/docs/en/agent-sdk/custom-tools)
+- [Connect to external tools with MCP](/docs/en/agent-sdk/mcp)
+- [Scale to many tools with tool search](/docs/en/agent-sdk/tool-search)
+- [Subagents in the SDK](/docs/en/agent-sdk/subagents)
+
+##### Customize behavior
+
+- [Modifying system prompts](/docs/en/agent-sdk/modifying-system-prompts)
+- [Slash Commands in the SDK](/docs/en/agent-sdk/slash-commands)
+- [Agent Skills in the SDK](/docs/en/agent-sdk/skills)
+- [Plugins in the SDK](/docs/en/agent-sdk/plugins)
+
+##### Control and observability
+
+- [Configure permissions](/docs/en/agent-sdk/permissions)
+- [Intercept and control agent behavior with hooks](/docs/en/agent-sdk/hooks)
+- [Rewind file changes with checkpointing](/docs/en/agent-sdk/file-checkpointing)
+- [Track cost and usage](/docs/en/agent-sdk/cost-tracking)
+- [Observability with OpenTelemetry](/docs/en/agent-sdk/observability)
+- [Todo Lists](/docs/en/agent-sdk/todo-tracking)
+
+##### Deployment
+
+- [Hosting the Agent SDK](/docs/en/agent-sdk/hosting)
+- [Securely deploying AI agents](/docs/en/agent-sdk/secure-deployment)
+
+##### SDK references
+
+- [TypeScript SDK](/docs/en/agent-sdk/typescript)
+- [TypeScript V2 (preview)](/docs/en/agent-sdk/typescript-v2-preview)
+- [Python SDK](/docs/en/agent-sdk/python)
+- [Migration Guide](/docs/en/agent-sdk/migration-guide)
+
+On this page
 
 Slash commands provide a way to control Claude Code sessions with special commands that start with `/`. These commands can be sent through the SDK to perform actions like clearing conversation history, compacting messages, or getting help.
 
-## Discovering Available Slash Commands
+## [​](#discovering-available-slash-commands) Discovering Available Slash Commands
 
 The Claude Agent SDK provides information about available slash commands in the system initialization message. Access this information when your session starts:
 
 TypeScript
+
+Python
 
 ```shiki
 import { query } from "@anthropic-ai/claude-agent-sdk";
@@ -28,11 +103,13 @@ for await (const message of query({
 }
 ```
 
-## Sending Slash Commands
+## [​](#sending-slash-commands) Sending Slash Commands
 
 Send slash commands by including them in your prompt string, just like regular text:
 
 TypeScript
+
+Python
 
 ```shiki
 import { query } from "@anthropic-ai/claude-agent-sdk";
@@ -48,13 +125,15 @@ for await (const message of query({
 }
 ```
 
-## Common Slash Commands
+## [​](#common-slash-commands) Common Slash Commands
 
-### `/compact` - Compact Conversation History
+### [​](#/compact-compact-conversation-history) `/compact` - Compact Conversation History
 
 The `/compact` command reduces the size of your conversation history by summarizing older messages while preserving important context:
 
 TypeScript
+
+Python
 
 ```shiki
 import { query } from "@anthropic-ai/claude-agent-sdk";
@@ -71,11 +150,13 @@ for await (const message of query({
 }
 ```
 
-### `/clear` - Clear Conversation
+### [​](#/clear-clear-conversation) `/clear` - Clear Conversation
 
 The `/clear` command starts a fresh conversation by clearing all previous history:
 
 TypeScript
+
+Python
 
 ```shiki
 import { query } from "@anthropic-ai/claude-agent-sdk";
@@ -92,20 +173,20 @@ for await (const message of query({
 }
 ```
 
-## Creating Custom Slash Commands
+## [​](#creating-custom-slash-commands) Creating Custom Slash Commands
 
 In addition to using built-in slash commands, you can create your own custom commands that are available through the SDK. Custom commands are defined as markdown files in specific directories, similar to how subagents are configured.
 
 The `.claude/commands/` directory is the legacy format. The recommended format is `.claude/skills/<name>/SKILL.md`, which supports the same slash-command invocation (`/name`) plus autonomous invocation by Claude. See [Skills](/docs/en/agent-sdk/skills) for the current format. The CLI continues to support both formats, and the examples below remain accurate for `.claude/commands/`.
 
-### File Locations
+### [​](#file-locations) File Locations
 
 Custom slash commands are stored in designated directories based on their scope:
 
 - **Project commands**: `.claude/commands/` - Available only in the current project (legacy; prefer `.claude/skills/`)
 - **Personal commands**: `~/.claude/commands/` - Available across all your projects (legacy; prefer `~/.claude/skills/`)
 
-### File Format
+### [​](#file-format) File Format
 
 Each custom command is a markdown file where:
 
@@ -113,7 +194,7 @@ Each custom command is a markdown file where:
 - The file content defines what the command does
 - Optional YAML frontmatter provides configuration
 
-#### Basic Example
+#### [​](#basic-example) Basic Example
 
 Create `.claude/commands/refactor.md`:
 
@@ -124,7 +205,7 @@ Focus on clean code principles and best practices.
 
 This creates the `/refactor` command that you can use through the SDK.
 
-#### With Frontmatter
+#### [​](#with-frontmatter) With Frontmatter
 
 Create `.claude/commands/security-check.md`:
 
@@ -142,11 +223,13 @@ Analyze the codebase for security vulnerabilities including:
 - Insecure configurations
 ```
 
-### Using Custom Commands in the SDK
+### [​](#using-custom-commands-in-the-sdk) Using Custom Commands in the SDK
 
 Once defined in the filesystem, custom commands are automatically available through the SDK:
 
 TypeScript
+
+Python
 
 ```shiki
 import { query } from "@anthropic-ai/claude-agent-sdk";
@@ -174,12 +257,11 @@ for await (const message of query({
 }
 ```
 
-### Advanced Features
+### [​](#advanced-features) Advanced Features
 
-#### Arguments and Placeholders
+#### [​](#arguments-and-placeholders) Arguments and Placeholders
 
 Custom commands support dynamic arguments using placeholders:
-
 Create `.claude/commands/fix-issue.md`:
 
 ```shiki
@@ -196,6 +278,8 @@ Use in SDK:
 
 TypeScript
 
+Python
+
 ```shiki
 import { query } from "@anthropic-ai/claude-agent-sdk";
 
@@ -211,10 +295,9 @@ for await (const message of query({
 }
 ```
 
-#### Bash Command Execution
+#### [​](#bash-command-execution) Bash Command Execution
 
 Custom commands can execute bash commands and include their output:
-
 Create `.claude/commands/git-commit.md`:
 
 ```shiki
@@ -233,10 +316,9 @@ description: Create a git commit
 Create a git commit with appropriate message based on the changes.
 ```
 
-#### File References
+#### [​](#file-references) File References
 
 Include file contents using the `@` prefix:
-
 Create `.claude/commands/review-config.md`:
 
 ```shiki
@@ -252,7 +334,7 @@ Review the following configuration files for issues:
 Check for security issues, outdated dependencies, and misconfigurations.
 ```
 
-### Organization with Namespacing
+### [​](#organization-with-namespacing) Organization with Namespacing
 
 Organize commands in subdirectories for better structure:
 
@@ -267,11 +349,11 @@ Organize commands in subdirectories for better structure:
 └── review.md # Creates /review (project)
 ```
 
-The subdirectory appears in the command description but doesn't affect the command name itself.
+The subdirectory appears in the command description but doesn’t affect the command name itself.
 
-### Practical Examples
+### [​](#practical-examples) Practical Examples
 
-#### Code Review Command
+#### [​](#code-review-command) Code Review Command
 
 Create `.claude/commands/code-review.md`:
 
@@ -299,7 +381,7 @@ Review the above changes for:
 Provide specific, actionable feedback organized by priority.
 ```
 
-#### Test Runner Command
+#### [​](#test-runner-command) Test Runner Command
 
 Create `.claude/commands/test.md`:
 
@@ -322,6 +404,8 @@ Use these commands through the SDK:
 
 TypeScript
 
+Python
+
 ```shiki
 import { query } from "@anthropic-ai/claude-agent-sdk";
 
@@ -342,12 +426,22 @@ for await (const message of query({
 }
 ```
 
-## See Also
+## [​](#see-also) See Also
 
-- [Slash Commands](https://code.claude.com/docs/en/slash-commands) - Complete slash command documentation
+- [Slash Commands](/docs/en/skills) - Complete slash command documentation
 - [Subagents in the SDK](/docs/en/agent-sdk/subagents) - Similar filesystem-based configuration for subagents
 - [TypeScript SDK reference](/docs/en/agent-sdk/typescript) - Complete API documentation
 - [SDK overview](/docs/en/agent-sdk/overview) - General SDK concepts
-- [CLI reference](https://code.claude.com/docs/en/cli-reference) - Command-line interface
+- [CLI reference](/docs/en/cli-reference) - Command-line interface
 
 Was this page helpful?
+
+YesNo
+
+[Modifying system prompts](/docs/en/agent-sdk/modifying-system-prompts)[Agent Skills in the SDK](/docs/en/agent-sdk/skills)
+
+Ctrl+I
+
+Assistant
+
+Responses are generated using AI and may contain mistakes.

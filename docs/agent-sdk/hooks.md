@@ -1,10 +1,83 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/hooks
 title: Intercept and control agent behavior with hooks
-last_fetched: 2026-03-11T09:01:34.155160+00:00
+last_fetched: 2026-04-09T09:02:11.162007+00:00
 ---
 
-Copy page
+[Claude Code Docs home page![light logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/light.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=78fd01ff4f4340295a4f66e2ea54903c)![dark logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/dark.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=1298a0c3b3a1da603b190d0de0e31712)](/docs/en/overview)
+
+![US](https://d3gk2c5xim1je2.cloudfront.net/flags/US.svg)
+
+English
+
+Search...
+
+Ctrl KAsk AI
+
+Search...
+
+Navigation
+
+Control and observability
+
+Intercept and control agent behavior with hooks
+
+[Getting started](/docs/en/overview)[Build with Claude Code](/docs/en/sub-agents)[Deployment](/docs/en/third-party-integrations)[Administration](/docs/en/setup)[Configuration](/docs/en/settings)[Reference](/docs/en/cli-reference)[Agent SDK](/docs/en/agent-sdk/overview)[What's New](/docs/en/whats-new)[Resources](/docs/en/legal-and-compliance)
+
+##### Agent SDK
+
+- [Overview](/docs/en/agent-sdk/overview)
+- [Quickstart](/docs/en/agent-sdk/quickstart)
+
+##### Core concepts
+
+- [How the agent loop works](/docs/en/agent-sdk/agent-loop)
+- [Use Claude Code features](/docs/en/agent-sdk/claude-code-features)
+- [Work with sessions](/docs/en/agent-sdk/sessions)
+
+##### Input and output
+
+- [Streaming Input](/docs/en/agent-sdk/streaming-vs-single-mode)
+- [Handle approvals and user input](/docs/en/agent-sdk/user-input)
+- [Stream responses in real-time](/docs/en/agent-sdk/streaming-output)
+- [Get structured output from agents](/docs/en/agent-sdk/structured-outputs)
+
+##### Extend with tools
+
+- [Give Claude custom tools](/docs/en/agent-sdk/custom-tools)
+- [Connect to external tools with MCP](/docs/en/agent-sdk/mcp)
+- [Scale to many tools with tool search](/docs/en/agent-sdk/tool-search)
+- [Subagents in the SDK](/docs/en/agent-sdk/subagents)
+
+##### Customize behavior
+
+- [Modifying system prompts](/docs/en/agent-sdk/modifying-system-prompts)
+- [Slash Commands in the SDK](/docs/en/agent-sdk/slash-commands)
+- [Agent Skills in the SDK](/docs/en/agent-sdk/skills)
+- [Plugins in the SDK](/docs/en/agent-sdk/plugins)
+
+##### Control and observability
+
+- [Configure permissions](/docs/en/agent-sdk/permissions)
+- [Intercept and control agent behavior with hooks](/docs/en/agent-sdk/hooks)
+- [Rewind file changes with checkpointing](/docs/en/agent-sdk/file-checkpointing)
+- [Track cost and usage](/docs/en/agent-sdk/cost-tracking)
+- [Observability with OpenTelemetry](/docs/en/agent-sdk/observability)
+- [Todo Lists](/docs/en/agent-sdk/todo-tracking)
+
+##### Deployment
+
+- [Hosting the Agent SDK](/docs/en/agent-sdk/hosting)
+- [Securely deploying AI agents](/docs/en/agent-sdk/secure-deployment)
+
+##### SDK references
+
+- [TypeScript SDK](/docs/en/agent-sdk/typescript)
+- [TypeScript V2 (preview)](/docs/en/agent-sdk/typescript-v2-preview)
+- [Python SDK](/docs/en/agent-sdk/python)
+- [Migration Guide](/docs/en/agent-sdk/migration-guide)
+
+On this page
 
 Hooks are callback functions that run your code in response to agent events, like a tool being called, a session starting, or execution stopping. With hooks, you can:
 
@@ -16,37 +89,43 @@ Hooks are callback functions that run your code in response to agent events, lik
 
 This guide covers how hooks work, how to configure them, and provides examples for common patterns like blocking tools, modifying inputs, and forwarding notifications.
 
-## How hooks work
+## [​](#how-hooks-work) How hooks work
 
-1. 1
+1
 
- An event fires
+An event fires
 
- Something happens during agent execution and the SDK fires an event: a tool is about to be called (`PreToolUse`), a tool returned a result (`PostToolUse`), a subagent started or stopped, the agent is idle, or execution finished. See the [full list of events](#available-hooks).
-2. 2
+Something happens during agent execution and the SDK fires an event: a tool is about to be called (`PreToolUse`), a tool returned a result (`PostToolUse`), a subagent started or stopped, the agent is idle, or execution finished. See the [full list of events](#available-hooks).
 
- The SDK collects registered hooks
+2
 
- The SDK checks for hooks registered for that event type. This includes callback hooks you pass in `options.hooks` and shell command hooks from settings files, but only if you explicitly load them with [`settingSources`](/docs/en/agent-sdk/typescript#setting-source) or [`setting_sources`](/docs/en/agent-sdk/python#setting-source).
-3. 3
+The SDK collects registered hooks
 
- Matchers filter which hooks run
+The SDK checks for hooks registered for that event type. This includes callback hooks you pass in `options.hooks` and shell command hooks from settings files, but only if you explicitly load them with [`settingSources`](/docs/en/agent-sdk/typescript#setting-source) or [`setting_sources`](/docs/en/agent-sdk/python#setting-source).
 
- If a hook has a [`matcher`](#matchers) pattern (like `"Write|Edit"`), the SDK tests it against the event's target (for example, the tool name). Hooks without a matcher run for every event of that type.
-4. 4
+3
 
- Callback functions execute
+Matchers filter which hooks run
 
- Each matching hook's [callback function](#callback-functions) receives input about what's happening: the tool name, its arguments, the session ID, and other event-specific details.
-5. 5
+If a hook has a [`matcher`](#matchers) pattern (like `"Write|Edit"`), the SDK tests it against the event’s target (for example, the tool name). Hooks without a matcher run for every event of that type.
 
- Your callback returns a decision
+4
 
- After performing any operations (logging, API calls, validation), your callback returns an [output object](#outputs) that tells the agent what to do: allow the operation, block it, modify the input, or inject context into the conversation.
+Callback functions execute
 
-The following example puts these steps together. It registers a `PreToolUse` hook (step 1) with a `"Write|Edit"` matcher (step 3) so the callback only fires for file-writing tools. When triggered, the callback receives the tool's input (step 4), checks if the file path targets a `.env` file, and returns `permissionDecision: "deny"` to block the operation (step 5):
+Each matching hook’s [callback function](#callback-functions) receives input about what’s happening: the tool name, its arguments, the session ID, and other event-specific details.
+
+5
+
+Your callback returns a decision
+
+After performing any operations (logging, API calls, validation), your callback returns an [output object](#outputs) that tells the agent what to do: allow the operation, block it, modify the input, or inject context into the conversation.
+
+The following example puts these steps together. It registers a `PreToolUse` hook (step 1) with a `"Write|Edit"` matcher (step 3) so the callback only fires for file-writing tools. When triggered, the callback receives the tool’s input (step 4), checks if the file path targets a `.env` file, and returns `permissionDecision: "deny"` to block the operation (step 5):
 
 Python
+
+TypeScript
 
 ```shiki
 import asyncio
@@ -96,7 +175,7 @@ async def main():
 asyncio.run(main())
 ```
 
-## Available hooks
+## [​](#available-hooks) Available hooks
 
 The SDK provides hooks for different stages of agent execution. Some hooks are available in both SDKs, while others are TypeScript-only.
 
@@ -121,11 +200,13 @@ The SDK provides hooks for different stages of agent execution. Some hooks are a
 | `WorktreeCreate` | No | Yes | Git worktree created | Track isolated workspaces |
 | `WorktreeRemove` | No | Yes | Git worktree removed | Clean up workspace resources |
 
-## Configure hooks
+## [​](#configure-hooks) Configure hooks
 
 To configure a hook, pass it in the `hooks` field of your agent options (`ClaudeAgentOptions` in Python, the `options` object in TypeScript):
 
 Python
+
+TypeScript
 
 ```shiki
 options = ClaudeAgentOptions(
@@ -143,25 +224,23 @@ The `hooks` option is a dictionary (Python) or object (TypeScript) where:
 - **Keys** are [hook event names](#available-hooks) (e.g., `'PreToolUse'`, `'PostToolUse'`, `'Stop'`)
 - **Values** are arrays of [matchers](#matchers), each containing an optional filter pattern and your [callback functions](#callback-functions)
 
-### Matchers
+### [​](#matchers) Matchers
 
-Use matchers to filter when your callbacks fire. The `matcher` field is a regex string that matches against a different value depending on the hook event type. For example, tool-based hooks match against the tool name, while `Notification` hooks match against the notification type. See the [Claude Code hooks reference](https://code.claude.com/docs/en/hooks#matcher-patterns) for the full list of matcher values for each event type.
+Use matchers to filter when your callbacks fire. The `matcher` field is a regex string that matches against a different value depending on the hook event type. For example, tool-based hooks match against the tool name, while `Notification` hooks match against the notification type. See the [Claude Code hooks reference](/docs/en/hooks#matcher-patterns) for the full list of matcher values for each event type.
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `matcher` | `string` | `undefined` | Regex pattern matched against the event's filter field. For tool hooks, this is the tool name. Built-in tools include `Bash`, `Read`, `Write`, `Edit`, `Glob`, `Grep`, `WebFetch`, `Agent`, and others (see [Tool Input Types](/docs/en/agent-sdk/typescript#tool-input-types) for the full list). MCP tools use the pattern `mcp__<server>__<action>`. |
+| `matcher` | `string` | `undefined` | Regex pattern matched against the event’s filter field. For tool hooks, this is the tool name. Built-in tools include `Bash`, `Read`, `Write`, `Edit`, `Glob`, `Grep`, `WebFetch`, `Agent`, and others (see [Tool Input Types](/docs/en/agent-sdk/typescript#tool-input-types) for the full list). MCP tools use the pattern `mcp__<server>__<action>`. |
 | `hooks` | `HookCallback[]` | - | Required. Array of callback functions to execute when the pattern matches |
 | `timeout` | `number` | `60` | Timeout in seconds |
 
 Use the `matcher` pattern to target specific tools whenever possible. A matcher with `'Bash'` only runs for Bash commands, while omitting the pattern runs your callbacks for every occurrence of the event. Note that for tool-based hooks, matchers only filter by **tool name**, not by file paths or other arguments. To filter by file path, check `tool_input.file_path` inside your callback.
 
-**Discovering tool names:** See [Tool Input Types](/docs/en/agent-sdk/typescript#tool-input-types) for the full list of built-in tool names, or add a hook without a matcher to log all tool calls your session makes.
+**Discovering tool names:** See [Tool Input Types](/docs/en/agent-sdk/typescript#tool-input-types) for the full list of built-in tool names, or add a hook without a matcher to log all tool calls your session makes.**MCP tool naming:** MCP tools always start with `mcp__` followed by the server name and action: `mcp__<server>__<action>`. For example, if you configure a server named `playwright`, its tools will be named `mcp__playwright__browser_screenshot`, `mcp__playwright__browser_click`, etc. The server name comes from the key you use in the `mcpServers` configuration.
 
-**MCP tool naming:** MCP tools always start with `mcp__` followed by the server name and action: `mcp__<server>__<action>`. For example, if you configure a server named `playwright`, its tools will be named `mcp__playwright__browser_screenshot`, `mcp__playwright__browser_click`, etc. The server name comes from the key you use in the `mcpServers` configuration.
+### [​](#callback-functions) Callback functions
 
-### Callback functions
-
-#### Inputs
+#### [​](#inputs) Inputs
 
 Every hook callback receives three arguments:
 
@@ -171,22 +250,24 @@ Every hook callback receives three arguments:
 - **Tool use ID** (`str | None` / `string | undefined`): correlates `PreToolUse` and `PostToolUse` events for the same tool call.
 - **Context:** in TypeScript, contains a `signal` property (`AbortSignal`) for cancellation. In Python, this argument is reserved for future use.
 
-#### Outputs
+#### [​](#outputs) Outputs
 
 Your callback returns an object with two categories of fields:
 
 - **Top-level fields** control the conversation: `systemMessage` injects a message into the conversation visible to the model, and `continue` (`continue_` in Python) determines whether the agent keeps running after this hook.
 - **`hookSpecificOutput`** controls the current operation. The fields inside depend on the hook event type. For `PreToolUse` hooks, this is where you set `permissionDecision` (`"allow"`, `"deny"`, or `"ask"`), `permissionDecisionReason`, and `updatedInput`. For `PostToolUse` hooks, you can set `additionalContext` to append information to the tool result.
 
-Return `{}` to allow the operation without changes. SDK callback hooks use the same JSON output format as [Claude Code shell command hooks](https://code.claude.com/docs/en/hooks#json-output), which documents every field and event-specific option. For the SDK type definitions, see the [TypeScript](/docs/en/agent-sdk/typescript#sync-hook-json-output) and [Python](/docs/en/agent-sdk/python#sync-hook-json-output) SDK references.
+Return `{}` to allow the operation without changes. SDK callback hooks use the same JSON output format as [Claude Code shell command hooks](/docs/en/hooks#json-output), which documents every field and event-specific option. For the SDK type definitions, see the [TypeScript](/docs/en/agent-sdk/typescript#sync-hook-json-output) and [Python](/docs/en/agent-sdk/python#sync-hook-json-output) SDK references.
 
 When multiple hooks or permission rules apply, **deny** takes priority over **ask**, which takes priority over **allow**. If any hook returns `deny`, the operation is blocked regardless of other hooks.
 
-#### Asynchronous output
+#### [​](#asynchronous-output) Asynchronous output
 
-By default, the agent waits for your hook to return before proceeding. If your hook performs a side effect (logging, sending a webhook) and doesn't need to influence the agent's behavior, you can return an async output instead. This tells the agent to continue immediately without waiting for the hook to finish:
+By default, the agent waits for your hook to return before proceeding. If your hook performs a side effect (logging, sending a webhook) and doesn’t need to influence the agent’s behavior, you can return an async output instead. This tells the agent to continue immediately without waiting for the hook to finish:
 
 Python
+
+TypeScript
 
 ```shiki
 async def async_hook(input_data, tool_use_id, context):
@@ -202,13 +283,15 @@ async def async_hook(input_data, tool_use_id, context):
 
 Async outputs cannot block, modify, or inject context into the operation since the agent has already moved on. Use them only for side effects like logging, metrics, or notifications.
 
-## Examples
+## [​](#examples) Examples
 
-### Modify tool input
+### [​](#modify-tool-input) Modify tool input
 
 This example intercepts Write tool calls and rewrites the `file_path` argument to prepend `/sandbox`, redirecting all file writes to a sandboxed directory. The callback returns `updatedInput` with the modified path and `permissionDecision: 'allow'` to auto-approve the rewritten operation:
 
 Python
+
+TypeScript
 
 ```shiki
 async def redirect_to_sandbox(input_data, tool_use_id, context):
@@ -232,11 +315,13 @@ async def redirect_to_sandbox(input_data, tool_use_id, context):
 
 When using `updatedInput`, you must also include `permissionDecision: 'allow'`. Always return a new object rather than mutating the original `tool_input`.
 
-### Add context and block a tool
+### [​](#add-context-and-block-a-tool) Add context and block a tool
 
 This example blocks any attempt to write to the `/etc` directory and uses two output fields together: `permissionDecision: 'deny'` stops the tool call, while `systemMessage` injects a reminder into the conversation so the agent receives context about why the operation was blocked and avoids retrying it:
 
 Python
+
+TypeScript
 
 ```shiki
 async def block_etc_writes(input_data, tool_use_id, context):
@@ -256,11 +341,13 @@ async def block_etc_writes(input_data, tool_use_id, context):
  return {}
 ```
 
-### Auto-approve specific tools
+### [​](#auto-approve-specific-tools) Auto-approve specific tools
 
 By default, the agent may prompt for permission before using certain tools. This example auto-approves read-only filesystem tools (Read, Glob, Grep) by returning `permissionDecision: 'allow'`, letting them run without user confirmation while leaving all other tools subject to normal permission checks:
 
 Python
+
+TypeScript
 
 ```shiki
 async def auto_approve_read_only(input_data, tool_use_id, context):
@@ -279,11 +366,13 @@ async def auto_approve_read_only(input_data, tool_use_id, context):
  return {}
 ```
 
-### Chain multiple hooks
+### [​](#chain-multiple-hooks) Chain multiple hooks
 
 Hooks execute in the order they appear in the array. Keep each hook focused on a single responsibility and chain multiple hooks for complex logic:
 
 Python
+
+TypeScript
 
 ```shiki
 options = ClaudeAgentOptions(
@@ -298,11 +387,13 @@ options = ClaudeAgentOptions(
 )
 ```
 
-### Filter with regex matchers
+### [​](#filter-with-regex-matchers) Filter with regex matchers
 
 Use regex patterns to match multiple tools. This example registers three matchers with different scopes: the first triggers `file_security_hook` only for file modification tools, the second triggers `mcp_audit_hook` for any MCP tool (tools whose names start with `mcp__`), and the third triggers `global_logger` for every tool call regardless of name:
 
 Python
+
+TypeScript
 
 ```shiki
 options = ClaudeAgentOptions(
@@ -319,11 +410,13 @@ options = ClaudeAgentOptions(
 )
 ```
 
-### Track subagent activity
+### [​](#track-subagent-activity) Track subagent activity
 
 Use `SubagentStop` hooks to monitor when subagents finish their work. See the full input type in the [TypeScript](/docs/en/agent-sdk/typescript#hook-input) and [Python](/docs/en/agent-sdk/python#hook-input) SDK references. This example logs a summary each time a subagent completes:
 
 Python
+
+TypeScript
 
 ```shiki
 async def subagent_tracker(input_data, tool_use_id, context):
@@ -339,13 +432,14 @@ options = ClaudeAgentOptions(
 )
 ```
 
-### Make HTTP requests from hooks
+### [​](#make-http-requests-from-hooks) Make HTTP requests from hooks
 
 Hooks can perform asynchronous operations like HTTP requests. Catch errors inside your hook instead of letting them propagate, since an unhandled exception can interrupt the agent.
-
-This example sends a webhook after each tool completes, logging which tool ran and when. The hook catches errors so a failed webhook doesn't interrupt the agent:
+This example sends a webhook after each tool completes, logging which tool ran and when. The hook catches errors so a failed webhook doesn’t interrupt the agent:
 
 Python
+
+TypeScript
 
 ```shiki
 import asyncio
@@ -384,13 +478,14 @@ async def webhook_notifier(input_data, tool_use_id, context):
  return {}
 ```
 
-### Forward notifications to Slack
+### [​](#forward-notifications-to-slack) Forward notifications to Slack
 
 Use `Notification` hooks to receive system notifications from the agent and forward them to external services. Notifications fire for specific event types: `permission_prompt` (Claude needs permission), `idle_prompt` (Claude is waiting for input), `auth_success` (authentication completed), and `elicitation_dialog` (Claude is prompting the user). Each notification includes a `message` field with a human-readable description and optionally a `title`.
-
 This example forwards every notification to a Slack channel. It requires a [Slack incoming webhook URL](https://api.slack.com/messaging/webhooks), which you create by adding an app to your Slack workspace and enabling incoming webhooks:
 
 Python
+
+TypeScript
 
 ```shiki
 import asyncio
@@ -436,17 +531,17 @@ async def main():
 asyncio.run(main())
 ```
 
-## Fix common issues
+## [​](#fix-common-issues) Fix common issues
 
-### Hook not firing
+### [​](#hook-not-firing) Hook not firing
 
 - Verify the hook event name is correct and case-sensitive (`PreToolUse`, not `preToolUse`)
 - Check that your matcher pattern matches the tool name exactly
 - Ensure the hook is under the correct event type in `options.hooks`
-- For non-tool hooks like `Stop` and `SubagentStop`, matchers match against different fields (see [matcher patterns](https://code.claude.com/docs/en/hooks#matcher-patterns))
+- For non-tool hooks like `Stop` and `SubagentStop`, matchers match against different fields (see [matcher patterns](/docs/en/hooks#matcher-patterns))
 - Hooks may not fire when the agent hits the [`max_turns`](/docs/en/agent-sdk/python#claude-agent-options) limit because the session ends before hooks can execute
 
-### Matcher not filtering as expected
+### [​](#matcher-not-filtering-as-expected) Matcher not filtering as expected
 
 Matchers only match **tool names**, not file paths or other arguments. To filter by file path, check `tool_input.file_path` inside your hook:
 
@@ -461,18 +556,18 @@ const myHook: HookCallback = async (input, toolUseID, { signal }) => {
 };
 ```
 
-### Hook timeout
+### [​](#hook-timeout) Hook timeout
 
 - Increase the `timeout` value in the `HookMatcher` configuration
 - Use the `AbortSignal` from the third callback argument to handle cancellation gracefully in TypeScript
 
-### Tool blocked unexpectedly
+### [​](#tool-blocked-unexpectedly) Tool blocked unexpectedly
 
 - Check all `PreToolUse` hooks for `permissionDecision: 'deny'` returns
-- Add logging to your hooks to see what `permissionDecisionReason` they're returning
-- Verify matcher patterns aren't too broad (an empty matcher matches all tools)
+- Add logging to your hooks to see what `permissionDecisionReason` they’re returning
+- Verify matcher patterns aren’t too broad (an empty matcher matches all tools)
 
-### Modified input not applied
+### [​](#modified-input-not-applied) Modified input not applied
 
 - Ensure `updatedInput` is inside `hookSpecificOutput`, not at the top level:
 
@@ -488,11 +583,13 @@ const myHook: HookCallback = async (input, toolUseID, { signal }) => {
 - You must also return `permissionDecision: 'allow'` for the input modification to take effect
 - Include `hookEventName` in `hookSpecificOutput` to identify which hook type the output is for
 
-### Session hooks not available in Python
+### [​](#session-hooks-not-available-in-python) Session hooks not available in Python
 
-`SessionStart` and `SessionEnd` can be registered as SDK callback hooks in TypeScript, but are not available in the Python SDK (`HookEvent` omits them). In Python, they are only available as [shell command hooks](https://code.claude.com/docs/en/hooks#hook-events) defined in settings files (for example, `.claude/settings.json`). To load shell command hooks from your SDK application, include the appropriate setting source with [`setting_sources`](/docs/en/agent-sdk/python#setting-source) or [`settingSources`](/docs/en/agent-sdk/typescript#setting-source):
+`SessionStart` and `SessionEnd` can be registered as SDK callback hooks in TypeScript, but are not available in the Python SDK (`HookEvent` omits them). In Python, they are only available as [shell command hooks](/docs/en/hooks#hook-events) defined in settings files (for example, `.claude/settings.json`). To load shell command hooks from your SDK application, include the appropriate setting source with [`setting_sources`](/docs/en/agent-sdk/python#setting-source) or [`settingSources`](/docs/en/agent-sdk/typescript#setting-source):
 
 Python
+
+TypeScript
 
 ```shiki
 options = ClaudeAgentOptions(
@@ -502,29 +599,39 @@ options = ClaudeAgentOptions(
 
 To run initialization logic as a Python SDK callback instead, use the first message from `client.receive_response()` as your trigger.
 
-### Subagent permission prompts multiplying
+### [​](#subagent-permission-prompts-multiplying) Subagent permission prompts multiplying
 
 When spawning multiple subagents, each one may request permissions separately. Subagents do not automatically inherit parent agent permissions. To avoid repeated prompts, use `PreToolUse` hooks to auto-approve specific tools, or configure permission rules that apply to subagent sessions.
 
-### Recursive hook loops with subagents
+### [​](#recursive-hook-loops-with-subagents) Recursive hook loops with subagents
 
 A `UserPromptSubmit` hook that spawns subagents can create infinite loops if those subagents trigger the same hook. To prevent this:
 
 - Check for a subagent indicator in the hook input before spawning
-- Use a shared variable or session state to track whether you're already inside a subagent
+- Use a shared variable or session state to track whether you’re already inside a subagent
 - Scope hooks to only run for the top-level agent session
 
-### systemMessage not appearing in output
+### [​](#systemmessage-not-appearing-in-output) systemMessage not appearing in output
 
 The `systemMessage` field adds context to the conversation that the model sees, but it may not appear in all SDK output modes. If you need to surface hook decisions to your application, log them separately or use a dedicated output channel.
 
-## Related resources
+## [​](#related-resources) Related resources
 
-- [Claude Code hooks reference](https://code.claude.com/docs/en/hooks): full JSON input/output schemas, event documentation, and matcher patterns
-- [Claude Code hooks guide](https://code.claude.com/docs/en/hooks-guide): shell command hook examples and walkthroughs
+- [Claude Code hooks reference](/docs/en/hooks): full JSON input/output schemas, event documentation, and matcher patterns
+- [Claude Code hooks guide](/docs/en/hooks-guide): shell command hook examples and walkthroughs
 - [TypeScript SDK reference](/docs/en/agent-sdk/typescript): hook types, input/output definitions, and configuration options
 - [Python SDK reference](/docs/en/agent-sdk/python): hook types, input/output definitions, and configuration options
 - [Permissions](/docs/en/agent-sdk/permissions): control what your agent can do
 - [Custom tools](/docs/en/agent-sdk/custom-tools): build tools to extend agent capabilities
 
 Was this page helpful?
+
+YesNo
+
+[Configure permissions](/docs/en/agent-sdk/permissions)[Rewind file changes with checkpointing](/docs/en/agent-sdk/file-checkpointing)
+
+Ctrl+I
+
+Assistant
+
+Responses are generated using AI and may contain mistakes.

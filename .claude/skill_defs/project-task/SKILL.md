@@ -1,7 +1,7 @@
 ---
 name: project-task
 description: "Structured workflow for project-related tasks. Enforces read context, do work, document, schedule next. Use for any scheduled or manual task that's part of an ongoing project."
-updated: 2026-02-15
+updated: 2026-04-10
 ---
 
 # Project Task Workflow
@@ -17,6 +17,7 @@ updated: 2026-02-15
 Extract from the prompt:
 - **Project ID:** The identifier after `/project-task` and before the colon (e.g., `job-search-2026`)
 - **Task:** Everything after the colon
+- **Special commands:** Check for `init-spec` or `review-spec` (see Spec-Driven Format below)
 
 If no project ID is provided, ask for clarification before proceeding.
 
@@ -32,8 +33,9 @@ If no project ID is provided, ask for clarification before proceeding.
    - Blockers or notes
    - Agent activity (auto-populated by morning sync)
    - Related agents and their project connections
-3. **Read related docs:** If `_status.md` references other files (trackers, braindumps, etc.), read those too.
-4. **Check related agent outputs:** If `_status.md` has a `## Related Agents` section, check `00_Inbox/agent_outputs/` for recent outputs from those agents that haven't been processed yet.
+3. **Check for specs:** If `specs/` directory exists in the project folder, read the spec files to understand scope and design. Use task statuses in `specs/tasks.md` as authoritative work tracking (in addition to `_status.md`).
+4. **Read related docs:** If `_status.md` references other files (trackers, braindumps, etc.), read those too.
+5. **Check related agent outputs:** If `_status.md` has a `## Related Agents` section, check `00_Inbox/agent_outputs/` for recent outputs from those agents that haven't been processed yet.
 
 **If `_status.md` doesn't exist:** Create it with the enhanced template (see bottom of this file) before proceeding.
 
@@ -205,6 +207,92 @@ End with a brief message:
 
 ## Notes
 {Any relevant context, decisions, or observations}
+```
+
+---
+
+## Spec-Driven Format (Optional)
+
+For complex projects — multi-phase features, new products, major refactors — use the **spec-driven format** to formalize requirements, design, and tasks with human review gates between phases.
+
+### When to Use Specs
+
+Use specs when the project has:
+- **Multiple phases** spanning more than a few days
+- **Design decisions** that need human approval
+- **External dependencies** (APIs, people, systems)
+- **Significant scope** — enough complexity that ad-hoc task lists become unwieldy
+
+Don't use specs for: simple bug fixes, routine maintenance, projects with < 5 tasks, or time-sensitive work where formalization adds overhead without value.
+
+### The Three Spec Files
+
+Templates live at `.claude/templates/specs/`. Copy them into the project's `specs/` directory.
+
+| File | Purpose | Review Gate |
+|------|---------|-------------|
+| `specs/requirements.md` | **What** we're building and **why**. Problem, success criteria, use cases, constraints, scope. | the user approves before design begins |
+| `specs/design.md` | **How** we'll build it. Architecture, key decisions, components, integration, risks. | the user approves before tasks begin |
+| `specs/tasks.md` | **What to do**, in order. Phases, task breakdown, estimates, the user gates, dependency graph. | the user approves before implementation begins |
+
+### Spec Workflow
+
+```
+requirements.md (Draft)
+    → USER REVIEW → requirements.md (Approved)
+        → design.md (Draft)
+            → USER REVIEW → design.md (Approved)
+                → tasks.md (Draft)
+                    → USER REVIEW → tasks.md (Approved)
+                        → Implementation begins
+```
+
+Each review gate is a **non-silent escalation** — the user must explicitly approve before proceeding.
+
+### Special Commands
+
+#### `init-spec` — Initialize spec files for a project
+
+```
+/project-task {project-id}: init-spec
+```
+
+1. Creates `specs/` directory in the project folder
+2. Copies the three templates from `.claude/templates/specs/`
+3. Pre-fills what it can from `_status.md` context (project name, known requirements, existing decisions)
+4. Updates `_status.md` to reference the spec files under Key Files
+5. Sets `_status.md` Current Phase to "Spec: Requirements (Draft)"
+6. Schedules non-silent escalation: "requirements.md ready for your review"
+
+#### `review-spec` — Check spec status and advance
+
+```
+/project-task {project-id}: review-spec
+```
+
+1. Reads all spec files, checks their Status fields
+2. Reports current state (which specs exist, which are approved/pending)
+3. If a spec is marked "Approved" but the next spec hasn't been started, drafts the next spec
+4. Validates cross-references: design.md references requirements from requirements.md; tasks.md implements components from design.md
+
+### Spec Integration with _status.md
+
+When a project has specs, `_status.md` reflects the spec lifecycle:
+
+```markdown
+**Current Phase:** Spec: Design (In Review)
+**Spec Status:** requirements.md (Approved) | design.md (In Review) | tasks.md (Not Started)
+```
+
+Task tracking in `_status.md` "In Progress" and "Next Steps" should reference spec task IDs when available:
+
+```markdown
+## In Progress
+- [ ] T-1.2: Build email ingestion pipeline (from specs/tasks.md)
+
+## Next Steps
+- [ ] T-1.3: Build metrics dashboard
+- [ ] ZG-1: the user reviews pilot proposal
 ```
 
 ---

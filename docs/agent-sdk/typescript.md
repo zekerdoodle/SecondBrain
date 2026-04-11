@@ -1,22 +1,95 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/typescript
 title: Agent SDK reference - TypeScript
-last_fetched: 2026-04-08T09:04:05.294292+00:00
+last_fetched: 2026-04-10T09:04:44.729281+00:00
 ---
 
-Copy page
+[Claude Code Docs home page![light logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/light.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=78fd01ff4f4340295a4f66e2ea54903c)![dark logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/dark.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=1298a0c3b3a1da603b190d0de0e31712)](/docs/en/overview)
+
+![US](https://d3gk2c5xim1je2.cloudfront.net/flags/US.svg)
+
+English
+
+Search...
+
+Ctrl KAsk AI
+
+Search...
+
+Navigation
+
+SDK references
+
+Agent SDK reference - TypeScript
+
+[Getting started](/docs/en/overview)[Build with Claude Code](/docs/en/sub-agents)[Deployment](/docs/en/third-party-integrations)[Administration](/docs/en/setup)[Configuration](/docs/en/settings)[Reference](/docs/en/cli-reference)[Agent SDK](/docs/en/agent-sdk/overview)[What's New](/docs/en/whats-new)[Resources](/docs/en/legal-and-compliance)
+
+##### Agent SDK
+
+- [Overview](/docs/en/agent-sdk/overview)
+- [Quickstart](/docs/en/agent-sdk/quickstart)
+
+##### Core concepts
+
+- [How the agent loop works](/docs/en/agent-sdk/agent-loop)
+- [Use Claude Code features](/docs/en/agent-sdk/claude-code-features)
+- [Work with sessions](/docs/en/agent-sdk/sessions)
+
+##### Input and output
+
+- [Streaming Input](/docs/en/agent-sdk/streaming-vs-single-mode)
+- [Handle approvals and user input](/docs/en/agent-sdk/user-input)
+- [Stream responses in real-time](/docs/en/agent-sdk/streaming-output)
+- [Get structured output from agents](/docs/en/agent-sdk/structured-outputs)
+
+##### Extend with tools
+
+- [Give Claude custom tools](/docs/en/agent-sdk/custom-tools)
+- [Connect to external tools with MCP](/docs/en/agent-sdk/mcp)
+- [Scale to many tools with tool search](/docs/en/agent-sdk/tool-search)
+- [Subagents in the SDK](/docs/en/agent-sdk/subagents)
+
+##### Customize behavior
+
+- [Modifying system prompts](/docs/en/agent-sdk/modifying-system-prompts)
+- [Slash Commands in the SDK](/docs/en/agent-sdk/slash-commands)
+- [Agent Skills in the SDK](/docs/en/agent-sdk/skills)
+- [Plugins in the SDK](/docs/en/agent-sdk/plugins)
+
+##### Control and observability
+
+- [Configure permissions](/docs/en/agent-sdk/permissions)
+- [Intercept and control agent behavior with hooks](/docs/en/agent-sdk/hooks)
+- [Rewind file changes with checkpointing](/docs/en/agent-sdk/file-checkpointing)
+- [Track cost and usage](/docs/en/agent-sdk/cost-tracking)
+- [Observability with OpenTelemetry](/docs/en/agent-sdk/observability)
+- [Todo Lists](/docs/en/agent-sdk/todo-tracking)
+
+##### Deployment
+
+- [Hosting the Agent SDK](/docs/en/agent-sdk/hosting)
+- [Securely deploying AI agents](/docs/en/agent-sdk/secure-deployment)
+
+##### SDK references
+
+- [TypeScript SDK](/docs/en/agent-sdk/typescript)
+- [TypeScript V2 (preview)](/docs/en/agent-sdk/typescript-v2-preview)
+- [Python SDK](/docs/en/agent-sdk/python)
+- [Migration Guide](/docs/en/agent-sdk/migration-guide)
+
+On this page
 
 **Try the new V2 interface (preview):** A simplified interface with `send()` and `stream()` patterns is now available, making multi-turn conversations easier. [Learn more about the TypeScript V2 preview](/docs/en/agent-sdk/typescript-v2-preview)
 
-## Installation
+## [​](#installation) Installation
 
 ```shiki
 npm install @anthropic-ai/claude-agent-sdk
 ```
 
-## Functions
+## [​](#functions) Functions
 
-### `query()`
+### [​](#query) `query()`
 
 The primary function for interacting with Claude Code. Creates an async generator that streams messages as they arrive.
 
@@ -30,18 +103,18 @@ function query({
 }): Query;
 ```
 
-#### Parameters
+#### [​](#parameters) Parameters
 
 | Parameter | Type | Description |
 | --- | --- | --- |
 | `prompt` | `string | AsyncIterable<`[`SDKUserMessage`](#sdkuser-message)`>` | The input prompt as a string or async iterable for streaming mode |
 | `options` | [`Options`](#options) | Optional configuration object (see Options type below) |
 
-#### Returns
+#### [​](#returns) Returns
 
 Returns a [`Query`](#query-object) object that extends `AsyncGenerator<`[`SDKMessage`](#sdk-message)`, void>` with additional methods.
 
-### `tool()`
+### [​](#tool) `tool()`
 
 Creates a type-safe MCP tool definition for use with SDK MCP servers.
 
@@ -55,17 +128,17 @@ function tool<Schema extends AnyZodRawShape>(
 ): SdkMcpToolDefinition<Schema>;
 ```
 
-#### Parameters
+#### [​](#parameters-2) Parameters
 
 | Parameter | Type | Description |
 | --- | --- | --- |
 | `name` | `string` | The name of the tool |
 | `description` | `string` | A description of what the tool does |
-| `inputSchema` | `Schema extends AnyZodRawShape` | Zod schema defining the tool's input parameters (supports both Zod 3 and Zod 4) |
+| `inputSchema` | `Schema extends AnyZodRawShape` | Zod schema defining the tool’s input parameters (supports both Zod 3 and Zod 4) |
 | `handler` | `(args, extra) => Promise<`[`CallToolResult`](#call-tool-result)`>` | Async function that executes the tool logic |
 | `extras` | `{ annotations?:` [`ToolAnnotations`](#tool-annotations) `}` | Optional MCP tool annotations providing behavioral hints to clients |
 
-#### `ToolAnnotations`
+#### [​](#toolannotations) `ToolAnnotations`
 
 Re-exported from `@modelcontextprotocol/sdk/types.js`. All fields are optional hints; clients should not rely on them for security decisions.
 
@@ -75,7 +148,7 @@ Re-exported from `@modelcontextprotocol/sdk/types.js`. All fields are optional h
 | `readOnlyHint` | `boolean` | `false` | If `true`, the tool does not modify its environment |
 | `destructiveHint` | `boolean` | `true` | If `true`, the tool may perform destructive updates (only meaningful when `readOnlyHint` is `false`) |
 | `idempotentHint` | `boolean` | `false` | If `true`, repeated calls with the same arguments have no additional effect (only meaningful when `readOnlyHint` is `false`) |
-| `openWorldHint` | `boolean` | `true` | If `true`, the tool interacts with external entities (for example, web search). If `false`, the tool's domain is closed (for example, a memory tool) |
+| `openWorldHint` | `boolean` | `true` | If `true`, the tool interacts with external entities (for example, web search). If `false`, the tool’s domain is closed (for example, a memory tool) |
 
 ```shiki
 import { tool } from "@anthropic-ai/claude-agent-sdk";
@@ -92,7 +165,7 @@ const searchTool = tool(
 );
 ```
 
-### `createSdkMcpServer()`
+### [​](#createsdkmcpserver) `createSdkMcpServer()`
 
 Creates an MCP server instance that runs in the same process as your application.
 
@@ -104,7 +177,7 @@ function createSdkMcpServer(options: {
 }): McpSdkServerConfigWithInstance;
 ```
 
-#### Parameters
+#### [​](#parameters-3) Parameters
 
 | Parameter | Type | Description |
 | --- | --- | --- |
@@ -112,7 +185,7 @@ function createSdkMcpServer(options: {
 | `options.version` | `string` | Optional version string |
 | `options.tools` | `Array<SdkMcpToolDefinition>` | Array of tool definitions created with [`tool()`](#tool) |
 
-### `listSessions()`
+### [​](#listsessions) `listSessions()`
 
 Discovers and lists past sessions with light metadata. Filter by project directory or list sessions across all projects.
 
@@ -120,7 +193,7 @@ Discovers and lists past sessions with light metadata. Filter by project directo
 function listSessions(options?: ListSessionsOptions): Promise<SDKSessionInfo[]>;
 ```
 
-#### Parameters
+#### [​](#parameters-4) Parameters
 
 | Parameter | Type | Default | Description |
 | --- | --- | --- | --- |
@@ -128,7 +201,7 @@ function listSessions(options?: ListSessionsOptions): Promise<SDKSessionInfo[]>;
 | `options.limit` | `number` | `undefined` | Maximum number of sessions to return |
 | `options.includeWorktrees` | `boolean` | `true` | When `dir` is inside a git repository, include sessions from all worktree paths |
 
-#### Return type: `SDKSessionInfo`
+#### [​](#return-type-sdksessioninfo) Return type: `SDKSessionInfo`
 
 | Property | Type | Description |
 | --- | --- | --- |
@@ -141,9 +214,9 @@ function listSessions(options?: ListSessionsOptions): Promise<SDKSessionInfo[]>;
 | `gitBranch` | `string | undefined` | Git branch at the end of the session |
 | `cwd` | `string | undefined` | Working directory for the session |
 | `tag` | `string | undefined` | User-set session tag (see [`tagSession()`](#tag-session)) |
-| `createdAt` | `number | undefined` | Creation time in milliseconds since epoch, from the first entry's timestamp |
+| `createdAt` | `number | undefined` | Creation time in milliseconds since epoch, from the first entry’s timestamp |
 
-#### Example
+#### [​](#example) Example
 
 Print the 10 most recent sessions for a project. Results are sorted by `lastModified` descending, so the first item is the newest. Omit `dir` to search across all projects.
 
@@ -157,7 +230,7 @@ for (const session of sessions) {
 }
 ```
 
-### `getSessionMessages()`
+### [​](#getsessionmessages) `getSessionMessages()`
 
 Reads user and assistant messages from a past session transcript.
 
@@ -168,7 +241,7 @@ function getSessionMessages(
 ): Promise<SessionMessage[]>;
 ```
 
-#### Parameters
+#### [​](#parameters-5) Parameters
 
 | Parameter | Type | Default | Description |
 | --- | --- | --- | --- |
@@ -177,7 +250,7 @@ function getSessionMessages(
 | `options.limit` | `number` | `undefined` | Maximum number of messages to return |
 | `options.offset` | `number` | `undefined` | Number of messages to skip from the start |
 
-#### Return type: `SessionMessage`
+#### [​](#return-type-sessionmessage) Return type: `SessionMessage`
 
 | Property | Type | Description |
 | --- | --- | --- |
@@ -187,7 +260,7 @@ function getSessionMessages(
 | `message` | `unknown` | Raw message payload from the transcript |
 | `parent_tool_use_id` | `null` | Reserved |
 
-#### Example
+#### [​](#example-2) Example
 
 ```shiki
 import { listSessions, getSessionMessages } from "@anthropic-ai/claude-agent-sdk";
@@ -206,7 +279,7 @@ if (latest) {
 }
 ```
 
-### `getSessionInfo()`
+### [​](#getsessioninfo) `getSessionInfo()`
 
 Reads metadata for a single session by ID without scanning the full project directory.
 
@@ -217,7 +290,7 @@ function getSessionInfo(
 ): Promise<SDKSessionInfo | undefined>;
 ```
 
-#### Parameters
+#### [​](#parameters-6) Parameters
 
 | Parameter | Type | Default | Description |
 | --- | --- | --- | --- |
@@ -226,7 +299,7 @@ function getSessionInfo(
 
 Returns [`SDKSessionInfo`](#return-type-sdk-session-info), or `undefined` if the session is not found.
 
-### `renameSession()`
+### [​](#renamesession) `renameSession()`
 
 Renames a session by appending a custom-title entry. Repeated calls are safe; the most recent title wins.
 
@@ -238,7 +311,7 @@ function renameSession(
 ): Promise<void>;
 ```
 
-#### Parameters
+#### [​](#parameters-7) Parameters
 
 | Parameter | Type | Default | Description |
 | --- | --- | --- | --- |
@@ -246,7 +319,7 @@ function renameSession(
 | `title` | `string` | required | New title. Must be non-empty after trimming whitespace |
 | `options.dir` | `string` | `undefined` | Project directory path. When omitted, searches all project directories |
 
-### `tagSession()`
+### [​](#tagsession) `tagSession()`
 
 Tags a session. Pass `null` to clear the tag. Repeated calls are safe; the most recent tag wins.
 
@@ -258,7 +331,7 @@ function tagSession(
 ): Promise<void>;
 ```
 
-#### Parameters
+#### [​](#parameters-8) Parameters
 
 | Parameter | Type | Default | Description |
 | --- | --- | --- | --- |
@@ -266,9 +339,9 @@ function tagSession(
 | `tag` | `string | null` | required | Tag string, or `null` to clear |
 | `options.dir` | `string` | `undefined` | Project directory path. When omitted, searches all project directories |
 
-## Types
+## [​](#types) Types
 
-### `Options`
+### [​](#options) `Options`
 
 Configuration object for the `query()` function.
 
@@ -287,7 +360,7 @@ Configuration object for the `query()` function.
 | `debug` | `boolean` | `false` | Enable debug mode for the Claude Code process |
 | `debugFile` | `string` | `undefined` | Write debug logs to a specific file path. Implicitly enables debug mode |
 | `disallowedTools` | `string[]` | `[]` | Tools to always deny. Deny rules are checked first and override `allowedTools` and `permissionMode` (including `bypassPermissions`) |
-| `effort` | `'low' | 'medium' | 'high' | 'max'` | `undefined` | Controls how much effort Claude puts into its response. When unset, the engine resolves a model-dependent default. Works with adaptive thinking to guide thinking depth |
+| `effort` | `'low' | 'medium' | 'high' | 'max'` | `'high'` | Controls how much effort Claude puts into its response. Works with adaptive thinking to guide thinking depth |
 | `enableFileCheckpointing` | `boolean` | `false` | Enable file change tracking for rewinding. See [File checkpointing](/docs/en/agent-sdk/file-checkpointing) |
 | `env` | `Record<string, string | undefined>` | `process.env` | Environment variables. Set `CLAUDE_AGENT_SDK_CLIENT_APP` to identify your app in the User-Agent header |
 | `executable` | `'bun' | 'deno' | 'node'` | Auto-detected | JavaScript runtime to use |
@@ -317,12 +390,12 @@ Configuration object for the `query()` function.
 | `spawnClaudeCodeProcess` | `(options: SpawnOptions) => SpawnedProcess` | `undefined` | Custom function to spawn the Claude Code process. Use to run Claude Code in VMs, containers, or remote environments |
 | `stderr` | `(data: string) => void` | `undefined` | Callback for stderr output |
 | `strictMcpConfig` | `boolean` | `false` | Enforce strict MCP validation |
-| `systemPrompt` | `string | { type: 'preset'; preset: 'claude_code'; append?: string }` | `undefined` (minimal prompt) | System prompt configuration. Pass a string for custom prompt, or `{ type: 'preset', preset: 'claude_code' }` to use Claude Code's system prompt. When using the preset object form, add `append` to extend the system prompt with additional instructions |
-| `thinking` | [`ThinkingConfig`](#thinking-config) | `{ type: 'adaptive' }` for supported models | Controls Claude's thinking/reasoning behavior. See [`ThinkingConfig`](#thinking-config) for options |
+| `systemPrompt` | `string | { type: 'preset'; preset: 'claude_code'; append?: string }` | `undefined` (minimal prompt) | System prompt configuration. Pass a string for custom prompt, or `{ type: 'preset', preset: 'claude_code' }` to use Claude Code’s system prompt. When using the preset object form, add `append` to extend the system prompt with additional instructions |
+| `thinking` | [`ThinkingConfig`](#thinking-config) | `{ type: 'adaptive' }` for supported models | Controls Claude’s thinking/reasoning behavior. See [`ThinkingConfig`](#thinking-config) for options |
 | `toolConfig` | [`ToolConfig`](#tool-config) | `undefined` | Configuration for built-in tool behavior. See [`ToolConfig`](#tool-config) for details |
-| `tools` | `string[] | { type: 'preset'; preset: 'claude_code' }` | `undefined` | Tool configuration. Pass an array of tool names or use the preset to get Claude Code's default tools |
+| `tools` | `string[] | { type: 'preset'; preset: 'claude_code' }` | `undefined` | Tool configuration. Pass an array of tool names or use the preset to get Claude Code’s default tools |
 
-### `Query` object
+### [​](#query-object) `Query` object
 
 Interface returned by the `query()` function.
 
@@ -351,7 +424,7 @@ interface Query extends AsyncGenerator<SDKMessage, void> {
 }
 ```
 
-#### Methods
+#### [​](#methods) Methods
 
 | Method | Description |
 | --- | --- |
@@ -373,7 +446,7 @@ interface Query extends AsyncGenerator<SDKMessage, void> {
 | `stopTask(taskId)` | Stop a running background task by ID |
 | `close()` | Close the query and terminate the underlying process. Forcefully ends the query and cleans up all resources |
 
-### `SDKControlInitializeResponse`
+### [​](#sdkcontrolinitializeresponse) `SDKControlInitializeResponse`
 
 Return type of `initializationResult()`. Contains session initialization data.
 
@@ -389,7 +462,7 @@ type SDKControlInitializeResponse = {
 };
 ```
 
-### `AgentDefinition`
+### [​](#agentdefinition) `AgentDefinition`
 
 Configuration for a subagent defined programmatically.
 
@@ -412,16 +485,16 @@ type AgentDefinition = {
 | `description` | Yes | Natural language description of when to use this agent |
 | `tools` | No | Array of allowed tool names. If omitted, inherits all tools from parent |
 | `disallowedTools` | No | Array of tool names to explicitly disallow for this agent |
-| `prompt` | Yes | The agent's system prompt |
+| `prompt` | Yes | The agent’s system prompt |
 | `model` | No | Model override for this agent. If omitted or `'inherit'`, uses the main model |
 | `mcpServers` | No | MCP server specifications for this agent |
 | `skills` | No | Array of skill names to preload into the agent context |
 | `maxTurns` | No | Maximum number of agentic turns (API round-trips) before stopping |
 | `criticalSystemReminder_EXPERIMENTAL` | No | Experimental: Critical reminder added to the system prompt |
 
-### `AgentMcpServerSpec`
+### [​](#agentmcpserverspec) `AgentMcpServerSpec`
 
-Specifies MCP servers available to a subagent. Can be a server name (string referencing a server from the parent's `mcpServers` config) or an inline server configuration record mapping server names to configs.
+Specifies MCP servers available to a subagent. Can be a server name (string referencing a server from the parent’s `mcpServers` config) or an inline server configuration record mapping server names to configs.
 
 ```shiki
 type AgentMcpServerSpec = string | Record<string, McpServerConfigForProcessTransport>;
@@ -429,7 +502,7 @@ type AgentMcpServerSpec = string | Record<string, McpServerConfigForProcessTrans
 
 Where `McpServerConfigForProcessTransport` is `McpStdioServerConfig | McpSSEServerConfig | McpHttpServerConfig | McpSdkServerConfig`.
 
-### `SettingSource`
+### [​](#settingsource) `SettingSource`
 
 Controls which filesystem-based configuration sources the SDK loads settings from.
 
@@ -443,11 +516,11 @@ type SettingSource = "user" | "project" | "local";
 | `'project'` | Shared project settings (version controlled) | `.claude/settings.json` |
 | `'local'` | Local project settings (gitignored) | `.claude/settings.local.json` |
 
-#### Default behavior
+#### [​](#default-behavior) Default behavior
 
 When `settingSources` is **omitted** or **undefined**, the SDK does **not** load any filesystem settings. This provides isolation for SDK applications.
 
-#### Why use settingSources
+#### [​](#why-use-settingsources) Why use settingSources
 
 **Load all filesystem settings (legacy behavior):**
 
@@ -523,7 +596,7 @@ const result = query({
 });
 ```
 
-#### Settings precedence
+#### [​](#settings-precedence) Settings precedence
 
 When multiple sources are loaded, settings are merged with this precedence (highest to lowest):
 
@@ -533,19 +606,19 @@ When multiple sources are loaded, settings are merged with this precedence (high
 
 Programmatic options (like `agents`, `allowedTools`) always override filesystem settings.
 
-### `PermissionMode`
+### [​](#permissionmode) `PermissionMode`
 
 ```shiki
 type PermissionMode =
  | "default" // Standard permission behavior
  | "acceptEdits" // Auto-accept file edits
  | "bypassPermissions" // Bypass all permission checks
- | "plan" // Planning mode - read-only tools only
+ | "plan" // Planning mode - no execution
  | "dontAsk" // Don't prompt for permissions, deny if not pre-approved
  | "auto"; // Use a model classifier to approve or deny each tool call
 ```
 
-### `CanUseTool`
+### [​](#canusetool) `CanUseTool`
 
 Custom permission function type for controlling tool usage.
 
@@ -571,9 +644,9 @@ type CanUseTool = (
 | `blockedPath` | `string` | The file path that triggered the permission request, if applicable |
 | `decisionReason` | `string` | Explains why this permission request was triggered |
 | `toolUseID` | `string` | Unique identifier for this specific tool call within the assistant message |
-| `agentID` | `string` | If running within a sub-agent, the sub-agent's ID |
+| `agentID` | `string` | If running within a sub-agent, the sub-agent’s ID |
 
-### `PermissionResult`
+### [​](#permissionresult) `PermissionResult`
 
 Result of a permission check.
 
@@ -593,7 +666,7 @@ type PermissionResult =
  };
 ```
 
-### `ToolConfig`
+### [​](#toolconfig) `ToolConfig`
 
 Configuration for built-in tool behavior.
 
@@ -609,7 +682,7 @@ type ToolConfig = {
 | --- | --- | --- |
 | `askUserQuestion.previewFormat` | `'markdown' | 'html'` | Opts into the `preview` field on [`AskUserQuestion`](/docs/en/agent-sdk/user-input#question-format) options and sets its content format. When unset, Claude does not emit previews |
 
-### `McpServerConfig`
+### [​](#mcpserverconfig) `McpServerConfig`
 
 Configuration for MCP servers.
 
@@ -621,7 +694,7 @@ type McpServerConfig =
  | McpSdkServerConfigWithInstance;
 ```
 
-#### `McpStdioServerConfig`
+#### [​](#mcpstdioserverconfig) `McpStdioServerConfig`
 
 ```shiki
 type McpStdioServerConfig = {
@@ -632,7 +705,7 @@ type McpStdioServerConfig = {
 };
 ```
 
-#### `McpSSEServerConfig`
+#### [​](#mcpsseserverconfig) `McpSSEServerConfig`
 
 ```shiki
 type McpSSEServerConfig = {
@@ -642,7 +715,7 @@ type McpSSEServerConfig = {
 };
 ```
 
-#### `McpHttpServerConfig`
+#### [​](#mcphttpserverconfig) `McpHttpServerConfig`
 
 ```shiki
 type McpHttpServerConfig = {
@@ -652,7 +725,7 @@ type McpHttpServerConfig = {
 };
 ```
 
-#### `McpSdkServerConfigWithInstance`
+#### [​](#mcpsdkserverconfigwithinstance) `McpSdkServerConfigWithInstance`
 
 ```shiki
 type McpSdkServerConfigWithInstance = {
@@ -662,7 +735,7 @@ type McpSdkServerConfigWithInstance = {
 };
 ```
 
-#### `McpClaudeAIProxyServerConfig`
+#### [​](#mcpclaudeaiproxyserverconfig) `McpClaudeAIProxyServerConfig`
 
 ```shiki
 type McpClaudeAIProxyServerConfig = {
@@ -672,7 +745,7 @@ type McpClaudeAIProxyServerConfig = {
 };
 ```
 
-### `SdkPluginConfig`
+### [​](#sdkpluginconfig) `SdkPluginConfig`
 
 Configuration for loading plugins in the SDK.
 
@@ -699,9 +772,9 @@ plugins: [
 
 For complete information on creating and using plugins, see [Plugins](/docs/en/agent-sdk/plugins).
 
-## Message Types
+## [​](#message-types) Message Types
 
-### `SDKMessage`
+### [​](#sdkmessage) `SDKMessage`
 
 Union type of all possible messages returned by the query.
 
@@ -730,7 +803,7 @@ type SDKMessage =
  | SDKPromptSuggestionMessage;
 ```
 
-### `SDKAssistantMessage`
+### [​](#sdkassistantmessage) `SDKAssistantMessage`
 
 Assistant response message.
 
@@ -745,11 +818,10 @@ type SDKAssistantMessage = {
 };
 ```
 
-The `message` field is a [`BetaMessage`](/docs/en/api/messages) from the Anthropic SDK. It includes fields like `id`, `content`, `model`, `stop_reason`, and `usage`.
-
+The `message` field is a [`BetaMessage`](https://platform.claude.com/docs/en/api/messages/create) from the Anthropic SDK. It includes fields like `id`, `content`, `model`, `stop_reason`, and `usage`.
 `SDKAssistantMessageError` is one of: `'authentication_failed'`, `'billing_error'`, `'rate_limit'`, `'invalid_request'`, `'server_error'`, `'max_output_tokens'`, or `'unknown'`.
 
-### `SDKUserMessage`
+### [​](#sdkusermessage) `SDKUserMessage`
 
 User input message.
 
@@ -765,7 +837,7 @@ type SDKUserMessage = {
 };
 ```
 
-### `SDKUserMessageReplay`
+### [​](#sdkusermessagereplay) `SDKUserMessageReplay`
 
 Replayed user message with required UUID.
 
@@ -782,7 +854,7 @@ type SDKUserMessageReplay = {
 };
 ```
 
-### `SDKResultMessage`
+### [​](#sdkresultmessage) `SDKResultMessage`
 
 Final result message.
 
@@ -827,7 +899,7 @@ type SDKResultMessage =
  };
 ```
 
-### `SDKSystemMessage`
+### [​](#sdksystemmessage) `SDKSystemMessage`
 
 System initialization message.
 
@@ -856,7 +928,7 @@ type SDKSystemMessage = {
 };
 ```
 
-### `SDKPartialAssistantMessage`
+### [​](#sdkpartialassistantmessage) `SDKPartialAssistantMessage`
 
 Streaming partial message (only when `includePartialMessages` is true).
 
@@ -870,7 +942,7 @@ type SDKPartialAssistantMessage = {
 };
 ```
 
-### `SDKCompactBoundaryMessage`
+### [​](#sdkcompactboundarymessage) `SDKCompactBoundaryMessage`
 
 Message indicating a conversation compaction boundary.
 
@@ -887,7 +959,7 @@ type SDKCompactBoundaryMessage = {
 };
 ```
 
-### `SDKPermissionDenial`
+### [​](#sdkpermissiondenial) `SDKPermissionDenial`
 
 Information about a denied tool use.
 
@@ -899,11 +971,11 @@ type SDKPermissionDenial = {
 };
 ```
 
-## Hook Types
+## [​](#hook-types) Hook Types
 
 For a comprehensive guide on using hooks with examples and common patterns, see the [Hooks guide](/docs/en/agent-sdk/hooks).
 
-### `HookEvent`
+### [​](#hookevent) `HookEvent`
 
 Available hook events.
 
@@ -929,7 +1001,7 @@ type HookEvent =
  | "WorktreeRemove";
 ```
 
-### `HookCallback`
+### [​](#hookcallback) `HookCallback`
 
 Hook callback function type.
 
@@ -941,7 +1013,7 @@ type HookCallback = (
 ) => Promise<HookJSONOutput>;
 ```
 
-### `HookCallbackMatcher`
+### [​](#hookcallbackmatcher) `HookCallbackMatcher`
 
 Hook configuration with optional matcher.
 
@@ -953,7 +1025,7 @@ interface HookCallbackMatcher {
 }
 ```
 
-### `HookInput`
+### [​](#hookinput) `HookInput`
 
 Union type of all hook input types.
 
@@ -979,7 +1051,7 @@ type HookInput =
  | WorktreeRemoveHookInput;
 ```
 
-### `BaseHookInput`
+### [​](#basehookinput) `BaseHookInput`
 
 Base interface that all hook input types extend.
 
@@ -994,7 +1066,7 @@ type BaseHookInput = {
 };
 ```
 
-#### `PreToolUseHookInput`
+#### [​](#pretoolusehookinput) `PreToolUseHookInput`
 
 ```shiki
 type PreToolUseHookInput = BaseHookInput & {
@@ -1005,7 +1077,7 @@ type PreToolUseHookInput = BaseHookInput & {
 };
 ```
 
-#### `PostToolUseHookInput`
+#### [​](#posttoolusehookinput) `PostToolUseHookInput`
 
 ```shiki
 type PostToolUseHookInput = BaseHookInput & {
@@ -1017,7 +1089,7 @@ type PostToolUseHookInput = BaseHookInput & {
 };
 ```
 
-#### `PostToolUseFailureHookInput`
+#### [​](#posttoolusefailurehookinput) `PostToolUseFailureHookInput`
 
 ```shiki
 type PostToolUseFailureHookInput = BaseHookInput & {
@@ -1030,7 +1102,7 @@ type PostToolUseFailureHookInput = BaseHookInput & {
 };
 ```
 
-#### `NotificationHookInput`
+#### [​](#notificationhookinput) `NotificationHookInput`
 
 ```shiki
 type NotificationHookInput = BaseHookInput & {
@@ -1041,7 +1113,7 @@ type NotificationHookInput = BaseHookInput & {
 };
 ```
 
-#### `UserPromptSubmitHookInput`
+#### [​](#userpromptsubmithookinput) `UserPromptSubmitHookInput`
 
 ```shiki
 type UserPromptSubmitHookInput = BaseHookInput & {
@@ -1050,7 +1122,7 @@ type UserPromptSubmitHookInput = BaseHookInput & {
 };
 ```
 
-#### `SessionStartHookInput`
+#### [​](#sessionstarthookinput) `SessionStartHookInput`
 
 ```shiki
 type SessionStartHookInput = BaseHookInput & {
@@ -1061,7 +1133,7 @@ type SessionStartHookInput = BaseHookInput & {
 };
 ```
 
-#### `SessionEndHookInput`
+#### [​](#sessionendhookinput) `SessionEndHookInput`
 
 ```shiki
 type SessionEndHookInput = BaseHookInput & {
@@ -1070,7 +1142,7 @@ type SessionEndHookInput = BaseHookInput & {
 };
 ```
 
-#### `StopHookInput`
+#### [​](#stophookinput) `StopHookInput`
 
 ```shiki
 type StopHookInput = BaseHookInput & {
@@ -1080,7 +1152,7 @@ type StopHookInput = BaseHookInput & {
 };
 ```
 
-#### `SubagentStartHookInput`
+#### [​](#subagentstarthookinput) `SubagentStartHookInput`
 
 ```shiki
 type SubagentStartHookInput = BaseHookInput & {
@@ -1090,7 +1162,7 @@ type SubagentStartHookInput = BaseHookInput & {
 };
 ```
 
-#### `SubagentStopHookInput`
+#### [​](#subagentstophookinput) `SubagentStopHookInput`
 
 ```shiki
 type SubagentStopHookInput = BaseHookInput & {
@@ -1103,7 +1175,7 @@ type SubagentStopHookInput = BaseHookInput & {
 };
 ```
 
-#### `PreCompactHookInput`
+#### [​](#precompacthookinput) `PreCompactHookInput`
 
 ```shiki
 type PreCompactHookInput = BaseHookInput & {
@@ -1113,7 +1185,7 @@ type PreCompactHookInput = BaseHookInput & {
 };
 ```
 
-#### `PermissionRequestHookInput`
+#### [​](#permissionrequesthookinput) `PermissionRequestHookInput`
 
 ```shiki
 type PermissionRequestHookInput = BaseHookInput & {
@@ -1124,7 +1196,7 @@ type PermissionRequestHookInput = BaseHookInput & {
 };
 ```
 
-#### `SetupHookInput`
+#### [​](#setuphookinput) `SetupHookInput`
 
 ```shiki
 type SetupHookInput = BaseHookInput & {
@@ -1133,7 +1205,7 @@ type SetupHookInput = BaseHookInput & {
 };
 ```
 
-#### `TeammateIdleHookInput`
+#### [​](#teammateidlehookinput) `TeammateIdleHookInput`
 
 ```shiki
 type TeammateIdleHookInput = BaseHookInput & {
@@ -1143,7 +1215,7 @@ type TeammateIdleHookInput = BaseHookInput & {
 };
 ```
 
-#### `TaskCompletedHookInput`
+#### [​](#taskcompletedhookinput) `TaskCompletedHookInput`
 
 ```shiki
 type TaskCompletedHookInput = BaseHookInput & {
@@ -1156,7 +1228,7 @@ type TaskCompletedHookInput = BaseHookInput & {
 };
 ```
 
-#### `ConfigChangeHookInput`
+#### [​](#configchangehookinput) `ConfigChangeHookInput`
 
 ```shiki
 type ConfigChangeHookInput = BaseHookInput & {
@@ -1171,7 +1243,7 @@ type ConfigChangeHookInput = BaseHookInput & {
 };
 ```
 
-#### `WorktreeCreateHookInput`
+#### [​](#worktreecreatehookinput) `WorktreeCreateHookInput`
 
 ```shiki
 type WorktreeCreateHookInput = BaseHookInput & {
@@ -1180,7 +1252,7 @@ type WorktreeCreateHookInput = BaseHookInput & {
 };
 ```
 
-#### `WorktreeRemoveHookInput`
+#### [​](#worktreeremovehookinput) `WorktreeRemoveHookInput`
 
 ```shiki
 type WorktreeRemoveHookInput = BaseHookInput & {
@@ -1189,7 +1261,7 @@ type WorktreeRemoveHookInput = BaseHookInput & {
 };
 ```
 
-### `HookJSONOutput`
+### [​](#hookjsonoutput) `HookJSONOutput`
 
 Hook return value.
 
@@ -1197,7 +1269,7 @@ Hook return value.
 type HookJSONOutput = AsyncHookJSONOutput | SyncHookJSONOutput;
 ```
 
-#### `AsyncHookJSONOutput`
+#### [​](#asynchookjsonoutput) `AsyncHookJSONOutput`
 
 ```shiki
 type AsyncHookJSONOutput = {
@@ -1206,7 +1278,7 @@ type AsyncHookJSONOutput = {
 };
 ```
 
-#### `SyncHookJSONOutput`
+#### [​](#synchookjsonoutput) `SyncHookJSONOutput`
 
 ```shiki
 type SyncHookJSONOutput = {
@@ -1270,11 +1342,11 @@ type SyncHookJSONOutput = {
 };
 ```
 
-## Tool Input Types
+## [​](#tool-input-types) Tool Input Types
 
 Documentation of input schemas for all built-in Claude Code tools. These types are exported from `@anthropic-ai/claude-agent-sdk` and can be used for type-safe tool interactions.
 
-### `ToolInputSchemas`
+### [​](#toolinputschemas) `ToolInputSchemas`
 
 Union of all tool input types, exported from `@anthropic-ai/claude-agent-sdk`.
 
@@ -1294,6 +1366,7 @@ type ToolInputSchemas =
  | GrepInput
  | ListMcpResourcesInput
  | McpInput
+ | MonitorInput
  | NotebookEditInput
  | ReadMcpResourceInput
  | SubscribeMcpResourceInput
@@ -1306,7 +1379,7 @@ type ToolInputSchemas =
  | WebSearchInput;
 ```
 
-### Agent
+### [​](#agent) Agent
 
 **Tool name:** `Agent` (previously `Task`, which is still accepted as an alias)
 
@@ -1328,7 +1401,7 @@ type AgentInput = {
 
 Launches a new agent to handle complex, multi-step tasks autonomously.
 
-### AskUserQuestion
+### [​](#askuserquestion) AskUserQuestion
 
 **Tool name:** `AskUserQuestion`
 
@@ -1345,7 +1418,7 @@ type AskUserQuestionInput = {
 
 Asks the user clarifying questions during execution. See [Handle approvals and user input](/docs/en/agent-sdk/user-input#handle-clarifying-questions) for usage details.
 
-### Bash
+### [​](#bash) Bash
 
 **Tool name:** `Bash`
 
@@ -1361,7 +1434,22 @@ type BashInput = {
 
 Executes bash commands in a persistent shell session with optional timeout and background execution.
 
-### TaskOutput
+### [​](#monitor) Monitor
+
+**Tool name:** `Monitor`
+
+```shiki
+type MonitorInput = {
+ command: string;
+ description: string;
+ timeout_ms?: number;
+ persistent?: boolean;
+};
+```
+
+Runs a background script and delivers each stdout line to Claude as an event so it can react without polling. Set `persistent: true` for session-length watches such as log tails. Monitor follows the same permission rules as Bash. See the [Monitor tool reference](/docs/en/tools-reference#monitor-tool) for behavior and provider availability.
+
+### [​](#taskoutput) TaskOutput
 
 **Tool name:** `TaskOutput`
 
@@ -1375,7 +1463,7 @@ type TaskOutputInput = {
 
 Retrieves output from a running or completed background task.
 
-### Edit
+### [​](#edit) Edit
 
 **Tool name:** `Edit`
 
@@ -1390,7 +1478,7 @@ type FileEditInput = {
 
 Performs exact string replacements in files.
 
-### Read
+### [​](#read) Read
 
 **Tool name:** `Read`
 
@@ -1405,7 +1493,7 @@ type FileReadInput = {
 
 Reads files from the local filesystem, including text, images, PDFs, and Jupyter notebooks. Use `pages` for PDF page ranges (for example, `"1-5"`).
 
-### Write
+### [​](#write) Write
 
 **Tool name:** `Write`
 
@@ -1418,7 +1506,7 @@ type FileWriteInput = {
 
 Writes a file to the local filesystem, overwriting if it exists.
 
-### Glob
+### [​](#glob) Glob
 
 **Tool name:** `Glob`
 
@@ -1431,7 +1519,7 @@ type GlobInput = {
 
 Fast file pattern matching that works with any codebase size.
 
-### Grep
+### [​](#grep) Grep
 
 **Tool name:** `Grep`
 
@@ -1456,7 +1544,7 @@ type GrepInput = {
 
 Powerful search tool built on ripgrep with regex support.
 
-### TaskStop
+### [​](#taskstop) TaskStop
 
 **Tool name:** `TaskStop`
 
@@ -1469,7 +1557,7 @@ type TaskStopInput = {
 
 Stops a running background task or shell by ID.
 
-### NotebookEdit
+### [​](#notebookedit) NotebookEdit
 
 **Tool name:** `NotebookEdit`
 
@@ -1485,7 +1573,7 @@ type NotebookEditInput = {
 
 Edits cells in Jupyter notebook files.
 
-### WebFetch
+### [​](#webfetch) WebFetch
 
 **Tool name:** `WebFetch`
 
@@ -1498,7 +1586,7 @@ type WebFetchInput = {
 
 Fetches content from a URL and processes it with an AI model.
 
-### WebSearch
+### [​](#websearch) WebSearch
 
 **Tool name:** `WebSearch`
 
@@ -1512,7 +1600,7 @@ type WebSearchInput = {
 
 Searches the web and returns formatted results.
 
-### TodoWrite
+### [​](#todowrite) TodoWrite
 
 **Tool name:** `TodoWrite`
 
@@ -1528,7 +1616,7 @@ type TodoWriteInput = {
 
 Creates and manages a structured task list for tracking progress.
 
-### ExitPlanMode
+### [​](#exitplanmode) ExitPlanMode
 
 **Tool name:** `ExitPlanMode`
 
@@ -1543,7 +1631,7 @@ type ExitPlanModeInput = {
 
 Exits planning mode. Optionally specifies prompt-based permissions needed to implement the plan.
 
-### ListMcpResources
+### [​](#listmcpresources) ListMcpResources
 
 **Tool name:** `ListMcpResources`
 
@@ -1555,7 +1643,7 @@ type ListMcpResourcesInput = {
 
 Lists available MCP resources from connected servers.
 
-### ReadMcpResource
+### [​](#readmcpresource) ReadMcpResource
 
 **Tool name:** `ReadMcpResource`
 
@@ -1568,7 +1656,7 @@ type ReadMcpResourceInput = {
 
 Reads a specific MCP resource from a server.
 
-### Config
+### [​](#config) Config
 
 **Tool name:** `Config`
 
@@ -1581,7 +1669,7 @@ type ConfigInput = {
 
 Gets or sets a configuration value.
 
-### EnterWorktree
+### [​](#enterworktree) EnterWorktree
 
 **Tool name:** `EnterWorktree`
 
@@ -1593,11 +1681,11 @@ type EnterWorktreeInput = {
 
 Creates and enters a temporary git worktree for isolated work.
 
-## Tool Output Types
+## [​](#tool-output-types) Tool Output Types
 
 Documentation of output schemas for all built-in Claude Code tools. These types are exported from `@anthropic-ai/claude-agent-sdk` and represent the actual response data returned by each tool.
 
-### `ToolOutputSchemas`
+### [​](#tooloutputschemas) `ToolOutputSchemas`
 
 Union of all tool output types.
 
@@ -1615,6 +1703,7 @@ type ToolOutputSchemas =
  | GlobOutput
  | GrepOutput
  | ListMcpResourcesOutput
+ | MonitorOutput
  | NotebookEditOutput
  | ReadMcpResourceOutput
  | TaskStopOutput
@@ -1623,7 +1712,7 @@ type ToolOutputSchemas =
  | WebSearchOutput;
 ```
 
-### Agent
+### [​](#agent-2) Agent
 
 **Tool name:** `Agent` (previously `Task`, which is still accepted as an alias)
 
@@ -1670,7 +1759,7 @@ type AgentOutput =
 
 Returns the result from the subagent. Discriminated on the `status` field: `"completed"` for finished tasks, `"async_launched"` for background tasks, and `"sub_agent_entered"` for interactive subagents.
 
-### AskUserQuestion
+### [​](#askuserquestion-2) AskUserQuestion
 
 **Tool name:** `AskUserQuestion`
 
@@ -1686,9 +1775,9 @@ type AskUserQuestionOutput = {
 };
 ```
 
-Returns the questions asked and the user's answers.
+Returns the questions asked and the user’s answers.
 
-### Bash
+### [​](#bash-2) Bash
 
 **Tool name:** `Bash`
 
@@ -1711,7 +1800,21 @@ type BashOutput = {
 
 Returns command output with stdout/stderr split. Background commands include a `backgroundTaskId`.
 
-### Edit
+### [​](#monitor-2) Monitor
+
+**Tool name:** `Monitor`
+
+```shiki
+type MonitorOutput = {
+ taskId: string;
+ timeoutMs: number;
+ persistent?: boolean;
+};
+```
+
+Returns the background task ID for the running monitor. Use this ID with `TaskStop` to cancel the watch early.
+
+### [​](#edit-2) Edit
 
 **Tool name:** `Edit`
 
@@ -1743,7 +1846,7 @@ type FileEditOutput = {
 
 Returns the structured diff of the edit operation.
 
-### Read
+### [​](#read-2) Read
 
 **Tool name:** `Read`
 
@@ -1801,7 +1904,7 @@ type FileReadOutput =
 
 Returns file contents in a format appropriate to the file type. Discriminated on the `type` field.
 
-### Write
+### [​](#write-2) Write
 
 **Tool name:** `Write`
 
@@ -1831,7 +1934,7 @@ type FileWriteOutput = {
 
 Returns the write result with structured diff information.
 
-### Glob
+### [​](#glob-2) Glob
 
 **Tool name:** `Glob`
 
@@ -1846,7 +1949,7 @@ type GlobOutput = {
 
 Returns file paths matching the glob pattern, sorted by modification time.
 
-### Grep
+### [​](#grep-2) Grep
 
 **Tool name:** `Grep`
 
@@ -1865,7 +1968,7 @@ type GrepOutput = {
 
 Returns search results. The shape varies by `mode`: file list, content with matches, or match counts.
 
-### TaskStop
+### [​](#taskstop-2) TaskStop
 
 **Tool name:** `TaskStop`
 
@@ -1880,7 +1983,7 @@ type TaskStopOutput = {
 
 Returns confirmation after stopping the background task.
 
-### NotebookEdit
+### [​](#notebookedit-2) NotebookEdit
 
 **Tool name:** `NotebookEdit`
 
@@ -1900,7 +2003,7 @@ type NotebookEditOutput = {
 
 Returns the result of the notebook edit with original and updated file contents.
 
-### WebFetch
+### [​](#webfetch-2) WebFetch
 
 **Tool name:** `WebFetch`
 
@@ -1917,7 +2020,7 @@ type WebFetchOutput = {
 
 Returns the fetched content with HTTP status and metadata.
 
-### WebSearch
+### [​](#websearch-2) WebSearch
 
 **Tool name:** `WebSearch`
 
@@ -1937,7 +2040,7 @@ type WebSearchOutput = {
 
 Returns search results from the web.
 
-### TodoWrite
+### [​](#todowrite-2) TodoWrite
 
 **Tool name:** `TodoWrite`
 
@@ -1958,7 +2061,7 @@ type TodoWriteOutput = {
 
 Returns the previous and updated task lists.
 
-### ExitPlanMode
+### [​](#exitplanmode-2) ExitPlanMode
 
 **Tool name:** `ExitPlanMode`
 
@@ -1975,7 +2078,7 @@ type ExitPlanModeOutput = {
 
 Returns the plan state after exiting plan mode.
 
-### ListMcpResources
+### [​](#listmcpresources-2) ListMcpResources
 
 **Tool name:** `ListMcpResources`
 
@@ -1991,7 +2094,7 @@ type ListMcpResourcesOutput = Array<{
 
 Returns an array of available MCP resources.
 
-### ReadMcpResource
+### [​](#readmcpresource-2) ReadMcpResource
 
 **Tool name:** `ReadMcpResource`
 
@@ -2007,7 +2110,7 @@ type ReadMcpResourceOutput = {
 
 Returns the contents of the requested MCP resource.
 
-### Config
+### [​](#config-2) Config
 
 **Tool name:** `Config`
 
@@ -2025,7 +2128,7 @@ type ConfigOutput = {
 
 Returns the result of a configuration get or set operation.
 
-### EnterWorktree
+### [​](#enterworktree-2) EnterWorktree
 
 **Tool name:** `EnterWorktree`
 
@@ -2039,9 +2142,9 @@ type EnterWorktreeOutput = {
 
 Returns information about the created git worktree.
 
-## Permission Types
+## [​](#permission-types) Permission Types
 
-### `PermissionUpdate`
+### [​](#permissionupdate) `PermissionUpdate`
 
 Operations for updating permissions.
 
@@ -2082,13 +2185,13 @@ type PermissionUpdate =
  };
 ```
 
-### `PermissionBehavior`
+### [​](#permissionbehavior) `PermissionBehavior`
 
 ```shiki
 type PermissionBehavior = "allow" | "deny" | "ask";
 ```
 
-### `PermissionUpdateDestination`
+### [​](#permissionupdatedestination) `PermissionUpdateDestination`
 
 ```shiki
 type PermissionUpdateDestination =
@@ -2099,7 +2202,7 @@ type PermissionUpdateDestination =
  | "cliArg"; // CLI argument
 ```
 
-### `PermissionRuleValue`
+### [​](#permissionrulevalue) `PermissionRuleValue`
 
 ```shiki
 type PermissionRuleValue = {
@@ -2108,25 +2211,25 @@ type PermissionRuleValue = {
 };
 ```
 
-## Other Types
+## [​](#other-types) Other Types
 
-### `ApiKeySource`
+### [​](#apikeysource) `ApiKeySource`
 
 ```shiki
 type ApiKeySource = "user" | "project" | "org" | "temporary" | "oauth";
 ```
 
-### `SdkBeta`
+### [​](#sdkbeta) `SdkBeta`
 
-Available beta features that can be enabled via the `betas` option. See [Beta headers](/docs/en/api/beta-headers) for more information.
+Available beta features that can be enabled via the `betas` option. See [Beta headers](https://platform.claude.com/docs/en/api/beta-headers) for more information.
 
 ```shiki
 type SdkBeta = "context-1m-2025-08-07";
 ```
 
-The `context-1m-2025-08-07` beta is retired as of April 30, 2026. Passing this value with Claude Sonnet 4.5 or Sonnet 4 has no effect, and requests that exceed the standard 200k-token context window return an error. To use a 1M-token context window, migrate to [Claude Sonnet 4.6 or Claude Opus 4.6](/docs/en/about-claude/models/overview), which include 1M context at standard pricing with no beta header required.
+The `context-1m-2025-08-07` beta is retired as of April 30, 2026. Passing this value with Claude Sonnet 4.5 or Sonnet 4 has no effect, and requests that exceed the standard 200k-token context window return an error. To use a 1M-token context window, migrate to [Claude Sonnet 4.6 or Claude Opus 4.6](https://platform.claude.com/docs/en/about-claude/models/overview), which include 1M context at standard pricing with no beta header required.
 
-### `SlashCommand`
+### [​](#slashcommand) `SlashCommand`
 
 Information about an available slash command.
 
@@ -2138,7 +2241,7 @@ type SlashCommand = {
 };
 ```
 
-### `ModelInfo`
+### [​](#modelinfo) `ModelInfo`
 
 Information about an available model.
 
@@ -2154,7 +2257,7 @@ type ModelInfo = {
 };
 ```
 
-### `AgentInfo`
+### [​](#agentinfo) `AgentInfo`
 
 Information about an available subagent that can be invoked via the Agent tool.
 
@@ -2170,9 +2273,9 @@ type AgentInfo = {
 | --- | --- | --- |
 | `name` | `string` | Agent type identifier (e.g., `"Explore"`, `"general-purpose"`) |
 | `description` | `string` | Description of when to use this agent |
-| `model` | `string | undefined` | Model alias this agent uses. If omitted, inherits the parent's model |
+| `model` | `string | undefined` | Model alias this agent uses. If omitted, inherits the parent’s model |
 
-### `McpServerStatus`
+### [​](#mcpserverstatus) `McpServerStatus`
 
 Status of a connected MCP server.
 
@@ -2199,7 +2302,7 @@ type McpServerStatus = {
 };
 ```
 
-### `McpServerStatusConfig`
+### [​](#mcpserverstatusconfig) `McpServerStatusConfig`
 
 The configuration of an MCP server as reported by `mcpServerStatus()`. This is the union of all MCP server transport types.
 
@@ -2214,7 +2317,7 @@ type McpServerStatusConfig =
 
 See [`McpServerConfig`](#mcp-server-config) for details on each transport type.
 
-### `AccountInfo`
+### [​](#accountinfo) `AccountInfo`
 
 Account information for the authenticated user.
 
@@ -2228,7 +2331,7 @@ type AccountInfo = {
 };
 ```
 
-### `ModelUsage`
+### [​](#modelusage) `ModelUsage`
 
 Per-model usage statistics returned in result messages.
 
@@ -2245,13 +2348,13 @@ type ModelUsage = {
 };
 ```
 
-### `ConfigScope`
+### [​](#configscope) `ConfigScope`
 
 ```shiki
 type ConfigScope = "local" | "user" | "project";
 ```
 
-### `NonNullableUsage`
+### [​](#nonnullableusage) `NonNullableUsage`
 
 A version of [`Usage`](#usage) with all nullable fields made non-nullable.
 
@@ -2261,7 +2364,7 @@ type NonNullableUsage = {
 };
 ```
 
-### `Usage`
+### [​](#usage) `Usage`
 
 Token usage statistics (from `@anthropic-ai/sdk`).
 
@@ -2274,7 +2377,7 @@ type Usage = {
 };
 ```
 
-### `CallToolResult`
+### [​](#calltoolresult) `CallToolResult`
 
 MCP tool result type (from `@modelcontextprotocol/sdk/types.js`).
 
@@ -2288,9 +2391,9 @@ type CallToolResult = {
 };
 ```
 
-### `ThinkingConfig`
+### [​](#thinkingconfig) `ThinkingConfig`
 
-Controls Claude's thinking/reasoning behavior. Takes precedence over the deprecated `maxThinkingTokens`.
+Controls Claude’s thinking/reasoning behavior. Takes precedence over the deprecated `maxThinkingTokens`.
 
 ```shiki
 type ThinkingConfig =
@@ -2299,7 +2402,7 @@ type ThinkingConfig =
  | { type: "disabled" }; // No extended thinking
 ```
 
-### `SpawnedProcess`
+### [​](#spawnedprocess) `SpawnedProcess`
 
 Interface for custom process spawning (used with `spawnClaudeCodeProcess` option). `ChildProcess` already satisfies this interface.
 
@@ -2328,7 +2431,7 @@ interface SpawnedProcess {
 }
 ```
 
-### `SpawnOptions`
+### [​](#spawnoptions) `SpawnOptions`
 
 Options passed to the custom spawn function.
 
@@ -2342,7 +2445,7 @@ interface SpawnOptions {
 }
 ```
 
-### `McpSetServersResult`
+### [​](#mcpsetserversresult) `McpSetServersResult`
 
 Result of a `setMcpServers()` operation.
 
@@ -2354,7 +2457,7 @@ type McpSetServersResult = {
 };
 ```
 
-### `RewindFilesResult`
+### [​](#rewindfilesresult) `RewindFilesResult`
 
 Result of a `rewindFiles()` operation.
 
@@ -2368,7 +2471,7 @@ type RewindFilesResult = {
 };
 ```
 
-### `SDKStatusMessage`
+### [​](#sdkstatusmessage) `SDKStatusMessage`
 
 Status update message (e.g., compacting).
 
@@ -2383,9 +2486,9 @@ type SDKStatusMessage = {
 };
 ```
 
-### `SDKTaskNotificationMessage`
+### [​](#sdktasknotificationmessage) `SDKTaskNotificationMessage`
 
-Notification when a background task completes, fails, or is stopped.
+Notification when a background task completes, fails, or is stopped. Background tasks include `run_in_background` Bash commands, [Monitor](#monitor) watches, and background subagents.
 
 ```shiki
 type SDKTaskNotificationMessage = {
@@ -2406,7 +2509,7 @@ type SDKTaskNotificationMessage = {
 };
 ```
 
-### `SDKToolUseSummaryMessage`
+### [​](#sdktoolusesummarymessage) `SDKToolUseSummaryMessage`
 
 Summary of tool usage in a conversation.
 
@@ -2420,7 +2523,7 @@ type SDKToolUseSummaryMessage = {
 };
 ```
 
-### `SDKHookStartedMessage`
+### [​](#sdkhookstartedmessage) `SDKHookStartedMessage`
 
 Emitted when a hook begins executing.
 
@@ -2436,7 +2539,7 @@ type SDKHookStartedMessage = {
 };
 ```
 
-### `SDKHookProgressMessage`
+### [​](#sdkhookprogressmessage) `SDKHookProgressMessage`
 
 Emitted while a hook is running, with stdout/stderr output.
 
@@ -2455,7 +2558,7 @@ type SDKHookProgressMessage = {
 };
 ```
 
-### `SDKHookResponseMessage`
+### [​](#sdkhookresponsemessage) `SDKHookResponseMessage`
 
 Emitted when a hook finishes executing.
 
@@ -2476,7 +2579,7 @@ type SDKHookResponseMessage = {
 };
 ```
 
-### `SDKToolProgressMessage`
+### [​](#sdktoolprogressmessage) `SDKToolProgressMessage`
 
 Emitted periodically while a tool is executing to indicate progress.
 
@@ -2493,7 +2596,7 @@ type SDKToolProgressMessage = {
 };
 ```
 
-### `SDKAuthStatusMessage`
+### [​](#sdkauthstatusmessage) `SDKAuthStatusMessage`
 
 Emitted during authentication flows.
 
@@ -2508,9 +2611,9 @@ type SDKAuthStatusMessage = {
 };
 ```
 
-### `SDKTaskStartedMessage`
+### [​](#sdktaskstartedmessage) `SDKTaskStartedMessage`
 
-Emitted when a background task begins.
+Emitted when a background task begins. The `task_type` field is `"local_bash"` for background Bash commands and [Monitor](#monitor) watches, `"local_agent"` for subagents, or `"remote_agent"`.
 
 ```shiki
 type SDKTaskStartedMessage = {
@@ -2525,7 +2628,7 @@ type SDKTaskStartedMessage = {
 };
 ```
 
-### `SDKTaskProgressMessage`
+### [​](#sdktaskprogressmessage) `SDKTaskProgressMessage`
 
 Emitted periodically while a background task is running.
 
@@ -2547,7 +2650,7 @@ type SDKTaskProgressMessage = {
 };
 ```
 
-### `SDKFilesPersistedEvent`
+### [​](#sdkfilespersistedevent) `SDKFilesPersistedEvent`
 
 Emitted when file checkpoints are persisted to disk.
 
@@ -2563,7 +2666,7 @@ type SDKFilesPersistedEvent = {
 };
 ```
 
-### `SDKRateLimitEvent`
+### [​](#sdkratelimitevent) `SDKRateLimitEvent`
 
 Emitted when the session encounters a rate limit.
 
@@ -2580,7 +2683,7 @@ type SDKRateLimitEvent = {
 };
 ```
 
-### `SDKLocalCommandOutputMessage`
+### [​](#sdklocalcommandoutputmessage) `SDKLocalCommandOutputMessage`
 
 Output from a local slash command (for example, `/voice` or `/cost`). Displayed as assistant-style text in the transcript.
 
@@ -2594,7 +2697,7 @@ type SDKLocalCommandOutputMessage = {
 };
 ```
 
-### `SDKPromptSuggestionMessage`
+### [​](#sdkpromptsuggestionmessage) `SDKPromptSuggestionMessage`
 
 Emitted after each turn when `promptSuggestions` is enabled. Contains a predicted next user prompt.
 
@@ -2607,7 +2710,7 @@ type SDKPromptSuggestionMessage = {
 };
 ```
 
-### `AbortError`
+### [​](#aborterror) `AbortError`
 
 Custom error class for abort operations.
 
@@ -2615,9 +2718,9 @@ Custom error class for abort operations.
 class AbortError extends Error {}
 ```
 
-## Sandbox Configuration
+## [​](#sandbox-configuration) Sandbox Configuration
 
-### `SandboxSettings`
+### [​](#sandboxsettings) `SandboxSettings`
 
 Configuration for sandbox behavior. Use this to enable command sandboxing and configure network restrictions programmatically.
 
@@ -2647,7 +2750,7 @@ type SandboxSettings = {
 | `enableWeakerNestedSandbox` | `boolean` | `false` | Enable a weaker nested sandbox for compatibility |
 | `ripgrep` | `{ command: string; args?: string[] }` | `undefined` | Custom ripgrep binary configuration for sandbox environments |
 
-#### Example usage
+#### [​](#example-usage) Example usage
 
 ```shiki
 import { query } from "@anthropic-ai/claude-agent-sdk";
@@ -2670,7 +2773,7 @@ for await (const message of query({
 
 **Unix socket security:** The `allowUnixSockets` option can grant access to powerful system services. For example, allowing `/var/run/docker.sock` effectively grants full host system access through the Docker API, bypassing sandbox isolation. Only allow Unix sockets that are strictly necessary and understand the security implications of each.
 
-### `SandboxNetworkConfig`
+### [​](#sandboxnetworkconfig) `SandboxNetworkConfig`
 
 Network-specific configuration for sandbox mode.
 
@@ -2696,7 +2799,7 @@ type SandboxNetworkConfig = {
 | `httpProxyPort` | `number` | `undefined` | HTTP proxy port for network requests |
 | `socksProxyPort` | `number` | `undefined` | SOCKS proxy port for network requests |
 
-### `SandboxFilesystemConfig`
+### [​](#sandboxfilesystemconfig) `SandboxFilesystemConfig`
 
 Filesystem-specific configuration for sandbox mode.
 
@@ -2714,7 +2817,7 @@ type SandboxFilesystemConfig = {
 | `denyWrite` | `string[]` | `[]` | File path patterns to deny write access to |
 | `denyRead` | `string[]` | `[]` | File path patterns to deny read access to |
 
-### Permissions Fallback for Unsandboxed Commands
+### [​](#permissions-fallback-for-unsandboxed-commands) Permissions Fallback for Unsandboxed Commands
 
 When `allowUnsandboxedCommands` is enabled, the model can request to run commands outside the sandbox by setting `dangerouslyDisableSandbox: true` in the tool input. These requests fall back to the existing permissions system, meaning your `canUseTool` handler is invoked, allowing you to implement custom authorization logic.
 
@@ -2762,15 +2865,23 @@ This pattern enables you to:
 - **Implement allowlists:** Only permit specific commands to run unsandboxed
 - **Add approval workflows:** Require explicit authorization for privileged operations
 
-Commands running with `dangerouslyDisableSandbox: true` have full system access. Ensure your `canUseTool` handler validates these requests carefully.
+Commands running with `dangerouslyDisableSandbox: true` have full system access. Ensure your `canUseTool` handler validates these requests carefully.If `permissionMode` is set to `bypassPermissions` and `allowUnsandboxedCommands` is enabled, the model can autonomously execute commands outside the sandbox without any approval prompts. This combination effectively allows the model to escape sandbox isolation silently.
 
-If `permissionMode` is set to `bypassPermissions` and `allowUnsandboxedCommands` is enabled, the model can autonomously execute commands outside the sandbox without any approval prompts. This combination effectively allows the model to escape sandbox isolation silently.
-
-## See also
+## [​](#see-also) See also
 
 - [SDK overview](/docs/en/agent-sdk/overview) - General SDK concepts
 - [Python SDK reference](/docs/en/agent-sdk/python) - Python SDK documentation
-- [CLI reference](https://code.claude.com/docs/en/cli-reference) - Command-line interface
-- [Common workflows](https://code.claude.com/docs/en/common-workflows) - Step-by-step guides
+- [CLI reference](/docs/en/cli-reference) - Command-line interface
+- [Common workflows](/docs/en/common-workflows) - Step-by-step guides
 
 Was this page helpful?
+
+YesNo
+
+[Securely deploying AI agents](/docs/en/agent-sdk/secure-deployment)[TypeScript V2 (preview)](/docs/en/agent-sdk/typescript-v2-preview)
+
+Ctrl+I
+
+Assistant
+
+Responses are generated using AI and may contain mistakes.

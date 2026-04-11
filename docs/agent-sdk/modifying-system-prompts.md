@@ -1,20 +1,93 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/modifying-system-prompts
 title: Modifying system prompts
-last_fetched: 2026-04-03T09:01:36.336164+00:00
+last_fetched: 2026-04-09T09:02:33.436715+00:00
 ---
 
-Copy page
+[Claude Code Docs home page![light logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/light.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=78fd01ff4f4340295a4f66e2ea54903c)![dark logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/dark.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=1298a0c3b3a1da603b190d0de0e31712)](/docs/en/overview)
 
-System prompts define Claude's behavior, capabilities, and response style. The Claude Agent SDK provides three ways to customize system prompts: using output styles (persistent, file-based configurations), appending to Claude Code's prompt, or using a fully custom prompt.
+![US](https://d3gk2c5xim1je2.cloudfront.net/flags/US.svg)
 
-## Understanding system prompts
+English
+
+Search...
+
+Ctrl KAsk AI
+
+Search...
+
+Navigation
+
+Customize behavior
+
+Modifying system prompts
+
+[Getting started](/docs/en/overview)[Build with Claude Code](/docs/en/sub-agents)[Deployment](/docs/en/third-party-integrations)[Administration](/docs/en/setup)[Configuration](/docs/en/settings)[Reference](/docs/en/cli-reference)[Agent SDK](/docs/en/agent-sdk/overview)[What's New](/docs/en/whats-new)[Resources](/docs/en/legal-and-compliance)
+
+##### Agent SDK
+
+- [Overview](/docs/en/agent-sdk/overview)
+- [Quickstart](/docs/en/agent-sdk/quickstart)
+
+##### Core concepts
+
+- [How the agent loop works](/docs/en/agent-sdk/agent-loop)
+- [Use Claude Code features](/docs/en/agent-sdk/claude-code-features)
+- [Work with sessions](/docs/en/agent-sdk/sessions)
+
+##### Input and output
+
+- [Streaming Input](/docs/en/agent-sdk/streaming-vs-single-mode)
+- [Handle approvals and user input](/docs/en/agent-sdk/user-input)
+- [Stream responses in real-time](/docs/en/agent-sdk/streaming-output)
+- [Get structured output from agents](/docs/en/agent-sdk/structured-outputs)
+
+##### Extend with tools
+
+- [Give Claude custom tools](/docs/en/agent-sdk/custom-tools)
+- [Connect to external tools with MCP](/docs/en/agent-sdk/mcp)
+- [Scale to many tools with tool search](/docs/en/agent-sdk/tool-search)
+- [Subagents in the SDK](/docs/en/agent-sdk/subagents)
+
+##### Customize behavior
+
+- [Modifying system prompts](/docs/en/agent-sdk/modifying-system-prompts)
+- [Slash Commands in the SDK](/docs/en/agent-sdk/slash-commands)
+- [Agent Skills in the SDK](/docs/en/agent-sdk/skills)
+- [Plugins in the SDK](/docs/en/agent-sdk/plugins)
+
+##### Control and observability
+
+- [Configure permissions](/docs/en/agent-sdk/permissions)
+- [Intercept and control agent behavior with hooks](/docs/en/agent-sdk/hooks)
+- [Rewind file changes with checkpointing](/docs/en/agent-sdk/file-checkpointing)
+- [Track cost and usage](/docs/en/agent-sdk/cost-tracking)
+- [Observability with OpenTelemetry](/docs/en/agent-sdk/observability)
+- [Todo Lists](/docs/en/agent-sdk/todo-tracking)
+
+##### Deployment
+
+- [Hosting the Agent SDK](/docs/en/agent-sdk/hosting)
+- [Securely deploying AI agents](/docs/en/agent-sdk/secure-deployment)
+
+##### SDK references
+
+- [TypeScript SDK](/docs/en/agent-sdk/typescript)
+- [TypeScript V2 (preview)](/docs/en/agent-sdk/typescript-v2-preview)
+- [Python SDK](/docs/en/agent-sdk/python)
+- [Migration Guide](/docs/en/agent-sdk/migration-guide)
+
+On this page
+
+System prompts define Claude’s behavior, capabilities, and response style. The Claude Agent SDK provides three ways to customize system prompts: using output styles (persistent, file-based configurations), appending to Claude Code’s prompt, or using a fully custom prompt.
+
+## [​](#understanding-system-prompts) Understanding system prompts
 
 A system prompt is the initial instruction set that shapes how Claude behaves throughout a conversation.
 
-**Default behavior:** The Agent SDK uses a **minimal system prompt** by default. It contains only essential tool instructions but omits Claude Code's coding guidelines, response style, and project context. To include the full Claude Code system prompt, specify `systemPrompt: { type: "preset", preset: "claude_code" }` in TypeScript or `system_prompt={"type": "preset", "preset": "claude_code"}` in Python.
+**Default behavior:** The Agent SDK uses a **minimal system prompt** by default. It contains only essential tool instructions but omits Claude Code’s coding guidelines, response style, and project context. To include the full Claude Code system prompt, specify `systemPrompt: { type: "preset", preset: "claude_code" }` in TypeScript or `system_prompt={"type": "preset", "preset": "claude_code"}` in Python.
 
-Claude Code's system prompt includes:
+Claude Code’s system prompt includes:
 
 - Tool usage instructions and available tools
 - Code style and formatting guidelines
@@ -22,13 +95,13 @@ Claude Code's system prompt includes:
 - Security and safety instructions
 - Context about the current working directory and environment
 
-## Methods of modification
+## [​](#methods-of-modification) Methods of modification
 
-### Method 1: CLAUDE.md files (project-level instructions)
+### [​](#method-1-claude-md-files-project-level-instructions) Method 1: CLAUDE.md files (project-level instructions)
 
-CLAUDE.md files provide project-specific context and instructions that are automatically read by the Agent SDK when it runs in a directory. They serve as persistent "memory" for your project.
+CLAUDE.md files provide project-specific context and instructions that are automatically read by the Agent SDK when it runs in a directory. They serve as persistent “memory” for your project.
 
-#### How CLAUDE.md works with the SDK
+#### [​](#how-claude-md-works-with-the-sdk) How CLAUDE.md works with the SDK
 
 **Location and discovery:**
 
@@ -41,7 +114,6 @@ CLAUDE.md files provide project-specific context and instructions that are autom
 - Include `'user'` to load user-level CLAUDE.md (`~/.claude/CLAUDE.md`)
 
 The `claude_code` system prompt preset does NOT automatically load CLAUDE.md - you must also specify setting sources.
-
 **Content format:**
 CLAUDE.md files use plain markdown and can contain:
 
@@ -51,7 +123,7 @@ CLAUDE.md files use plain markdown and can contain:
 - API conventions
 - Testing requirements
 
-#### Example CLAUDE.md
+#### [​](#example-claude-md) Example CLAUDE.md
 
 ```shiki
 # Project Guidelines
@@ -75,9 +147,11 @@ CLAUDE.md files use plain markdown and can contain:
 - Type check: `npm run typecheck`
 ```
 
-#### Using CLAUDE.md with the SDK
+#### [​](#using-claude-md-with-the-sdk) Using CLAUDE.md with the SDK
 
 TypeScript
+
+Python
 
 ```shiki
 import { query } from "@anthropic-ai/claude-agent-sdk";
@@ -102,7 +176,7 @@ for await (const message of query({
 // Now Claude has access to your project guidelines from CLAUDE.md
 ```
 
-#### When to use CLAUDE.md
+#### [​](#when-to-use-claude-md) When to use CLAUDE.md
 
 **Best for:**
 
@@ -119,13 +193,15 @@ for await (const message of query({
 - ✅ Automatic discovery (no code changes needed)
 - ⚠️ Requires loading settings via `settingSources`
 
-### Method 2: Output styles (persistent configurations)
+### [​](#method-2-output-styles-persistent-configurations) Method 2: Output styles (persistent configurations)
 
-Output styles are saved configurations that modify Claude's system prompt. They're stored as markdown files and can be reused across sessions and projects.
+Output styles are saved configurations that modify Claude’s system prompt. They’re stored as markdown files and can be reused across sessions and projects.
 
-#### Creating an output style
+#### [​](#creating-an-output-style) Creating an output style
 
 TypeScript
+
+Python
 
 ```shiki
 import { writeFile, mkdir } from "fs/promises";
@@ -164,7 +240,7 @@ For every code submission:
 );
 ```
 
-#### Using output styles
+#### [​](#using-output-styles) Using output styles
 
 Once created, activate output styles via:
 
@@ -174,11 +250,13 @@ Once created, activate output styles via:
 
 **Note for SDK users:** Output styles are loaded when you include `settingSources: ['user']` or `settingSources: ['project']` (TypeScript) / `setting_sources=["user"]` or `setting_sources=["project"]` (Python) in your options.
 
-### Method 3: Using `systemPrompt` with append
+### [​](#method-3-using-systemprompt-with-append) Method 3: Using `systemPrompt` with append
 
 You can use the Claude Code preset with an `append` property to add your custom instructions while preserving all built-in functionality.
 
 TypeScript
+
+Python
 
 ```shiki
 import { query } from "@anthropic-ai/claude-agent-sdk";
@@ -202,11 +280,13 @@ for await (const message of query({
 }
 ```
 
-### Method 4: Custom system prompts
+### [​](#method-4-custom-system-prompts) Method 4: Custom system prompts
 
 You can provide a custom string as `systemPrompt` to replace the default entirely with your own instructions.
 
 TypeScript
+
+Python
 
 ```shiki
 import { query } from "@anthropic-ai/claude-agent-sdk";
@@ -234,7 +314,7 @@ for await (const message of query({
 }
 ```
 
-## Comparison of all four approaches
+## [​](#comparison-of-all-four-approaches) Comparison of all four approaches
 
 | Feature | CLAUDE.md | Output Styles | `systemPrompt` with append | Custom `systemPrompt` |
 | --- | --- | --- | --- | --- |
@@ -248,11 +328,11 @@ for await (const message of query({
 | **Version control** | With project | Yes | With code | With code |
 | **Scope** | Project-specific | User or project | Code session | Code session |
 
-**Note:** "With append" means using `systemPrompt: { type: "preset", preset: "claude_code", append: "..." }` in TypeScript or `system_prompt={"type": "preset", "preset": "claude_code", "append": "..."}` in Python.
+**Note:** “With append” means using `systemPrompt: { type: "preset", preset: "claude_code", append: "..." }` in TypeScript or `system_prompt={"type": "preset", "preset": "claude_code", "append": "..."}` in Python.
 
-## Use cases and best practices
+## [​](#use-cases-and-best-practices) Use cases and best practices
 
-### When to use CLAUDE.md
+### [​](#when-to-use-claude-md-2) When to use CLAUDE.md
 
 **Best for:**
 
@@ -264,13 +344,13 @@ for await (const message of query({
 
 **Examples:**
 
-- "All API endpoints should use async/await patterns"
-- "Run `npm run lint:fix` before committing"
-- "Database migrations are in the `migrations/` directory"
+- “All API endpoints should use async/await patterns”
+- “Run `npm run lint:fix` before committing”
+- “Database migrations are in the `migrations/` directory”
 
 **Important:** To load CLAUDE.md files, you must explicitly set `settingSources: ['project']` (TypeScript) or `setting_sources=["project"]` (Python). The `claude_code` system prompt preset does NOT automatically load CLAUDE.md without this setting.
 
-### When to use output styles
+### [​](#when-to-use-output-styles) When to use output styles
 
 **Best for:**
 
@@ -285,7 +365,7 @@ for await (const message of query({
 - Building a security-focused code reviewer
 - Developing a teaching assistant with specific pedagogy
 
-### When to use `systemPrompt` with append
+### [​](#when-to-use-systemprompt-with-append) When to use `systemPrompt` with append
 
 **Best for:**
 
@@ -293,25 +373,27 @@ for await (const message of query({
 - Customizing output formatting
 - Adding domain-specific knowledge
 - Modifying response verbosity
-- Enhancing Claude Code's default behavior without losing tool instructions
+- Enhancing Claude Code’s default behavior without losing tool instructions
 
-### When to use custom `systemPrompt`
+### [​](#when-to-use-custom-systemprompt) When to use custom `systemPrompt`
 
 **Best for:**
 
-- Complete control over Claude's behavior
+- Complete control over Claude’s behavior
 - Specialized single-session tasks
 - Testing new prompt strategies
-- Situations where default tools aren't needed
+- Situations where default tools aren’t needed
 - Building specialized agents with unique behavior
 
-## Combining approaches
+## [​](#combining-approaches) Combining approaches
 
 You can combine these methods for maximum flexibility:
 
-### Example: Output style with session-specific additions
+### [​](#example-output-style-with-session-specific-additions) Example: Output style with session-specific additions
 
 TypeScript
+
+Python
 
 ```shiki
 import { query } from "@anthropic-ai/claude-agent-sdk";
@@ -339,10 +421,20 @@ for await (const message of query({
 }
 ```
 
-## See also
+## [​](#see-also) See also
 
-- [Output styles](https://code.claude.com/docs/en/output-styles) - Complete output styles documentation
+- [Output styles](/docs/en/output-styles) - Complete output styles documentation
 - [TypeScript SDK guide](/docs/en/agent-sdk/typescript) - Complete SDK usage guide
-- [Configuration guide](https://code.claude.com/docs/en/settings) - General configuration options
+- [Configuration guide](/docs/en/settings) - General configuration options
 
 Was this page helpful?
+
+YesNo
+
+[Subagents in the SDK](/docs/en/agent-sdk/subagents)[Slash Commands in the SDK](/docs/en/agent-sdk/slash-commands)
+
+Ctrl+I
+
+Assistant
+
+Responses are generated using AI and may contain mistakes.

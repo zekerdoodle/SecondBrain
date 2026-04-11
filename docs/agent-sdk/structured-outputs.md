@@ -1,32 +1,134 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/structured-outputs
 title: Get structured output from agents
-last_fetched: 2026-04-03T09:02:58.632522+00:00
+last_fetched: 2026-04-09T09:03:50.547687+00:00
 ---
 
-Copy page
+[Claude Code Docs home page![light logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/light.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=78fd01ff4f4340295a4f66e2ea54903c)![dark logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/dark.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=1298a0c3b3a1da603b190d0de0e31712)](/docs/en/overview)
+
+![US](https://d3gk2c5xim1je2.cloudfront.net/flags/US.svg)
+
+English
+
+Search...
+
+Ctrl KAsk AI
+
+Search...
+
+Navigation
+
+Input and output
+
+Get structured output from agents
+
+[Getting started](/docs/en/overview)[Build with Claude Code](/docs/en/sub-agents)[Deployment](/docs/en/third-party-integrations)[Administration](/docs/en/setup)[Configuration](/docs/en/settings)[Reference](/docs/en/cli-reference)[Agent SDK](/docs/en/agent-sdk/overview)[What's New](/docs/en/whats-new)[Resources](/docs/en/legal-and-compliance)
+
+##### Agent SDK
+
+- [Overview](/docs/en/agent-sdk/overview)
+- [Quickstart](/docs/en/agent-sdk/quickstart)
+
+##### Core concepts
+
+- [How the agent loop works](/docs/en/agent-sdk/agent-loop)
+- [Use Claude Code features](/docs/en/agent-sdk/claude-code-features)
+- [Work with sessions](/docs/en/agent-sdk/sessions)
+
+##### Input and output
+
+- [Streaming Input](/docs/en/agent-sdk/streaming-vs-single-mode)
+- [Handle approvals and user input](/docs/en/agent-sdk/user-input)
+- [Stream responses in real-time](/docs/en/agent-sdk/streaming-output)
+- [Get structured output from agents](/docs/en/agent-sdk/structured-outputs)
+
+##### Extend with tools
+
+- [Give Claude custom tools](/docs/en/agent-sdk/custom-tools)
+- [Connect to external tools with MCP](/docs/en/agent-sdk/mcp)
+- [Scale to many tools with tool search](/docs/en/agent-sdk/tool-search)
+- [Subagents in the SDK](/docs/en/agent-sdk/subagents)
+
+##### Customize behavior
+
+- [Modifying system prompts](/docs/en/agent-sdk/modifying-system-prompts)
+- [Slash Commands in the SDK](/docs/en/agent-sdk/slash-commands)
+- [Agent Skills in the SDK](/docs/en/agent-sdk/skills)
+- [Plugins in the SDK](/docs/en/agent-sdk/plugins)
+
+##### Control and observability
+
+- [Configure permissions](/docs/en/agent-sdk/permissions)
+- [Intercept and control agent behavior with hooks](/docs/en/agent-sdk/hooks)
+- [Rewind file changes with checkpointing](/docs/en/agent-sdk/file-checkpointing)
+- [Track cost and usage](/docs/en/agent-sdk/cost-tracking)
+- [Observability with OpenTelemetry](/docs/en/agent-sdk/observability)
+- [Todo Lists](/docs/en/agent-sdk/todo-tracking)
+
+##### Deployment
+
+- [Hosting the Agent SDK](/docs/en/agent-sdk/hosting)
+- [Securely deploying AI agents](/docs/en/agent-sdk/secure-deployment)
+
+##### SDK references
+
+- [TypeScript SDK](/docs/en/agent-sdk/typescript)
+- [TypeScript V2 (preview)](/docs/en/agent-sdk/typescript-v2-preview)
+- [Python SDK](/docs/en/agent-sdk/python)
+- [Migration Guide](/docs/en/agent-sdk/migration-guide)
+
+On this page
 
 Structured outputs let you define the exact shape of data you want back from an agent. The agent can use any tools it needs to complete the task, and you still get validated JSON matching your schema at the end. Define a [JSON Schema](https://json-schema.org/understanding-json-schema/about) for the structure you need, and the SDK guarantees the output matches it.
-
 For full type safety, use [Zod](#type-safe-schemas-with-zod-and-pydantic) (TypeScript) or [Pydantic](#type-safe-schemas-with-zod-and-pydantic) (Python) to define your schema and get strongly-typed objects back.
 
-## Why structured outputs?
+## [​](#why-structured-outputs) Why structured outputs?
 
 Agents return free-form text by default, which works for chat but not when you need to use the output programmatically. Structured outputs give you typed data you can pass directly to your application logic, database, or UI components.
+Consider a recipe app where an agent searches the web and brings back recipes. Without structured outputs, you get free-form text that you’d need to parse yourself. With structured outputs, you define the shape you want and get typed data you can use directly in your app.
 
-Consider a recipe app where an agent searches the web and brings back recipes. Without structured outputs, you get free-form text that you'd need to parse yourself. With structured outputs, you define the shape you want and get typed data you can use directly in your app.
+Without structured outputs
 
-### Without structured outputs
+```shiki
+Here's a classic chocolate chip cookie recipe!
 
-### With structured outputs
+**Chocolate Chip Cookies**
+Prep time: 15 minutes | Cook time: 10 minutes
 
-## Quick start
+Ingredients:
+- 2 1/4 cups all-purpose flour
+- 1 cup butter, softened
+...
+```
+
+To use this in your app, you’d need to parse out the title, convert “15 minutes” to a number, separate ingredients from instructions, and handle inconsistent formatting across responses.
+
+With structured outputs
+
+```shiki
+{
+ "name": "Chocolate Chip Cookies",
+ "prep_time_minutes": 15,
+ "cook_time_minutes": 10,
+ "ingredients": [
+ { "item": "all-purpose flour", "amount": 2.25, "unit": "cups" },
+ { "item": "butter, softened", "amount": 1, "unit": "cup" }
+ // ...
+ ],
+ "steps": ["Preheat oven to 375°F", "Cream butter and sugar" /* ... */]
+}
+```
+
+Typed data you can use directly in your UI.
+
+## [​](#quick-start) Quick start
 
 To use structured outputs, define a [JSON Schema](https://json-schema.org/understanding-json-schema/about) describing the shape of data you want, then pass it to `query()` via the `outputFormat` option (TypeScript) or `output_format` option (Python). When the agent finishes, the result message includes a `structured_output` field with validated data matching your schema.
-
 The example below asks the agent to research Anthropic and return the company name, year founded, and headquarters as structured output.
 
 TypeScript
+
+Python
 
 ```shiki
 import { query } from "@anthropic-ai/claude-agent-sdk";
@@ -59,13 +161,14 @@ for await (const message of query({
 }
 ```
 
-## Type-safe schemas with Zod and Pydantic
+## [​](#type-safe-schemas-with-zod-and-pydantic) Type-safe schemas with Zod and Pydantic
 
 Instead of writing JSON Schema by hand, you can use [Zod](https://zod.dev/) (TypeScript) or [Pydantic](https://docs.pydantic.dev/latest/) (Python) to define your schema. These libraries generate the JSON Schema for you and let you parse the response into a fully-typed object you can use throughout your codebase with autocomplete and type checking.
-
 The example below defines a schema for a feature implementation plan with a summary, list of steps (each with complexity level), and potential risks. The agent plans the feature and returns a typed `FeaturePlan` object. You can then access properties like `plan.summary` and iterate over `plan.steps` with full type safety.
 
 TypeScript
+
+Python
 
 ```shiki
 import { z } from "zod";
@@ -123,22 +226,23 @@ for await (const message of query({
 - Better error messages
 - Composable, reusable schemas
 
-## Output format configuration
+## [​](#output-format-configuration) Output format configuration
 
 The `outputFormat` (TypeScript) or `output_format` (Python) option accepts an object with:
 
 - `type`: Set to `"json_schema"` for structured outputs
 - `schema`: A [JSON Schema](https://json-schema.org/understanding-json-schema/about) object defining your output structure. You can generate this from a Zod schema with `z.toJSONSchema()` or a Pydantic model with `.model_json_schema()`
 
-The SDK supports standard JSON Schema features including all basic types (object, array, string, number, boolean, null), `enum`, `const`, `required`, nested objects, and `$ref` definitions. For the full list of supported features and limitations, see [JSON Schema limitations](/docs/en/build-with-claude/structured-outputs#json-schema-limitations).
+The SDK supports standard JSON Schema features including all basic types (object, array, string, number, boolean, null), `enum`, `const`, `required`, nested objects, and `$ref` definitions. For the full list of supported features and limitations, see [JSON Schema limitations](https://platform.claude.com/docs/en/build-with-claude/structured-outputs#json-schema-limitations).
 
-## Example: TODO tracking agent
+## [​](#example-todo-tracking-agent) Example: TODO tracking agent
 
 This example demonstrates how structured outputs work with multi-step tool use. The agent needs to find TODO comments in the codebase, then look up git blame information for each one. It autonomously decides which tools to use (Grep to search, Bash to run git commands) and combines the results into a single structured response.
-
 The schema includes optional fields (`author` and `date`) since git blame information might not be available for all files. The agent fills in what it can find and omits the rest.
 
 TypeScript
+
+Python
 
 ```shiki
 import { query } from "@anthropic-ai/claude-agent-sdk";
@@ -189,20 +293,21 @@ for await (const message of query({
 }
 ```
 
-## Error handling
+## [​](#error-handling) Error handling
 
 Structured output generation can fail when the agent cannot produce valid JSON matching your schema. This typically happens when the schema is too complex for the task, the task itself is ambiguous, or the agent hits its retry limit trying to fix validation errors.
-
 When an error occurs, the result message has a `subtype` indicating what went wrong:
 
 | Subtype | Meaning |
 | --- | --- |
 | `success` | Output was generated and validated successfully |
-| `error_max_structured_output_retries` | Agent couldn't produce valid output after multiple attempts |
+| `error_max_structured_output_retries` | Agent couldn’t produce valid output after multiple attempts |
 
 The example below checks the `subtype` field to determine whether the output was generated successfully or if you need to handle a failure:
 
 TypeScript
+
+Python
 
 ```shiki
 for await (const msg of query({
@@ -232,10 +337,20 @@ for await (const msg of query({
 - **Match schema to task.** If the task might not have all the information your schema requires, make those fields optional.
 - **Use clear prompts.** Ambiguous prompts make it harder for the agent to know what output to produce.
 
-## Related resources
+## [​](#related-resources) Related resources
 
 - [JSON Schema documentation](https://json-schema.org/): learn JSON Schema syntax for defining complex schemas with nested objects, arrays, enums, and validation constraints
-- [API Structured Outputs](/docs/en/build-with-claude/structured-outputs): use structured outputs with the Claude API directly for single-turn requests without tool use
+- [API Structured Outputs](https://platform.claude.com/docs/en/build-with-claude/structured-outputs): use structured outputs with the Claude API directly for single-turn requests without tool use
 - [Custom tools](/docs/en/agent-sdk/custom-tools): give your agent custom tools to call during execution before returning structured output
 
 Was this page helpful?
+
+YesNo
+
+[Stream responses in real-time](/docs/en/agent-sdk/streaming-output)[Give Claude custom tools](/docs/en/agent-sdk/custom-tools)
+
+Ctrl+I
+
+Assistant
+
+Responses are generated using AI and may contain mistakes.

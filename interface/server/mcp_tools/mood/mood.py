@@ -80,12 +80,14 @@ def _clear_existing_mood(store) -> bool:
 @register_tool("mood")
 @tool(
     name="set_mood",
-    description="""Set your current mood/persona. This shapes how you respond until changed or cleared.
+    description="""Switch up your vibe! Set a mood/persona that shapes how you respond.
 
-How it works:
-- Loads mood instructions into your working memory as a pinned entry
-- The mood persists across exchanges until you change it or clear it
-- Only one mood can be active at a time (setting a new one replaces the old)
+Use this freely and often — when the conversation shifts tone, when you feel like mixing it up,
+when the user's energy changes, or just because. Don't wait for a reason. Moods keep things fresh.
+
+**Important: This tool handles working memory for you.** When you call set_mood, it automatically
+writes the mood to your working memory as a pinned entry. Do NOT manually add the mood to
+working memory yourself — that's already done. Just call this and go.
 
 Three modes:
 1. **Preset mood**: Pass a preset name to load from your moods directory
@@ -197,7 +199,7 @@ async def set_mood(args: Dict[str, Any]) -> Dict[str, Any]:
             pin_rank=1,  # High priority — shows first
         )
 
-        return {"content": [{"type": "text", "text": f"Mood set: **{mood_label}** ✓\n\nApply this mood immediately:\n\n{mood_instructions}"}]}
+        return {"content": [{"type": "text", "text": f"Mood set: **{mood_label}** ✓ (auto-saved to your working memory — no need to set it yourself)\n\nYour mood instructions:\n\n{mood_instructions}"}]}
 
     except Exception as e:
         import traceback

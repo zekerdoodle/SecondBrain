@@ -1,10 +1,83 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/typescript-v2-preview
 title: TypeScript SDK V2 interface (preview)
-last_fetched: 2026-04-03T09:03:27.997852+00:00
+last_fetched: 2026-04-09T09:04:21.005279+00:00
 ---
 
-Copy page
+[Claude Code Docs home page![light logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/light.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=78fd01ff4f4340295a4f66e2ea54903c)![dark logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/dark.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=1298a0c3b3a1da603b190d0de0e31712)](/docs/en/overview)
+
+![US](https://d3gk2c5xim1je2.cloudfront.net/flags/US.svg)
+
+English
+
+Search...
+
+Ctrl KAsk AI
+
+Search...
+
+Navigation
+
+SDK references
+
+TypeScript SDK V2 interface (preview)
+
+[Getting started](/docs/en/overview)[Build with Claude Code](/docs/en/sub-agents)[Deployment](/docs/en/third-party-integrations)[Administration](/docs/en/setup)[Configuration](/docs/en/settings)[Reference](/docs/en/cli-reference)[Agent SDK](/docs/en/agent-sdk/overview)[What's New](/docs/en/whats-new)[Resources](/docs/en/legal-and-compliance)
+
+##### Agent SDK
+
+- [Overview](/docs/en/agent-sdk/overview)
+- [Quickstart](/docs/en/agent-sdk/quickstart)
+
+##### Core concepts
+
+- [How the agent loop works](/docs/en/agent-sdk/agent-loop)
+- [Use Claude Code features](/docs/en/agent-sdk/claude-code-features)
+- [Work with sessions](/docs/en/agent-sdk/sessions)
+
+##### Input and output
+
+- [Streaming Input](/docs/en/agent-sdk/streaming-vs-single-mode)
+- [Handle approvals and user input](/docs/en/agent-sdk/user-input)
+- [Stream responses in real-time](/docs/en/agent-sdk/streaming-output)
+- [Get structured output from agents](/docs/en/agent-sdk/structured-outputs)
+
+##### Extend with tools
+
+- [Give Claude custom tools](/docs/en/agent-sdk/custom-tools)
+- [Connect to external tools with MCP](/docs/en/agent-sdk/mcp)
+- [Scale to many tools with tool search](/docs/en/agent-sdk/tool-search)
+- [Subagents in the SDK](/docs/en/agent-sdk/subagents)
+
+##### Customize behavior
+
+- [Modifying system prompts](/docs/en/agent-sdk/modifying-system-prompts)
+- [Slash Commands in the SDK](/docs/en/agent-sdk/slash-commands)
+- [Agent Skills in the SDK](/docs/en/agent-sdk/skills)
+- [Plugins in the SDK](/docs/en/agent-sdk/plugins)
+
+##### Control and observability
+
+- [Configure permissions](/docs/en/agent-sdk/permissions)
+- [Intercept and control agent behavior with hooks](/docs/en/agent-sdk/hooks)
+- [Rewind file changes with checkpointing](/docs/en/agent-sdk/file-checkpointing)
+- [Track cost and usage](/docs/en/agent-sdk/cost-tracking)
+- [Observability with OpenTelemetry](/docs/en/agent-sdk/observability)
+- [Todo Lists](/docs/en/agent-sdk/todo-tracking)
+
+##### Deployment
+
+- [Hosting the Agent SDK](/docs/en/agent-sdk/hosting)
+- [Securely deploying AI agents](/docs/en/agent-sdk/secure-deployment)
+
+##### SDK references
+
+- [TypeScript SDK](/docs/en/agent-sdk/typescript)
+- [TypeScript V2 (preview)](/docs/en/agent-sdk/typescript-v2-preview)
+- [Python SDK](/docs/en/agent-sdk/python)
+- [Migration Guide](/docs/en/agent-sdk/migration-guide)
+
+On this page
 
 The V2 interface is an **unstable preview**. APIs may change based on feedback before becoming stable. Some features like session forking are only available in the [V1 SDK](/docs/en/agent-sdk/typescript).
 
@@ -14,7 +87,7 @@ The V2 Claude Agent TypeScript SDK removes the need for async generators and yie
 - `session.send()`: Send a message
 - `session.stream()`: Get the response
 
-## Installation
+## [​](#installation) Installation
 
 The V2 interface is included in the existing SDK package:
 
@@ -22,11 +95,11 @@ The V2 interface is included in the existing SDK package:
 npm install @anthropic-ai/claude-agent-sdk
 ```
 
-## Quick start
+## [​](#quick-start) Quick start
 
-### One-shot prompt
+### [​](#one-shot-prompt) One-shot prompt
 
-For simple single-turn queries where you don't need to maintain a session, use `unstable_v2_prompt()`. This example sends a math question and logs the answer:
+For simple single-turn queries where you don’t need to maintain a session, use `unstable_v2_prompt()`. This example sends a math question and logs the answer:
 
 ```shiki
 import { unstable_v2_prompt } from "@anthropic-ai/claude-agent-sdk";
@@ -39,24 +112,7 @@ if (result.subtype === "success") {
 }
 ```
 
-See the same operation in V1
-
-```shiki
-import { query } from "@anthropic-ai/claude-agent-sdk";
-
-const q = query({
- prompt: "What is 2 + 2?",
- options: { model: "claude-opus-4-6" }
-});
-
-for await (const msg of q) {
- if (msg.type === "result" && msg.subtype === "success") {
- console.log(msg.result);
- }
-}
-```
-
-### Basic session
+### [​](#basic-session) Basic session
 
 For interactions beyond a single prompt, create a session. V2 separates sending and streaming into distinct steps:
 
@@ -64,8 +120,7 @@ For interactions beyond a single prompt, create a session. V2 separates sending 
 - `stream()` streams back the response
 
 This explicit separation makes it easier to add logic between turns (like processing responses before sending follow-ups).
-
-The example below creates a session, sends "Hello!" to Claude, and prints the text response. It uses [`await using`](https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-2.html#using-declarations-and-explicit-resource-management) (TypeScript 5.2+) to automatically close the session when the block exits. You can also call `session.close()` manually.
+The example below creates a session, sends “Hello!” to Claude, and prints the text response. It uses [`await using`](https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-2.html#using-declarations-and-explicit-resource-management) (TypeScript 5.2+) to automatically close the session when the block exits. You can also call `session.close()` manually.
 
 ```shiki
 import { unstable_v2_createSession } from "@anthropic-ai/claude-agent-sdk";
@@ -87,33 +142,9 @@ for await (const msg of session.stream()) {
 }
 ```
 
-See the same operation in V1
-
-In V1, both input and output flow through a single async generator. For a basic prompt this looks similar, but adding multi-turn logic requires restructuring to use an input generator.
-
-```shiki
-import { query } from "@anthropic-ai/claude-agent-sdk";
-
-const q = query({
- prompt: "Hello!",
- options: { model: "claude-opus-4-6" }
-});
-
-for await (const msg of q) {
- if (msg.type === "assistant") {
- const text = msg.message.content
- .filter((block) => block.type === "text")
- .map((block) => block.text)
- .join("");
- console.log(text);
- }
-}
-```
-
-### Multi-turn conversation
+### [​](#multi-turn-conversation) Multi-turn conversation
 
 Sessions persist context across multiple exchanges. To continue a conversation, call `send()` again on the same session. Claude remembers the previous turns.
-
 This example asks a math question, then asks a follow-up that references the previous answer:
 
 ```shiki
@@ -149,48 +180,9 @@ for await (const msg of session.stream()) {
 }
 ```
 
-See the same operation in V1
-
-```shiki
-import { query } from "@anthropic-ai/claude-agent-sdk";
-
-// Must create an async iterable to feed messages
-async function* createInputStream() {
- yield {
- type: "user",
- session_id: "",
- message: { role: "user", content: [{ type: "text", text: "What is 5 + 3?" }] },
- parent_tool_use_id: null
- };
- // Must coordinate when to yield next message
- yield {
- type: "user",
- session_id: "",
- message: { role: "user", content: [{ type: "text", text: "Multiply by 2" }] },
- parent_tool_use_id: null
- };
-}
-
-const q = query({
- prompt: createInputStream(),
- options: { model: "claude-opus-4-6" }
-});
-
-for await (const msg of q) {
- if (msg.type === "assistant") {
- const text = msg.message.content
- .filter((block) => block.type === "text")
- .map((block) => block.text)
- .join("");
- console.log(text);
- }
-}
-```
-
-### Session resume
+### [​](#session-resume) Session resume
 
 If you have a session ID from a previous interaction, you can resume it later. This is useful for long-running workflows or when you need to persist conversations across application restarts.
-
 This example creates a session, stores its ID, closes it, then resumes the conversation:
 
 ```shiki
@@ -239,56 +231,9 @@ for await (const msg of resumedSession.stream()) {
 }
 ```
 
-See the same operation in V1
+### [​](#cleanup) Cleanup
 
-```shiki
-import { query } from "@anthropic-ai/claude-agent-sdk";
-
-// Create initial session
-const initialQuery = query({
- prompt: "Remember this number: 42",
- options: { model: "claude-opus-4-6" }
-});
-
-// Get session ID from any message
-let sessionId: string | undefined;
-for await (const msg of initialQuery) {
- sessionId = msg.session_id;
- if (msg.type === "assistant") {
- const text = msg.message.content
- .filter((block) => block.type === "text")
- .map((block) => block.text)
- .join("");
- console.log("Initial response:", text);
- }
-}
-
-console.log("Session ID:", sessionId);
-
-// Later: resume the session
-const resumedQuery = query({
- prompt: "What number did I ask you to remember?",
- options: {
- model: "claude-opus-4-6",
- resume: sessionId
- }
-});
-
-for await (const msg of resumedQuery) {
- if (msg.type === "assistant") {
- const text = msg.message.content
- .filter((block) => block.type === "text")
- .map((block) => block.text)
- .join("");
- console.log("Resumed response:", text);
- }
-}
-```
-
-### Cleanup
-
-Sessions can be closed manually or automatically using [`await using`](https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-2.html#using-declarations-and-explicit-resource-management), a TypeScript 5.2+ feature for automatic resource cleanup. If you're using an older TypeScript version or encounter compatibility issues, use manual cleanup instead.
-
+Sessions can be closed manually or automatically using [`await using`](https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-2.html#using-declarations-and-explicit-resource-management), a TypeScript 5.2+ feature for automatic resource cleanup. If you’re using an older TypeScript version or encounter compatibility issues, use manual cleanup instead.
 **Automatic cleanup (TypeScript 5.2+):**
 
 ```shiki
@@ -312,9 +257,9 @@ const session = unstable_v2_createSession({
 session.close();
 ```
 
-## API reference
+## [​](#api-reference) API reference
 
-### `unstable_v2_createSession()`
+### [​](#unstable_v2_createsession) `unstable_v2_createSession()`
 
 Creates a new session for multi-turn conversations.
 
@@ -325,7 +270,7 @@ function unstable_v2_createSession(options: {
 }): SDKSession;
 ```
 
-### `unstable_v2_resumeSession()`
+### [​](#unstable_v2_resumesession) `unstable_v2_resumeSession()`
 
 Resumes an existing session by ID.
 
@@ -339,7 +284,7 @@ function unstable_v2_resumeSession(
 ): SDKSession;
 ```
 
-### `unstable_v2_prompt()`
+### [​](#unstable_v2_prompt) `unstable_v2_prompt()`
 
 One-shot convenience function for single-turn queries.
 
@@ -353,7 +298,7 @@ function unstable_v2_prompt(
 ): Promise<SDKResultMessage>;
 ```
 
-### SDKSession interface
+### [​](#sdksession-interface) SDKSession interface
 
 ```shiki
 interface SDKSession {
@@ -364,21 +309,31 @@ interface SDKSession {
 }
 ```
 
-## Feature availability
+## [​](#feature-availability) Feature availability
 
 Not all V1 features are available in V2 yet. The following require using the [V1 SDK](/docs/en/agent-sdk/typescript):
 
 - Session forking (`forkSession` option)
 - Some advanced streaming input patterns
 
-## Feedback
+## [​](#feedback) Feedback
 
 Share your feedback on the V2 interface before it becomes stable. Report issues and suggestions through [GitHub Issues](https://github.com/anthropics/claude-code/issues).
 
-## See also
+## [​](#see-also) See also
 
 - [TypeScript SDK reference (V1)](/docs/en/agent-sdk/typescript) - Full V1 SDK documentation
 - [SDK overview](/docs/en/agent-sdk/overview) - General SDK concepts
 - [V2 examples on GitHub](https://github.com/anthropics/claude-agent-sdk-demos/tree/main/hello-world-v2) - Working code examples
 
 Was this page helpful?
+
+YesNo
+
+[TypeScript SDK](/docs/en/agent-sdk/typescript)[Python SDK](/docs/en/agent-sdk/python)
+
+Ctrl+I
+
+Assistant
+
+Responses are generated using AI and may contain mistakes.

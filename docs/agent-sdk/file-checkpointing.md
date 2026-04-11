@@ -1,13 +1,85 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/file-checkpointing
 title: Rewind file changes with checkpointing
-last_fetched: 2026-04-03T09:00:52.053837+00:00
+last_fetched: 2026-04-09T09:02:05.406513+00:00
 ---
 
-Copy page
+[Claude Code Docs home page![light logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/light.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=78fd01ff4f4340295a4f66e2ea54903c)![dark logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/dark.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=1298a0c3b3a1da603b190d0de0e31712)](/docs/en/overview)
+
+![US](https://d3gk2c5xim1je2.cloudfront.net/flags/US.svg)
+
+English
+
+Search...
+
+Ctrl KAsk AI
+
+Search...
+
+Navigation
+
+Control and observability
+
+Rewind file changes with checkpointing
+
+[Getting started](/docs/en/overview)[Build with Claude Code](/docs/en/sub-agents)[Deployment](/docs/en/third-party-integrations)[Administration](/docs/en/setup)[Configuration](/docs/en/settings)[Reference](/docs/en/cli-reference)[Agent SDK](/docs/en/agent-sdk/overview)[What's New](/docs/en/whats-new)[Resources](/docs/en/legal-and-compliance)
+
+##### Agent SDK
+
+- [Overview](/docs/en/agent-sdk/overview)
+- [Quickstart](/docs/en/agent-sdk/quickstart)
+
+##### Core concepts
+
+- [How the agent loop works](/docs/en/agent-sdk/agent-loop)
+- [Use Claude Code features](/docs/en/agent-sdk/claude-code-features)
+- [Work with sessions](/docs/en/agent-sdk/sessions)
+
+##### Input and output
+
+- [Streaming Input](/docs/en/agent-sdk/streaming-vs-single-mode)
+- [Handle approvals and user input](/docs/en/agent-sdk/user-input)
+- [Stream responses in real-time](/docs/en/agent-sdk/streaming-output)
+- [Get structured output from agents](/docs/en/agent-sdk/structured-outputs)
+
+##### Extend with tools
+
+- [Give Claude custom tools](/docs/en/agent-sdk/custom-tools)
+- [Connect to external tools with MCP](/docs/en/agent-sdk/mcp)
+- [Scale to many tools with tool search](/docs/en/agent-sdk/tool-search)
+- [Subagents in the SDK](/docs/en/agent-sdk/subagents)
+
+##### Customize behavior
+
+- [Modifying system prompts](/docs/en/agent-sdk/modifying-system-prompts)
+- [Slash Commands in the SDK](/docs/en/agent-sdk/slash-commands)
+- [Agent Skills in the SDK](/docs/en/agent-sdk/skills)
+- [Plugins in the SDK](/docs/en/agent-sdk/plugins)
+
+##### Control and observability
+
+- [Configure permissions](/docs/en/agent-sdk/permissions)
+- [Intercept and control agent behavior with hooks](/docs/en/agent-sdk/hooks)
+- [Rewind file changes with checkpointing](/docs/en/agent-sdk/file-checkpointing)
+- [Track cost and usage](/docs/en/agent-sdk/cost-tracking)
+- [Observability with OpenTelemetry](/docs/en/agent-sdk/observability)
+- [Todo Lists](/docs/en/agent-sdk/todo-tracking)
+
+##### Deployment
+
+- [Hosting the Agent SDK](/docs/en/agent-sdk/hosting)
+- [Securely deploying AI agents](/docs/en/agent-sdk/secure-deployment)
+
+##### SDK references
+
+- [TypeScript SDK](/docs/en/agent-sdk/typescript)
+- [TypeScript V2 (preview)](/docs/en/agent-sdk/typescript-v2-preview)
+- [Python SDK](/docs/en/agent-sdk/python)
+- [Migration Guide](/docs/en/agent-sdk/migration-guide)
+
+On this page
 
 File checkpointing tracks file modifications made through the Write, Edit, and NotebookEdit tools during an agent session, allowing you to rewind files to any previous state. Want to try it out? Jump to the [interactive example](#try-it-out).
-
 With checkpointing, you can:
 
 - **Undo unwanted changes** by restoring files to a known good state
@@ -16,10 +88,9 @@ With checkpointing, you can:
 
 Only changes made through the Write, Edit, and NotebookEdit tools are tracked. Changes made through Bash commands (like `echo > file.txt` or `sed -i`) are not captured by the checkpoint system.
 
-## How checkpointing works
+## [​](#how-checkpointing-works) How checkpointing works
 
 When you enable file checkpointing, the SDK creates backups of files before modifying them through the Write, Edit, or NotebookEdit tools. User messages in the response stream include a checkpoint UUID that you can use as a restore point.
-
 Checkpoint works with these built-in tools that the agent uses to modify files:
 
 | Tool | Description |
@@ -38,13 +109,14 @@ The checkpoint system tracks:
 
 When you rewind to a checkpoint, created files are deleted and modified files are restored to their content at that point.
 
-## Implement checkpointing
+## [​](#implement-checkpointing) Implement checkpointing
 
 To use file checkpointing, enable it in your options, capture checkpoint UUIDs from the response stream, then call `rewindFiles()` (TypeScript) or `rewind_files()` (Python) when you need to restore.
-
 The following example shows the complete flow: enable checkpointing, capture the checkpoint UUID and session ID from the response stream, then resume the session later to rewind files. Each step is explained in detail below.
 
 Python
+
+TypeScript
 
 ```shiki
 import asyncio
@@ -93,86 +165,92 @@ async def main():
 asyncio.run(main())
 ```
 
-1. 1
+1
 
- Enable checkpointing
+Enable checkpointing
 
- Configure your SDK options to enable checkpointing and receive checkpoint UUIDs:
+Configure your SDK options to enable checkpointing and receive checkpoint UUIDs:
 
- | Option | Python | TypeScript | Description |
- | --- | --- | --- | --- |
- | Enable checkpointing | `enable_file_checkpointing=True` | `enableFileCheckpointing: true` | Tracks file changes for rewinding |
- | Receive checkpoint UUIDs | `extra_args={"replay-user-messages": None}` | `extraArgs: { 'replay-user-messages': null }` | Required to get user message UUIDs in the stream |
+| Option | Python | TypeScript | Description |
+| --- | --- | --- | --- |
+| Enable checkpointing | `enable_file_checkpointing=True` | `enableFileCheckpointing: true` | Tracks file changes for rewinding |
+| Receive checkpoint UUIDs | `extra_args={"replay-user-messages": None}` | `extraArgs: { 'replay-user-messages': null }` | Required to get user message UUIDs in the stream |
 
- Python
+Python
 
- ```shiki
- options = ClaudeAgentOptions(
+TypeScript
+
+```shiki
+options = ClaudeAgentOptions(
  enable_file_checkpointing=True,
  permission_mode="acceptEdits",
  extra_args={"replay-user-messages": None},
- )
+)
 
- async with ClaudeSDKClient(options) as client:
+async with ClaudeSDKClient(options) as client:
  await client.query("Refactor the authentication module")
- ```
-2. 2
+```
 
- Capture checkpoint UUID and session ID
+2
 
- With the `replay-user-messages` option set (shown above), each user message in the response stream has a UUID that serves as a checkpoint.
+Capture checkpoint UUID and session ID
 
- For most use cases, capture the first user message UUID (`message.uuid`); rewinding to it restores all files to their original state. To store multiple checkpoints and rewind to intermediate states, see [Multiple restore points](#multiple-restore-points).
+With the `replay-user-messages` option set (shown above), each user message in the response stream has a UUID that serves as a checkpoint.For most use cases, capture the first user message UUID (`message.uuid`); rewinding to it restores all files to their original state. To store multiple checkpoints and rewind to intermediate states, see [Multiple restore points](#multiple-restore-points).Capturing the session ID (`message.session_id`) is optional; you only need it if you want to rewind later, after the stream completes. If you’re calling `rewindFiles()` immediately while still processing messages (as the example in [Checkpoint before risky operations](#checkpoint-before-risky-operations) does), you can skip capturing the session ID.
 
- Capturing the session ID (`message.session_id`) is optional; you only need it if you want to rewind later, after the stream completes. If you're calling `rewindFiles()` immediately while still processing messages (as the example in [Checkpoint before risky operations](#checkpoint-before-risky-operations) does), you can skip capturing the session ID.
+Python
 
- Python
+TypeScript
 
- ```shiki
- checkpoint_id = None
- session_id = None
+```shiki
+checkpoint_id = None
+session_id = None
 
- async for message in client.receive_response():
+async for message in client.receive_response():
  # Update checkpoint on each user message (keeps the latest)
  if isinstance(message, UserMessage) and message.uuid:
  checkpoint_id = message.uuid
  # Capture session ID from the result message
  if isinstance(message, ResultMessage):
  session_id = message.session_id
- ```
-3. 3
+```
 
- Rewind files
+3
 
- To rewind after the stream completes, resume the session with an empty prompt and call `rewind_files()` (Python) or `rewindFiles()` (TypeScript) with your checkpoint UUID. You can also rewind during the stream; see [Checkpoint before risky operations](#checkpoint-before-risky-operations) for that pattern.
+Rewind files
 
- Python
+To rewind after the stream completes, resume the session with an empty prompt and call `rewind_files()` (Python) or `rewindFiles()` (TypeScript) with your checkpoint UUID. You can also rewind during the stream; see [Checkpoint before risky operations](#checkpoint-before-risky-operations) for that pattern.
 
- ```shiki
- async with ClaudeSDKClient(
+Python
+
+TypeScript
+
+```shiki
+async with ClaudeSDKClient(
  ClaudeAgentOptions(enable_file_checkpointing=True, resume=session_id)
- ) as client:
+) as client:
  await client.query("") # Empty prompt to open the connection
  async for message in client.receive_response():
  await client.rewind_files(checkpoint_id)
  break
- ```
+```
 
- If you capture the session ID and checkpoint ID, you can also rewind from the CLI:
+If you capture the session ID and checkpoint ID, you can also rewind from the CLI:
 
- ```shiki
- claude -p --resume <session-id> --rewind-files <checkpoint-uuid>
- ```
+```shiki
+claude -p --resume <session-id> --rewind-files <checkpoint-uuid>
+```
 
-## Common patterns
+## [​](#common-patterns) Common patterns
 
 These patterns show different ways to capture and use checkpoint UUIDs depending on your use case.
 
-### Checkpoint before risky operations
+### [​](#checkpoint-before-risky-operations) Checkpoint before risky operations
 
 This pattern keeps only the most recent checkpoint UUID, updating it before each agent turn. If something goes wrong during processing, you can immediately rewind to the last safe state and break out of the loop.
 
 Python
+
+TypeScript
 
 ```shiki
 import asyncio
@@ -206,13 +284,14 @@ async def main():
 asyncio.run(main())
 ```
 
-### Multiple restore points
+### [​](#multiple-restore-points) Multiple restore points
 
 If Claude makes changes across multiple turns, you might want to rewind to a specific point rather than all the way back. For example, if Claude refactors a file in turn one and adds tests in turn two, you might want to keep the refactor but undo the tests.
-
 This pattern stores all checkpoint UUIDs in an array with metadata. After the session completes, you can rewind to any previous checkpoint:
 
 Python
+
+TypeScript
 
 ```shiki
 import asyncio
@@ -272,55 +351,57 @@ async def main():
 asyncio.run(main())
 ```
 
-## Try it out
+## [​](#try-it-out) Try it out
 
 This complete example creates a small utility file, has the agent add documentation comments, shows you the changes, then asks if you want to rewind.
-
 Before you begin, make sure you have the [Claude Agent SDK installed](/docs/en/agent-sdk/quickstart).
 
-1. 1
+1
 
- Create a test file
+Create a test file
 
- Create a new file called `utils.py` (Python) or `utils.ts` (TypeScript) and paste the following code:
+Create a new file called `utils.py` (Python) or `utils.ts` (TypeScript) and paste the following code:
 
- utils.py
+utils.py
 
- ```shiki
- def add(a, b):
+utils.ts
+
+```shiki
+def add(a, b):
  return a + b
 
- def subtract(a, b):
+def subtract(a, b):
  return a - b
 
- def multiply(a, b):
+def multiply(a, b):
  return a * b
 
- def divide(a, b):
+def divide(a, b):
  if b == 0:
  raise ValueError("Cannot divide by zero")
  return a / b
- ```
-2. 2
+```
 
- Run the interactive example
+2
 
- Create a new file called `try_checkpointing.py` (Python) or `try_checkpointing.ts` (TypeScript) in the same directory as your utility file, and paste the following code.
+Run the interactive example
 
- This script asks Claude to add doc comments to your utility file, then gives you the option to rewind and restore the original.
+Create a new file called `try_checkpointing.py` (Python) or `try_checkpointing.ts` (TypeScript) in the same directory as your utility file, and paste the following code.This script asks Claude to add doc comments to your utility file, then gives you the option to rewind and restore the original.
 
- try\_checkpointing.py
+try\_checkpointing.py
 
- ```shiki
- import asyncio
- from claude_agent_sdk import (
+try\_checkpointing.ts
+
+```shiki
+import asyncio
+from claude_agent_sdk import (
  ClaudeSDKClient,
  ClaudeAgentOptions,
  UserMessage,
  ResultMessage,
- )
+)
 
- async def main():
+async def main():
  # Configure the SDK with checkpointing enabled
  # - enable_file_checkpointing: Track file changes for rewinding
  # - permission_mode: Auto-accept file edits without prompting
@@ -370,38 +451,38 @@ Before you begin, make sure you have the [Claude Agent SDK installed](/docs/en/a
  else:
  print("\nKept the modified file.")
 
- asyncio.run(main())
- ```
+asyncio.run(main())
+```
 
- This example demonstrates the complete checkpointing workflow:
+This example demonstrates the complete checkpointing workflow:
 
- 1. **Enable checkpointing**: configure the SDK with `enable_file_checkpointing=True` and `permission_mode="acceptEdits"` to auto-approve file edits
- 2. **Capture checkpoint data**: as the agent runs, store the first user message UUID (your restore point) and the session ID
- 3. **Prompt for rewind**: after the agent finishes, check your utility file to see the doc comments, then decide if you want to undo the changes
- 4. **Resume and rewind**: if yes, resume the session with an empty prompt and call `rewind_files()` to restore the original file
-3. 3
+1. **Enable checkpointing**: configure the SDK with `enable_file_checkpointing=True` and `permission_mode="acceptEdits"` to auto-approve file edits
+2. **Capture checkpoint data**: as the agent runs, store the first user message UUID (your restore point) and the session ID
+3. **Prompt for rewind**: after the agent finishes, check your utility file to see the doc comments, then decide if you want to undo the changes
+4. **Resume and rewind**: if yes, resume the session with an empty prompt and call `rewind_files()` to restore the original file
 
- Run the example
+3
 
- Run the script from the same directory as your utility file.
+Run the example
 
- Open your utility file (`utils.py` or `utils.ts`) in your IDE or editor before running the script. You'll see the file update in real-time as the agent adds doc comments, then revert back to the original when you choose to rewind.
+Run the script from the same directory as your utility file.
 
- Python
+Open your utility file (`utils.py` or `utils.ts`) in your IDE or editor before running the script. You’ll see the file update in real-time as the agent adds doc comments, then revert back to the original when you choose to rewind.
 
- Python
+- Python
+- TypeScript
 
- TypeScript
+```shiki
+python try_checkpointing.py
+```
 
- TypeScript
+```shiki
+npx tsx try_checkpointing.ts
+```
 
- ```shiki
- python try_checkpointing.py
- ```
+You’ll see the agent add doc comments, then a prompt asking if you want to rewind. If you choose yes, the file is restored to its original state.
 
- You'll see the agent add doc comments, then a prompt asking if you want to rewind. If you choose yes, the file is restored to its original state.
-
-## Limitations
+## [​](#limitations) Limitations
 
 File checkpointing has the following limitations:
 
@@ -412,43 +493,40 @@ File checkpointing has the following limitations:
 | File content only | Creating, moving, or deleting directories is not undone by rewinding |
 | Local files | Remote or network files are not tracked |
 
-## Troubleshooting
+## [​](#troubleshooting) Troubleshooting
 
-### Checkpointing options not recognized
+### [​](#checkpointing-options-not-recognized) Checkpointing options not recognized
 
-If `enableFileCheckpointing` or `rewindFiles()` isn't available, you may be on an older SDK version.
-
+If `enableFileCheckpointing` or `rewindFiles()` isn’t available, you may be on an older SDK version.
 **Solution**: Update to the latest SDK version:
 
 - **Python**: `pip install --upgrade claude-agent-sdk`
 - **TypeScript**: `npm install @anthropic-ai/claude-agent-sdk@latest`
 
-### User messages don't have UUIDs
+### [​](#user-messages-don’t-have-uuids) User messages don’t have UUIDs
 
-If `message.uuid` is `undefined` or missing, you're not receiving checkpoint UUIDs.
-
-**Cause**: The `replay-user-messages` option isn't set.
-
+If `message.uuid` is `undefined` or missing, you’re not receiving checkpoint UUIDs.
+**Cause**: The `replay-user-messages` option isn’t set.
 **Solution**: Add `extra_args={"replay-user-messages": None}` (Python) or `extraArgs: { 'replay-user-messages': null }` (TypeScript) to your options.
 
-### "No file checkpoint found for message" error
+### [​](#”no-file-checkpoint-found-for-message”-error) ”No file checkpoint found for message” error
 
-This error occurs when the checkpoint data doesn't exist for the specified user message UUID.
-
+This error occurs when the checkpoint data doesn’t exist for the specified user message UUID.
 **Common causes**:
 
 - File checkpointing was not enabled on the original session (`enable_file_checkpointing` or `enableFileCheckpointing` was not set to `true`)
-- The session wasn't properly completed before attempting to resume and rewind
+- The session wasn’t properly completed before attempting to resume and rewind
 
 **Solution**: Ensure `enable_file_checkpointing=True` (Python) or `enableFileCheckpointing: true` (TypeScript) was set on the original session, then use the pattern shown in the examples: capture the first user message UUID, complete the session fully, then resume with an empty prompt and call `rewindFiles()` once.
 
-### "ProcessTransport is not ready for writing" error
+### [​](#”processtransport-is-not-ready-for-writing”-error) ”ProcessTransport is not ready for writing” error
 
-This error occurs when you call `rewindFiles()` or `rewind_files()` after you've finished iterating through the response. The connection to the CLI process closes when the loop completes.
-
+This error occurs when you call `rewindFiles()` or `rewind_files()` after you’ve finished iterating through the response. The connection to the CLI process closes when the loop completes.
 **Solution**: Resume the session with an empty prompt, then call rewind on the new query:
 
 Python
+
+TypeScript
 
 ```shiki
 # Resume session with empty prompt, then rewind
@@ -461,7 +539,7 @@ async with ClaudeSDKClient(
  break
 ```
 
-## Next steps
+## [​](#next-steps) Next steps
 
 - **[Sessions](/docs/en/agent-sdk/sessions)**: learn how to resume sessions, which is required for rewinding after the stream completes. Covers session IDs, resuming conversations, and session forking.
 - **[Permissions](/docs/en/agent-sdk/permissions)**: configure which tools Claude can use and how file modifications are approved. Useful if you want more control over when edits happen.
@@ -469,3 +547,13 @@ async with ClaudeSDKClient(
 - **[Python SDK reference](/docs/en/agent-sdk/python)**: complete API reference including all options for `ClaudeAgentOptions` and the `rewind_files()` method.
 
 Was this page helpful?
+
+YesNo
+
+[Intercept and control agent behavior with hooks](/docs/en/agent-sdk/hooks)[Track cost and usage](/docs/en/agent-sdk/cost-tracking)
+
+Ctrl+I
+
+Assistant
+
+Responses are generated using AI and may contain mistakes.
