@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/
 title: Anthropic Agent SDK Documentation Index
-last_fetched: 2026-04-11T09:04:29.174090+00:00
+last_fetched: 2026-04-14T09:04:57.257713+00:00
 ---
 
 # Anthropic Agent SDK Documentation
@@ -45,7 +45,7 @@ This is a local mirror of the [Anthropic Agent SDK documentation](https://platfo
 This documentation mirror is automatically synced from the official Anthropic documentation.
 Claude Code agents can reference these files directly for up-to-date information.
 
-**Last sync:** 2026-04-11T09:04:29.174090+00:00
+**Last sync:** 2026-04-14T09:04:57.257713+00:00
 
 To manually sync, run:
 ```bash

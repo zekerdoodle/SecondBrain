@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/typescript
 title: Agent SDK reference - TypeScript
-last_fetched: 2026-04-10T09:04:44.729281+00:00
+last_fetched: 2026-04-14T09:04:42.092615+00:00
 ---
 
 [Claude Code Docs home page![light logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/light.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=78fd01ff4f4340295a4f66e2ea54903c)![dark logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/dark.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=1298a0c3b3a1da603b190d0de0e31712)](/docs/en/overview)
@@ -1676,10 +1676,11 @@ Gets or sets a configuration value.
 ```shiki
 type EnterWorktreeInput = {
  name?: string;
+ path?: string;
 };
 ```
 
-Creates and enters a temporary git worktree for isolated work.
+Creates and enters a temporary git worktree for isolated work. Pass `path` to switch into an existing worktree of the current repository instead of creating a new one. `name` and `path` are mutually exclusive.
 
 ## [​](#tool-output-types) Tool Output Types
 

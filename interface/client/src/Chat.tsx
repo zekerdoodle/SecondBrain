@@ -1051,15 +1051,25 @@ export const Chat: React.FC<ChatProps> = ({
   }, []);
 
   // Keep isUserNearBottom fresh during DOM mutations that don't fire scroll events
-  // (e.g., thinking block expand/collapse changes content height)
+  // (e.g., thinking block expand/collapse, tool blocks rendering).
+  // Critical: if user WAS near bottom and content grew, keep them pinned to bottom.
+  // This prevents tool call blocks from breaking auto-scroll (they increase DOM height
+  // without a scroll event, which would otherwise flip isUserNearBottom to false).
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
     const inner = el.firstElementChild as HTMLElement;
     if (!inner) return;
     const observer = new ResizeObserver(() => {
-      const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-      isUserNearBottom.current = distFromBottom <= 150;
+      if (isUserNearBottom.current) {
+        // User was at/near bottom — keep them pinned as content grows
+        el.scrollTop = el.scrollHeight;
+        // isUserNearBottom stays true
+      } else {
+        // User has scrolled away — just recalculate in case they scrolled back
+        const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+        isUserNearBottom.current = distFromBottom <= 150;
+      }
     });
     observer.observe(inner);
     return () => observer.disconnect();
