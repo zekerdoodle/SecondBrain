@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/observability
 title: Agent SDK overview
-last_fetched: 2026-04-10T09:03:09.940116+00:00
+last_fetched: 2026-04-17T09:02:30.630226+00:00
 ---
 
 [Claude Code Docs home page![light logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/light.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=78fd01ff4f4340295a4f66e2ea54903c)![dark logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/dark.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=1298a0c3b3a1da603b190d0de0e31712)](/docs/en/overview)
@@ -82,6 +82,8 @@ On this page
 The Claude Code SDK has been renamed to the Claude Agent SDK. If you’re migrating from the old SDK, see the [Migration Guide](/docs/en/agent-sdk/migration-guide).
 
 Build AI agents that autonomously read files, run commands, search the web, edit code, and more. The Agent SDK gives you the same tools, agent loop, and context management that power Claude Code, programmable in Python and TypeScript.
+
+Opus 4.7 (`claude-opus-4-7`) requires Agent SDK v0.2.111 or later. If you see a `thinking.type.enabled` API error, see [Troubleshooting](/docs/en/agent-sdk/quickstart#troubleshooting).
 
 Python
 
@@ -383,7 +385,7 @@ asyncio.run(main())
 
 ### [​](#claude-code-features) Claude Code features
 
-The SDK also supports Claude Code’s filesystem-based configuration. To use these features, set `setting_sources=["project"]` (Python) or `settingSources: ['project']` (TypeScript) in your options.
+The SDK also supports Claude Code’s filesystem-based configuration. With default options the SDK loads these from `.claude/` in your working directory and `~/.claude/`. To restrict which sources load, set `setting_sources` (Python) or `settingSources` (TypeScript) in your options.
 
 | Feature | Description | Location |
 | --- | --- | --- |

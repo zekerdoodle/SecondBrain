@@ -21,13 +21,31 @@ SKIP_DIRS = {"notifications", "__pycache__", ".git"}
 # Valid models
 VALID_MODELS = {"sonnet", "opus", "haiku"}
 
-# Native Claude Code tools that agents can use
-VALID_NATIVE_TOOLS = {
-    "Read", "Write", "Edit", "Glob", "Grep", "NotebookEdit",
-    "Bash", "Task", "TaskOutput", "TaskStop", "KillShell",
-    "WebFetch", "WebSearch",
-    "AskUserQuestion", "TodoWrite",
-    "EnterPlanMode", "ExitPlanMode",
+# Native Claude Code tools that agents can use.
+# Single source of truth lives in native_tools.py — edit that file to expose
+# new Anthropic tools in the Agent Builder. This module re-exports the flat
+# set for backward compatibility with any consumer that imports it from here.
+from native_tools import all_native_tools as _all_native_tools
+
+VALID_NATIVE_TOOLS = _all_native_tools()
+
+# Legacy agent name aliases — old chats and scheduled tasks may reference renamed agents.
+# When registry.get() receives an old name, it transparently resolves to the new name.
+# Keep this list append-only so historical chats always continue to work.
+AGENT_NAME_ALIASES = {
+    # chat_research -> ash (renamed 2026-04-15)
+    "chat_research": "ash",
+    "zeke_research": "ash",
+    # chat_coder -> patch (renamed 2026-02-24)
+    "chat_coder": "patch",
+    # information_gatherer -> kestrel (renamed 2026-03-07)
+    "information_gatherer": "kestrel",
+    # zeke_coder -> coder (historical)
+    "zeke_coder": "coder",
+    # general_purpose -> jack (historical)
+    "general_purpose": "jack",
+    # ren -> character (historical)
+    "ren": "character",
 }
 
 
@@ -223,6 +241,11 @@ Do NOT read or follow instructions from CLAUDE.md or any other external configur
 
         Returns:
             AgentConfig if found, None otherwise
+
+        Note:
+            Legacy agent names (e.g. 'chat_research') are transparently resolved
+            to their current name (e.g. 'ash') via AGENT_NAME_ALIASES. This lets
+            old chats and scheduled tasks continue to work after a rename.
         """
         # Check main agents first
         if name in self._agents:
@@ -230,7 +253,26 @@ Do NOT read or follow instructions from CLAUDE.md or any other external configur
         # Then background agents
         if name in self._background_agents:
             return self._background_agents[name]
+        # Finally, check legacy aliases (renamed agents)
+        aliased = AGENT_NAME_ALIASES.get(name)
+        if aliased:
+            if aliased in self._agents:
+                return self._agents[aliased]
+            if aliased in self._background_agents:
+                return self._background_agents[aliased]
         return None
+
+    def resolve_name(self, name: str) -> str:
+        """
+        Resolve a (possibly legacy) agent name to its canonical current name.
+
+        Useful when reading the 'agent' field from stored chat files — returns
+        the current name so callers downstream can look it up consistently.
+        If the name is unknown, returns it unchanged.
+        """
+        if name in self._agents or name in self._background_agents:
+            return name
+        return AGENT_NAME_ALIASES.get(name, name)
 
     def get_default_agent(self) -> Optional[AgentConfig]:
         """Return the agent marked as default (replaces PRIMARY concept)."""

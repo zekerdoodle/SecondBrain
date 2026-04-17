@@ -1182,11 +1182,11 @@ Search modes:
                     "Filter by agent. Defaults to your own chats only. "
                     "Use 'all' to search across all agents, or specify an agent name. "
                     "Available agents: character, patch, coder, kestrel, jack, ops, "
-                    "chat_research, deep_research, deep_think, research_critic, "
+                    "ash, deep_research, deep_think, research_critic, "
                     "life_admin, finance, cortex, running_coach, nutrition_coach, "
                     "lifting_coach, moltbook. "
                     "Legacy names (zeke_coder, information_gatherer, general_purpose, "
-                    "chat_coder, ren, zeke_research) are automatically aliased."
+                    "chat_coder, chat_research, ren, zeke_research) are automatically aliased."
                 ),
             },
         },

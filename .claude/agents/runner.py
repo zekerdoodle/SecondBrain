@@ -1079,13 +1079,13 @@ async def _run_sdk_agent(config: AgentConfig, invocation: AgentInvocation) -> st
     # What's in config.tools is exactly what the agent gets.
     effective_tools = list(config.tools) if config.tools else []
 
-    # Compute disallowed native tools: block any native tool NOT in the agent's config.
-    # The SDK provides all native tools by default; disallowed_tools is the only way
-    # to restrict them. Without this, every agent gets ALL native tools regardless
-    # of what's in config.yaml.
-    from registry import VALID_NATIVE_TOOLS
+    # Native tool whitelist: agents get exactly the native tools listed in their config
+    # — nothing more. This passes `tools=[list]` to the SDK, which in turn passes
+    # `--tools Read,Edit,...` to the CLI. Any native tool not in this list — including
+    # future Anthropic-shipped tools (Cron*, Monitor, PushNotification, ScheduleWakeup,
+    # EnterWorktree, etc.) — is blocked at the CLI level. No blacklist to maintain.
+    # Source of truth for what's available lives in .claude/agents/native_tools.py.
     native_tool_names = [t for t in effective_tools if not t.startswith(MCP_ANY_PREFIX)]
-    disallowed_native = [t for t in VALID_NATIVE_TOOLS if t not in native_tool_names]
 
     if config.tools:
         # Internal "brain" MCP server
@@ -1133,16 +1133,38 @@ async def _run_sdk_agent(config: AgentConfig, invocation: AgentInvocation) -> st
         "setting_sources": [],  # Never load project settings for subagents
         "max_turns": config.max_turns,
         "mcp_servers": mcp_servers if mcp_servers else None,
-        "env": {"ENABLE_TOOL_SEARCH": "false"},  # Disable tool deferral (tengu_defer_all_bn4)
+        "env": {
+            "ENABLE_TOOL_SEARCH": "false",  # Disable tool deferral (tengu_defer_all_bn4)
+            # Short-circuits the CLI's XSY() attachment pipeline which auto-injects
+            # bundled Skill listings ("The following skills are available for use
+            # with the Skill tool:..."), dynamic_skill triggers, native TodoWrite
+            # reminders, plan_mode/delegate_mode reminders, nested CLAUDE.md loading,
+            # and relevant-memory injection. We have our own Skills system
+            # (mcp__brain__fetch_skill), our own memory system, and our own prompts —
+            # none of the native auto-injection is wanted. See cli.js function XSY at
+            # the `CLAUDE_CODE_DISABLE_ATTACHMENTS` check.
+            "CLAUDE_CODE_DISABLE_ATTACHMENTS": "1",
+        },
+        # Restore visible thinking on Opus 4.7+ — the model silently changed its
+        # default from display="summarized" to display="omitted" (see Anthropic's
+        # "What's new in Claude Opus 4.7" docs). Without this, thinking blocks
+        # still stream but their content is empty, so the frontend shows no
+        # reasoning. The SDK's ClaudeAgentOptions doesn't model the `display`
+        # field on ThinkingConfigAdaptive, but the bundled CLI supports the
+        # --thinking-display flag, and extra_args forwards unmapped CLI flags.
+        # No-op on Sonnet/Haiku (they still default to "summarized").
+        "extra_args": {"thinking-display": "summarized"},
     }
 
-    # Preset agents need the tools preset so Claude Code's native tool suite is used
+    # Tool availability gate (whitelist-only).
+    # - Preset agents: opt into Claude Code's full native tool suite.
+    # - Everyone else: exactly the native tools listed in config.tools — nothing else.
+    #   Empty list → zero native tools enabled. This is the CLI-level ON/OFF switch
+    #   that prevents silent-enable of future Anthropic tools.
     if config.system_prompt_preset:
         options_kwargs["tools"] = {"type": "preset", "preset": config.system_prompt_preset}
-
-    # Block native tools not in the agent's config — applies to ALL agents
-    if disallowed_native:
-        options_kwargs["disallowed_tools"] = disallowed_native
+    else:
+        options_kwargs["tools"] = native_tool_names
 
     # Apply model-aware thinking configuration
     model = config.model or "sonnet"

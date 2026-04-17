@@ -230,6 +230,8 @@ interface EditorViewProps {
   onPaneFocus?: () => void;
   /** Callback to close split mode (shows X button when provided) */
   onCloseSplit?: () => void;
+  /** Changing this key forces HTML iframes to remount (e.g. after exiting fullscreen) */
+  iframeRefreshKey?: number;
 }
 
 // Check if a URL is external (http/https)
@@ -357,6 +359,7 @@ export const EditorView: React.FC<EditorViewProps> = ({
   isActive,
   onPaneFocus,
   onCloseSplit,
+  iframeRefreshKey,
 }) => {
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
   const editorViewRef = useRef<HTMLDivElement>(null);
@@ -693,7 +696,7 @@ export const EditorView: React.FC<EditorViewProps> = ({
                 />
               </div>
             ) : isHtmlFile(selectedFile) ? (
-              <HtmlIframe html={markdown} />
+              <HtmlIframe key={iframeRefreshKey} html={markdown} />
             ) : isImageFile(selectedFile) ? (
               <div className="flex items-center justify-center h-full p-4">
                 <img

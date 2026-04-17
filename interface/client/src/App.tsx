@@ -102,6 +102,17 @@ function App() {
     html: string;
   } | null>(null);
 
+  // Increments when exiting fullscreen to force editor iframes to remount with fresh data
+  const [iframeRefreshKey, setIframeRefreshKey] = useState(0);
+  const prevFullscreenApp = useRef(fullscreenApp);
+  useEffect(() => {
+    // When fullscreen transitions from open → closed, bump the key
+    if (prevFullscreenApp.current && !fullscreenApp) {
+      setIframeRefreshKey(k => k + 1);
+    }
+    prevFullscreenApp.current = fullscreenApp;
+  }, [fullscreenApp]);
+
   // Chat panel width (percentage of viewport)
   const [chatWidth, setChatWidth] = useState(30);
   const isResizing = useRef(false);
@@ -893,6 +904,7 @@ function App() {
                 onTabSelect={handleFileSelect}
                 onTabClose={handleCloseTab}
                 unsavedPaths={unsavedPaths}
+                iframeRefreshKey={iframeRefreshKey}
               />
             </div>
           </>
@@ -958,6 +970,7 @@ function App() {
                         isActive={activePaneId === 'primary'}
                         onPaneFocus={() => setActivePaneId('primary')}
                         onCloseSplit={toggleSplitMode}
+                        iframeRefreshKey={iframeRefreshKey}
                       />
                     </Panel>
                     <PanelResizeHandle className="w-1.5 bg-[var(--border-color)] hover:bg-[var(--accent-primary)] active:bg-[var(--accent-primary)] transition-colors cursor-col-resize flex items-center justify-center group">
@@ -983,6 +996,7 @@ function App() {
                         isActive={activePaneId === 'secondary'}
                         onPaneFocus={() => setActivePaneId('secondary')}
                         onCloseSplit={toggleSplitMode}
+                        iframeRefreshKey={iframeRefreshKey}
                       />
                     </Panel>
                   </PanelGroup>
@@ -1002,6 +1016,7 @@ function App() {
                     onTabSelect={handleFileSelect}
                     onTabClose={handleCloseTab}
                     unsavedPaths={unsavedPaths}
+                    iframeRefreshKey={iframeRefreshKey}
                   />
                 )}
               </Panel>

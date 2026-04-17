@@ -73,19 +73,11 @@ except Exception as e:
     MCP_PREFIX = "mcp__brain__"
 
 
-# All native Claude Code tools that can be controlled
-ALL_NATIVE_TOOLS = {
-    # File operations
-    "Read", "Write", "Edit", "Glob", "Grep", "NotebookEdit",
-    # Execution
-    "Bash", "Task", "TaskOutput", "TaskStop", "KillShell",
-    # Web
-    "WebFetch", "WebSearch",
-    # UI/Interaction
-    "AskUserQuestion", "TodoWrite",
-    # Plan mode
-    "EnterPlanMode", "ExitPlanMode",
-}
+# Native tool availability is controlled via the SDK's `tools=[list]` parameter
+# (whitelist-only). Source of truth is .claude/agents/native_tools.py — any
+# tool not listed there (including future Anthropic-shipped tools like Cron*,
+# Monitor, PushNotification, ScheduleWakeup, EnterWorktree, RemoteTrigger,
+# Skill, etc.) is never exposed to agents. No blacklist, no silent enabling.
 
 # Model-aware thinking defaults — maximize thinking for every model tier
 # Keys match the short model aliases used in agent config.yaml files
@@ -503,15 +495,9 @@ class ClaudeWrapper:
         # Determine if this agent uses the Claude Code preset
         use_preset = bool(agent_config.system_prompt_preset)
 
-        # Compute disallowed native tools for ALL agents (not just preset).
-        # The SDK provides all native tools by default; disallowed_tools is the
-        # only way to block ones not in this agent's config.
-        disallowed = [t for t in ALL_NATIVE_TOOLS if t not in native_tool_names]
-
         if use_preset:
             # Preset mode: Claude Code tools preset provides native tools;
-            # disallowed_tools restricts which ones this agent can use.
-            # Only MCP tools go in allowed_tools (native tools come from preset).
+            # only MCP tools go in allowed_tools (native tools come from preset).
             allowed = list(mcp_tool_names)
         else:
             # Non-preset mode: native + MCP tools in allowed_tools.
@@ -540,15 +526,41 @@ class ClaudeWrapper:
             "hooks": {"PreToolUse": [HookMatcher(matcher=None, hooks=[_keepalive_hook])]},
             "cwd": self.cwd,
             "include_partial_messages": True,
+            "env": {
+                "ENABLE_TOOL_SEARCH": "false",  # Disable tool deferral (tengu_defer_all_bn4)
+                # Short-circuits the CLI's XSY() attachment pipeline which auto-injects
+                # the native bundled-Skill listing ("The following skills are available
+                # for use with the Skill tool: update-config, init, review, ..."),
+                # dynamic_skill triggers, native TodoWrite reminders, plan_mode /
+                # delegate_mode reminders, nested CLAUDE.md loading, and
+                # relevant-memory injection. We have our own pull-based Skills system
+                # (mcp__brain__fetch_skill loading from .claude/skill_defs/), our own
+                # memory system, and our own prompt construction — none of the native
+                # auto-injection is wanted. See cli.js function XSY — the first line
+                # is `if(O1(process.env.CLAUDE_CODE_DISABLE_ATTACHMENTS))return[]`.
+                "CLAUDE_CODE_DISABLE_ATTACHMENTS": "1",
+            },
+            # Restore visible thinking on Opus 4.7+ — the model silently changed
+            # its default from display="summarized" to display="omitted" (see
+            # Anthropic's "What's new in Claude Opus 4.7" docs). Without this,
+            # thinking blocks still stream but their content is empty, so the
+            # frontend shows no reasoning. The SDK's ClaudeAgentOptions doesn't
+            # model the `display` field on ThinkingConfigAdaptive, but the
+            # bundled CLI supports the --thinking-display flag, and extra_args
+            # forwards unmapped CLI flags. No-op on Sonnet/Haiku (they still
+            # default to "summarized").
+            "extra_args": {"thinking-display": "summarized"},
         }
 
+        # Tool availability gate (whitelist-only).
+        # - Preset agents: opt into Claude Code's full native tool suite.
+        # - Everyone else: exactly the native tools listed in config.tools — nothing else.
+        #   Empty list means no native tools (only MCP) — passing [] makes the SDK
+        #   emit `--tools ""`, which disables all natives at the CLI level.
         if use_preset:
-            # Preset agents get Claude Code's native tool suite via the preset.
             options_kwargs["tools"] = {"type": "preset", "preset": "claude_code"}
-
-        # Block native tools not in the agent's config — applies to ALL agents.
-        if disallowed:
-            options_kwargs["disallowed_tools"] = disallowed
+        else:
+            options_kwargs["tools"] = list(native_tool_names)
 
         # Apply model-aware thinking configuration
         model = agent_config.model or "sonnet"
@@ -781,6 +793,32 @@ class ClaudeWrapper:
         logger.info(f"Agent chat '{agent_config.name}' completed, session_id={self._current_session_id}")
 
 
+def _resolve_agent_alias(name: Optional[str]) -> Optional[str]:
+    """Resolve a (possibly legacy) agent name to its current canonical name.
+
+    When agents are renamed (e.g., chat_research -> ash), old chats still carry
+    the legacy name in their 'agent' field. This function transparently maps
+    the legacy name to the current name so chats keep opening under the
+    renamed agent. If the registry can't be imported, returns the input
+    unchanged (safe degraded behavior).
+    """
+    if not name:
+        return name
+    try:
+        agents_dir = str(Path(__file__).parent.parent.parent / ".claude" / "agents")
+        if agents_dir not in sys.path:
+            sys.path.insert(0, agents_dir)
+        from registry import AGENT_NAME_ALIASES, get_registry
+        # If the name is already a live agent, keep it
+        reg = get_registry()
+        if reg.get(name) is not None and name not in AGENT_NAME_ALIASES:
+            return name
+        # Otherwise try the alias map
+        return AGENT_NAME_ALIASES.get(name, name)
+    except Exception:
+        return name
+
+
 class ChatManager:
     """Manages chat sessions and history.
 
@@ -801,14 +839,22 @@ class ChatManager:
         return os.path.join(self._locks_dir, f"{session_id}.lock")
 
     def load_chat(self, session_id: str) -> Optional[Dict[str, Any]]:
-        """Load a chat from disk."""
+        """Load a chat from disk.
+
+        Legacy agent names in the 'agent' field (e.g., 'chat_research') are
+        transparently resolved to their current canonical name (e.g., 'ash')
+        so old chats continue to work after an agent rename.
+        """
         path = self.get_chat_path(session_id)
         if not os.path.exists(path):
             return None
         try:
             with FileLock(self._get_lock_path(session_id), timeout=5):
                 with open(path, 'r') as f:
-                    return json.load(f)
+                    data = json.load(f)
+            if isinstance(data, dict) and data.get("agent"):
+                data["agent"] = _resolve_agent_alias(data["agent"])
+            return data
         except (json.JSONDecodeError, IOError):
             return None
 
@@ -920,7 +966,7 @@ class ChatManager:
                         "updated": last_message_time,
                         "is_system": data.get("is_system", False),
                         "scheduled": is_scheduled,
-                        "agent": data.get("agent")
+                        "agent": _resolve_agent_alias(data.get("agent"))
                     })
             except Exception:
                 pass

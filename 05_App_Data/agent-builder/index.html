@@ -772,13 +772,21 @@ let iconSearchQuery = '';
 
 const ICON_CATEGORIES = ['all', ...new Set(AGENT_ICONS.map(i => i.category))];
 
-const NATIVE_TOOL_GROUPS = [
+// Native tool list is populated from the server at init time via /api/native-tools.
+// The server's source of truth lives in .claude/agents/native_tools.py — add new
+// Anthropic tools there and they appear in the builder automatically. The array
+// below is only used as an offline/fallback copy if the fetch fails.
+let NATIVE_TOOL_GROUPS = [
   { label: 'File System', tools: ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'NotebookEdit'] },
   { label: 'Execution',   tools: ['Bash', 'Task', 'TaskOutput', 'TaskStop', 'KillShell'] },
   { label: 'Web',         tools: ['WebFetch', 'WebSearch'] },
   { label: 'Interaction', tools: ['AskUserQuestion', 'TodoWrite', 'EnterPlanMode', 'ExitPlanMode'] },
+  { label: 'Sub-agents',  tools: ['Agent', 'Skill'] },
+  { label: 'Scheduling',  tools: ['CronCreate', 'CronDelete', 'CronList', 'ScheduleWakeup', 'Monitor'] },
+  { label: 'System',      tools: ['PushNotification', 'RemoteTrigger'] },
+  { label: 'Worktrees',   tools: ['EnterWorktree', 'ExitWorktree'] },
 ];
-const NATIVE_TOOLS = NATIVE_TOOL_GROUPS.flatMap(g => g.tools);
+let NATIVE_TOOLS = NATIVE_TOOL_GROUPS.flatMap(g => g.tools);
 
 const RESERVED_NAMES = ['character', 'claudey', 'background', '_template', 'notifications', '__pycache__'];
 const CORE_AGENTS = ['character', 'claudey'];
@@ -830,12 +838,28 @@ async function init() {
   renderIconCategories();
   renderIconGrid();
   updateIconPreview();
-  renderNativeTools();
   updateThinkingUI();
-  await Promise.all([fetchAgents(), fetchToolCategories(), fetchSkills()]);
+  // Fetch native tools first so the chip list reflects the server's source of truth
+  // before the initial render. Other fetches can run in parallel.
+  await Promise.all([fetchNativeTools(), fetchAgents(), fetchToolCategories(), fetchSkills()]);
+  renderNativeTools();
   renderMcpCategories();
   renderSkillChips();
   updateRestrictSkillsUI();
+}
+
+async function fetchNativeTools() {
+  try {
+    const res = await fetch(`${API}/native-tools`);
+    const data = await res.json();
+    if (data.groups && data.groups.length > 0) {
+      NATIVE_TOOL_GROUPS = data.groups;
+      NATIVE_TOOLS = NATIVE_TOOL_GROUPS.flatMap(g => g.tools);
+    }
+    // If the fetch returns empty, keep the hardcoded fallback (safer than an empty UI).
+  } catch (e) {
+    console.error('Failed to fetch native tools (using fallback list):', e);
+  }
 }
 
 async function fetchAgents() {

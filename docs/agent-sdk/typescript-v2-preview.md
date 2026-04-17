@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/typescript-v2-preview
 title: TypeScript SDK V2 interface (preview)
-last_fetched: 2026-04-09T09:04:21.005279+00:00
+last_fetched: 2026-04-17T09:04:01.507183+00:00
 ---
 
 [Claude Code Docs home page![light logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/light.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=78fd01ff4f4340295a4f66e2ea54903c)![dark logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/dark.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=1298a0c3b3a1da603b190d0de0e31712)](/docs/en/overview)
@@ -105,7 +105,7 @@ For simple single-turn queries where you don’t need to maintain a session, use
 import { unstable_v2_prompt } from "@anthropic-ai/claude-agent-sdk";
 
 const result = await unstable_v2_prompt("What is 2 + 2?", {
- model: "claude-opus-4-6"
+ model: "claude-opus-4-7"
 });
 if (result.subtype === "success") {
  console.log(result.result);
@@ -126,7 +126,7 @@ The example below creates a session, sends “Hello!” to Claude, and prints th
 import { unstable_v2_createSession } from "@anthropic-ai/claude-agent-sdk";
 
 await using session = unstable_v2_createSession({
- model: "claude-opus-4-6"
+ model: "claude-opus-4-7"
 });
 
 await session.send("Hello!");
@@ -151,7 +151,7 @@ This example asks a math question, then asks a follow-up that references the pre
 import { unstable_v2_createSession } from "@anthropic-ai/claude-agent-sdk";
 
 await using session = unstable_v2_createSession({
- model: "claude-opus-4-6"
+ model: "claude-opus-4-7"
 });
 
 // Turn 1
@@ -203,7 +203,7 @@ function getAssistantText(msg: SDKMessage): string | null {
 
 // Create initial session and have a conversation
 const session = unstable_v2_createSession({
- model: "claude-opus-4-6"
+ model: "claude-opus-4-7"
 });
 
 await session.send("Remember this number: 42");
@@ -221,7 +221,7 @@ session.close();
 
 // Later: resume the session using the stored ID
 await using resumedSession = unstable_v2_resumeSession(sessionId!, {
- model: "claude-opus-4-6"
+ model: "claude-opus-4-7"
 });
 
 await resumedSession.send("What number did I ask you to remember?");
@@ -240,7 +240,7 @@ Sessions can be closed manually or automatically using [`await using`](https://w
 import { unstable_v2_createSession } from "@anthropic-ai/claude-agent-sdk";
 
 await using session = unstable_v2_createSession({
- model: "claude-opus-4-6"
+ model: "claude-opus-4-7"
 });
 // Session closes automatically when the block exits
 ```
@@ -251,7 +251,7 @@ await using session = unstable_v2_createSession({
 import { unstable_v2_createSession } from "@anthropic-ai/claude-agent-sdk";
 
 const session = unstable_v2_createSession({
- model: "claude-opus-4-6"
+ model: "claude-opus-4-7"
 });
 // ... use the session ...
 session.close();

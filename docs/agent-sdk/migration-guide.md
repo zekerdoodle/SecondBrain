@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/migration-guide
 title: Migrate to Claude Agent SDK
-last_fetched: 2026-04-09T09:02:27.761862+00:00
+last_fetched: 2026-04-17T09:02:20.773686+00:00
 ---
 
 [Claude Code Docs home page![light logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/light.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=78fd01ff4f4340295a4f66e2ea54903c)![dark logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/dark.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=1298a0c3b3a1da603b190d0de0e31712)](/docs/en/overview)
@@ -176,12 +176,12 @@ Change `ClaudeCodeOptions` to `ClaudeAgentOptions`:
 # Before
 from claude_code_sdk import query, ClaudeCodeOptions
 
-options = ClaudeCodeOptions(model="claude-opus-4-6")
+options = ClaudeCodeOptions(model="claude-opus-4-7")
 
 # After
 from claude_agent_sdk import query, ClaudeAgentOptions
 
-options = ClaudeAgentOptions(model="claude-opus-4-6")
+options = ClaudeAgentOptions(model="claude-opus-4-7")
 ```
 
 **5. Review [breaking changes](#breaking-changes)**
@@ -200,12 +200,12 @@ To improve isolation and explicit configuration, Claude Agent SDK v0.1.0 introdu
 # BEFORE (claude-code-sdk)
 from claude_code_sdk import query, ClaudeCodeOptions
 
-options = ClaudeCodeOptions(model="claude-opus-4-6", permission_mode="acceptEdits")
+options = ClaudeCodeOptions(model="claude-opus-4-7", permission_mode="acceptEdits")
 
 # AFTER (claude-agent-sdk)
 from claude_agent_sdk import query, ClaudeAgentOptions
 
-options = ClaudeAgentOptions(model="claude-opus-4-6", permission_mode="acceptEdits")
+options = ClaudeAgentOptions(model="claude-opus-4-7", permission_mode="acceptEdits")
 ```
 
 **Why this changed:** The type name now matches the “Claude Agent SDK” branding and provides consistency across the SDK’s naming conventions.
@@ -287,7 +287,7 @@ const result = query({
 - **Testing** - Isolated test environments
 - **Multi-tenant systems** - Prevent settings leakage between users
 
-**Backward compatibility:** If your application relied on filesystem settings (custom slash commands, CLAUDE.md instructions, etc.), add `settingSources: ['user', 'project', 'local']` to your options.
+Current SDK releases have reverted this default for `query()`: omitting the option once again loads user, project, and local settings, matching the CLI. Pass `settingSources: []` in TypeScript or `setting_sources=[]` in Python if your application depends on the isolated behavior described above. Python SDK 0.1.59 and earlier treated an empty list the same as omitting the option, so upgrade before relying on `setting_sources=[]`. See [What settingSources does not control](/docs/en/agent-sdk/claude-code-features#what-settingsources-does-not-control) for inputs that are read even when `settingSources` is `[]`.
 
 ## [​](#why-the-rename) Why the Rename?
 

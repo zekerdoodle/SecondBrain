@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/skills
 title: Agent Skills in the SDK
-last_fetched: 2026-04-09T09:03:28.253266+00:00
+last_fetched: 2026-04-17T09:03:13.788107+00:00
 ---
 
 [Claude Code Docs home page![light logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/light.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=78fd01ff4f4340295a4f66e2ea54903c)![dark logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/dark.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=1298a0c3b3a1da603b190d0de0e31712)](/docs/en/overview)
@@ -89,14 +89,14 @@ For comprehensive information about Skills, including benefits, architecture, an
 When using the Claude Agent SDK, Skills are:
 
 1. **Defined as filesystem artifacts**: Created as `SKILL.md` files in specific directories (`.claude/skills/`)
-2. **Loaded from filesystem**: Skills are loaded from configured filesystem locations. You must specify `settingSources` (TypeScript) or `setting_sources` (Python) to load Skills from the filesystem
+2. **Loaded from filesystem**: Skills are loaded from filesystem locations governed by `settingSources` (TypeScript) or `setting_sources` (Python)
 3. **Automatically discovered**: Once filesystem settings are loaded, Skill metadata is discovered at startup from user and project directories; full content loaded when triggered
 4. **Model-invoked**: Claude autonomously chooses when to use them based on context
 5. **Enabled via allowed\_tools**: Add `"Skill"` to your `allowed_tools` to enable Skills
 
 Unlike subagents (which can be defined programmatically), Skills must be created as filesystem artifacts. The SDK does not provide a programmatic API for registering Skills.
 
-**Default behavior**: By default, the SDK does not load any filesystem settings. To use Skills, you must explicitly configure `settingSources: ['user', 'project']` (TypeScript) or `setting_sources=["user", "project"]` (Python) in your options.
+Skills are discovered through the filesystem setting sources. With default `query()` options, the SDK loads user and project sources, so skills in `~/.claude/skills/` and `<cwd>/.claude/skills/` are available. If you set `settingSources` explicitly, include `'user'` or `'project'` to keep skill discovery, or use the [`plugins` option](/docs/en/agent-sdk/plugins) to load skills from a specific path.
 
 ## [​](#using-skills-with-the-sdk) Using Skills with the SDK
 
@@ -220,19 +220,19 @@ Claude automatically invokes the relevant Skill if the description matches your 
 
 ### [​](#skills-not-found) Skills Not Found
 
-**Check settingSources configuration**: Skills are only loaded when you explicitly configure `settingSources`/`setting_sources`. This is the most common issue:
+**Check settingSources configuration**: Skills are discovered through the `user` and `project` setting sources. If you set `settingSources`/`setting_sources` explicitly and omit those sources, skills are not loaded:
 
 Python
 
 TypeScript
 
 ```shiki
-# Wrong - Skills won't be loaded
-options = ClaudeAgentOptions(allowed_tools=["Skill"])
+# Skills not loaded: setting_sources excludes user and project
+options = ClaudeAgentOptions(setting_sources=[], allowed_tools=["Skill"])
 
-# Correct - Skills will be loaded
+# Skills loaded: user and project sources included
 options = ClaudeAgentOptions(
- setting_sources=["user", "project"], # Required to load Skills
+ setting_sources=["user", "project"],
  allowed_tools=["Skill"],
 )
 ```
@@ -248,7 +248,7 @@ TypeScript
 # Ensure your cwd points to the directory containing .claude/skills/
 options = ClaudeAgentOptions(
  cwd="/path/to/project", # Must contain .claude/skills/
- setting_sources=["user", "project"], # Required to load Skills
+ setting_sources=["user", "project"], # Loads skills from these sources
  allowed_tools=["Skill"],
 )
 ```

@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/quickstart
 title: Quickstart
-last_fetched: 2026-04-09T09:03:11.727253+00:00
+last_fetched: 2026-04-17T09:02:59.091271+00:00
 ---
 
 [Claude Code Docs home page![light logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/light.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=78fd01ff4f4340295a4f66e2ea54903c)![dark logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/dark.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=1298a0c3b3a1da603b190d0de0e31712)](/docs/en/overview)
@@ -314,6 +314,18 @@ With `Bash` enabled, try: `"Write unit tests for utils.py, run them, and fix any
 | `default` | Requires a `canUseTool` callback to handle approval | Custom approval flows |
 
 The example above uses `acceptEdits` mode, which auto-approves file operations so the agent can run without interactive prompts. If you want to prompt users for approval, use `default` mode and provide a [`canUseTool` callback](/docs/en/agent-sdk/user-input) that collects user input. For more control, see [Permissions](/docs/en/agent-sdk/permissions).
+
+## [​](#troubleshooting) Troubleshooting
+
+### [​](#api-error-thinking-type-enabled-is-not-supported-for-this-model) API error `thinking.type.enabled` is not supported for this model
+
+Claude Opus 4.7 replaces `thinking.type.enabled` with `thinking.type.adaptive`. Older Agent SDK versions fail with the following API error when you select `claude-opus-4-7`:
+
+```shiki
+API Error: 400 {"type":"invalid_request_error","message":"\"thinking.type.enabled\" is not supported for this model. Use \"thinking.type.adaptive\" and \"output_config.effort\" to control thinking behavior."}
+```
+
+Upgrade to Agent SDK v0.2.111 or later to use Opus 4.7.
 
 ## [​](#next-steps) Next steps
 

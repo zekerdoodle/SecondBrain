@@ -200,7 +200,7 @@ Generate a concise, descriptive title for this conversation."""
         }
 
     except Exception as e:
-        logger.error(f"Titler agent failed: {e}")
+        logger.error(f"Titler agent failed: {type(e).__name__}: {e}", exc_info=True)
         return {
             "title": _fallback_title(messages),
             "confidence": 0.2,

@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/python
 title: Agent SDK reference - Python
-last_fetched: 2026-04-10T09:03:35.550743+00:00
+last_fetched: 2026-04-17T09:02:54.167622+00:00
 ---
 
 [Claude Code Docs home page![light logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/light.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=78fd01ff4f4340295a4f66e2ea54903c)![dark logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/dark.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=1298a0c3b3a1da603b190d0de0e31712)](/docs/en/overview)
@@ -837,7 +837,7 @@ class ClaudeAgentOptions:
  plugins: list[SdkPluginConfig] = field(default_factory=list)
  max_thinking_tokens: int | None = None # Deprecated: use thinking instead
  thinking: ThinkingConfig | None = None
- effort: Literal["low", "medium", "high", "max"] | None = None
+ effort: Literal["low", "medium", "high", "xhigh", "max"] | None = None
  enable_file_checkpointing: bool = False
 ```
 
@@ -851,7 +851,7 @@ class ClaudeAgentOptions:
 | `continue_conversation` | `bool` | `False` | Continue the most recent conversation |
 | `resume` | `str | None` | `None` | Session ID to resume |
 | `max_turns` | `int | None` | `None` | Maximum agentic turns (tool-use round trips) |
-| `max_budget_usd` | `float | None` | `None` | Maximum budget in USD for the session |
+| `max_budget_usd` | `float | None` | `None` | Stop the query when the client-side cost estimate reaches this USD value. Compared against the same estimate as `total_cost_usd`; see [Track cost and usage](/docs/en/agent-sdk/cost-tracking) for accuracy caveats |
 | `disallowed_tools` | `list[str]` | `[]` | Tools to always deny. Deny rules are checked first and override `allowed_tools` and `permission_mode` (including `bypassPermissions`) |
 | `enable_file_checkpointing` | `bool` | `False` | Enable file change tracking for rewinding. See [File checkpointing](/docs/en/agent-sdk/file-checkpointing) |
 | `model` | `str | None` | `None` | Claude model to use |
@@ -876,10 +876,10 @@ class ClaudeAgentOptions:
 | `agents` | `dict[str, AgentDefinition] | None` | `None` | Programmatically defined subagents |
 | `plugins` | `list[SdkPluginConfig]` | `[]` | Load custom plugins from local paths. See [Plugins](/docs/en/agent-sdk/plugins) for details |
 | `sandbox` | [`SandboxSettings`](#sandbox-settings) `| None` | `None` | Configure sandbox behavior programmatically. See [Sandbox settings](#sandbox-settings) for details |
-| `setting_sources` | `list[SettingSource] | None` | `None` (no settings) | Control which filesystem settings to load. When omitted, no settings are loaded. **Note:** Must include `"project"` to load CLAUDE.md files |
+| `setting_sources` | `list[SettingSource] | None` | `None` (CLI defaults: all sources) | Control which filesystem settings to load. Pass `[]` to disable user, project, and local settings. Managed policy settings load regardless. See [Use Claude Code features](/docs/en/agent-sdk/claude-code-features#what-settingsources-does-not-control) |
 | `max_thinking_tokens` | `int | None` | `None` | *Deprecated* - Maximum tokens for thinking blocks. Use `thinking` instead |
 | `thinking` | [`ThinkingConfig`](#thinking-config) `| None` | `None` | Controls extended thinking behavior. Takes precedence over `max_thinking_tokens` |
-| `effort` | `Literal["low", "medium", "high", "max"] | None` | `None` | Effort level for thinking depth |
+| `effort` | `Literal["low", "medium", "high", "xhigh", "max"] | None` | `None` | Effort level for thinking depth |
 
 ### [​](#outputformat) `OutputFormat`
 
@@ -907,6 +907,7 @@ class SystemPromptPreset(TypedDict):
  type: Literal["preset"]
  preset: Literal["claude_code"]
  append: NotRequired[str]
+ exclude_dynamic_sections: NotRequired[bool]
 ```
 
 | Field | Required | Description |
@@ -914,6 +915,7 @@ class SystemPromptPreset(TypedDict):
 | `type` | Yes | Must be `"preset"` to use a preset system prompt |
 | `preset` | Yes | Must be `"claude_code"` to use Claude Code’s system prompt |
 | `append` | No | Additional instructions to append to the preset system prompt |
+| `exclude_dynamic_sections` | No | Move per-session context such as working directory, git status, and memory paths from the system prompt into the first user message. Improves prompt-cache reuse across users and machines. See [Modify system prompts](/docs/en/agent-sdk/modifying-system-prompts#improve-prompt-caching-across-users-and-machines) |
 
 ### [​](#settingsource) `SettingSource`
 
@@ -931,20 +933,36 @@ SettingSource = Literal["user", "project", "local"]
 
 #### [​](#default-behavior) Default behavior
 
-When `setting_sources` is **omitted** or **`None`**, the SDK does **not** load any filesystem settings. This provides isolation for SDK applications.
+When `setting_sources` is omitted or `None`, `query()` loads the same filesystem settings as the Claude Code CLI: user, project, and local. Managed policy settings are loaded in all cases. See [What settingSources does not control](/docs/en/agent-sdk/claude-code-features#what-settingsources-does-not-control) for inputs that are read regardless of this option, and how to disable them.
 
 #### [​](#why-use-setting_sources) Why use setting\_sources
 
-**Load all filesystem settings (legacy behavior):**
+**Disable filesystem settings:**
 
 ```shiki
-# Load all settings like SDK v0.0.x did
+# Do not load user, project, or local settings from disk
 from claude_agent_sdk import query, ClaudeAgentOptions
 
 async for message in query(
  prompt="Analyze this code",
  options=ClaudeAgentOptions(
- setting_sources=["user", "project", "local"] # Load all settings
+ setting_sources=[]
+ ),
+):
+ print(message)
+```
+
+In Python SDK 0.1.59 and earlier, an empty list was treated the same as omitting the option, so `setting_sources=[]` did not disable filesystem settings. Upgrade to a newer release if you need an empty list to take effect. The TypeScript SDK is not affected.
+
+**Load all filesystem settings explicitly:**
+
+```shiki
+from claude_agent_sdk import query, ClaudeAgentOptions
+
+async for message in query(
+ prompt="Analyze this code",
+ options=ClaudeAgentOptions(
+ setting_sources=["user", "project", "local"]
  ),
 ):
  print(message)
@@ -980,12 +998,12 @@ async for message in query(
 **SDK-only applications:**
 
 ```shiki
-# Define everything programmatically (default behavior)
-# No filesystem dependencies - setting_sources defaults to None
+# Define everything programmatically.
+# Pass [] to opt out of filesystem setting sources.
 async for message in query(
  prompt="Review this PR",
  options=ClaudeAgentOptions(
- # setting_sources=None is the default, no need to specify
+ setting_sources=[],
  agents={...},
  mcp_servers={...},
  allowed_tools=["Read", "Grep", "Glob"],
@@ -1005,7 +1023,7 @@ async for message in query(
  "type": "preset",
  "preset": "claude_code", # Use Claude Code's system prompt
  },
- setting_sources=["project"], # Required to load CLAUDE.md from project
+ setting_sources=["project"], # Loads CLAUDE.md from project
  allowed_tools=["Read", "Write", "Edit"],
  ),
 ):
@@ -1020,7 +1038,7 @@ When multiple sources are loaded, settings are merged with this precedence (high
 2. Project settings (`.claude/settings.json`)
 3. User settings (`~/.claude/settings.json`)
 
-Programmatic options (like `agents`, `allowed_tools`) always override filesystem settings.
+Programmatic options such as `agents` and `allowed_tools` override user, project, and local filesystem settings. Managed policy settings take precedence over programmatic options.
 
 ### [​](#agentdefinition) `AgentDefinition`
 
@@ -1242,7 +1260,7 @@ SdkBeta = Literal["context-1m-2025-08-07"]
 
 Use with the `betas` field in `ClaudeAgentOptions` to enable beta features.
 
-The `context-1m-2025-08-07` beta is retired as of April 30, 2026. Passing this header with Claude Sonnet 4.5 or Sonnet 4 has no effect, and requests that exceed the standard 200k-token context window return an error. To use a 1M-token context window, migrate to [Claude Sonnet 4.6 or Claude Opus 4.6](https://platform.claude.com/docs/en/about-claude/models/overview), which include 1M context at standard pricing with no beta header required.
+The `context-1m-2025-08-07` beta is retired as of April 30, 2026. Passing this header with Claude Sonnet 4.5 or Sonnet 4 has no effect, and requests that exceed the standard 200k-token context window return an error. To use a 1M-token context window, migrate to [Claude Sonnet 4.6, Claude Opus 4.6, or Claude Opus 4.7](https://platform.claude.com/docs/en/about-claude/models/overview), which include 1M context at standard pricing with no beta header required.
 
 ### [​](#mcpsdkserverconfig) `McpSdkServerConfig`
 
@@ -1496,7 +1514,7 @@ The `model_usage` dict maps model names to per-model usage. The inner dict keys 
 | `cacheReadInputTokens` | `int` | Cache read tokens for this model. |
 | `cacheCreationInputTokens` | `int` | Cache creation tokens for this model. |
 | `webSearchRequests` | `int` | Web search requests made by this model. |
-| `costUSD` | `float` | Cost in USD for this model. |
+| `costUSD` | `float` | Estimated cost in USD for this model, computed client-side. See [Track cost and usage](/docs/en/agent-sdk/cost-tracking) for billing caveats. |
 | `contextWindow` | `int` | Context window size for this model. |
 | `maxOutputTokens` | `int` | Maximum output token limit for this model. |
 
@@ -2251,7 +2269,7 @@ Documentation of input/output schemas for all built-in Claude Code tools. While 
 {
  "result": str, # Final result from the subagent
  "usage": dict | None, # Token usage statistics
- "total_cost_usd": float | None, # Total cost in USD
+ "total_cost_usd": float | None, # Estimated total cost in USD
  "duration_ms": int | None, # Execution duration in milliseconds
 }
 ```

@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/claude-code-features
 title: Use Claude Code features in the SDK
-last_fetched: 2026-04-09T09:01:48.371141+00:00
+last_fetched: 2026-04-17T09:01:45.204872+00:00
 ---
 
 [Claude Code Docs home page![light logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/light.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=78fd01ff4f4340295a4f66e2ea54903c)![dark logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/dark.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=1298a0c3b3a1da603b190d0de0e31712)](/docs/en/overview)
@@ -80,12 +80,12 @@ Use Claude Code features in the SDK
 On this page
 
 The Agent SDK is built on the same foundation as Claude Code, which means your SDK agents have access to the same filesystem-based features: project instructions (`CLAUDE.md` and rules), skills, hooks, and more.
-By default, the SDK loads no filesystem settings. Your agent runs in isolation mode with only what you pass programmatically. To load CLAUDE.md, skills, or filesystem hooks, set `settingSources` to tell the SDK where to look.
+When you omit `settingSources`, `query()` reads the same filesystem settings as the Claude Code CLI: user, project, and local settings, CLAUDE.md files, and `.claude/` skills, agents, and commands. To run without these, pass `settingSources: []`, which limits the agent to what you configure programmatically. Managed policy settings and the global `~/.claude.json` config are read regardless of this option. See [What settingSources does not control](#what-settingsources-does-not-control).
 For a conceptual overview of what each feature does and when to use it, see [Extend Claude Code](/docs/en/features-overview).
 
-## [​](#enable-claude-code-features-with-settingsources) Enable Claude Code features with settingSources
+## [​](#control-filesystem-settings-with-settingsources) Control filesystem settings with settingSources
 
-The setting sources option ([`setting_sources`](/docs/en/agent-sdk/python#claude-agent-options) in Python, [`settingSources`](/docs/en/agent-sdk/typescript#setting-source) in TypeScript) controls which filesystem-based settings the SDK loads. Without it, your agent won’t discover skills, `CLAUDE.md` files, or project-level hooks.
+The setting sources option ([`setting_sources`](/docs/en/agent-sdk/python#claude-agent-options) in Python, [`settingSources`](/docs/en/agent-sdk/typescript#setting-source) in TypeScript) controls which filesystem-based settings the SDK loads. Pass an explicit list to opt in to specific sources, or pass an empty array to disable user, project, and local settings.
 This example loads both user-level and project-level settings by setting `settingSources` to `["user", "project"]`:
 
 Python
@@ -121,9 +121,20 @@ Each source loads settings from a specific location, where `<cwd>` is the workin
 | `"user"` | User CLAUDE.md, `~/.claude/rules/*.md`, user skills, user settings | `~/.claude/` |
 | `"local"` | CLAUDE.local.md (gitignored), `.claude/settings.local.json` | `<cwd>/` |
 
-To match the full Claude Code CLI behavior, use `["user", "project", "local"]`.
+Omitting `settingSources` is equivalent to `["user", "project", "local"]`.
+The `cwd` option determines where the SDK looks for project settings. If neither `cwd` nor any of its parent directories contains a `.claude/` folder, project-level features won’t load.
 
-The `cwd` option determines where the SDK looks for project settings. If neither `cwd` nor any of its parent directories contains a `.claude/` folder, project-level features won’t load. Auto memory (the `~/.claude/projects/<project>/memory/` directory that Claude Code uses to persist notes across interactive sessions) is a CLI-only feature and is never loaded by the SDK.
+### [​](#what-settingsources-does-not-control) What settingSources does not control
+
+`settingSources` covers user, project, and local settings. A few inputs are read regardless of its value:
+
+| Input | Behavior | To disable |
+| --- | --- | --- |
+| Managed policy settings | Always loaded when present on the host | Remove the managed settings file |
+| `~/.claude.json` global config | Always read | Relocate with `CLAUDE_CONFIG_DIR` in `env` |
+| Auto memory at `~/.claude/projects/<project>/memory/` | Loaded by default into the system prompt | Set `autoMemoryEnabled: false` in settings, or `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` in `env` |
+
+Do not rely on default `query()` options for multi-tenant isolation. Because the inputs above are read regardless of `settingSources`, an SDK process can pick up host-level configuration and per-directory memory. For multi-tenant deployments, run each tenant in its own filesystem and set `settingSources: []` plus `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` in `env`. See [Secure deployment](/docs/en/agent-sdk/secure-deployment).
 
 ## [​](#project-instructions-claude-md-and-rules) Project instructions (CLAUDE.md and rules)
 
@@ -150,7 +161,7 @@ For how to structure and organize CLAUDE.md content, see [Manage Claude’s memo
 ## [​](#skills) Skills
 
 Skills are markdown files that give your agent specialized knowledge and invocable workflows. Unlike `CLAUDE.md` (which loads every session), skills load on demand. The agent receives skill descriptions at startup and loads the full content when relevant.
-To use skills in the SDK, set `settingSources` so the agent discovers skill files from the filesystem. The `Skill` tool is enabled by default when you don’t specify `allowedTools`. If you are using an `allowedTools` allowlist, include `"Skill"` explicitly.
+Skills are discovered from the filesystem through `settingSources`. With default options, user and project skills load automatically. The `Skill` tool is enabled by default when you don’t specify `allowedTools`. If you are using an `allowedTools` allowlist, include `"Skill"` explicitly.
 
 Python
 

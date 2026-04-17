@@ -1260,6 +1260,10 @@ async def app_bridge_ask_claude(req: AskClaudeRequest):
             max_turns=1,
             permission_mode="bypassPermissions",
             setting_sources=[],
+            # Suppress the CLI's auto-injected native skill listing, TodoWrite
+            # reminders, and other XSY() attachments. See claude_wrapper.py for
+            # the full rationale — we ship our own skills via fetch_skill.
+            env={"CLAUDE_CODE_DISABLE_ATTACHMENTS": "1"},
         )
 
         result_text = ""
@@ -1491,6 +1495,25 @@ def get_agent_detail(name: str):
             bg_prompt_content = default_bg_path.read_text()
 
     return {"name": name, "config": config_yaml, "prompt": prompt_content, "background_prompt": bg_prompt_content}
+
+
+@app.get("/api/native-tools")
+def list_native_tools():
+    """List native Claude Code tools exposed to agents (Agent Builder source of truth).
+
+    Reads from .claude/agents/native_tools.py — the single place to edit when a new
+    Anthropic tool should become available in the builder. Frontend falls back to a
+    local copy if this endpoint fails.
+    """
+    agents_dir = Path(ROOT_DIR) / ".claude" / "agents"
+    if str(agents_dir) not in sys.path:
+        sys.path.insert(0, str(agents_dir))
+    try:
+        from native_tools import NATIVE_TOOL_GROUPS
+        return {"groups": NATIVE_TOOL_GROUPS}
+    except Exception as e:
+        logger.error(f"Failed to load native tools: {e}")
+        return {"groups": []}
 
 
 @app.get("/api/tools/categories")

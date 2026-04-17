@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/cost-tracking
 title: Track cost and usage
-last_fetched: 2026-04-09T09:01:53.861175+00:00
+last_fetched: 2026-04-17T09:01:50.047345+00:00
 ---
 
 [Claude Code Docs home page![light logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/light.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=78fd01ff4f4340295a4f66e2ea54903c)![dark logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/dark.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=1298a0c3b3a1da603b190d0de0e31712)](/docs/en/overview)
@@ -79,8 +79,16 @@ Track cost and usage
 
 On this page
 
-The Claude Agent SDK provides detailed token usage information for each interaction with Claude. This guide explains how to properly track costs and understand usage reporting, especially when dealing with parallel tool uses and multi-step conversations.
+The Claude Agent SDK provides detailed token usage information for each interaction with Claude. This guide explains how to properly track usage and understand cost reporting, especially when dealing with parallel tool uses and multi-step conversations.
 For complete API documentation, see the [TypeScript SDK reference](/docs/en/agent-sdk/typescript) and [Python SDK reference](/docs/en/agent-sdk/python).
+
+The `total_cost_usd` and `costUSD` fields are client-side estimates, not authoritative billing data. The SDK computes them locally from a price table bundled at build time, so they can drift from what you are actually billed when:
+
+- pricing changes
+- the installed SDK version does not recognize a model
+- billing rules apply that the client cannot model
+
+Use these fields for development insight and approximate budgeting. For authoritative billing, use the [Usage and Cost API](https://platform.claude.com/docs/en/build-with-claude/usage-cost-api) or the Usage page in the [Claude Console](https://platform.claude.com/usage). Do not bill end users or trigger financial decisions from these fields.
 
 ## [​](#understand-token-usage) Understand token usage
 
@@ -96,8 +104,8 @@ Cost tracking depends on understanding how the SDK scopes usage data:
 - **Step:** a single request/response cycle within a `query()` call. Each step produces assistant messages with token usage.
 - **Session:** a series of `query()` calls linked by a session ID (using the `resume` option). Each `query()` call within a session reports its own cost independently.
 
-The following diagram shows the message stream from a single `query()` call, with token usage reported at each step and the authoritative total at the end:
-![Diagram showing a query producing two steps of messages. Step 1 has four assistant messages sharing the same ID and usage (count once), Step 2 has one assistant message with a new ID, and the final result message shows total_cost_usd for billing.](https://mintcdn.com/claude-code/gvy2DIUELtNA8qD3/images/agent-sdk/message-usage-flow.svg?fit=max&auto=format&n=gvy2DIUELtNA8qD3&q=85&s=88cba82134f8f7994d780c3f153b83fc)
+The following diagram shows the message stream from a single `query()` call, with token usage reported at each step and the cumulative estimate at the end:
+![Diagram showing a query producing two steps of messages. Step 1 has four assistant messages sharing the same ID and usage (count once), Step 2 has one assistant message with a new ID, and the final result message shows the estimated total_cost_usd.](https://mintcdn.com/claude-code/Dujg43sxTkuhSELI/images/agent-sdk/message-usage-flow.svg?fit=max&auto=format&n=Dujg43sxTkuhSELI&q=85&s=c542f51ff58547ef9c0e57b16d03f33c)
 
 1
 
@@ -107,13 +115,13 @@ When Claude responds, it sends one or more assistant messages. In TypeScript, ea
 
 2
 
-The result message provides the authoritative total
+The result message provides the cumulative estimate
 
-When the `query()` call completes, the SDK emits a result message with `total_cost_usd` and cumulative `usage`. This is available in both TypeScript ([`SDKResultMessage`](/docs/en/agent-sdk/typescript#sdk-result-message)) and Python ([`ResultMessage`](/docs/en/agent-sdk/python#result-message)). If you make multiple `query()` calls (for example, in a multi-turn session), each result only reflects the cost of that individual call. If you only need the total cost, you can ignore the per-step usage and read this single value.
+When the `query()` call completes, the SDK emits a result message with `total_cost_usd` and cumulative `usage`. This is available in both TypeScript ([`SDKResultMessage`](/docs/en/agent-sdk/typescript#sdk-result-message)) and Python ([`ResultMessage`](/docs/en/agent-sdk/python#result-message)). If you make multiple `query()` calls (for example, in a multi-turn session), each result only reflects the cost of that individual call. If you only need the estimated total, you can ignore the per-step usage and read this single value.
 
 ## [​](#get-the-total-cost-of-a-query) Get the total cost of a query
 
-The result message ([TypeScript](/docs/en/agent-sdk/typescript#sdk-result-message), [Python](/docs/en/agent-sdk/python#result-message)) is the last message in every `query()` call. It includes `total_cost_usd`, the cumulative cost across all steps in that call. This works for both success and error results. If you use sessions to make multiple `query()` calls, each result only reflects the cost of that individual call.
+The result message ([TypeScript](/docs/en/agent-sdk/typescript#sdk-result-message), [Python](/docs/en/agent-sdk/python#result-message)) marks the end of the agent loop for a `query()` call. It includes `total_cost_usd`, the cumulative estimated cost across all steps in that call. This works for both success and error results. If you use sessions to make multiple `query()` calls, each result only reflects the cost of that individual call.
 The following examples iterate over the message stream from a `query()` call and print the total cost when the `result` message arrives:
 
 TypeScript
@@ -229,7 +237,7 @@ For accurate cost tracking, account for failed conversations, cache token pricin
 In rare cases, you might observe different `output_tokens` values for messages with the same ID. When this occurs:
 
 1. **Use the highest value:** the final message in a group typically contains the accurate total.
-2. **Verify against total cost:** the `total_cost_usd` in the result message is authoritative.
+2. **Prefer the result message:** the `total_cost_usd` in the result message reflects the SDK’s accumulated estimate across all steps, so it is more reliable than summing per-step values yourself. It is still an estimate and may differ from your actual bill.
 3. **Report inconsistencies:** file issues at the [Claude Code GitHub repository](https://github.com/anthropics/claude-code/issues).
 
 ### [​](#track-costs-on-failed-conversations) Track costs on failed conversations
