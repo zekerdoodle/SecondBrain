@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/typescript-v2-preview
 title: TypeScript SDK V2 interface (preview)
-last_fetched: 2026-04-17T09:04:01.507183+00:00
+last_fetched: 2026-04-18T09:04:07.208471+00:00
 ---
 
 [Claude Code Docs home page![light logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/light.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=78fd01ff4f4340295a4f66e2ea54903c)![dark logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/dark.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=1298a0c3b3a1da603b190d0de0e31712)](/docs/en/overview)
@@ -94,6 +94,8 @@ The V2 interface is included in the existing SDK package:
 ```shiki
 npm install @anthropic-ai/claude-agent-sdk
 ```
+
+The SDK bundles a native Claude Code binary for your platform as an optional dependency, so you don’t need to install Claude Code separately.
 
 ## [​](#quick-start) Quick start
 

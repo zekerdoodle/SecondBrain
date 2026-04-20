@@ -89,20 +89,40 @@ TITLER_OUTPUT_SCHEMA = {
 }
 
 
-def _format_messages_for_titler(messages: List[Dict[str, Any]], max_chars: int = 2000) -> str:
-    """Format messages for the Titler prompt, truncating if needed."""
-    formatted = []
-    total_chars = 0
+def _format_messages_for_titler(messages: List[Dict[str, Any]]) -> str:
+    """Format messages for the Titler prompt.
 
+    For long conversations we keep the FIRST user message (anchors topic) plus
+    the LAST 4 messages (captures any topic drift) — at FULL fidelity, no
+    per-message truncation. Pick fewer messages if needed; never chop content.
+    """
+    if not messages:
+        return ""
+
+    # Keep first user message as an anchor, plus most recent 4 messages.
+    first_user = None
     for msg in messages:
-        role = msg.get("role", "user")
-        content = msg.get("content", "")[:500]  # Truncate individual messages
-
-        if total_chars + len(content) > max_chars:
+        if msg.get("role") == "user":
+            first_user = msg
             break
 
+    recent = messages[-4:]
+    selected: List[Dict[str, Any]] = []
+    if first_user is not None and first_user not in recent:
+        selected.append(first_user)
+    selected.extend(recent)
+
+    formatted = []
+    for msg in selected:
+        role = msg.get("role", "user")
+        raw_content = msg.get("content", "")
+        if isinstance(raw_content, list):
+            raw_content = " ".join(
+                b.get("text", "") for b in raw_content
+                if isinstance(b, dict) and b.get("type") == "text"
+            )
+        content = str(raw_content)
         formatted.append(f"**{role.title()}**: {content}")
-        total_chars += len(content)
 
     return "\n\n".join(formatted)
 
@@ -155,58 +175,77 @@ Only suggest a new title if the topic has significantly changed."""
 
 Generate a concise, descriptive title for this conversation."""
 
-    logger.info(f"Running Titler on {len(messages)} messages (retitle={is_retitle})")
+    logger.info(f"Running Titler on {len(messages)} messages (retitle={is_retitle}, prompt_len={len(prompt)})")
 
-    try:
-        result = None
-        async for message in query(
-            prompt=prompt,
-            options=ClaudeAgentOptions(
-                model="haiku",  # Fast and cost-effective for simple tasks
-                system_prompt=TITLER_SYSTEM_PROMPT,
-                max_turns=2,  # Need 2 for structured output
-                permission_mode="bypassPermissions",
-                allowed_tools=[],
-                output_format={
-                    "type": "json_schema",
-                    "schema": TITLER_OUTPUT_SCHEMA
-                }
+    # One retry on SDK subprocess failure — these are usually transient
+    # (exit-code-1 crashes from the CLI, typically ~1-3% of calls).
+    last_error: Optional[Exception] = None
+    for attempt in range(2):
+        try:
+            result = None
+            async for message in query(
+                prompt=prompt,
+                options=ClaudeAgentOptions(
+                    model="haiku",  # Fast and cost-effective for simple tasks
+                    system_prompt=TITLER_SYSTEM_PROMPT,
+                    max_turns=2,  # Need 2 for structured output
+                    permission_mode="bypassPermissions",
+                    allowed_tools=[],
+                    output_format={
+                        "type": "json_schema",
+                        "schema": TITLER_OUTPUT_SCHEMA
+                    }
+                )
+            ):
+                if isinstance(message, ResultMessage) and message.structured_output:
+                    result = message.structured_output
+
+            if result:
+                # Ensure all fields are present
+                result.setdefault("title", "Untitled Chat")
+                result.setdefault("confidence", 0.5)
+                result.setdefault("should_update", not is_retitle)  # Default: update for new, keep for retitle
+                result.setdefault("reasoning", "")
+
+                # Sanitize title
+                result["title"] = result["title"].strip()[:60]
+                if not result["title"]:
+                    result["title"] = "Untitled Chat"
+
+                if attempt > 0:
+                    logger.info(f"Titler result (after retry): '{result['title']}' (confidence={result['confidence']}, update={result.get('should_update')})")
+                else:
+                    logger.info(f"Titler result: '{result['title']}' (confidence={result['confidence']}, update={result.get('should_update')})")
+                return result
+
+            logger.warning(f"No structured output from Titler (attempt {attempt + 1}/2, prompt_len={len(prompt)})")
+            # Empty result isn't an exception, don't retry — fall through to fallback
+            return {
+                "title": _fallback_title(messages),
+                "confidence": 0.3,
+                "should_update": True,
+                "reasoning": "Fallback - no structured output"
+            }
+
+        except Exception as e:
+            last_error = e
+            if attempt == 0:
+                logger.warning(
+                    f"Titler attempt 1/2 failed: {type(e).__name__}: {e}. Retrying..."
+                )
+                continue
+            logger.error(
+                f"Titler agent failed after retry: {type(e).__name__}: {e} (prompt_len={len(prompt)})",
+                exc_info=True,
             )
-        ):
-            if isinstance(message, ResultMessage) and message.structured_output:
-                result = message.structured_output
 
-        if result:
-            # Ensure all fields are present
-            result.setdefault("title", "Untitled Chat")
-            result.setdefault("confidence", 0.5)
-            result.setdefault("should_update", not is_retitle)  # Default: update for new, keep for retitle
-            result.setdefault("reasoning", "")
-
-            # Sanitize title
-            result["title"] = result["title"].strip()[:60]
-            if not result["title"]:
-                result["title"] = "Untitled Chat"
-
-            logger.info(f"Titler result: '{result['title']}' (confidence={result['confidence']}, update={result.get('should_update')})")
-            return result
-
-        logger.warning("No structured output from Titler")
-        return {
-            "title": _fallback_title(messages),
-            "confidence": 0.3,
-            "should_update": True,
-            "reasoning": "Fallback - no structured output"
-        }
-
-    except Exception as e:
-        logger.error(f"Titler agent failed: {type(e).__name__}: {e}", exc_info=True)
-        return {
-            "title": _fallback_title(messages),
-            "confidence": 0.2,
-            "should_update": True,
-            "error": str(e)
-        }
+    # Both attempts failed
+    return {
+        "title": _fallback_title(messages),
+        "confidence": 0.2,
+        "should_update": True,
+        "error": str(last_error) if last_error else "unknown",
+    }
 
 
 def _fallback_title(messages: List[Dict[str, Any]]) -> str:

@@ -447,6 +447,9 @@ export const Chat: React.FC<ChatProps> = ({
   const [input, setInput] = useState('');
   const [view, setView] = useState<'chat' | 'history'>('chat');
   const [historyList, setHistoryList] = useState<any[]>([]);
+  // Ref mirror for access inside stable callbacks without re-binding.
+  const historyListRef = useRef<any[]>([]);
+  useEffect(() => { historyListRef.current = historyList; }, [historyList]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editText, setEditText] = useState('');
@@ -594,8 +597,14 @@ export const Chat: React.FC<ChatProps> = ({
     // Mark session as unread in tab bar
     setUnreadSessions(prev => new Set([...prev, data.chatId]));
 
-    // Auto-add tab for the notifying session if not already tabbed
-    upsertTab(data.chatId, data.preview.slice(0, 40));
+    // Auto-add tab for the notifying session if not already tabbed.
+    // Prefer the chat's real title (from the server); fall back to the
+    // history list; only use preview as a last resort (for scheduled tasks
+    // the first streamed message is often a tool-call marker, which made
+    // for terrible tab labels).
+    const fallbackFromHistory = historyListRef.current.find(c => c.id === data.chatId)?.title;
+    const tabTitle = data.title || fallbackFromHistory || data.preview.slice(0, 40);
+    upsertTab(data.chatId, tabTitle);
 
     // Show toast notification
     showToast({

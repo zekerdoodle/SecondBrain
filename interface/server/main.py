@@ -5663,7 +5663,8 @@ You are running as a scheduled task. Your output will be shown to the user in a 
                     chat_id=actual_session_id,
                     preview=preview,
                     critical=False,
-                    play_sound=decision.play_sound
+                    play_sound=decision.play_sound,
+                    title=title
                 )
 
                 # Also send legacy scheduled_task_complete for backward compatibility
@@ -6244,13 +6245,15 @@ Please review the agent response(s) and take any necessary follow-up action. If 
         )
         if decision.notify:
             preview = assistant_response[:200] if assistant_response else f"{count_str} completed"
+            wakeup_title = existing_chat.get("title", "") if isinstance(existing_chat, dict) else ""
             if decision.use_toast:
                 await send_notification(
                     client_sessions=client_sessions,
                     chat_id=chat_id,
                     preview=preview,
                     critical=False,
-                    play_sound=decision.play_sound
+                    play_sound=decision.play_sound,
+                    title=wakeup_title
                 )
             if decision.use_push:
                 await send_push_notification(

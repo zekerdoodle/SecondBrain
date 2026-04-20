@@ -110,7 +110,8 @@ async def send_notification(
     chat_id: str,
     preview: str,
     critical: bool = False,
-    play_sound: bool = True
+    play_sound: bool = True,
+    title: str = ""
 ):
     """
     Send notification to all connected clients.
@@ -121,13 +122,17 @@ async def send_notification(
         preview: Message preview text
         critical: Whether this is a critical notification
         play_sound: Whether clients should play sound
+        title: The chat's actual title (used by client to label auto-opened tabs —
+               without this, the client falls back to using `preview`, which for
+               scheduled tasks is often the assistant's first tool-call marker).
     """
     notification_data = {
         "type": "new_message_notification",
         "chatId": chat_id,
         "preview": preview[:200] if preview else "",
         "critical": critical,
-        "playSound": play_sound
+        "playSound": play_sound,
+        "title": title or ""
     }
 
     for ws in list(client_sessions):

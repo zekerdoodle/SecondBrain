@@ -94,6 +94,7 @@ export interface NotificationData {
   preview: string;
   critical: boolean;
   playSound: boolean;
+  title?: string;
 }
 
 export interface FormRequestData {
@@ -1107,7 +1108,8 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
             chatId: data.chatId,
             preview: data.preview || '',
             critical: data.critical || false,
-            playSound: data.playSound ?? true
+            playSound: data.playSound ?? true,
+            title: data.title || ''
           });
           break;
 

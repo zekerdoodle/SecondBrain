@@ -263,6 +263,7 @@ async def message_user(args: Dict[str, Any]) -> Dict[str, Any]:
                 chat_id=room_id,
                 preview=preview,
                 play_sound=decision.play_sound,
+                title=title or "",
             )
 
         logger.info(f"message_user: {'created' if is_new_room else 'appended to'} room {room_id} (agent={agent_name})")
