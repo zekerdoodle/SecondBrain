@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/subagents
 title: Subagents in the SDK
-last_fetched: 2026-04-09T09:03:56.175065+00:00
+last_fetched: 2026-04-22T09:03:31.807766+00:00
 ---
 
 [Claude Code Docs home page![light logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/light.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=78fd01ff4f4340295a4f66e2ea54903c)![dark logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/dark.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=1298a0c3b3a1da603b190d0de0e31712)](/docs/en/overview)
@@ -183,10 +183,17 @@ asyncio.run(main())
 | `description` | `string` | Yes | Natural language description of when to use this agent |
 | `prompt` | `string` | Yes | The agent’s system prompt defining its role and behavior |
 | `tools` | `string[]` | No | Array of allowed tool names. If omitted, inherits all tools |
-| `model` | `'sonnet' | 'opus' | 'haiku' | 'inherit'` | No | Model override for this agent. Defaults to main model if omitted |
+| `disallowedTools` | `string[]` | No | Array of tool names to remove from the agent’s tool set |
+| `model` | `string` | No | Model override for this agent. Accepts an alias such as `'sonnet'`, `'opus'`, `'haiku'`, `'inherit'`, or a full model ID. Defaults to main model if omitted |
 | `skills` | `string[]` | No | List of skill names available to this agent |
-| `memory` | `'user' | 'project' | 'local'` | No | Memory source for this agent (Python only) |
+| `memory` | `'user' | 'project' | 'local'` | No | Memory source for this agent |
 | `mcpServers` | `(string | object)[]` | No | MCP servers available to this agent, by name or inline config |
+| `maxTurns` | `number` | No | Maximum number of agentic turns before the agent stops |
+| `background` | `boolean` | No | Run this agent as a non-blocking background task when invoked |
+| `effort` | `'low' | 'medium' | 'high' | 'xhigh' | 'max' | number` | No | Reasoning effort level for this agent |
+| `permissionMode` | `PermissionMode` | No | Permission mode for tool execution within this agent |
+
+In the Python SDK, these field names use camelCase to match the wire format. See the [`AgentDefinition` reference](/docs/en/agent-sdk/python#agent-definition) for details.
 
 Subagents cannot spawn their own subagents. Don’t include `Agent` in a subagent’s `tools` array.
 

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react';
 import {
   Send, Loader2, Plus, History, ChevronLeft, Pencil, RotateCcw, X,
   File as FileIcon, Trash2, MessageCircle, Clock, Square, Search,
@@ -19,6 +19,7 @@ import { API_URL } from './config';
 import { InlineForm } from './components/InlineForm';
 import { ChessGame, useChessGame } from './components/ChessGame';
 import { AgentSelector } from './components/AgentSelector';
+import { MoodSelector } from './components/MoodSelector';
 import { ChatTabBar } from './components/ChatTabBar';
 import { getAgentIcon } from './utils/agentIcons';
 import { MentionAutocomplete } from './components/MentionAutocomplete';
@@ -31,6 +32,7 @@ import type { EmojiClickData } from 'emoji-picker-react';
 
 // Accent color is now managed via CSS variables (--accent-primary)
 const CHAT_TABS_KEY = 'second_brain_chat_tabs';
+const CHAT_DRAFTS_KEY = 'second_brain_chat_drafts';
 const MAX_CHAT_TABS = 8;
 
 // Fun phrases for different generation phases
@@ -444,12 +446,26 @@ export const Chat: React.FC<ChatProps> = ({
   onCloseSplit,
   isSecondary = false,
 }) => {
-  const [input, setInput] = useState('');
+  // Per-session message drafts — composer text is remembered per room.
+  // Namespaced by panelId for split view independence.
+  const draftsKey = panelId === 'primary' ? CHAT_DRAFTS_KEY : `${CHAT_DRAFTS_KEY}_${panelId}`;
+  const [drafts, setDrafts] = useState<Record<string, string>>(() => {
+    try {
+      const stored = localStorage.getItem(draftsKey);
+      return stored ? JSON.parse(stored) : {};
+    } catch { return {}; }
+  });
+  // Persist drafts
+  useEffect(() => {
+    try {
+      localStorage.setItem(draftsKey, JSON.stringify(drafts));
+    } catch { /* ignore */ }
+  }, [drafts, draftsKey]);
   const [view, setView] = useState<'chat' | 'history'>('chat');
   const [historyList, setHistoryList] = useState<any[]>([]);
   // Ref mirror for access inside stable callbacks without re-binding.
-  const historyListRef = useRef<any[]>([]);
-  useEffect(() => { historyListRef.current = historyList; }, [historyList]);
+  const historyDataRef = useRef<any[]>([]);
+  useEffect(() => { historyDataRef.current = historyList; }, [historyList]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editText, setEditText] = useState('');
@@ -602,7 +618,7 @@ export const Chat: React.FC<ChatProps> = ({
     // history list; only use preview as a last resort (for scheduled tasks
     // the first streamed message is often a tool-call marker, which made
     // for terrible tab labels).
-    const fallbackFromHistory = historyListRef.current.find(c => c.id === data.chatId)?.title;
+    const fallbackFromHistory = historyDataRef.current.find(c => c.id === data.chatId)?.title;
     const tabTitle = data.title || fallbackFromHistory || data.preview.slice(0, 40);
     upsertTab(data.chatId, tabTitle);
 
@@ -675,6 +691,22 @@ export const Chat: React.FC<ChatProps> = ({
 
   // Keep ref updated
   loadChatRef.current = loadChat;
+
+  // Derive current composer text from per-session drafts.
+  // Empty drafts are pruned from the map to keep storage clean.
+  const input = drafts[sessionId] ?? '';
+  const setInput = useCallback((value: string) => {
+    setDrafts(prev => {
+      if (!value) {
+        if (!(sessionId in prev)) return prev;
+        const next = { ...prev };
+        delete next[sessionId];
+        return next;
+      }
+      if (prev[sessionId] === value) return prev;
+      return { ...prev, [sessionId]: value };
+    });
+  }, [sessionId]);
 
   // Agent selection state
   const { agents, defaultAgent, getAgent } = useAgents();
@@ -1141,11 +1173,6 @@ export const Chat: React.FC<ChatProps> = ({
         .then(data => {
           setHistoryList(data.chats || []);
           setHistoryLoading(false);
-          requestAnimationFrame(() => {
-            if (historyListRef.current) {
-              historyListRef.current.scrollTop = 0;
-            }
-          });
         })
         .catch(err => {
           console.error(err);
@@ -1153,6 +1180,15 @@ export const Chat: React.FC<ChatProps> = ({
         });
     }
   }, [view]);
+
+  // Reset scroll to top whenever the history view is opened or fresh data arrives.
+  // useLayoutEffect runs synchronously after DOM commit, so the scroll reset
+  // applies to the fully rendered list (not a stale/short DOM).
+  useLayoutEffect(() => {
+    if (view === 'history' && historyListRef.current) {
+      historyListRef.current.scrollTop = 0;
+    }
+  }, [view, historyLoading]);
 
   const handleLoad = (id: string, title?: string, agent?: string) => {
     loadChat(id, agent || null);
@@ -1260,7 +1296,7 @@ export const Chat: React.FC<ChatProps> = ({
   // Handle input changes
   const handleInputChange = useCallback((value: string) => {
     setInput(value);
-  }, []);
+  }, [setInput]);
 
   // Handle @mention autocomplete selection
   const handleMentionSelect = useCallback((agentName: string, replaceFrom: number) => {
@@ -1278,7 +1314,7 @@ export const Chat: React.FC<ChatProps> = ({
       textarea.selectionEnd = newPos;
       textarea.focus();
     });
-  }, [input]);
+  }, [input, setInput]);
 
   // Upload image files to the server and return image refs
   const uploadImages = useCallback(async (files: File[]): Promise<ChatImageRef[]> => {
@@ -1390,7 +1426,7 @@ export const Chat: React.FC<ChatProps> = ({
       });
       setImageAttachments([]);
     }
-  }, [input, attachments, imageAttachments, sendMessageWithAgent, effectiveAgentName]);
+  }, [input, attachments, imageAttachments, sendMessageWithAgent, effectiveAgentName, setInput]);
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
@@ -1673,6 +1709,7 @@ export const Chat: React.FC<ChatProps> = ({
             currentChatAgent={currentAgent || (messages.length > 0 ? effectiveAgentName : null)}
             onSelect={(agent) => setSelectedAgentName(agent.name)}
           />
+          <MoodSelector agentName={effectiveAgentName || selectedAgentObj?.name} />
         </div>
 
         <div className="flex items-center gap-3">

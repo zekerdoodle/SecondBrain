@@ -205,6 +205,12 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
   // Set on truncate/session_init; checked on done/interrupted to prevent stale completion.
   const currentTurnId = useRef<string | null>(null);
 
+  // Flag: we've sent a message from a 'new' session and are waiting for the server
+  // to assign a real sessionId via session_init. While true, session_init events from
+  // other sessions must NOT be allowed through the filter. Cleared once the real ID
+  // arrives (or when the user navigates away via startNewChat/loadChat).
+  const pendingNewSessionInit = useRef(false);
+
   const flushDeltas = useCallback(() => {
     rafId.current = null;
     const deltas = pendingDeltas.current;
@@ -495,8 +501,21 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
         'agent_typing', 'agent_message'
       ]);
       if (streamingEventTypes.has(data.type) && data.sessionId &&
-          sessionIdRef.current !== 'new' && data.sessionId !== sessionIdRef.current) {
-        return;
+          data.sessionId !== sessionIdRef.current) {
+        // When we're in a fresh 'new' chat, the ONLY event we want to let through
+        // from a different sessionId is the session_init that assigns our real ID —
+        // and only if we're actually awaiting one (i.e., we just sent a message).
+        // All other events (message_accepted, done, block_*, etc.) from other chats
+        // must be dropped so they don't yank the user out of the new chat they're
+        // composing in. The other chat keeps streaming server-side; navigating back
+        // to it will restore full state via the subscribe→state round-trip.
+        const awaitingOurNewSession =
+          sessionIdRef.current === 'new' &&
+          pendingNewSessionInit.current &&
+          data.type === 'session_init';
+        if (!awaitingOurNewSession) {
+          return;
+        }
       }
 
       // Guard: after a chat switch, ignore ALL streaming events until the 'state' response
@@ -679,6 +698,9 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
           if (data.id && data.id !== 'new') {
             setSessionId(data.id);
             // Note: setSessionId triggers useEffect that saves to localStorage
+            // Our pending new-session assignment has arrived — clear the flag so
+            // subsequent session_init events from OTHER chats get filtered out.
+            pendingNewSessionInit.current = false;
           }
           // Capture agent from session_init (default to "character" for backward compatibility)
           if (data.agent !== undefined) {
@@ -828,6 +850,16 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
             setActiveTools(new Map());
             setStreamPhase('idle');
           }
+          break;
+        }
+
+        case 'mood_updated': {
+          // Server-pushed when an agent's mood changes (via UI or via the
+          // set_mood MCP tool). MoodSelector listens for this DOM event and
+          // refetches if the agent matches.
+          window.dispatchEvent(
+            new CustomEvent('mood_updated', { detail: { agent: data.agent } })
+          );
           break;
         }
 
@@ -1734,6 +1766,12 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
     if (agent && sessionId === 'new') {
       wsPayload.agent = agent;
     }
+    // If we're sending from a 'new' session, flag that we're awaiting a session_init
+    // to assign the real sessionId. This narrows the streaming-event filter so only
+    // OUR session_init leaks through — not other chats' events.
+    if (sessionId === 'new') {
+      pendingNewSessionInit.current = true;
+    }
     ws.current.send(JSON.stringify(wsPayload));
 
     // Set up ACK timeout - warn if no acknowledgment received
@@ -1935,6 +1973,8 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
     awaitingStateResponse.current = true;
     // Clear turn tracking when switching/creating chats
     currentTurnId.current = null;
+    // Reset pending new-session flag — we're in a fresh new chat, no message sent yet
+    pendingNewSessionInit.current = false;
     localStorage.removeItem(sessionKey);
     // Notify server: unregister from old session, don't redirect to active streams
     if (ws.current && ws.current.readyState === WebSocket.OPEN) {
@@ -1962,6 +2002,8 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
       pendingDeltas.current.clear();
       // Clear injected messages from previous chat to prevent leaking across chats
       injectedMessagesRef.current = [];
+      // Leaving 'new' (or any other chat) — no longer awaiting a new-session assignment
+      pendingNewSessionInit.current = false;
 
       // Reset all state
       setStatus('idle');

@@ -1,4 +1,4 @@
-"""Finance tools (Plaid integration)."""
+"""Finance tools (Plaid integration + Second Brain categorizer)."""
 
 # Import to trigger registration
 from . import tools
@@ -11,6 +11,8 @@ from .tools import (
     finance_connect,
     finance_disconnect,
     finance_status,
+    finance_add_merchant,
+    finance_override_txn,
 )
 
 __all__ = [
@@ -20,4 +22,6 @@ __all__ = [
     "finance_connect",
     "finance_disconnect",
     "finance_status",
+    "finance_add_merchant",
+    "finance_override_txn",
 ]

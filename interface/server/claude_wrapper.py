@@ -12,6 +12,7 @@ import os
 import sys
 import json
 import asyncio
+import functools
 import logging
 import time
 import uuid
@@ -192,6 +193,10 @@ class ClaudeWrapper:
         self._conversation_history: List[Dict[str, Any]] = []
         # Message injection queue for mid-stream messages
         self._injection_queue: Optional[MessageInjectionQueue] = None
+        # Interrupt tracking — allows stop to work during pre-SDK phases
+        # (query rewriter, contextual memory retrieval) before self.client exists
+        self._interrupted: bool = False
+        self._current_task: Optional[asyncio.Task] = None
 
     @staticmethod
     def _truncate_to_byte_limit(text: str, max_bytes: int, label: str = "content") -> str:
@@ -256,7 +261,18 @@ class ClaudeWrapper:
         return self._injection_queue
 
     async def interrupt(self):
-        """Send interrupt signal to running Claude session."""
+        """Send interrupt signal to running Claude session.
+
+        Works in three phases:
+        1. Before SDK client exists (query rewriter / contextual memory phase):
+           cancel the running task so pre-phase awaits raise CancelledError.
+        2. After SDK client exists: call client.interrupt() normally.
+        3. Always: mark self._interrupted so the checkpoint between phases
+           can bail out cleanly even if task cancellation misses a window.
+        """
+        # Mark first — checkpoint reads this between rewriter and SDK init
+        self._interrupted = True
+
         # Close injection queue first
         if self._injection_queue:
             self._injection_queue.close()
@@ -267,6 +283,11 @@ class ClaudeWrapper:
                 logger.info("Claude session interrupted")
             except Exception as e:
                 logger.error(f"Error interrupting: {e}")
+        elif self._current_task is not None and not self._current_task.done():
+            # Pre-SDK phase: cancel the running task so the rewriter /
+            # contextual memory awaits raise CancelledError and exit early.
+            logger.info("Interrupt during pre-SDK phase — cancelling current task")
+            self._current_task.cancel()
 
 
     def _load_agent_working_memory(self, agent_name: str) -> str:
@@ -606,6 +627,10 @@ class ClaudeWrapper:
         Skills are handled by the skill injector + fetch_skill MCP tool.
         """
         self._conversation_history = conversation_history or []
+        # Reset interrupt state and record the running task so interrupt() can
+        # cancel us during the pre-SDK phases (rewriter, retrieval).
+        self._interrupted = False
+        self._current_task = asyncio.current_task()
         options = self._build_options(agent_config)
 
         # Auto-retrieve contextual memories relevant to the user's message
@@ -627,7 +652,6 @@ class ClaudeWrapper:
             retrieval_queries = await rewrite_query_for_retrieval(raw_query, self._conversation_history, session_id=session_id)
             # Run CPU-bound retrieval (embedding model inference) in a thread
             # to avoid blocking the event loop / freezing WebSocket heartbeats
-            import asyncio, functools
             loop = asyncio.get_event_loop()
             ctx_block = await asyncio.wait_for(
                 loop.run_in_executor(
@@ -647,8 +671,23 @@ class ClaudeWrapper:
                 else:
                     options.system_prompt = (options.system_prompt or "") + "\n\n" + ctx_block
                 logger.info(f"Agent '{agent_config.name}': injected contextual memory into system prompt")
+        except asyncio.CancelledError:
+            # User pressed stop during rewriter / retrieval — bail out cleanly
+            # before we create the SDK client and start a real agent turn.
+            logger.info(f"Agent '{agent_config.name}': pre-SDK phase cancelled by user interrupt")
+            self._current_task = None
+            return
         except Exception as e:
             logger.warning(f"Agent '{agent_config.name}': contextual memory auto-retrieve failed: {e}")
+
+        # Checkpoint: if interrupt() was called during the pre-SDK phase but
+        # cancellation didn't propagate (e.g. it hit a non-cancellable await,
+        # or landed in the broad Exception handler above), stop here before
+        # spinning up the real SDK client.
+        if self._interrupted:
+            logger.info(f"Agent '{agent_config.name}': interrupt flag set — aborting before SDK init")
+            self._current_task = None
+            return
 
         logger.info(f"Running agent chat '{agent_config.name}': model={agent_config.model}, streaming_input={use_streaming_input}")
 
@@ -789,6 +828,7 @@ class ClaudeWrapper:
                 except Exception:
                     pass
                 self.client = None
+            self._current_task = None
 
         logger.info(f"Agent chat '{agent_config.name}' completed, session_id={self._current_session_id}")
 

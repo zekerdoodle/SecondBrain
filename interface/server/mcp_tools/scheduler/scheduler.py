@@ -32,14 +32,18 @@ Visibility (silent parameter):
 
 Room targeting: Use room_id to deliver the scheduled output to a specific conversation room.
 If room_id is specified, the task will run with that room's history as context, and the
-output will appear in that room. If not specified, uses the active room or creates a new chat.""",
+output will appear in that room. If not specified, uses the active room or creates a new chat.
+
+Pass room_id="current" to target the CURRENT room you're running in (most common case for
+self-reminders and follow-ups — e.g. "remind me in this chat in 10 min"). The server will
+substitute the actual room ID automatically.""",
     input_schema={
         "type": "object",
         "properties": {
             "prompt": {"type": "string", "description": "The prompt to execute"},
             "schedule": {"type": "string", "description": "Schedule: 'every X minutes/hours', 'daily at HH:MM', or 'once at YYYY-MM-DDTHH:MM:SS'"},
             "silent": {"type": "boolean", "description": "If true: the user does NOT see this — no chat history, no notifications. If false (default): the user WILL see this — appears in chat with notifications.", "default": False},
-            "room_id": {"type": "string", "description": "Optional: Target room ID. Output will be delivered to this room with its history as context. If not specified, uses active room or creates new chat."}
+            "room_id": {"type": "string", "description": "Optional: Target room ID. Pass \"current\" to target the room you're currently running in (auto-resolved to the actual ID). Pass a specific room ID to target that room. Omit to use active room or create new chat."}
         },
         "required": ["prompt", "schedule"]
     }
@@ -60,6 +64,16 @@ async def schedule_self(args: Dict[str, Any]) -> Dict[str, Any]:
         silent = args.get("silent", False)
         room_id = args.get("room_id")
         agent_name = args.get("_agent_name")  # Injected by _inject_agent_context
+
+        # Resolve "current" sentinel to the actual source chat_id (injected by _inject_chat_context).
+        # Allows agents to target the room they're currently running in without knowing its ID.
+        if room_id == "current":
+            source_chat_id = args.get("_source_chat_id")
+            if source_chat_id:
+                room_id = source_chat_id
+            else:
+                # No source chat — fall back to letting the scheduler use active/new room.
+                room_id = None
 
         if not prompt or not schedule:
             return {"content": [{"type": "text", "text": "Both prompt and schedule are required"}], "is_error": True}
@@ -105,7 +119,10 @@ async def scheduler_list(args: Dict[str, Any]) -> Dict[str, Any]:
     description="""Update an existing scheduled task.
 
 Use this to toggle silent mode, enable/disable tasks, change schedule/prompt, or update room targeting.
-Get task IDs from scheduler_list.""",
+Get task IDs from scheduler_list.
+
+Pass room_id="current" to retarget the task to the room you're currently running in
+(auto-resolved to the actual ID).""",
     input_schema={
         "type": "object",
         "properties": {
@@ -114,7 +131,7 @@ Get task IDs from scheduler_list.""",
             "active": {"type": "boolean", "description": "Enable (true) or disable (false) the task"},
             "schedule": {"type": "string", "description": "New schedule string"},
             "prompt": {"type": "string", "description": "New prompt text"},
-            "room_id": {"type": "string", "description": "Set target room ID. Use empty string to clear room targeting."}
+            "room_id": {"type": "string", "description": "Set target room ID. Pass \"current\" to target the room you're currently running in (auto-resolved). Use empty string to clear room targeting."}
         },
         "required": ["task_id"]
     }
@@ -127,13 +144,24 @@ async def scheduler_update(args: Dict[str, Any]) -> Dict[str, Any]:
         if not task_id:
             return {"content": [{"type": "text", "text": "task_id is required"}], "is_error": True}
 
+        # Resolve "current" sentinel to the actual source chat_id.
+        room_id = args.get("room_id")
+        if room_id == "current":
+            source_chat_id = args.get("_source_chat_id")
+            if source_chat_id:
+                room_id = source_chat_id
+            # If no source chat, leave as "current" — update_task will treat it as a literal
+            # room ID string, which is wrong. Better to drop it.
+            else:
+                room_id = None
+
         result = scheduler_tool.update_task(
             task_id,
             silent=args.get("silent"),
             active=args.get("active"),
             schedule=args.get("schedule"),
             prompt=args.get("prompt"),
-            room_id=args.get("room_id")
+            room_id=room_id
         )
         return {"content": [{"type": "text", "text": result}]}
     except Exception as e:

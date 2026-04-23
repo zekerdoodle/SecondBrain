@@ -53,7 +53,7 @@ def _inject_chat_context(tools, chat_id: str):
     from claude_agent_sdk import SdkMcpTool
 
     # Tools that need to know their source chat_id
-    CONTEXT_TOOLS = {"invoke_agent", "invoke_agent_chain", "invoke_agent_parallel", "message_react"}
+    CONTEXT_TOOLS = {"invoke_agent", "invoke_agent_chain", "invoke_agent_parallel", "message_react", "schedule_self", "scheduler_update"}
 
     wrapped = []
     for t in tools:
@@ -115,9 +115,30 @@ def _inject_agent_context(tools, agent_name: str):
                     return await handler(args)
                 return wrapper
 
+            # For set_mood: rewrite description to bake in THIS agent's available
+            # moods with short previews, so the agent sees the full catalog in the
+            # tool registration (no exploratory tool call needed).
+            description = t.description
+            if tool_name == "set_mood":
+                try:
+                    from .mood.mood import _list_presets, _format_preset_list
+                    available = _list_presets(agent_name)
+                    if available:
+                        catalog = _format_preset_list(agent_name, available)
+                        description = (
+                            f"{t.description}\n\n"
+                            f"---\n\n"
+                            f"{catalog}\n\n"
+                            f"Pass one of these preset names (e.g. set_mood(preset='cozy')) "
+                            f"to load the full mood. Use preset='clear' to go neutral. "
+                            f"Or define a custom mood with mood= + description=."
+                        )
+                except Exception as e:
+                    logger.warning(f"Failed to inject mood list into set_mood description for {agent_name}: {e}")
+
             wrapped.append(SdkMcpTool(
                 name=t.name,
-                description=t.description,
+                description=description,
                 input_schema=t.input_schema,
                 handler=_make_wrapper(original_handler, agent_name),
                 annotations=getattr(t, 'annotations', None),

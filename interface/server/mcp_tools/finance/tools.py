@@ -22,6 +22,12 @@ from typing import Any, Dict
 from claude_agent_sdk import tool
 
 from ..registry import register_tool
+from .categorizer import (
+    categorize_batch,
+    format_summary_report,
+    add_merchant as _add_merchant,
+    override_txn_category as _override_txn_category,
+)
 
 # Add scripts directory to path so we can import theo_ports
 SCRIPTS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../.claude/scripts"))
@@ -100,7 +106,7 @@ Returns transactions with merchant name, amount, category, and date. Sorted most
     }
 )
 async def finance_transactions(args: Dict[str, Any]) -> Dict[str, Any]:
-    """Get transaction history."""
+    """Get transaction history with Second Brain categorization applied."""
     try:
         tools = _import_financial_tools()
         message, metadata = tools["transactions"](
@@ -109,7 +115,43 @@ async def finance_transactions(args: Dict[str, Any]) -> Dict[str, Any]:
             account_id=args.get("account_id"),
             limit=args.get("limit", 50)
         )
-        return _result_to_mcp(message, metadata)
+
+        # Short-circuit on failure or empty
+        if not metadata.get("success"):
+            return _result_to_mcp(message, metadata)
+
+        raw_txns = metadata.get("transactions", []) or []
+        if not raw_txns:
+            return _result_to_mcp(message, metadata)
+
+        # Run Second Brain categorizer
+        try:
+            batch = categorize_batch(raw_txns)
+            summary_report = format_summary_report(
+                batch,
+                start_date=args.get("start_date"),
+                end_date=args.get("end_date"),
+            )
+            # Prepend the SB summary so Finance reads it first
+            enriched_message = (
+                "=== SECOND BRAIN CATEGORIZATION ===\n"
+                f"{summary_report}\n"
+                "===================================\n\n"
+                f"{message}"
+            )
+            # Keep raw metadata + add enriched view
+            enriched_meta = dict(metadata)
+            enriched_meta["transactions"] = batch["categorized"]
+            enriched_meta["sb_summary"] = batch["summary_by_category"]
+            enriched_meta["sb_unknown"] = batch["unknown"]
+            enriched_meta["sb_alerts"] = batch["alerts"]
+            return _result_to_mcp(enriched_message, enriched_meta)
+        except Exception as e:
+            # Never let categorization failure block the core data
+            import traceback
+            err = f"⚠️ Categorizer error (raw txns still returned): {e}\n{traceback.format_exc()}"
+            return _result_to_mcp(f"{err}\n\n{message}", metadata)
+
     except Exception as e:
         return {"content": [{"type": "text", "text": f"Error: {str(e)}"}], "is_error": True}
 
@@ -254,3 +296,110 @@ async def finance_status(args: Dict[str, Any]) -> Dict[str, Any]:
         return _result_to_mcp(message, metadata)
     except Exception as e:
         return {"content": [{"type": "text", "text": f"Error: {str(e)}"}], "is_error": True}
+
+
+@register_tool("finance")
+@tool(
+    name="finance_add_merchant",
+    description="""Add a merchant pattern→category rule to the Second Brain categorizer.
+
+Use this when the user labels an unknown merchant in a daily ping. The rule gets appended
+to 20_Areas/finance/merchants.json and takes effect on the next finance_transactions call.
+
+Pattern is a regex (case-insensitive). Keep patterns tight — "walmart" not "wal.*" — to
+avoid false matches. Use "|" to combine aliases, e.g. "doordash|door dash".
+
+Confidence levels:
+  - "locked": the user has confirmed this is always this category. Never re-ask.
+  - "learn":  default is this category but specific txns can be re-tagged. Ask in ping if unsure.""",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "pattern": {"type": "string", "description": "Case-insensitive regex matched against merchant_name (fallback: name)"},
+            "category": {"type": "string", "description": "Target category (e.g. 'groceries', 'gas', 'dining_out', 'allowance')"},
+            "confidence": {"type": "string", "enum": ["locked", "learn"], "description": "'locked' (never re-ask) or 'learn' (may re-tag individual txns). Default: 'locked'"},
+            "note": {"type": "string", "description": "Optional context note stored with the rule"},
+            "reimbursable": {"type": "boolean", "description": "Mark txns from this merchant as reimbursable (excluded from caps). Default: false"},
+            "alert": {"type": "boolean", "description": "Fire an alert on any match (e.g. for nicotine/weed lapses). Default: false"}
+        },
+        "required": ["pattern", "category"]
+    }
+)
+async def finance_add_merchant(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Append a merchant rule to the categorizer."""
+    try:
+        entry = _add_merchant(
+            pattern=args["pattern"],
+            category=args["category"],
+            confidence=args.get("confidence", "locked"),
+            note=args.get("note"),
+            reimbursable=bool(args.get("reimbursable", False)),
+            alert=bool(args.get("alert", False)),
+        )
+        return {
+            "content": [{"type": "text", "text": (
+                f"✅ Added merchant rule:\n"
+                f"  pattern:    {entry['pattern']}\n"
+                f"  category:   {entry['category']}\n"
+                f"  confidence: {entry.get('confidence', 'locked')}\n"
+                + (f"  note:       {entry['note']}\n" if entry.get('note') else "")
+                + (f"  reimbursable: True\n" if entry.get('reimbursable') else "")
+                + (f"  alert:      True\n" if entry.get('alert') else "")
+                + "\nTakes effect on the next finance_transactions call."
+            )}]
+        }
+    except ValueError as e:
+        return {"content": [{"type": "text", "text": f"Invalid input: {e}"}], "is_error": True}
+    except Exception as e:
+        return {"content": [{"type": "text", "text": f"Error: {e}"}], "is_error": True}
+
+
+@register_tool("finance")
+@tool(
+    name="finance_override_txn",
+    description="""Override the category for a single transaction by its Plaid transaction_id.
+
+Use this when a specific charge needs a different category than its merchant rule would assign.
+Example: "this particular Amazon charge was a birthday gift, tag as 'gift' not 'allowance'".
+
+Does NOT modify merchant rules — just records a per-txn override in 20_Areas/finance/txn_overrides.json.
+Overrides win over merchant patterns on subsequent reads.
+
+Get the txn_id from the [id=...] field in the UNKNOWN TXNS list or from finance_transactions output.""",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "txn_id": {"type": "string", "description": "Plaid transaction_id to override"},
+            "category": {"type": "string", "description": "Category to assign (e.g. 'gift', 'reimbursable', 'groceries')"},
+            "note": {"type": "string", "description": "Optional context for why this one was re-tagged"},
+            "reimbursable": {"type": "boolean", "description": "Mark this specific txn as reimbursable. Default: false"},
+            "alert": {"type": "boolean", "description": "Fire an alert on this txn. Default: false"}
+        },
+        "required": ["txn_id", "category"]
+    }
+)
+async def finance_override_txn(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Override the category of a specific transaction."""
+    try:
+        entry = _override_txn_category(
+            txn_id=args["txn_id"],
+            new_category=args["category"],
+            note=args.get("note"),
+            reimbursable=bool(args.get("reimbursable", False)),
+            alert=bool(args.get("alert", False)),
+        )
+        return {
+            "content": [{"type": "text", "text": (
+                f"✅ Override recorded for txn_id={args['txn_id']}:\n"
+                f"  category: {entry['category']}\n"
+                + (f"  note:     {entry['note']}\n" if entry.get('note') else "")
+                + (f"  reimbursable: True\n" if entry.get('reimbursable') else "")
+                + (f"  alert:    True\n" if entry.get('alert') else "")
+                + f"  set_at:   {entry['set_at']}\n"
+                + "\nTakes effect on the next finance_transactions call."
+            )}]
+        }
+    except ValueError as e:
+        return {"content": [{"type": "text", "text": f"Invalid input: {e}"}], "is_error": True}
+    except Exception as e:
+        return {"content": [{"type": "text", "text": f"Error: {e}"}], "is_error": True}

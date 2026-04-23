@@ -1,11 +1,21 @@
 """
 Conversation Compaction tool.
 
-Compacts older conversation history into a dense summary, preserving the last N
-exchanges verbatim. Reduces context window usage for long conversations.
+Three modes for reclaiming context window budget in long conversations:
 
-The compaction subagent (Opus) produces a thorough, comprehensive summary preserving
-all decisions, facts, action items, tool results, and conversational flow.
+1. "truncate_tools" (default) — Mechanically truncate tool call outputs & args
+   for messages older than `keep_exchanges`. All user/assistant dialogue is
+   preserved verbatim. Fast, no external LLM call. This is usually what you want
+   because tool outputs are almost always the bulk of context bloat.
+
+2. "strip_tools" — More aggressive: replace tool outputs with "[output stripped]"
+   entirely, keeping only the tool name + a short hint of the args. All
+   user/assistant dialogue preserved verbatim. Fast, no external LLM call.
+
+3. "summarize" — Original behavior: an Opus subagent produces a dense narrative
+   summary of older messages. Semantic, expensive (~$0.10+ per call), but
+   preserves meaning across long-ago dialogue. Use when there's lots of OLD
+   dialogue that needs collapsing (not just tool bloat).
 """
 
 import os
@@ -157,37 +167,153 @@ async def _summarize_messages(messages: List[Dict]) -> str:
         raise
 
 
+def _truncate_str(text: str, max_chars: int) -> str:
+    """Simple truncation with ellipsis — no line-boundary cleverness."""
+    if not text:
+        return text or ""
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + "..."
+
+
+def _truncate_args(args: Dict[str, Any], max_chars: int) -> Dict[str, Any]:
+    """Truncate each string value in an args dict to max_chars."""
+    if not isinstance(args, dict):
+        return args
+    out = {}
+    for k, v in args.items():
+        if isinstance(v, str):
+            out[k] = _truncate_str(v, max_chars)
+        elif isinstance(v, (dict, list)):
+            # Stringify and truncate — preserves readability without recursion bloat
+            import json as _json
+            try:
+                s = _json.dumps(v, default=str)
+            except Exception:
+                s = str(v)
+            out[k] = _truncate_str(s, max_chars)
+        else:
+            out[k] = v
+    return out
+
+
+def _apply_tool_shrink(
+    messages: List[Dict], mode: str, truncate_chars: int, strip_args: bool
+) -> Tuple[List[Dict], int, int]:
+    """
+    Walk messages and shrink tool_call entries in place (on a copy).
+
+    Returns (new_messages, num_shrunk, bytes_saved).
+
+    mode:
+      - "truncate_tools": truncate output_summary to truncate_chars
+      - "strip_tools": replace output_summary with "[output stripped]"
+    """
+    new_messages = []
+    num_shrunk = 0
+    bytes_saved = 0
+
+    STRIP_PLACEHOLDER = "[output stripped]"
+    ARG_CAP_STRIP = 80      # aggressive arg cap when stripping
+    ARG_CAP_TRUNCATE = truncate_chars  # match output cap
+
+    for m in messages:
+        if m.get("role") != "tool_call":
+            new_messages.append(m)
+            continue
+
+        # Skip already-shrunk messages
+        if m.get("_compacted_mode") in ("truncate_tools", "strip_tools"):
+            new_messages.append(m)
+            continue
+
+        shrunk = dict(m)
+        original_output = m.get("output_summary", "") or ""
+        original_args_size = len(str(m.get("args", "")))
+
+        if mode == "strip_tools":
+            shrunk["output_summary"] = STRIP_PLACEHOLDER if original_output else ""
+            if strip_args:
+                shrunk["args"] = _truncate_args(m.get("args", {}), ARG_CAP_STRIP)
+        else:  # truncate_tools
+            shrunk["output_summary"] = _truncate_str(original_output, truncate_chars)
+            if strip_args:
+                shrunk["args"] = _truncate_args(m.get("args", {}), ARG_CAP_TRUNCATE)
+
+        shrunk["_compacted_mode"] = mode
+        shrunk["_compacted_at"] = datetime.now().isoformat()
+
+        saved = (
+            (len(original_output) - len(shrunk["output_summary"]))
+            + (original_args_size - len(str(shrunk.get("args", ""))))
+        )
+        if saved > 0:
+            num_shrunk += 1
+            bytes_saved += saved
+
+        new_messages.append(shrunk)
+
+    return new_messages, num_shrunk, bytes_saved
+
+
 @register_tool("utilities")
 @tool(
     name="compact_conversation",
-    description="""Compact older conversation history into a summary to free up context space.
+    description="""Compact the current conversation's history to free up context window.
 
-Use this when a conversation is getting long and you want to preserve context window budget. The last 5 exchanges (user/assistant pairs + their tool calls) are kept verbatim. Everything older is replaced with a concise summary.
+Three modes — pick based on WHY context is bloated:
 
-This modifies the current conversation's history in-place and saves to disk. The summary preserves key decisions, facts, action items, and context.
+- **"truncate_tools"** (default): Truncate tool call outputs & args for messages older than `keep_exchanges`. All user/assistant dialogue is preserved verbatim. Fast, free (no LLM call). Use this when tool outputs (bash, reads, greps, agent invocations) are eating your context — which is almost always the case. START HERE.
 
-Call this proactively when the conversation exceeds ~15 exchanges, or when the user asks you to compact/summarize the conversation history.""",
+- **"strip_tools"**: More aggressive — replace tool outputs entirely with "[output stripped]", keeping only tool name + short arg hint. Dialogue still verbatim. Fast, free. Use when truncate isn't enough, or when the tool results are truly unneeded going forward.
+
+- **"summarize"**: Opus-powered semantic summary of older messages. Collapses BOTH dialogue and tools into a narrative. Slower (~10-30s) and costs money. Use only when there's lots of old user/assistant discussion that also needs collapsing — not just tool bloat.
+
+Always preserves the last `keep_exchanges` exchanges (default 5) completely verbatim. Modifies the conversation in-place and saves to disk.
+
+Call proactively when context feels heavy, or when the user asks you to compact/shrink the conversation.""",
     input_schema={
         "type": "object",
         "properties": {
+            "mode": {
+                "type": "string",
+                "enum": ["truncate_tools", "strip_tools", "summarize"],
+                "description": "Compaction strategy. Default 'truncate_tools' is fast and free — preserves all dialogue verbatim, truncates tool outputs older than keep_exchanges. Use 'strip_tools' for aggressive removal of old tool outputs. Use 'summarize' only when old dialogue (not just tools) needs collapsing.",
+                "default": "truncate_tools",
+            },
             "keep_exchanges": {
                 "type": "integer",
-                "description": "Number of recent exchanges to keep verbatim (default: 5)",
+                "description": "Number of recent exchanges to keep fully verbatim (default: 5). Older exchanges are shrunk according to `mode`.",
                 "default": 5,
                 "minimum": 0,
                 "maximum": 20,
             },
+            "truncate_chars": {
+                "type": "integer",
+                "description": "For 'truncate_tools' mode: max chars per tool output & arg value (default: 200). Ignored for other modes.",
+                "default": 200,
+                "minimum": 0,
+                "maximum": 2000,
+            },
             "reason": {
                 "type": "string",
-                "description": "Why compaction is being triggered (for logging)",
+                "description": "Why compaction is being triggered (for logging).",
             },
         },
     },
 )
 async def compact_conversation(args: Dict[str, Any]) -> Dict[str, Any]:
     """Compact the current conversation's history."""
+    mode = args.get("mode", "truncate_tools")
     keep_n = args.get("keep_exchanges", 5)
+    truncate_chars = args.get("truncate_chars", 200)
     reason = args.get("reason", "Conversation compaction requested")
+
+    if mode not in ("truncate_tools", "strip_tools", "summarize"):
+        return {
+            "content": [{"type": "text", "text": f"Invalid mode: {mode}. Use 'truncate_tools', 'strip_tools', or 'summarize'."}],
+            "is_error": True,
+        }
 
     # Access the current conversation (same pattern as restart_server)
     main_module = sys.modules.get("main") or sys.modules.get("__main__")
@@ -228,8 +354,8 @@ async def compact_conversation(args: Dict[str, Any]) -> Dict[str, Any]:
     total_exchanges = _count_exchanges(conv.messages)
 
     logger.info(
-        f"Compaction requested: {total_exchanges} exchanges, keep_last={keep_n}, "
-        f"reason={reason}"
+        f"Compaction requested: mode={mode}, {total_exchanges} exchanges, "
+        f"keep_last={keep_n}, truncate_chars={truncate_chars}, reason={reason}"
     )
 
     # Auto-adjust keep_n so there's always at least 1 exchange to compact
@@ -256,79 +382,90 @@ async def compact_conversation(args: Dict[str, Any]) -> Dict[str, Any]:
         f"{len(recent)} recent messages"
     )
 
-    # Run the compaction subagent
-    try:
-        summary = await _summarize_messages(older)
-    except Exception as e:
-        return {
-            "content": [
-                {
-                    "type": "text",
-                    "text": f"Compaction failed (subagent error): {e}. Conversation unchanged.",
-                }
-            ],
-            "is_error": True,
-        }
-
-    if not summary:
-        return {
-            "content": [
-                {
-                    "type": "text",
-                    "text": "Compaction failed: subagent produced no summary. Conversation unchanged.",
-                }
-            ],
-            "is_error": True,
-        }
-
-    # Build the compacted message
-    compacted_msg = {
-        "id": str(uuid.uuid4()),
-        "role": "compacted",
-        "content": summary,
-        "compacted_at": datetime.now().isoformat(),
-        "original_count": len(older),
-        "original_exchanges": older_exchanges,
-    }
-
-    # Backup and replace
+    # Backup for rollback
     original_messages = conv.messages.copy()
 
+    # ── Dispatch by mode ──
     try:
-        conv.messages = [compacted_msg] + recent
+        if mode in ("truncate_tools", "strip_tools"):
+            # Mechanical tool output shrinking — preserves dialogue verbatim
+            shrunk_older, num_shrunk, bytes_saved = _apply_tool_shrink(
+                older, mode=mode, truncate_chars=truncate_chars, strip_args=True
+            )
 
-        # Save to disk
-        if chat_manager:
-            existing = chat_manager.load_chat(current_session)
-            title = existing.get("title", "Untitled") if existing else "Untitled"
-            save_data = {
-                "title": title,
-                "sessionId": current_session,
-                "messages": conv.messages,
+            if num_shrunk == 0:
+                return {
+                    "content": [{
+                        "type": "text",
+                        "text": (
+                            f"No tool outputs to shrink in the older {older_exchanges} "
+                            f"exchange(s). Conversation unchanged. "
+                            f"(Try mode='summarize' if you want to collapse old dialogue too.)"
+                        ),
+                    }],
+                }
+
+            conv.messages = shrunk_older + recent
+            action_summary = (
+                f"Shrunk {num_shrunk} tool call(s) in older history "
+                f"(~{bytes_saved:,} chars saved). "
+                f"All {older_exchanges + _count_exchanges(recent)} exchanges preserved "
+                f"verbatim; only tool outputs were modified."
+            )
+
+        else:  # mode == "summarize"
+            summary = await _summarize_messages(older)
+            if not summary:
+                return {
+                    "content": [{
+                        "type": "text",
+                        "text": "Compaction failed: subagent produced no summary. Conversation unchanged.",
+                    }],
+                    "is_error": True,
+                }
+
+            compacted_msg = {
+                "id": str(uuid.uuid4()),
+                "role": "compacted",
+                "content": summary,
+                "compacted_at": datetime.now().isoformat(),
+                "original_count": len(older),
+                "original_exchanges": older_exchanges,
             }
-            # Preserve cumulative usage if it exists
+            conv.messages = [compacted_msg] + recent
+            action_summary = (
+                f"Summarized {len(older)} older messages ({older_exchanges} exchanges) "
+                f"into 1 narrative summary. {len(recent)} recent messages preserved verbatim."
+            )
+
+        # Save to disk — PRESERVE all existing fields (display_messages, agent,
+        # reactions, etc.) and only overwrite `messages`. chat_manager.save_chat
+        # does a full overwrite with no merging, so we must merge ourselves or
+        # we'll wipe display_messages and break UI rendering.
+        if chat_manager:
+            existing = chat_manager.load_chat(current_session) or {}
+            save_data = dict(existing)  # shallow copy of all existing fields
+            save_data["sessionId"] = current_session
+            save_data["messages"] = conv.messages
             if hasattr(conv, "cumulative_usage") and conv.cumulative_usage:
                 save_data["cumulative_usage"] = conv.cumulative_usage
+            # NOTE: display_messages is preserved as-is from `existing`. The
+            # context savings come from shrinking `messages` (what the agent
+            # reads). display_messages drives UI rendering and may still show
+            # full tool outputs — that's intentional for now.
             chat_manager.save_chat(current_session, save_data)
             logger.info(f"Saved compacted conversation to disk: {current_session}")
 
     except Exception as e:
-        # Rollback on failure
         conv.messages = original_messages
-        logger.error(f"Compaction save failed, rolled back: {e}")
+        logger.error(f"Compaction failed, rolled back: {e}", exc_info=True)
         return {
-            "content": [
-                {
-                    "type": "text",
-                    "text": f"Compaction save failed, rolled back: {e}",
-                }
-            ],
+            "content": [{"type": "text", "text": f"Compaction failed, rolled back: {e}"}],
             "is_error": True,
         }
 
     result_text = (
-        f"Compacted conversation: {len(older)} messages ({older_exchanges} exchanges) "
-        f"-> 1 summary. {len(recent)} recent messages preserved verbatim. "
+        f"[mode={mode}] {action_summary} "
         f"History now has {len(conv.messages)} messages total."
     )
     logger.info(result_text)

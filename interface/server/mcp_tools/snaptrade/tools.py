@@ -44,6 +44,8 @@ def _import_snaptrade_tools():
         snaptrade_activities as _activities,
         snaptrade_performance as _performance,
         snaptrade_connections as _connections,
+        snaptrade_disconnect as _disconnect,
+        snaptrade_cleanup_dead as _cleanup_dead,
         snaptrade_search_symbol as _search_symbol,
         snaptrade_preview_order as _preview_order,
         snaptrade_execute_order as _execute_order,
@@ -58,6 +60,8 @@ def _import_snaptrade_tools():
         "activities": _activities,
         "performance": _performance,
         "connections": _connections,
+        "disconnect": _disconnect,
+        "cleanup_dead": _cleanup_dead,
         "search_symbol": _search_symbol,
         "preview_order": _preview_order,
         "execute_order": _execute_order,
@@ -299,6 +303,68 @@ async def snaptrade_connections(args: Dict[str, Any]) -> Dict[str, Any]:
     try:
         tools = _import_snaptrade_tools()
         message, metadata = tools["connections"]()
+        return _result_to_mcp(message, metadata)
+    except Exception as e:
+        return {"content": [{"type": "text", "text": f"Error: {str(e)}"}], "is_error": True}
+
+
+@register_tool("snaptrade")
+@tool(
+    name="snaptrade_disconnect",
+    description="""Remove a single brokerage authorization by ID.
+
+Use this to kill zombie auth records — SnapTrade's reauth flow soft-disables
+old tokens (status=disabled) instead of deleting them, so disabled auths
+accumulate unless explicitly removed.
+
+Get the authorization_id from snaptrade_connections. Safe to call on both
+active and disabled auths, but you almost always want to only target
+disabled ones.""",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "authorization_id": {
+                "type": "string",
+                "description": "The authorization ID to remove (from snaptrade_connections)"
+            }
+        },
+        "required": ["authorization_id"]
+    }
+)
+async def snaptrade_disconnect(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Remove a single brokerage authorization."""
+    try:
+        authorization_id = args.get("authorization_id")
+        if not authorization_id:
+            return {"content": [{"type": "text", "text": "authorization_id is required"}], "is_error": True}
+
+        tools = _import_snaptrade_tools()
+        message, metadata = tools["disconnect"](authorization_id=authorization_id)
+        return _result_to_mcp(message, metadata)
+    except Exception as e:
+        return {"content": [{"type": "text", "text": f"Error: {str(e)}"}], "is_error": True}
+
+
+@register_tool("snaptrade")
+@tool(
+    name="snaptrade_cleanup_dead",
+    description="""Sweep all disabled brokerage authorizations and remove them.
+
+Lists connections, filters to disabled=True, and removes each one.
+Safe to run any time — a no-op if no dead auths exist.
+
+Use this after a reauth to clean up zombie tokens left behind by
+SnapTrade's "append, don't replace" auth behavior.""",
+    input_schema={
+        "type": "object",
+        "properties": {}
+    }
+)
+async def snaptrade_cleanup_dead(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Remove all disabled brokerage authorizations."""
+    try:
+        tools = _import_snaptrade_tools()
+        message, metadata = tools["cleanup_dead"]()
         return _result_to_mcp(message, metadata)
     except Exception as e:
         return {"content": [{"type": "text", "text": f"Error: {str(e)}"}], "is_error": True}

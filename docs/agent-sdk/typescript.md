@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/typescript
 title: Agent SDK reference - TypeScript
-last_fetched: 2026-04-19T09:02:58.304872+00:00
+last_fetched: 2026-04-23T09:03:28.082006+00:00
 ---
 
 [Claude Code Docs home page![light logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/light.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=78fd01ff4f4340295a4f66e2ea54903c)![dark logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/dark.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=1298a0c3b3a1da603b190d0de0e31712)](/docs/en/overview)
@@ -426,6 +426,7 @@ Configuration object for the `query()` function.
 | `resumeSessionAt` | `string` | `undefined` | Resume session at a specific message UUID |
 | `sandbox` | [`SandboxSettings`](#sandbox-settings) | `undefined` | Configure sandbox behavior programmatically. See [Sandbox settings](#sandbox-settings) for details |
 | `sessionId` | `string` | Auto-generated | Use a specific UUID for the session instead of auto-generating one |
+| `sessionStore` | [`SessionStore`](/docs/en/agent-sdk/session-storage#the-session-store-interface) | `undefined` | Mirror session transcripts to an external backend so any host can resume them. See [Persist sessions to external storage](/docs/en/agent-sdk/session-storage) |
 | `settingSources` | [`SettingSource`](#setting-source)`[]` | CLI defaults (all sources) | Control which filesystem settings to load. Pass `[]` to disable user, project, and local settings. Managed policy settings load regardless. See [Use Claude Code features](/docs/en/agent-sdk/claude-code-features#what-settingsources-does-not-control) |
 | `spawnClaudeCodeProcess` | `(options: SpawnOptions) => SpawnedProcess` | `undefined` | Custom function to spawn the Claude Code process. Use to run Claude Code in VMs, containers, or remote environments |
 | `stderr` | `(data: string) => void` | `undefined` | Callback for stderr output |
@@ -532,10 +533,15 @@ type AgentDefinition = {
  tools?: string[];
  disallowedTools?: string[];
  prompt: string;
- model?: "sonnet" | "opus" | "haiku" | "inherit";
+ model?: string;
  mcpServers?: AgentMcpServerSpec[];
  skills?: string[];
+ initialPrompt?: string;
  maxTurns?: number;
+ background?: boolean;
+ memory?: "user" | "project" | "local";
+ effort?: "low" | "medium" | "high" | "xhigh" | "max" | number;
+ permissionMode?: PermissionMode;
  criticalSystemReminder_EXPERIMENTAL?: string;
 };
 ```
@@ -546,10 +552,15 @@ type AgentDefinition = {
 | `tools` | No | Array of allowed tool names. If omitted, inherits all tools from parent |
 | `disallowedTools` | No | Array of tool names to explicitly disallow for this agent |
 | `prompt` | Yes | The agent’s system prompt |
-| `model` | No | Model override for this agent. If omitted or `'inherit'`, uses the main model |
+| `model` | No | Model override for this agent. Accepts an alias such as `'sonnet'`, `'opus'`, `'haiku'`, `'inherit'`, or a full model ID. If omitted or `'inherit'`, uses the main model |
 | `mcpServers` | No | MCP server specifications for this agent |
 | `skills` | No | Array of skill names to preload into the agent context |
+| `initialPrompt` | No | Auto-submitted as the first user turn when this agent runs as the main thread agent |
 | `maxTurns` | No | Maximum number of agentic turns (API round-trips) before stopping |
+| `background` | No | Run this agent as a non-blocking background task when invoked |
+| `memory` | No | Memory source for this agent: `'user'`, `'project'`, or `'local'` |
+| `effort` | No | Reasoning effort level for this agent. Accepts a named level or an integer |
+| `permissionMode` | No | Permission mode for tool execution within this agent. See [`PermissionMode`](#permission-mode) |
 | `criticalSystemReminder_EXPERIMENTAL` | No | Experimental: Critical reminder added to the system prompt |
 
 ### [​](#agentmcpserverspec) `AgentMcpServerSpec`
@@ -867,6 +878,7 @@ type SDKMessage =
  | SDKTaskNotificationMessage
  | SDKTaskStartedMessage
  | SDKTaskProgressMessage
+ | SDKTaskUpdatedMessage
  | SDKFilesPersistedEvent
  | SDKToolUseSummaryMessage
  | SDKRateLimitEvent
@@ -949,6 +961,7 @@ type SDKResultMessage =
  modelUsage: { [modelName: string]: ModelUsage };
  permission_denials: SDKPermissionDenial[];
  structured_output?: unknown;
+ deferred_tool_use?: { id: string; name: string; input: Record<string, unknown> };
  }
  | {
  type: "result";
@@ -971,6 +984,8 @@ type SDKResultMessage =
  errors: string[];
  };
 ```
+
+When a `PreToolUse` hook returns `permissionDecision: "defer"`, the result has `stop_reason: "tool_deferred"` and `deferred_tool_use` carries the pending tool’s `id`, `name`, and `input`. Read this field to surface the request in your own UI, then resume with the same `session_id` to continue. See [Defer a tool call for later](/docs/en/hooks#defer-a-tool-call-for-later) for the full round trip.
 
 ### [​](#sdksystemmessage) `SDKSystemMessage`
 
@@ -1380,7 +1395,7 @@ type SyncHookJSONOutput = {
  hookSpecificOutput?:
  | {
  hookEventName: "PreToolUse";
- permissionDecision?: "allow" | "deny" | "ask";
+ permissionDecision?: "allow" | "deny" | "ask" | "defer";
  permissionDecisionReason?: string;
  updatedInput?: Record<string, unknown>;
  additionalContext?: string;
@@ -2735,6 +2750,28 @@ type SDKTaskProgressMessage = {
  duration_ms: number;
  };
  last_tool_name?: string;
+ uuid: UUID;
+ session_id: string;
+};
+```
+
+### [​](#sdktaskupdatedmessage) `SDKTaskUpdatedMessage`
+
+Emitted when a background task’s state changes, such as when it transitions from `running` to `completed`. Merge `patch` into your local task map keyed by `task_id`. The `end_time` field is a Unix epoch timestamp in milliseconds, comparable with `Date.now()`.
+
+```shiki
+type SDKTaskUpdatedMessage = {
+ type: "system";
+ subtype: "task_updated";
+ task_id: string;
+ patch: {
+ status?: "pending" | "running" | "completed" | "failed" | "killed";
+ description?: string;
+ end_time?: number;
+ total_paused_ms?: number;
+ error?: string;
+ is_backgrounded?: boolean;
+ };
  uuid: UUID;
  session_id: string;
 };

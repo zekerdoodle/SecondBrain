@@ -50,6 +50,53 @@ def _read_preset(agent_name: str, preset: str) -> Optional[str]:
     return preset_file.read_text().strip()
 
 
+def _preset_description(agent_name: str, preset: str) -> str:
+    """Extract a short one-line description from a mood preset.
+
+    Skips the leading `# Heading` line and returns the first paragraph,
+    truncated to a sensible length. Mirrors the logic used by the UI
+    `/api/agents/{name}/moods` endpoint so the views stay consistent.
+    """
+    content = _read_preset(agent_name, preset)
+    if not content:
+        return ""
+    body_lines: List[str] = []
+    for line in content.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            if body_lines:
+                break
+            continue
+        if stripped.startswith("#"):
+            continue
+        body_lines.append(stripped)
+        if sum(len(l) for l in body_lines) > 200:
+            break
+    preview = " ".join(body_lines).strip()
+    cutoff = 140
+    if len(preview) > cutoff:
+        for marker in [". ", "! ", "? "]:
+            idx = preview.rfind(marker, 0, cutoff)
+            if idx > 40:
+                return preview[: idx + 1]
+        return preview[:cutoff].rstrip() + "…"
+    return preview
+
+
+def _format_preset_list(agent_name: str, available: List[str]) -> str:
+    """Render the full preset catalog with short descriptions — same view the user sees in the UI."""
+    if not available:
+        return f"No mood presets found in .claude/agents/{agent_name}/moods/"
+    lines = ["**Available presets:**"]
+    for preset in available:
+        desc = _preset_description(agent_name, preset)
+        if desc:
+            lines.append(f"- **{preset}** — {desc}")
+        else:
+            lines.append(f"- **{preset}**")
+    return "\n".join(lines)
+
+
 def _get_agent_store(agent_name: str):
     """Get the working memory store for an agent."""
     sys.path.insert(0, SCRIPTS_DIR)
@@ -64,6 +111,22 @@ def _find_mood_items(store) -> List[int]:
         i + 1 for i, item in enumerate(items)
         if item.tag == "mood"
     ]
+
+
+async def _broadcast_change(agent_name: str) -> None:
+    """Notify the UI that this agent's mood changed.
+
+    Lazy-imports the broadcast helper from main (the running uvicorn module)
+    to avoid circular imports. Silent on failure — the tool still succeeds.
+    """
+    try:
+        main_mod = sys.modules.get("main") or sys.modules.get("__main__")
+        broadcaster = getattr(main_mod, "broadcast_mood_changed", None) if main_mod else None
+        if broadcaster:
+            await broadcaster(agent_name)
+    except Exception:
+        # Broadcast is best-effort — never block the tool result on UI sync.
+        pass
 
 
 def _clear_existing_mood(store) -> bool:
@@ -129,6 +192,7 @@ async def set_mood(args: Dict[str, Any]) -> Dict[str, Any]:
         if preset == "clear" or preset == "neutral":
             was_active = _clear_existing_mood(store)
             if was_active:
+                await _broadcast_change(agent_name)
                 return {"content": [{"type": "text", "text": "Mood cleared. Back to baseline."}]}
             else:
                 return {"content": [{"type": "text", "text": "No active mood to clear."}]}
@@ -149,10 +213,8 @@ async def set_mood(args: Dict[str, Any]) -> Dict[str, Any]:
             else:
                 lines.append("**No active mood.**")
 
-            if available:
-                lines.append(f"\n**Available presets:** {', '.join(available)}")
-            else:
-                lines.append(f"\nNo mood presets found in .claude/agents/{agent_name}/moods/")
+            lines.append("")
+            lines.append(_format_preset_list(agent_name, available))
 
             lines.append("\nUsage: set_mood(preset='cozy') or set_mood(mood='nostalgic', description='...')")
 
@@ -165,10 +227,10 @@ async def set_mood(args: Dict[str, Any]) -> Dict[str, Any]:
                 # Suggest close matches
                 suggestions = [p for p in available if preset in p or p in preset]
                 msg = f"No preset '{preset}' found."
-                if available:
-                    msg += f"\n\nAvailable presets: {', '.join(available)}"
                 if suggestions:
-                    msg += f"\nDid you mean: {', '.join(suggestions)}?"
+                    msg += f"\n\nDid you mean: {', '.join(suggestions)}?"
+                if available:
+                    msg += f"\n\n{_format_preset_list(agent_name, available)}"
                 return {"content": [{"type": "text", "text": msg}], "is_error": True}
 
             mood_label = preset
@@ -199,6 +261,7 @@ async def set_mood(args: Dict[str, Any]) -> Dict[str, Any]:
             pin_rank=1,  # High priority — shows first
         )
 
+        await _broadcast_change(agent_name)
         return {"content": [{"type": "text", "text": f"Mood set: **{mood_label}** ✓ (auto-saved to your working memory — no need to set it yourself)\n\nYour mood instructions:\n\n{mood_instructions}"}]}
 
     except Exception as e:

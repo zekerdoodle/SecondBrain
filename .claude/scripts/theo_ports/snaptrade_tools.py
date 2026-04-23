@@ -478,6 +478,123 @@ def snaptrade_connections() -> Tuple[str, Dict[str, Any]]:
         return f"ERROR: {error_msg}", {"success": False, "error": error_msg}
 
 
+def snaptrade_disconnect(authorization_id: str) -> Tuple[str, Dict[str, Any]]:
+    """
+    Remove a single brokerage authorization by its ID.
+
+    Use this to kill zombie / disabled auth records after a reauth.
+
+    Args:
+        authorization_id: The authorization ID to remove
+
+    Returns:
+        Tuple of (formatted message, metadata)
+    """
+    client, error = _get_client()
+    if error:
+        logger.error("L4.snaptrade [tool:disconnect] - %s", error)
+        return f"ERROR: {error}", {"success": False, "error": error}
+
+    try:
+        success, message = client.remove_connection(authorization_id)
+
+        if not success:
+            return f"ERROR: {message}", {
+                "success": False,
+                "error": message,
+                "authorization_id": authorization_id,
+            }
+
+        return (
+            f"✅ {message}",
+            {"success": True, "authorization_id": authorization_id},
+        )
+
+    except Exception as e:
+        error_msg = f"Unexpected error: {e}"
+        logger.error("L4.snaptrade [tool:disconnect] - %s", error_msg)
+        return f"ERROR: {error_msg}", {"success": False, "error": error_msg}
+
+
+def snaptrade_cleanup_dead() -> Tuple[str, Dict[str, Any]]:
+    """
+    Sweep all disabled brokerage authorizations and remove them.
+
+    Lists connections, filters to disabled=True, and calls remove_connection
+    on each. Safe to run any time — a no-op if no dead auths exist.
+
+    Returns:
+        Tuple of (formatted message, metadata)
+    """
+    client, error = _get_client()
+    if error:
+        logger.error("L4.snaptrade [tool:cleanup_dead] - %s", error)
+        return f"ERROR: {error}", {"success": False, "error": error}
+
+    try:
+        success, message, connections = client.list_connections()
+        if not success:
+            return f"ERROR: {message}", {"success": False, "error": message}
+
+        dead = [c for c in connections if c.get("disabled")]
+
+        if not dead:
+            return (
+                "✨ No dead authorizations to clean up. All connections are active.",
+                {
+                    "success": True,
+                    "removed_count": 0,
+                    "total_connections": len(connections),
+                },
+            )
+
+        removed = []
+        failed = []
+
+        for conn in dead:
+            auth_id = conn.get("authorization_id", "")
+            name = conn.get("brokerage_name", "Unknown")
+            ok, msg = client.remove_connection(auth_id)
+            if ok:
+                removed.append({"authorization_id": auth_id, "brokerage_name": name})
+            else:
+                failed.append(
+                    {
+                        "authorization_id": auth_id,
+                        "brokerage_name": name,
+                        "error": msg,
+                    }
+                )
+
+        lines = []
+        if removed:
+            lines.append(f"🧹 Removed {len(removed)} dead authorization(s):")
+            for r in removed:
+                lines.append(f"  • {r['brokerage_name']} ({r['authorization_id']})")
+        if failed:
+            lines.append(f"\n⚠️ Failed to remove {len(failed)}:")
+            for f in failed:
+                lines.append(
+                    f"  • {f['brokerage_name']} ({f['authorization_id']}): {f['error']}"
+                )
+
+        return (
+            "\n".join(lines),
+            {
+                "success": len(failed) == 0,
+                "removed_count": len(removed),
+                "failed_count": len(failed),
+                "removed": removed,
+                "failed": failed,
+            },
+        )
+
+    except Exception as e:
+        error_msg = f"Unexpected error: {e}"
+        logger.error("L4.snaptrade [tool:cleanup_dead] - %s", error_msg)
+        return f"ERROR: {error_msg}", {"success": False, "error": error_msg}
+
+
 def snaptrade_search_symbol(query: str) -> Tuple[str, Dict[str, Any]]:
     """
     Search for a ticker symbol.
@@ -691,6 +808,8 @@ __all__ = [
     "snaptrade_activities",
     "snaptrade_performance",
     "snaptrade_connections",
+    "snaptrade_disconnect",
+    "snaptrade_cleanup_dead",
     "snaptrade_search_symbol",
     "snaptrade_preview_order",
     "snaptrade_execute_order",

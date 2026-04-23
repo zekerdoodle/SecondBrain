@@ -1497,6 +1497,251 @@ def get_agent_detail(name: str):
     return {"name": name, "config": config_yaml, "prompt": prompt_content, "background_prompt": bg_prompt_content}
 
 
+# ---------------------------------------------------------------------------
+# Mood selector endpoints
+# ---------------------------------------------------------------------------
+# Exposes the mood toolkit to the UI so the user can set an agent's mood directly
+# when they don't want to decide themselves. Only surfaces for agents that
+# already have `mcp__brain__set_mood` in their config `tools` list — the UI
+# hides the selector entirely for other agents.
+
+_MOOD_TOOL_NAME = "mcp__brain__set_mood"
+
+
+def _agent_has_mood_tool(agent_config) -> bool:
+    """Check if an agent has the mood tool enabled in its config."""
+    return _MOOD_TOOL_NAME in (agent_config.tools or [])
+
+
+async def broadcast_mood_changed(agent_name: str):
+    """Tell every connected client that ``agent_name``'s mood changed.
+
+    Called by both the POST /api/agents/{name}/set-mood endpoint (when the user
+    sets via UI) and by the set_mood MCP tool (when the agent sets its own
+    mood). The frontend MoodSelector listens for this and refetches.
+    """
+    try:
+        await broadcast_to_all_clients({
+            "type": "mood_updated",
+            "agent": agent_name,
+        })
+    except Exception as e:
+        logger.warning(f"Failed to broadcast mood update for {agent_name}: {e}")
+
+
+def _read_mood_description(mood_path: Path) -> str:
+    """Extract a short description from a mood .md file.
+
+    Skips leading `# Heading` lines and blank lines, returns the first sentence
+    (or up to ~140 chars) of the first body paragraph.
+    """
+    try:
+        text = mood_path.read_text().strip()
+    except Exception:
+        return ""
+    body_lines = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            if body_lines:
+                break
+            continue
+        if stripped.startswith("#"):
+            continue
+        body_lines.append(stripped)
+        # Grab enough for a one-line preview then stop
+        if sum(len(l) for l in body_lines) > 200:
+            break
+    preview = " ".join(body_lines).strip()
+    # Truncate to first sentence or 140 chars
+    cutoff = 140
+    if len(preview) > cutoff:
+        # Try to cut at sentence boundary
+        for marker in [". ", "! ", "? "]:
+            idx = preview.rfind(marker, 0, cutoff)
+            if idx > 40:
+                return preview[: idx + 1]
+        return preview[:cutoff].rstrip() + "…"
+    return preview
+
+
+@app.get("/api/agents/{name}/moods")
+def get_agent_moods(name: str):
+    """Return mood-selector data for an agent.
+
+    Response:
+        {
+            "enabled": bool,           # whether the mood tool is in the agent's config
+            "current": str | None,     # name of active preset if one matches, else "custom" / None
+            "current_preview": str,    # short preview of active mood content (empty if none)
+            "moods": [
+                {"name": "cozy", "description": "Sunday morning energy..."},
+                ...
+            ]
+        }
+    """
+    agents_dir = Path(ROOT_DIR) / ".claude" / "agents"
+    if str(agents_dir) not in sys.path:
+        sys.path.insert(0, str(agents_dir))
+    from registry import get_registry
+
+    registry = get_registry()
+    agent = registry.get(name)
+    if not agent:
+        raise HTTPException(status_code=404, detail=f"Agent '{name}' not found")
+
+    enabled = _agent_has_mood_tool(agent)
+    if not enabled:
+        return {"enabled": False, "current": None, "current_preview": "", "moods": []}
+
+    # List preset mood files
+    moods_dir = agents_dir / name / "moods"
+    moods: List[Dict[str, str]] = []
+    if moods_dir.exists():
+        for md_file in sorted(moods_dir.glob("*.md")):
+            if md_file.name.startswith("_"):
+                continue
+            moods.append({
+                "name": md_file.stem,
+                "description": _read_mood_description(md_file),
+            })
+
+    # Inspect current mood via working memory
+    scripts_dir = Path(ROOT_DIR) / ".claude" / "scripts"
+    if str(scripts_dir) not in sys.path:
+        sys.path.insert(0, str(scripts_dir))
+    from working_memory import get_store
+
+    store = get_store(agent_name=name)
+    current_name: Optional[str] = None
+    current_preview = ""
+    for item in store.list_items():
+        if item.tag == "mood":
+            # Try to match content against a preset file
+            for m in moods:
+                preset_path = moods_dir / f"{m['name']}.md"
+                try:
+                    if preset_path.read_text().strip() == item.content.strip():
+                        current_name = m["name"]
+                        break
+                except Exception:
+                    continue
+            if current_name is None:
+                current_name = "custom"
+            # Short preview for the button label
+            first_line = item.content.splitlines()[0].lstrip("# ").strip()
+            current_preview = first_line[:60]
+            break
+
+    return {
+        "enabled": True,
+        "current": current_name,
+        "current_preview": current_preview,
+        "moods": moods,
+    }
+
+
+class SetMoodRequest(BaseModel):
+    preset: str  # preset name (e.g. "cozy") or "clear" to remove the active mood
+
+
+@app.post("/api/agents/{name}/set-mood")
+async def set_agent_mood(name: str, body: SetMoodRequest):
+    """Set or clear an agent's mood on the user's behalf.
+
+    Writes the mood to the agent's working memory as a pinned entry (same as the
+    mood MCP tool) and adds a short TTL=1 attribution note so the agent knows
+    the user set it and can still change it. The attribution note auto-expires
+    after one exchange.
+    """
+    agents_dir = Path(ROOT_DIR) / ".claude" / "agents"
+    if str(agents_dir) not in sys.path:
+        sys.path.insert(0, str(agents_dir))
+    from registry import get_registry
+
+    registry = get_registry()
+    agent = registry.get(name)
+    if not agent:
+        raise HTTPException(status_code=404, detail=f"Agent '{name}' not found")
+    if not _agent_has_mood_tool(agent):
+        raise HTTPException(status_code=400, detail=f"Agent '{name}' does not have the mood tool enabled")
+
+    scripts_dir = Path(ROOT_DIR) / ".claude" / "scripts"
+    if str(scripts_dir) not in sys.path:
+        sys.path.insert(0, str(scripts_dir))
+    from working_memory import get_store
+
+    store = get_store(agent_name=name)
+    preset = (body.preset or "").strip().lower()
+
+    # Clear any existing mood-tagged item (only one mood active at a time).
+    def _clear_mood():
+        items = store.list_items()
+        mood_indices = [i + 1 for i, item in enumerate(items) if item.tag == "mood"]
+        for idx in reversed(mood_indices):
+            store.remove_item(idx)
+
+    # Clear any stale attribution notes too — don't stack them.
+    def _clear_attribution():
+        items = store.list_items()
+        attr_indices = [i + 1 for i, item in enumerate(items) if item.tag == "mood-set-by-zeke"]
+        for idx in reversed(attr_indices):
+            store.remove_item(idx)
+
+    _clear_attribution()
+
+    if preset in ("clear", "neutral", ""):
+        _clear_mood()
+        # Attribution note so the agent knows the user intentionally cleared it
+        try:
+            store.add_item(
+                content="the user just cleared your mood via the UI — back to baseline. Change it anytime with set_mood if something fits better.",
+                tag="mood-set-by-zeke",
+                ttl=1,
+                pinned=False,
+            )
+        except Exception as e:
+            logger.warning(f"Could not add attribution note: {e}")
+        await broadcast_mood_changed(name)
+        return {"ok": True, "action": "cleared"}
+
+    # Apply preset
+    moods_dir = agents_dir / name / "moods"
+    preset_file = moods_dir / f"{preset}.md"
+    if not preset_file.exists():
+        raise HTTPException(status_code=404, detail=f"Mood preset '{preset}' not found for agent '{name}'")
+
+    try:
+        mood_content = preset_file.read_text().strip()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Could not read mood file: {e}")
+
+    _clear_mood()
+    try:
+        store.add_item(
+            content=mood_content,
+            tag="mood",
+            pinned=True,
+            pin_rank=1,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Could not set mood: {e}")
+
+    # TTL=1 attribution — decays after a single exchange so it doesn't clutter.
+    try:
+        store.add_item(
+            content=f"the user set your mood to **{preset}** via the UI just now — change it anytime with set_mood if it doesn't fit.",
+            tag="mood-set-by-zeke",
+            ttl=1,
+            pinned=False,
+        )
+    except Exception as e:
+        logger.warning(f"Could not add attribution note: {e}")
+
+    await broadcast_mood_changed(name)
+    return {"ok": True, "action": "set", "preset": preset}
+
+
 @app.get("/api/native-tools")
 def list_native_tools():
     """List native Claude Code tools exposed to agents (Agent Builder source of truth).
@@ -5570,7 +5815,7 @@ You are running as a scheduled task. Your output will be shown to the user in a 
                     existing_messages = existing_chat.get("messages", [])
                     title = existing_chat.get("title", "Scheduled Task")
 
-                    augmented_prompt = _build_history_context(existing_messages[-20:], prompt)
+                    augmented_prompt = _build_history_context(existing_messages, prompt)
 
                     claude = ClaudeWrapper(session_id="new", cwd=ROOT_DIR, chat_id=target_room_id, chat_messages=existing_messages)
                     logger.info(f"Starting fresh SDK session for room {target_room_id}")

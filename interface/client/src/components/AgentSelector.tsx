@@ -62,7 +62,7 @@ export const AgentSelector: React.FC<AgentSelectorProps> = ({
       </button>
 
       {open && !locked && (
-        <div className="absolute top-full left-0 mt-2 w-64 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-xl shadow-lg z-50 overflow-hidden">
+        <div className="absolute top-full left-0 mt-2 w-64 max-h-[min(70vh,500px)] overflow-y-auto bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-xl shadow-lg z-50">
           {agents.map(a => {
             const AIcon = getAgentIcon(a.icon);
             const isSelected = a.name === agent?.name;
