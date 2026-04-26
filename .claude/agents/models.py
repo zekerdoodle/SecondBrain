@@ -144,6 +144,9 @@ class AgentResult:
         started_at: When execution started
         completed_at: When execution finished
         error: Error message if status is error
+        conversation_id: Agent-to-agent thread ID (when invoked with threading).
+            Always returned by invoke_agent so callers can follow up on the
+            same thread.
     """
     agent: str
     status: Literal["success", "error", "timeout"]
@@ -153,6 +156,7 @@ class AgentResult:
     error: Optional[str] = None
     transcript: Optional[str] = None
     blocks: Optional[List[Dict[str, Any]]] = None
+    conversation_id: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""
@@ -166,6 +170,8 @@ class AgentResult:
         }
         if self.transcript:
             d["transcript"] = self.transcript
+        if self.conversation_id:
+            d["conversation_id"] = self.conversation_id
         # blocks are not serialized to execution log (too large)
         return d
 
@@ -180,6 +186,7 @@ class AgentResult:
             completed_at=datetime.fromisoformat(data["completed_at"]),
             error=data.get("error"),
             transcript=data.get("transcript"),
+            conversation_id=data.get("conversation_id"),
         )
 
 

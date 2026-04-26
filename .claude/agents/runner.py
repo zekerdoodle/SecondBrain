@@ -218,6 +218,8 @@ async def invoke_agent(
     model_override: Optional[str] = None,
     project: Optional[Union[str, List[str]]] = None,
     is_visible: bool = False,
+    conversation_id: Optional[str] = None,
+    caller_agent: Optional[str] = None,
 ) -> Union[AgentResult, Dict[str, str]]:
     """
     Invoke an agent with the specified mode.
@@ -231,11 +233,21 @@ async def invoke_agent(
         project: Optional project tag (string or list of strings) for output routing.
                  When present, appends PROJECT METADATA to the prompt instructing the
                  agent to include YAML frontmatter in output files.
+        conversation_id: Agent-to-agent thread ID. If omitted, a new thread is
+            created. If provided, the thread must exist and not be currently
+            locked by another live invocation.
+        caller_agent: Name of the agent (or caller identity) that initiated
+            this invocation. Recorded as the author of the prompt message in
+            the thread. Defaults to "caller" for legacy/unsourced callers.
 
     Returns:
-        For foreground: AgentResult with full response
-        For ping: Acknowledgment dict with notification ID
-        For trust/scheduled: Acknowledgment dict
+        For foreground: AgentResult (with ``conversation_id`` set)
+        For ping: Acknowledgment dict including ``conversation_id``
+        For trust/scheduled: Acknowledgment dict including ``conversation_id``
+
+    Errors related to conversations:
+        - ``{"error": "Conversation <id> not found..."}``
+        - ``{"error": "Thread <id> is currently being processed..."}``
     """
     from registry import get_registry
 
@@ -281,10 +293,46 @@ async def invoke_agent(
         prompt = prompt + _build_project_metadata_block(name, project)
         logger.info(f"Injected project metadata for '{project}' into agent '{name}' prompt")
 
-    # Create invocation record
+    # Conversation setup: resolve / create thread + acquire invocation lock.
+    # Runs synchronously for all three modes so ping/trust calls can return
+    # the conversation_id in their ack and so lock contention shows up to the
+    # caller immediately (not after N minutes of background work).
+    effective_caller = caller_agent or "caller"
+    thread_ctx = await _setup_conversation(
+        target_agent=name,
+        caller_agent=effective_caller,
+        prompt=prompt,
+        conversation_id=conversation_id,
+        source_chat_id=source_chat_id,
+        mode=mode,
+        model_override=model_override,
+        project=project,
+    )
+    if "error" in thread_ctx:
+        if mode == InvocationMode.FOREGROUND:
+            return AgentResult(
+                agent=name,
+                status="error",
+                response="",
+                started_at=datetime.utcnow(),
+                completed_at=datetime.utcnow(),
+                error=thread_ctx["error"],
+                conversation_id=thread_ctx.get("conversation_id"),
+            )
+        return {
+            "error": thread_ctx["error"],
+            "conversation_id": thread_ctx.get("conversation_id"),
+        }
+
+    conv_id = thread_ctx["conversation_id"]
+    lock_id = thread_ctx["lock_id"]
+    prompt_for_agent = thread_ctx["prompt_for_agent"]
+
+    # Create invocation record — the prompt sent to the SDK is the one with
+    # history injected (so the agent sees the full thread context).
     invocation = AgentInvocation(
         agent=name,
-        prompt=prompt,
+        prompt=prompt_for_agent,
         mode=mode,
         source_chat_id=source_chat_id,
         model_override=model_override,
@@ -292,37 +340,282 @@ async def invoke_agent(
         is_visible=is_visible,
     )
 
-    logger.info(f"Invoking agent '{name}' in {mode.value} mode" + (f" [project: {project}]" if project else ""))
+    logger.info(
+        f"Invoking agent '{name}' in {mode.value} mode"
+        + (f" [project: {project}]" if project else "")
+        + f" [thread: {conv_id}]"
+    )
 
     # Handle different modes
     if mode == InvocationMode.FOREGROUND:
-        return await _run_agent(config, invocation)
+        try:
+            result = await _run_agent(config, invocation)
+        except Exception:
+            _release_thread_lock(conv_id, lock_id)
+            raise
+        await _finalize_thread_turn(conv_id, lock_id, name, result)
+        result.conversation_id = conv_id
+        return result
 
     elif mode == InvocationMode.PING:
         if not source_chat_id:
-            return {"error": "source_chat_id required for ping mode"}
+            _release_thread_lock(conv_id, lock_id)
+            return {
+                "error": "source_chat_id required for ping mode",
+                "conversation_id": conv_id,
+            }
 
-        # Run in background, add notification when done
-        asyncio.create_task(_run_ping_agent(config, invocation))
+        asyncio.create_task(
+            _run_ping_agent(config, invocation, conversation_id=conv_id, lock_id=lock_id)
+        )
         return {
             "status": "accepted",
             "agent": name,
             "mode": "ping",
-            "message": f"Agent '{name}' is working on your task. You'll be notified when done."
+            "conversation_id": conv_id,
+            "message": (
+                f"Agent '{name}' is working on your task. "
+                f"You'll be notified when done."
+            ),
         }
 
     elif mode in (InvocationMode.TRUST, InvocationMode.SCHEDULED):
-        # Run in background, just log
-        asyncio.create_task(_run_background_agent(config, invocation))
+        asyncio.create_task(
+            _run_background_agent(
+                config, invocation, conversation_id=conv_id, lock_id=lock_id
+            )
+        )
         return {
             "status": "accepted",
             "agent": name,
             "mode": mode.value,
-            "message": f"Agent '{name}' is working on your task."
+            "conversation_id": conv_id,
+            "message": f"Agent '{name}' is working on your task.",
         }
 
     else:
-        return {"error": f"Unknown mode: {mode}"}
+        _release_thread_lock(conv_id, lock_id)
+        return {"error": f"Unknown mode: {mode}", "conversation_id": conv_id}
+
+
+# =============================================================================
+# Agent-to-Agent Conversation helpers (threading support)
+# =============================================================================
+
+async def _setup_conversation(
+    target_agent: str,
+    caller_agent: str,
+    prompt: str,
+    conversation_id: Optional[str],
+    source_chat_id: Optional[str],
+    mode: InvocationMode,
+    model_override: Optional[str],
+    project: Optional[Any],
+) -> Dict[str, Any]:
+    """Resolve / create the thread, acquire the invocation lock, append the
+    caller's prompt, and build the history-injected prompt for the SDK query.
+
+    Returns a dict with keys:
+        - ``conversation_id``: resolved or newly created thread ID
+        - ``lock_id``: lock token for later release
+        - ``prompt_for_agent``: prompt to pass into the SDK (history + current)
+
+    Or ``{"error": "...", "conversation_id": ...}`` on failure.
+    """
+    try:
+        from agent_conversation_manager import get_manager, build_history_prompt
+    except ImportError as e:
+        logger.error(f"Failed to import agent_conversation_manager: {e}")
+        return {"error": f"Agent conversation manager unavailable: {e}"}
+
+    manager = get_manager()
+
+    if conversation_id:
+        data = manager.load(conversation_id)
+        if data is None:
+            return {
+                "error": (
+                    f"Conversation '{conversation_id}' not found. "
+                    f"Use list_agent_conversations to discover existing threads, "
+                    f"or omit conversation_id to start a new one."
+                ),
+            }
+        lock_id = manager.acquire_lock(conversation_id, caller_agent)
+        if lock_id is None:
+            lock_info = data.get("lock") or {}
+            return {
+                "error": (
+                    f"Thread '{conversation_id}' is currently being processed "
+                    f"(held by '{lock_info.get('locked_by', 'unknown')}'). "
+                    f"Retry once it completes."
+                ),
+                "conversation_id": conversation_id,
+            }
+        resolved_id = conversation_id
+    else:
+        resolved_id = manager.create(
+            initiator=caller_agent,
+            source_chat_id=source_chat_id,
+        )
+        lock_id = manager.acquire_lock(resolved_id, caller_agent)
+        if lock_id is None:
+            # Should not happen for a fresh thread, but guard anyway.
+            return {
+                "error": (
+                    f"Failed to acquire lock on newly created thread "
+                    f"{resolved_id}. Try again."
+                ),
+                "conversation_id": resolved_id,
+            }
+
+    # Append caller's prompt BEFORE running the agent — if the agent crashes,
+    # the question is still preserved in the thread.
+    try:
+        manager.append_message(
+            resolved_id,
+            from_agent=caller_agent,
+            content=prompt,
+            mode=mode.value if isinstance(mode, InvocationMode) else str(mode),
+            model_override=model_override,
+            project=project,
+        )
+    except Exception as e:
+        logger.error(f"Failed to append caller prompt to {resolved_id}: {e}")
+        manager.release_lock(resolved_id, lock_id)
+        return {
+            "error": f"Failed to save prompt to thread: {e}",
+            "conversation_id": resolved_id,
+        }
+
+    # Build history-injected prompt. Strip the message we just appended (it's
+    # the "current message", not prior context).
+    data = manager.load(resolved_id) or {}
+    hist_data = dict(data)
+    hist_messages = list(hist_data.get("messages") or [])
+    if hist_messages:
+        hist_messages = hist_messages[:-1]
+    hist_data["messages"] = hist_messages
+
+    prompt_for_agent = build_history_prompt(
+        data=hist_data,
+        target_agent=target_agent,
+        caller_agent=caller_agent,
+        current_prompt=prompt,
+    )
+
+    return {
+        "conversation_id": resolved_id,
+        "lock_id": lock_id,
+        "prompt_for_agent": prompt_for_agent,
+    }
+
+
+def _release_thread_lock(conversation_id: str, lock_id: str) -> None:
+    """Best-effort lock release (never raises)."""
+    try:
+        from agent_conversation_manager import get_manager
+        get_manager().release_lock(conversation_id, lock_id)
+    except Exception as e:
+        logger.warning(
+            f"Failed to release lock on {conversation_id} "
+            f"(lock_id={lock_id}): {e}"
+        )
+
+
+async def _finalize_thread_turn(
+    conversation_id: str,
+    lock_id: str,
+    target_agent: str,
+    result: AgentResult,
+) -> None:
+    """Append the agent's response to the thread, release the lock, and kick
+    off the chat titler in the background when appropriate.
+    """
+    try:
+        from agent_conversation_manager import get_manager
+    except ImportError as e:
+        logger.error(f"finalize_thread_turn: manager import failed: {e}")
+        return
+
+    manager = get_manager()
+
+    # Append response even on error — preserves the failure text for debugging.
+    content = result.response or result.error or ""
+    try:
+        manager.append_message(
+            conversation_id,
+            from_agent=target_agent,
+            content=content,
+            transcript=getattr(result, "transcript", None),
+        )
+    except Exception as e:
+        logger.error(
+            f"Failed to append agent response to {conversation_id}: {e}"
+        )
+    finally:
+        _release_thread_lock(conversation_id, lock_id)
+
+    # Titler runs asynchronously — never block the caller on it.
+    asyncio.create_task(_maybe_retitle_thread(conversation_id))
+
+
+async def _maybe_retitle_thread(conversation_id: str) -> None:
+    """Trigger the haiku chat titler when a thread hits a title checkpoint.
+
+    Cadence mirrors user chats: generate on the 2nd message, re-evaluate
+    every ``RETITLE_INTERVAL`` messages after that.
+    """
+    try:
+        from agent_conversation_manager import get_manager, messages_as_roles_for_titler
+    except ImportError:
+        return
+
+    manager = get_manager()
+    data = manager.load(conversation_id)
+    if not data:
+        return
+
+    messages = data.get("messages") or []
+    n = len(messages)
+    current_title = data.get("title")
+
+    try:
+        scripts_dir = str(Path(__file__).parent.parent / "scripts")
+        if scripts_dir not in sys.path:
+            sys.path.insert(0, scripts_dir)
+        from chat_titler import generate_title, RETITLE_INTERVAL
+    except ImportError as e:
+        logger.debug(f"Chat titler unavailable: {e}")
+        return
+
+    should_title = False
+    is_retitle = False
+    if not current_title and n >= 2:
+        should_title = True
+    elif current_title and n >= 4 and n % RETITLE_INTERVAL == 0:
+        should_title = True
+        is_retitle = True
+
+    if not should_title:
+        return
+
+    try:
+        titler_messages = messages_as_roles_for_titler(data)
+        result = await generate_title(
+            titler_messages,
+            current_title=current_title,
+            is_retitle=is_retitle,
+        )
+        new_title = (result or {}).get("title")
+        should_update = (result or {}).get("should_update", not is_retitle)
+        if new_title and should_update and new_title != current_title:
+            manager.update_title(conversation_id, new_title)
+            logger.info(
+                f"Thread {conversation_id} titled: "
+                f"'{current_title}' -> '{new_title}'"
+            )
+    except Exception as e:
+        logger.warning(f"Titler failed for thread {conversation_id}: {e}")
 
 
 async def _run_agent(config: AgentConfig, invocation: AgentInvocation) -> AgentResult:
@@ -366,25 +659,54 @@ async def _run_agent(config: AgentConfig, invocation: AgentInvocation) -> AgentR
         )
 
 
-async def _run_ping_agent(config: AgentConfig, invocation: AgentInvocation) -> None:
-    """Run agent and add notification when done."""
+async def _run_ping_agent(
+    config: AgentConfig,
+    invocation: AgentInvocation,
+    conversation_id: Optional[str] = None,
+    lock_id: Optional[str] = None,
+) -> None:
+    """Run agent and add notification when done.
+
+    If ``conversation_id``/``lock_id`` are provided, finalize the thread turn
+    (append response + release lock + kick off titler) exactly like foreground.
+    """
     try:
         result = await _run_agent(config, invocation)
 
-        # Add to notification queue
+        # Finalize thread turn (append response, release lock, trigger titler).
+        if conversation_id and lock_id:
+            result.conversation_id = conversation_id
+            await _finalize_thread_turn(conversation_id, lock_id, config.name, result)
+
+        # Add to notification queue — include conversation_id footer so the
+        # caller can continue threading with the response.
+        response_text = (
+            result.response if result.status == "success"
+            else f"Error: {result.error}"
+        )
+        if conversation_id:
+            response_text = (
+                f"{response_text}\n\n---\n[conversation_id: {conversation_id}]"
+            )
+
         queue = get_notification_queue()
-        notification = queue.add(
+        queue.add(
             agent=config.name,
-            agent_response=result.response if result.status == "success" else f"Error: {result.error}",
+            agent_response=response_text,
             source_chat_id=invocation.source_chat_id,
             invoked_at=invocation.invoked_at,
             completed_at=result.completed_at,
         )
 
-        # Log execution
         _log_execution(invocation, result)
     except Exception as e:
-        logger.error(f"Background ping task for agent '{config.name}' failed: {e}", exc_info=True)
+        logger.error(
+            f"Background ping task for agent '{config.name}' failed: {e}",
+            exc_info=True,
+        )
+        # Ensure the lock gets released on catastrophic failure.
+        if conversation_id and lock_id:
+            _release_thread_lock(conversation_id, lock_id)
 
 
 async def invoke_agent_chain(
@@ -861,13 +1183,31 @@ def list_chain_checkpoints() -> List[Dict[str, Any]]:
     return checkpoints
 
 
-async def _run_background_agent(config: AgentConfig, invocation: AgentInvocation) -> None:
-    """Run agent and log (no notification)."""
+async def _run_background_agent(
+    config: AgentConfig,
+    invocation: AgentInvocation,
+    conversation_id: Optional[str] = None,
+    lock_id: Optional[str] = None,
+) -> None:
+    """Run agent and log (no notification).
+
+    If ``conversation_id``/``lock_id`` are provided, finalize the thread turn
+    (append response + release lock + kick off titler) the same way
+    foreground / ping do.
+    """
     try:
         result = await _run_agent(config, invocation)
+        if conversation_id and lock_id:
+            result.conversation_id = conversation_id
+            await _finalize_thread_turn(conversation_id, lock_id, config.name, result)
         _log_execution(invocation, result)
     except Exception as e:
-        logger.error(f"Background task for agent '{config.name}' failed: {e}", exc_info=True)
+        logger.error(
+            f"Background task for agent '{config.name}' failed: {e}",
+            exc_info=True,
+        )
+        if conversation_id and lock_id:
+            _release_thread_lock(conversation_id, lock_id)
 
 
 async def _run_sdk_agent(config: AgentConfig, invocation: AgentInvocation) -> str:

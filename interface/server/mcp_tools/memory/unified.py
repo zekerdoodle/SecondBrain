@@ -582,7 +582,7 @@ Omit agent to search ALL agents' memories. Private memories are always excluded.
             },
             "agent": {
                 "type": "string",
-                "description": 'Agent name (e.g., "coder", "deep_research"). Omit for all.',
+                "description": 'Agent name (e.g., "patch", "ash"). Omit for all.',
             },
             "max_results": {
                 "type": "integer",

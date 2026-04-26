@@ -11,7 +11,7 @@ import asyncio
 import os
 import sys
 import time
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from claude_agent_sdk import tool
 
@@ -38,22 +38,43 @@ def _build_invoke_tool_schema():
 IMPORTANT: This tool is for PARALLEL/INDEPENDENT agent invocations. If you need to run
 multiple agents where each depends on the previous result, use invoke_agent_chain instead.
 
-Invocation modes (all are non-silent — the user can see them):
-- foreground: Wait for result (blocking). Use for quick tasks or when you need the response.
-- ping: Run async, the user gets notified when done. Use for longer tasks where you want to continue working.
-- trust: Fire and forget. Use for background tasks where you trust the agent to do the right thing.
+Invocation modes (all are non-silent — visible to the user in his UI):
+- foreground: Wait for result (blocking). Use for quick tasks or when you need the response now.
+- ping: Run async. YOU — the agent calling this tool — get pinged back when the invoked
+  agent finishes, so you can continue the thread. ("Ping me" means ping YOU, the caller,
+  not the user.) Use for longer tasks where you want to continue working in parallel.
+- trust: Fire and forget. No ping-back to you. Use when you trust the agent to do the
+  right thing and don't need to react to the result yourself.
 
 When to use which mode:
 - Use foreground for quick lookups, simple code fixes, or when you need the result immediately
-- Use ping for research tasks, code refactoring, or anything that might take a while
-- Use trust for maintenance tasks, background processing, or when the work itself IS the result
+- Use ping for research tasks, code refactoring, or anything that might take a while AND
+  you want to be re-invoked with the result so you can act on it
+- Use trust for maintenance tasks, background processing, or when the work itself IS the
+  result (no follow-up needed from you)
 
 Note: For truly invisible (silent) execution where the user does NOT see the task, use schedule_agent
 with silent=true instead.
 
+THREADED CONVERSATIONS (optional):
+Every response includes a `[conversation_id: <uuid>]` footer. To continue a prior
+thread — for example, to answer a clarifying question the invoked agent asked —
+pass that ID back as the `conversation_id` param. The invoked agent will see the
+full prior history of the thread before responding.
+
+- If the thread is currently being processed by another in-flight invocation,
+  your call is rejected with a "thread locked" error — retry once it completes.
+- Any agent with a `conversation_id` may invoke on that thread when idle;
+  threads are NOT restricted to a single pair of agents. Another agent can join
+  a thread to contribute context.
+- Omit `conversation_id` to start a new thread; its ID is returned in the footer.
+- Use list_agent_conversations / read_agent_conversation / delete_agent_conversation
+  to discover and manage threads.
+
 Use case examples:
 - Launch multiple independent research tasks in parallel with separate invoke_agent calls
-- Quick one-off agent tasks that don't depend on other agents"""
+- Quick one-off agent tasks that don't depend on other agents
+- Multi-turn back-and-forth with one agent (pass conversation_id on follow-ups)"""
 
     schema = {
         "type": "object",
@@ -70,7 +91,7 @@ Use case examples:
             "mode": {
                 "type": "string",
                 "enum": ["foreground", "ping", "trust"],
-                "description": "Invocation mode: foreground (wait), ping (notify when done), trust (fire and forget). Default: foreground",
+                "description": "Invocation mode: foreground (wait for result), ping (async — YOU, the caller, get pinged back when done so you can continue the thread), trust (fire and forget, no ping-back). Default: foreground",
                 "default": "foreground"
             },
             "model_override": {
@@ -84,6 +105,10 @@ Use case examples:
                     {"type": "string"},
                     {"type": "array", "items": {"type": "string"}}
                 ]
+            },
+            "conversation_id": {
+                "type": "string",
+                "description": "Optional. Continue a prior agent-to-agent thread. The invoked agent will see the full prior history of that thread before responding. If the thread is currently being processed, the call is rejected — retry once it completes. Any agent with the ID may invoke on an idle thread. Omit to start a new thread; its ID is returned in the response footer."
             }
         },
         "required": ["agent", "prompt"]
@@ -93,6 +118,19 @@ Use case examples:
 
 
 _INVOKE_DESCRIPTION, _INVOKE_SCHEMA = _build_invoke_tool_schema()
+
+
+def _append_conversation_footer(text: str, conversation_id: Optional[str]) -> str:
+    """Append the machine-readable conversation footer so callers can resume.
+
+    Footer format: ``---\\n[conversation_id: <uuid>]`` — appears at the very
+    end of the agent's text response. MCP tool responses are text-only, so a
+    parseable sentinel beats trying to smuggle structured fields.
+    """
+    if not conversation_id:
+        return text
+    text = (text or "").rstrip()
+    return f"{text}\n\n---\n[conversation_id: {conversation_id}]"
 
 
 @register_tool("agents")
@@ -107,6 +145,7 @@ async def invoke_agent(args: Dict[str, Any]) -> Dict[str, Any]:
         mode = args.get("mode", "foreground")
         model_override = args.get("model_override")
         project = args.get("project")
+        conversation_id = args.get("conversation_id")
 
         if not agent_name:
             return {"content": [{"type": "text", "text": "Error: agent is required"}], "is_error": True}
@@ -117,33 +156,56 @@ async def invoke_agent(args: Dict[str, Any]) -> Dict[str, Any]:
         # Get source chat ID: injected by MCP wrapper (concurrent-safe) or env var (fallback)
         source_chat_id = args.pop("_source_chat_id", None) or os.environ.get("CURRENT_CHAT_ID")
 
+        # Get calling agent name — injected by MCP wrapper for agent-owned MCP servers.
+        # Falls back to "user" when the tool is called from a user chat (primary_claude
+        # has no agent_name injected).
+        caller_agent = args.pop("_agent_name", None) or "user"
+
         result = await _invoke_agent(
             name=agent_name,
             prompt=prompt,
             mode=mode,
             source_chat_id=source_chat_id,
             model_override=model_override,
-            project=project
+            project=project,
+            conversation_id=conversation_id,
+            caller_agent=caller_agent,
         )
 
         # Handle different result types based on mode
         if mode == "foreground":
             # AgentResult object
             if hasattr(result, "status"):
+                conv_id = getattr(result, "conversation_id", None)
                 if result.status == "success":
-                    return {"content": [{"type": "text", "text": result.transcript or result.response}]}
+                    body = result.transcript or result.response
+                    return {"content": [{"type": "text", "text": _append_conversation_footer(body, conv_id)}]}
                 else:
                     error_msg = f"Agent {agent_name} failed: {result.error or result.status}"
-                    return {"content": [{"type": "text", "text": error_msg}], "is_error": True}
+                    return {
+                        "content": [{"type": "text", "text": _append_conversation_footer(error_msg, conv_id)}],
+                        "is_error": True,
+                    }
             else:
                 # Dict result (error case)
                 if "error" in result:
-                    return {"content": [{"type": "text", "text": result["error"]}], "is_error": True}
+                    conv_id = result.get("conversation_id")
+                    return {
+                        "content": [{"type": "text", "text": _append_conversation_footer(result["error"], conv_id)}],
+                        "is_error": True,
+                    }
                 return {"content": [{"type": "text", "text": str(result)}]}
         else:
             # Acknowledgment dict for ping/trust modes
+            if "error" in result:
+                conv_id = result.get("conversation_id")
+                return {
+                    "content": [{"type": "text", "text": _append_conversation_footer(result["error"], conv_id)}],
+                    "is_error": True,
+                }
             message = result.get("message", f"Agent {agent_name} is working on your task.")
-            return {"content": [{"type": "text", "text": message}]}
+            conv_id = result.get("conversation_id")
+            return {"content": [{"type": "text", "text": _append_conversation_footer(message, conv_id)}]}
 
     except Exception as e:
         import traceback
@@ -444,6 +506,8 @@ async def invoke_agent_parallel(args: Dict[str, Any]) -> Dict[str, Any]:
 
         # Get source chat ID: injected by MCP wrapper (concurrent-safe) or env var (fallback)
         source_chat_id = args.pop("_source_chat_id", None) or os.environ.get("CURRENT_CHAT_ID")
+        # Caller identity for thread authorship.
+        caller_agent = args.pop("_agent_name", None) or "user"
 
         # Hardcoded semaphore for system safety — not a user parameter
         semaphore = asyncio.Semaphore(5)
@@ -469,21 +533,34 @@ async def invoke_agent_parallel(args: Dict[str, Any]) -> Dict[str, Any]:
                             mode="foreground",
                             source_chat_id=source_chat_id,
                             model_override=model_override,
+                            caller_agent=caller_agent,
                         ),
                         timeout=AGENT_TIMEOUT,
                     )
 
                     duration = time.monotonic() - start
 
-                    # Extract response from AgentResult or dict
+                    # Extract response + conversation_id from AgentResult or dict
                     if hasattr(result, "status"):
+                        conv_id = getattr(result, "conversation_id", None)
                         if result.status == "success":
-                            return {"idx": idx, "status": "success", "response": result.transcript or result.response, "duration": duration}
+                            return {
+                                "idx": idx, "status": "success",
+                                "response": result.transcript or result.response,
+                                "duration": duration, "conversation_id": conv_id,
+                            }
                         else:
                             error_msg = result.error or result.status
-                            return {"idx": idx, "status": "error", "error": error_msg, "duration": duration}
+                            return {
+                                "idx": idx, "status": "error", "error": error_msg,
+                                "duration": duration, "conversation_id": conv_id,
+                            }
                     elif isinstance(result, dict) and "error" in result:
-                        return {"idx": idx, "status": "error", "error": result["error"], "duration": duration}
+                        return {
+                            "idx": idx, "status": "error", "error": result["error"],
+                            "duration": duration,
+                            "conversation_id": result.get("conversation_id"),
+                        }
                     else:
                         return {"idx": idx, "status": "success", "response": str(result), "duration": duration}
 
@@ -557,6 +634,9 @@ def _format_parallel_results(
         parts.append("---")
         parts.append(f"### Result {i + 1}: {agent_name} ({duration_fmt}){status_marker}")
         parts.append(f"> **Prompt**: {prompt_preview}")
+        conv_id = r.get("conversation_id")
+        if conv_id:
+            parts.append(f"> **conversation_id**: `{conv_id}`")
         parts.append("")
 
         if r["status"] == "success":
@@ -576,3 +656,247 @@ def _fmt_duration(seconds: float) -> str:
     minutes = int(seconds // 60)
     secs = int(seconds % 60)
     return f"{minutes}m {secs}s"
+
+
+# =============================================================================
+# Agent-to-Agent Conversation tools
+# =============================================================================
+
+def _fmt_ago(ts: Optional[float]) -> str:
+    """Format a UNIX timestamp as a human-readable relative time."""
+    if not ts:
+        return "unknown"
+    delta = time.time() - ts
+    if delta < 60:
+        return "just now"
+    if delta < 3600:
+        return f"{int(delta // 60)}m ago"
+    if delta < 86400:
+        return f"{int(delta // 3600)}h ago"
+    return f"{int(delta // 86400)}d ago"
+
+
+def _format_conversation_summary(summary: Dict[str, Any]) -> str:
+    """Render one conversation summary as markdown."""
+    title = summary.get("title") or "(untitled thread)"
+    conv_id = summary.get("conversation_id")
+    initiator = summary.get("initiator") or "unknown"
+    participants = summary.get("participants") or []
+    participants_str = ", ".join(participants) if participants else "(none)"
+    msg_count = summary.get("message_count", 0)
+    last = _fmt_ago(summary.get("last_message_at"))
+    locked = summary.get("locked")
+    lock_marker = f" 🔒 (held by {summary.get('locked_by')})" if locked else ""
+
+    lines = [
+        f"### \"{title}\"  [{conv_id}]{lock_marker}",
+        f"- Started by **{initiator}**, participants: {participants_str}",
+        f"- {msg_count} messages, last activity {last}",
+    ]
+    return "\n".join(lines)
+
+
+@register_tool("agents")
+@tool(
+    name="list_agent_conversations",
+    description="""List agent-to-agent conversation threads.
+
+By default, returns threads YOU (the calling agent) have participated in, sorted by
+most recent activity. You can discover other agents' threads too:
+
+- `agent="<name>"`: list that agent's threads instead of your own
+- `other_participant="<name>"`: filter to threads involving a specific other agent
+  (combines with `agent` if both are provided)
+
+All agent conversations are discoverable by all agents — we trust each other.
+Use this to find threads worth re-opening or reviewing, or to see what other
+agents are working on together.
+
+Returns a markdown list of threads with titles, participants, message counts,
+and last-activity times. Use `read_agent_conversation` to view a thread's full
+contents, or pass the ID as `conversation_id` to `invoke_agent` to continue it.""",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "limit": {
+                "type": "integer",
+                "description": "Max threads to return (default 20, max 100)",
+                "default": 20,
+                "minimum": 1,
+                "maximum": 100,
+            },
+            "agent": {
+                "type": "string",
+                "description": "Whose conversations to list. Defaults to the calling agent.",
+            },
+            "other_participant": {
+                "type": "string",
+                "description": "Filter to threads also including this agent.",
+            },
+        },
+    },
+)
+async def list_agent_conversations(args: Dict[str, Any]) -> Dict[str, Any]:
+    """List agent-to-agent conversation threads."""
+    try:
+        from agent_conversation_manager import get_manager
+    except ImportError as e:
+        return {"content": [{"type": "text", "text": f"Error: {e}"}], "is_error": True}
+
+    caller = args.pop("_agent_name", None) or "user"
+    limit = int(args.get("limit") or 20)
+    agent_filter = args.get("agent") or caller
+    other = args.get("other_participant")
+
+    manager = get_manager()
+    summaries = manager.list_for_agent(
+        agent_name=agent_filter, limit=limit, other_participant=other
+    )
+
+    if not summaries:
+        who = "you" if agent_filter == caller else agent_filter
+        filter_str = f" with {other}" if other else ""
+        return {"content": [{"type": "text", "text": f"No conversations found for {who}{filter_str}."}]}
+
+    header_who = "you" if agent_filter == caller else agent_filter
+    filter_str = f" (with {other})" if other else ""
+    lines = [
+        f"## Conversations where **{header_who}** has participated{filter_str} ({len(summaries)} shown)",
+        "",
+    ]
+    for s in summaries:
+        lines.append(_format_conversation_summary(s))
+        lines.append("")
+
+    return {"content": [{"type": "text", "text": "\n".join(lines).rstrip()}]}
+
+
+@register_tool("agents")
+@tool(
+    name="read_agent_conversation",
+    description="""Read the full contents of an agent-to-agent conversation thread.
+
+Returns every message in the thread with sender, timestamp, and content.
+Useful for catching up on a thread before deciding whether to continue it
+(via `invoke_agent(..., conversation_id=...)`) or picking up context for a
+related task.
+
+Any agent can read any thread — threads are not access-controlled. Use
+`list_agent_conversations` first if you don't know the ID.""",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "conversation_id": {
+                "type": "string",
+                "description": "The conversation ID to read.",
+            },
+        },
+        "required": ["conversation_id"],
+    },
+)
+async def read_agent_conversation(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Read the full contents of an agent-to-agent conversation thread."""
+    try:
+        from agent_conversation_manager import get_manager
+    except ImportError as e:
+        return {"content": [{"type": "text", "text": f"Error: {e}"}], "is_error": True}
+
+    # Not used for gating, but pop to keep args clean.
+    args.pop("_agent_name", None)
+    conv_id = args.get("conversation_id", "")
+    if not conv_id:
+        return {"content": [{"type": "text", "text": "Error: conversation_id is required"}], "is_error": True}
+
+    manager = get_manager()
+    data = manager.load(conv_id)
+    if not data:
+        return {
+            "content": [{"type": "text", "text": f"Conversation '{conv_id}' not found."}],
+            "is_error": True,
+        }
+
+    from datetime import datetime
+
+    title = data.get("title") or "(untitled thread)"
+    initiator = data.get("initiator") or "unknown"
+    participants = manager.get_participants(data)
+    messages = data.get("messages") or []
+    locked = data.get("lock")
+    lock_marker = ""
+    if locked:
+        lock_marker = f"\n**🔒 Currently locked** by `{locked.get('locked_by')}` (lock age: {_fmt_ago(locked.get('locked_at'))})"
+
+    lines = [
+        f"## \"{title}\"",
+        f"**ID**: `{conv_id}`",
+        f"**Started by**: {initiator}",
+        f"**Participants**: {', '.join(participants) if participants else '(none)'}",
+        f"**Messages**: {len(messages)}",
+    ]
+    if lock_marker:
+        lines.append(lock_marker)
+    lines.append("")
+    lines.append("---")
+
+    for msg in messages:
+        sender = msg.get("from", "unknown")
+        created = msg.get("created_at")
+        try:
+            ts_str = datetime.fromtimestamp(created).strftime("%Y-%m-%d %H:%M:%S") if created else "?"
+        except (OSError, ValueError, TypeError):
+            ts_str = "?"
+        mode = msg.get("mode")
+        mode_tag = f" _(mode: {mode})_" if mode else ""
+        lines.append("")
+        lines.append(f"### **{sender}** — {ts_str}{mode_tag}")
+        lines.append("")
+        lines.append(msg.get("content", ""))
+
+    return {"content": [{"type": "text", "text": "\n".join(lines)}]}
+
+
+@register_tool("agents")
+@tool(
+    name="delete_agent_conversation",
+    description="""Delete an agent-to-agent conversation thread.
+
+Only agents who have participated in the thread (as initiator or author of at
+least one message) can delete it. This is a soft safety rail — it's easy to
+lose work by mass-deleting someone else's threads.
+
+Use `list_agent_conversations` to find thread IDs.""",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "conversation_id": {
+                "type": "string",
+                "description": "The conversation ID to delete.",
+            },
+        },
+        "required": ["conversation_id"],
+    },
+)
+async def delete_agent_conversation(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Delete an agent-to-agent conversation thread."""
+    try:
+        from agent_conversation_manager import get_manager
+    except ImportError as e:
+        return {"content": [{"type": "text", "text": f"Error: {e}"}], "is_error": True}
+
+    caller = args.pop("_agent_name", None) or "user"
+    conv_id = args.get("conversation_id", "")
+    if not conv_id:
+        return {"content": [{"type": "text", "text": "Error: conversation_id is required"}], "is_error": True}
+
+    manager = get_manager()
+    try:
+        ok = manager.delete(conv_id, requesting_agent=caller, require_participant=True)
+    except PermissionError as e:
+        return {"content": [{"type": "text", "text": f"Not permitted: {e}"}], "is_error": True}
+
+    if not ok:
+        return {
+            "content": [{"type": "text", "text": f"Conversation '{conv_id}' not found."}],
+            "is_error": True,
+        }
+    return {"content": [{"type": "text", "text": f"Deleted conversation '{conv_id}'."}]}

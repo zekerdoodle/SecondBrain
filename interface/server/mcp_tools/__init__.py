@@ -101,6 +101,11 @@ def _inject_agent_context(tools, agent_name: str):
         "message_user", "message_react",
         "leave_on_desk",
         "set_mood",
+        # Agent-to-agent conversation tools need to know the calling agent
+        # so the caller is recorded as author of thread messages.
+        "invoke_agent", "invoke_agent_parallel",
+        "list_agent_conversations", "read_agent_conversation",
+        "delete_agent_conversation",
     }
 
     wrapped = []

@@ -3,7 +3,7 @@ import {
   Send, Loader2, Plus, History, ChevronLeft, Pencil, RotateCcw, X,
   File as FileIcon, Trash2, MessageCircle, Clock, Square, Search,
   Check, CheckCheck, AlertCircle, Crown, ImagePlus, Circle, Copy,
-  SmilePlus
+  SmilePlus, Sparkles
 } from 'lucide-react';
 import { ChatSearch } from './ChatSearch';
 import { useClaude, type ClaudeHook, type NotificationData, type ChessGameState } from './useClaude';
@@ -23,6 +23,7 @@ import { MoodSelector } from './components/MoodSelector';
 import { ChatTabBar } from './components/ChatTabBar';
 import { getAgentIcon } from './utils/agentIcons';
 import { MentionAutocomplete } from './components/MentionAutocomplete';
+import { SlashCommandAutocomplete, type SlashCommand } from './components/SlashCommandAutocomplete';
 
 import { ToolCallChips, type ToolCallData } from './components/ToolCallChips';
 import { BlockRenderer } from './components/BlockView';
@@ -310,8 +311,41 @@ const ChatMessageItem = React.memo<ChatMessageProps>(({
                       </div>
                     )}
                     {displayText && (
-                      <div className="whitespace-pre-wrap font-chat" style={{ fontFamily: 'var(--font-chat)', fontSize: 'var(--font-size-base)' }}>
-                        {displayText}
+                      <div className="prose max-w-none chat-markdown chat-markdown-user font-chat" style={{ fontFamily: 'var(--font-chat)', fontSize: 'var(--font-size-base)' }}>
+                        <MDEditor.Markdown
+                          source={escapeNonHtmlTags(displayText)}
+                          style={{
+                            backgroundColor: 'transparent',
+                            color: 'inherit',
+                            fontFamily: 'var(--font-chat)',
+                            fontSize: 'var(--font-size-base)',
+                            lineHeight: '1.7'
+                          }}
+                          components={{
+                            code: ({ children, className, ...props }) => {
+                              const isInline = !className;
+                              const text = String(children).replace(/\n$/, '');
+                              if (isInline && onOpenFile && looksLikeFilePath(text)) {
+                                const relativePath = toRelativePath(text);
+                                return (
+                                  <code
+                                    className="file-path-link"
+                                    onClick={(e) => {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      onOpenFile(relativePath);
+                                    }}
+                                    title={`Open ${relativePath} in editor`}
+                                    {...props}
+                                  >
+                                    {children}
+                                  </code>
+                                );
+                              }
+                              return <code className={className} {...props}>{children}</code>;
+                            }
+                          }}
+                        />
                       </div>
                     )}
                     {fileAttachments.length > 0 && (
@@ -687,6 +721,7 @@ export const Chat: React.FC<ChatProps> = ({
     todos,
     streamPhase,
     toggleReaction,
+    sendSlashCommand,
   } = claude;
 
   // Keep ref updated
@@ -709,11 +744,57 @@ export const Chat: React.FC<ChatProps> = ({
   }, [sessionId]);
 
   // Agent selection state
-  const { agents, defaultAgent, getAgent } = useAgents();
+  const { agents, getAgent } = useAgents();
   const [selectedAgentName, setSelectedAgentName] = useState<string | null>(null);
-  const effectiveAgentName = currentAgent || selectedAgentName || defaultAgent?.name || 'character';
-  const selectedAgentObj = getAgent(effectiveAgentName);
-  const agentDisplayName = selectedAgentObj?.display_name || 'Character';
+
+  // Slash command registry (fetched from server)
+  const [slashCommands, setSlashCommands] = useState<SlashCommand[]>([]);
+  // Notice lifecycle: notices auto-fade after 5s and hide after 6s.
+  // Tracked locally — notices are not persisted server-side.
+  const [fadingNotices, setFadingNotices] = useState<Set<string>>(() => new Set());
+  const [hiddenNotices, setHiddenNotices] = useState<Set<string>>(() => new Set());
+  // Schedule fade/hide for any newly arrived notice
+  useEffect(() => {
+    const now = Date.now();
+    const timeouts: number[] = [];
+    for (const msg of messages) {
+      if (msg.role !== 'notice') continue;
+      if (fadingNotices.has(msg.id) || hiddenNotices.has(msg.id)) continue;
+      // If notice has a timestamp older than 6s (e.g. came in via subscribe before
+      // a refresh), hide immediately. Otherwise schedule fade.
+      const age = msg.timestamp ? now - msg.timestamp : 0;
+      if (age > 6000) {
+        setHiddenNotices(prev => new Set(prev).add(msg.id));
+        continue;
+      }
+      const fadeDelay = Math.max(0, 5000 - age);
+      const hideDelay = Math.max(0, 6000 - age);
+      timeouts.push(window.setTimeout(() => {
+        setFadingNotices(prev => new Set(prev).add(msg.id));
+      }, fadeDelay));
+      timeouts.push(window.setTimeout(() => {
+        setHiddenNotices(prev => new Set(prev).add(msg.id));
+      }, hideDelay));
+    }
+    return () => { timeouts.forEach(t => clearTimeout(t)); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages]);
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`${API_URL}/slash-commands`)
+      .then(r => r.ok ? r.json() : { commands: [] })
+      .then(data => {
+        if (!cancelled && Array.isArray(data?.commands)) {
+          setSlashCommands(data.commands);
+        }
+      })
+      .catch(err => console.warn('Failed to load slash commands:', err));
+    return () => { cancelled = true; };
+  }, []);
+  // New chats have no default — user must select an agent (via UI or by typing the name).
+  const effectiveAgentName: string | null = currentAgent || selectedAgentName || null;
+  const selectedAgentObj = effectiveAgentName ? getAgent(effectiveAgentName) : undefined;
+  const agentDisplayName = selectedAgentObj?.display_name || 'Select agent';
 
   // Reset chess game when session changes (new chat or loading different chat)
   useEffect(() => {
@@ -731,7 +812,7 @@ export const Chat: React.FC<ChatProps> = ({
   const prevSessionId = useRef<string>(sessionId);
   useEffect(() => {
     if (sessionId !== 'new' && prevSessionId.current !== sessionId) {
-      upsertTab(sessionId, undefined, effectiveAgentName);
+      upsertTab(sessionId, undefined, effectiveAgentName ?? undefined);
       // Clear unread for the session we're now viewing
       setUnreadSessions(prev => {
         const next = new Set(prev);
@@ -1173,6 +1254,16 @@ export const Chat: React.FC<ChatProps> = ({
         .then(data => {
           setHistoryList(data.chats || []);
           setHistoryLoading(false);
+          // Reset scroll AFTER the populated list has rendered. Two rAFs guarantees
+          // the browser has laid out the new content before we set scrollTop.
+          // (One rAF can fire before layout on some renders; two is the safe pattern.)
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+              if (historyListRef.current) {
+                historyListRef.current.scrollTop = 0;
+              }
+            });
+          });
         })
         .catch(err => {
           console.error(err);
@@ -1181,14 +1272,14 @@ export const Chat: React.FC<ChatProps> = ({
     }
   }, [view]);
 
-  // Reset scroll to top whenever the history view is opened or fresh data arrives.
-  // useLayoutEffect runs synchronously after DOM commit, so the scroll reset
-  // applies to the fully rendered list (not a stale/short DOM).
+  // Belt-and-suspenders: also reset scroll synchronously when the view flips to
+  // 'history'. Covers the case where stale historyList from a previous visit is
+  // already populated at the moment the view opens (before fresh fetch resolves).
   useLayoutEffect(() => {
     if (view === 'history' && historyListRef.current) {
       historyListRef.current.scrollTop = 0;
     }
-  }, [view, historyLoading]);
+  }, [view]);
 
   const handleLoad = (id: string, title?: string, agent?: string) => {
     loadChat(id, agent || null);
@@ -1293,10 +1384,37 @@ export const Chat: React.FC<ChatProps> = ({
     sendMessage(submissionMessage);
   }, [updateFormMessage, sendMessage]);
 
-  // Handle input changes
+  // Try to auto-select an agent by matching a typed name against the agent list.
+  // Returns true if an agent was matched and selected (input should be cleared).
+  const tryAutoSelectAgent = useCallback((candidate: string): boolean => {
+    const trimmed = candidate.trim();
+    if (!trimmed) return false;
+    const lower = trimmed.toLowerCase();
+    const match = agents.find(a =>
+      a.name.toLowerCase() === lower ||
+      (a.display_name && a.display_name.toLowerCase() === lower)
+    );
+    if (match) {
+      setSelectedAgentName(match.name);
+      return true;
+    }
+    return false;
+  }, [agents]);
+
+  // Handle input changes.
+  // On a fresh new chat with no agent selected, typing an agent name followed by
+  // a space will auto-select that agent and clear the input (the typed name is
+  // consumed as the selection, not part of the message).
   const handleInputChange = useCallback((value: string) => {
+    if (!effectiveAgentName && messages.length === 0 && value.endsWith(' ')) {
+      const prefix = value.slice(0, -1);
+      if (tryAutoSelectAgent(prefix)) {
+        setInput('');
+        return;
+      }
+    }
     setInput(value);
-  }, [setInput]);
+  }, [setInput, effectiveAgentName, messages.length, tryAutoSelectAgent]);
 
   // Handle @mention autocomplete selection
   const handleMentionSelect = useCallback((agentName: string, replaceFrom: number) => {
@@ -1397,9 +1515,103 @@ export const Chat: React.FC<ChatProps> = ({
     });
   }, []);
 
+  // Slash command dispatcher — runs server-side directly, bypassing the agent.
+  const dispatchSlash = useCallback((command: string, args: Record<string, any>) => {
+    if (sessionId === 'new') {
+      showToast({
+        type: 'warning',
+        title: 'No active chat',
+        message: 'Send a message first to create a chat, then use slash commands.',
+      });
+      return;
+    }
+    const ok = sendSlashCommand(command, args);
+    if (ok) {
+      setInput('');
+    } else {
+      showToast({
+        type: 'warning',
+        title: 'Slash command failed',
+        message: 'Could not send command. Connection may be down.',
+      });
+    }
+  }, [sessionId, sendSlashCommand, setInput, showToast]);
+
+  // Insert just the command name (with trailing space) so the user can keep typing args
+  const handleInsertSlashName = useCallback((name: string) => {
+    setInput(`/${name} `);
+    requestAnimationFrame(() => {
+      const ta = textareaRef.current;
+      if (ta) {
+        ta.focus();
+        const pos = name.length + 2;
+        ta.setSelectionRange(pos, pos);
+      }
+    });
+  }, [setInput]);
+
   // Handle send
   const handleSend = useCallback(() => {
     if (!input.trim() && attachments.length === 0 && imageAttachments.length === 0) return;
+
+    // ── Slash command interception ──
+    // If input starts with `/`, parse and dispatch as slash command (bypasses agent).
+    const trimmed = input.trim();
+    if (trimmed.startsWith('/') && trimmed.length > 1 && trimmed[1] !== '/' && trimmed[1] !== ' ') {
+      const parts = trimmed.slice(1).split(/\s+/);
+      const commandName = parts[0];
+      const positional = parts.slice(1);
+      const cmd = slashCommands.find(c => c.name === commandName);
+      if (cmd) {
+        // Build args from positional values using the command's arg schema
+        const args: Record<string, any> = {};
+        for (let i = 0; i < positional.length && i < cmd.args.length; i++) {
+          const arg = cmd.args[i];
+          const raw = positional[i];
+          if (arg.type === 'integer') {
+            const n = parseInt(raw, 10);
+            args[arg.name] = isNaN(n) ? raw : n;
+          } else if (arg.type === 'boolean') {
+            args[arg.name] = ['true', 'yes', '1', 'on'].includes(raw.toLowerCase());
+          } else {
+            args[arg.name] = raw;
+          }
+        }
+        dispatchSlash(commandName, args);
+        return;
+      }
+      // Unknown command — show toast, don't send to agent
+      showToast({
+        type: 'warning',
+        title: 'Unknown command',
+        message: `No such slash command: /${commandName}. Type /help to see available commands.`,
+      });
+      return;
+    }
+
+    // If no agent selected yet and the input is exactly an agent name, treat the
+    // Enter press as a selection (not a send).
+    if (!effectiveAgentName && !attachments.length && !imageAttachments.length) {
+      if (tryAutoSelectAgent(input)) {
+        setInput('');
+        return;
+      }
+      showToast({
+        type: 'warning',
+        title: 'Select an agent',
+        message: 'Pick an agent above, or type a name (e.g. "character ") before sending.',
+      });
+      return;
+    }
+
+    if (!effectiveAgentName) {
+      showToast({
+        type: 'warning',
+        title: 'Select an agent',
+        message: 'Pick an agent above before sending.',
+      });
+      return;
+    }
 
     let fullMessage = input;
     if (attachments.length > 0) {
@@ -1426,7 +1638,7 @@ export const Chat: React.FC<ChatProps> = ({
       });
       setImageAttachments([]);
     }
-  }, [input, attachments, imageAttachments, sendMessageWithAgent, effectiveAgentName, setInput]);
+  }, [input, attachments, imageAttachments, sendMessageWithAgent, effectiveAgentName, setInput, tryAutoSelectAgent, showToast]);
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
@@ -1746,7 +1958,6 @@ export const Chat: React.FC<ChatProps> = ({
           activeSessionId={sessionId}
           onTabClick={handleTabClick}
           onTabClose={handleTabClose}
-          onNewChat={startNewChat}
           getAgent={getAgent}
           onContextAction={(action, tabSessionId) => {
             if (action === 'split') {
@@ -1789,6 +2000,41 @@ export const Chat: React.FC<ChatProps> = ({
           {processedMessages.map(({ message: msg, legacyToolCalls }, idx) => {
             const isUser = msg.role === 'user';
             const hasBlocks = msg.blocks && msg.blocks.length > 0;
+
+            // Notice messages (slash command results, system events) — render
+            // as a small centered chip in the timeline.
+            if (msg.role === 'notice') {
+              if (hiddenNotices.has(msg.id)) return null;
+              const noticeKind = msg.kind;
+              const isFading = fadingNotices.has(msg.id);
+              // Compact, single-line pill. Title and content joined with " — " when both exist.
+              const pillText = msg.title && msg.content
+                ? `${msg.title} — ${msg.content}`
+                : (msg.content || msg.title || '');
+              return (
+                <div
+                  key={msg.id}
+                  className={clsx(
+                    "flex justify-center my-1.5 transition-opacity duration-1000",
+                    isFading ? "opacity-0" : "opacity-100"
+                  )}
+                >
+                  <div
+                    className={clsx(
+                      "rounded-full border px-2.5 py-0.5 text-[10.5px] flex items-center gap-1.5 max-w-[80%]",
+                      msg.ok === false
+                        ? "border-red-300/50 bg-red-50/60 text-red-700 dark:border-red-700/40 dark:bg-red-900/10 dark:text-red-300"
+                        : noticeKind === "noop"
+                          ? "border-amber-300/40 bg-amber-50/40 text-amber-700/90 dark:border-amber-700/30 dark:bg-amber-900/10 dark:text-amber-300/90"
+                          : "border-[var(--border-color)]/60 bg-[var(--bg-secondary)]/60 text-[var(--text-muted)]"
+                    )}
+                  >
+                    <Sparkles size={10} className="flex-shrink-0 opacity-60" />
+                    <span className="truncate">{pillText}</span>
+                  </div>
+                </div>
+              );
+            }
 
             // Skip form submission messages - the InlineForm already shows the summary
             if (isUser && msg.content.startsWith('[FORM_SUBMISSION:')) {
@@ -2181,6 +2427,15 @@ export const Chat: React.FC<ChatProps> = ({
               onSelect={handleMentionSelect}
             />
 
+            {/* /slash command autocomplete dropdown */}
+            <SlashCommandAutocomplete
+              input={input}
+              commands={slashCommands}
+              textareaRef={textareaRef}
+              onPickCommand={dispatchSlash}
+              onInsertCommandName={handleInsertSlashName}
+            />
+
             <div
               className={clsx(
                 "flex items-end gap-3 bg-[var(--bg-tertiary)] border rounded-2xl p-3 input-focus",
@@ -2206,7 +2461,9 @@ export const Chat: React.FC<ChatProps> = ({
                 onPaste={handlePaste}
                 placeholder={status !== 'idle'
                   ? `Type a follow-up... (will queue until ${agentDisplayName} finishes)`
-                  : `Message ${agentDisplayName}...`
+                  : effectiveAgentName
+                    ? `Message ${agentDisplayName}...`
+                    : `Type an agent name + space to select, or pick one above...`
                 }
                 rows={1}
                 onKeyDown={(e) => {
@@ -2218,6 +2475,19 @@ export const Chat: React.FC<ChatProps> = ({
                       e.preventDefault();
                       handleSend();
                     }
+                  } else if (e.key === 'Tab' && !e.shiftKey) {
+                    // Tab inserts an indent instead of shifting focus.
+                    // Shift+Tab is left alone so it still escapes the textarea (accessibility).
+                    e.preventDefault();
+                    const textarea = e.currentTarget;
+                    const start = textarea.selectionStart;
+                    const end = textarea.selectionEnd;
+                    const newValue = input.substring(0, start) + '\t' + input.substring(end);
+                    handleInputChange(newValue);
+                    // Restore cursor position after React flushes the new value.
+                    requestAnimationFrame(() => {
+                      textarea.selectionStart = textarea.selectionEnd = start + 1;
+                    });
                   }
                 }}
                 className="flex-1 bg-transparent border-none text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:ring-0 focus:outline-none resize-none py-1.5 px-1 font-chat"

@@ -139,6 +139,10 @@ AGENT_TOOLS = [
     "resume_agent_chain",
     "list_chain_checkpoints",
     "schedule_agent",
+    # Agent-to-agent conversation (threading) tools
+    "list_agent_conversations",
+    "read_agent_conversation",
+    "delete_agent_conversation",
 ]
 
 BASH_TOOLS = [

@@ -1478,15 +1478,22 @@ async function submitDescribeMeal(slotNum) {
 
   try {
     await BrainKit.askAgent('nutrition_coach',
-      `Custom meal estimate request from the diet tracker app.
+      `This message is from the user, sent from the diet tracker app. He's telling you what he ate for ${slotInfo?.name || 'Meal ' + slotNum} on ${todayKey}:
 
-Slot: ${slotNum} (${slotInfo?.name || 'Meal ' + slotNum})
-Date: ${todayKey}
-Description: "${text}"
+"${text}"
 
-Estimate the macros. Write the result as JSON to file path: 05_App_Data/diet/_estimate.json
+Use your full brain and toolset to figure out how to log this properly. You are his coach — you know him. Don't just guess a generic estimate.
 
-Required JSON structure (write ONLY this JSON to the file, nothing else):
+BEFORE estimating, think about whether the user is referencing something you should already know:
+- Phrases like "my classic X", "the usual", "I always get", "you know the deal", "same as last time" mean there IS a prior log. FIND IT.
+- Search your memory (memory_search) — you have entries on his standard orders (Subway, Whataburger, Lisa's, etc).
+- Grep the daily log at 05_App_Data/diet/daily_log.json for similar past entries and match the macros from those. Past the user has already done this math — reuse it.
+- Check meal_plan.json for pinned/built meals that might match.
+
+Only fall back to USDA/generic estimation if there's genuinely no prior reference for this food.
+
+When you have the answer, write it as JSON to 05_App_Data/diet/_estimate.json. Write ONLY the JSON — no prose, no markdown, no code fences:
+
 {
   "cal": number,
   "protein": number,
@@ -1495,7 +1502,7 @@ Required JSON structure (write ONLY this JSON to the file, nothing else):
   "items": [{"name": "Item name", "cal": number, "protein": number}]
 }
 
-Be precise with portions. Use USDA data where possible. Round calories to nearest 5, protein to nearest 1g.`
+Round calories to nearest 5, protein to nearest 1g. Match portions to what the user actually described — not a default serving.`
     );
 
     const resultStr = await BrainKit.readFile('diet/_estimate.json');

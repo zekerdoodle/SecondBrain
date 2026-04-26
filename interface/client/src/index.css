@@ -719,6 +719,55 @@ html, body, #root {
   background-color: var(--bg-tertiary) !important;
 }
 
+/* User message markdown — render markdown inside the colored user bubble.
+   The bubble sets its own text color (white on --user-bg), so inherit everywhere
+   instead of picking up the default text-primary from .chat-markdown rules. */
+.chat-markdown-user .wmde-markdown,
+.chat-markdown-user.prose,
+.chat-markdown-user.prose p,
+.chat-markdown-user.prose li,
+.chat-markdown-user.prose blockquote,
+.chat-markdown-user.prose h1,
+.chat-markdown-user.prose h2,
+.chat-markdown-user.prose h3,
+.chat-markdown-user.prose h4,
+.chat-markdown-user.prose strong,
+.chat-markdown-user.prose em {
+  color: inherit !important;
+}
+.chat-markdown-user .wmde-markdown a,
+.chat-markdown-user.prose a {
+  color: inherit !important;
+  text-decoration: underline;
+  text-decoration-color: rgba(255, 255, 255, 0.6);
+  text-underline-offset: 2px;
+}
+/* Code blocks & inline code on the colored bubble — subtle dark-transparent
+   background so they're visible against the accent color. */
+.chat-markdown-user .wmde-markdown code,
+.chat-markdown-user.prose code {
+  background-color: rgba(0, 0, 0, 0.25) !important;
+  color: inherit !important;
+}
+.chat-markdown-user .wmde-markdown pre,
+.chat-markdown-user.prose pre {
+  background-color: rgba(0, 0, 0, 0.25) !important;
+  color: inherit !important;
+}
+.chat-markdown-user.prose blockquote {
+  border-left-color: rgba(255, 255, 255, 0.4) !important;
+}
+/* MDEditor wraps content in an outer p with margin-bottom; remove it so single-line
+   user messages don't get extra padding at the bottom of the bubble. */
+.chat-markdown-user .wmde-markdown > *:last-child,
+.chat-markdown-user.prose > *:last-child {
+  margin-bottom: 0 !important;
+}
+.chat-markdown-user .wmde-markdown > *:first-child,
+.chat-markdown-user.prose > *:first-child {
+  margin-top: 0 !important;
+}
+
 /* Responsive table cells - tighter on small screens */
 @media (max-width: 640px) {
   .wmde-markdown table th,

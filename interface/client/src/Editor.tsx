@@ -531,6 +531,28 @@ export const EditorView: React.FC<EditorViewProps> = ({
     }
   };
 
+  // Keep latest onSave in a ref so the document keydown listener
+  // always invokes the current closure without re-registering.
+  const onSaveRef = useRef(onSave);
+  useEffect(() => {
+    onSaveRef.current = onSave;
+  });
+
+  // Global Ctrl+S / Cmd+S shortcut — in split mode, only the active pane
+  // responds; in single-pane mode (isActive undefined), always respond.
+  useEffect(() => {
+    if (isActive === false) return;
+    const handler = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'S')) {
+        e.preventDefault();
+        e.stopPropagation();
+        onSaveRef.current();
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [isActive]);
+
   return (
     <div
       className={clsx(

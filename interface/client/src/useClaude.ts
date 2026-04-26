@@ -87,6 +87,8 @@ export interface ClaudeHook {
   streamPhase: StreamPhase;
   // Emoji reactions
   toggleReaction: (messageId: string, emoji: string) => void;
+  // Slash commands — runs server-side directly, bypasses agent
+  sendSlashCommand: (command: string, args?: Record<string, any>) => boolean;
 }
 
 export interface NotificationData {
@@ -1081,6 +1083,28 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
               ? { ...msg, reactions: Object.keys(newReactions || {}).length ? newReactions : undefined }
               : msg
           ));
+          break;
+        }
+
+        case 'slash_command_result': {
+          // Result of a /slash command run server-side. Append a notice
+          // message to the chat so the user sees a chip with the outcome.
+          const noticeId = data.id || `slash-${Date.now()}`;
+          // Don't double-add if the server already sent it as part of subscribe
+          setMessages(prev => {
+            if (prev.some(m => m.id === noticeId)) return prev;
+            return [...prev, {
+              id: noticeId,
+              role: 'notice',
+              content: data.text || '',
+              command: data.command,
+              title: data.title,
+              ok: data.ok,
+              kind: data.kind,
+              icon: data.icon,
+              timestamp: typeof data.timestamp === 'number' ? data.timestamp : Date.now(),
+            }];
+          });
           break;
         }
 
@@ -2113,6 +2137,27 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
     }));
   }, [messages]);
 
+  // Slash command — runs server-side directly, no agent invocation.
+  // Returns true if the WS send succeeded.
+  const sendSlashCommand = useCallback((command: string, args: Record<string, any> = {}): boolean => {
+    if (!ws.current || ws.current.readyState !== WebSocket.OPEN) {
+      console.error('Cannot send slash command: WebSocket not open');
+      return false;
+    }
+    const sid = sessionIdRef.current;
+    if (!sid || sid === 'new') {
+      console.warn('Cannot send slash command without an active session');
+      return false;
+    }
+    ws.current.send(JSON.stringify({
+      action: 'slash_command',
+      sessionId: sid,
+      command,
+      args,
+    }));
+    return true;
+  }, []);
+
   return {
     messages,
     sendMessage,
@@ -2137,5 +2182,6 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
     todos,
     streamPhase,
     toggleReaction,
+    sendSlashCommand,
   };
 };

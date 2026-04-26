@@ -27,7 +27,10 @@ import hashlib
 import html
 import tempfile
 from datetime import datetime
+from io import BytesIO
 from pathlib import Path
+
+from PIL import Image, ImageOps
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Any, List, Set, Tuple
 from contextlib import asynccontextmanager
@@ -39,6 +42,12 @@ from message_wal import init_wal, get_wal, MessageWAL
 from tool_serializers import serialize_tool_call, format_tool_for_history
 from process_registry import register_process, deregister_by_pid, clear_registry
 from mention_parser import parse_mentions
+from slash_commands import (
+    SLASH_COMMANDS,
+    dispatch_slash_command,
+    get_command_menu,
+    parse_slash_input,
+)
 
 
 # --- Client Session Tracking (for notifications) ---
@@ -697,6 +706,12 @@ def update_preferences(req: UserPreferencesUpdate):
 
 # --- UI Config API ---
 
+@app.get("/api/slash-commands")
+def get_slash_commands():
+    """Return the registry of available slash commands for client-side autocomplete."""
+    return {"commands": get_command_menu()}
+
+
 @app.get("/api/ui-config")
 def get_ui_config():
     """Get UI visibility configuration."""
@@ -977,6 +992,43 @@ def _validate_image_magic(content: bytes, claimed_type: str) -> bool:
             return True
     return False
 
+def _apply_exif_orientation(content: bytes, content_type: str) -> bytes:
+    """Rotate image pixels according to EXIF Orientation tag, then strip the tag.
+
+    Phone cameras capture sensor-native (landscape) and set EXIF Orientation
+    instead of rotating pixels. If we ignore the tag, images render sideways
+    for any consumer that doesn't honor EXIF (e.g. model vision input, some
+    browser paths). Rotating pixels + stripping the tag makes the stored
+    bytes the source of truth.
+
+    - Skips GIF entirely to preserve animation.
+    - No-op when the image has no Orientation tag or Orientation=1 (normal).
+    - Falls back to original bytes on any decode/encode error.
+    """
+    if content_type not in ("image/jpeg", "image/png", "image/webp"):
+        return content
+    try:
+        img = Image.open(BytesIO(content))
+        orientation = img.getexif().get(0x0112)  # 0x0112 == Orientation
+        if not orientation or orientation == 1:
+            return content  # No rotation needed — don't re-encode and lose quality.
+        transposed = ImageOps.exif_transpose(img)
+        if transposed is None:
+            return content
+        out = BytesIO()
+        if content_type == "image/jpeg":
+            # Preserve color profile & high quality; re-encode without EXIF.
+            transposed.save(out, format="JPEG", quality=95, optimize=True)
+        elif content_type == "image/png":
+            transposed.save(out, format="PNG", optimize=True)
+        else:  # image/webp
+            transposed.save(out, format="WEBP", quality=95)
+        return out.getvalue()
+    except Exception as e:
+        logger.warning(f"[images] EXIF transpose failed ({e}); keeping original bytes.")
+        return content
+
+
 @app.post("/api/chat/images")
 async def upload_chat_images(files: List[UploadFile] = FastAPIFile(...)):
     """Upload images for use in chat messages. Returns image IDs and URLs."""
@@ -994,6 +1046,12 @@ async def upload_chat_images(files: List[UploadFile] = FastAPIFile(...)):
         # Server-side magic byte validation — prevents MIME spoofing (e.g. HTML disguised as image/png)
         if not _validate_image_magic(content, content_type):
             raise HTTPException(status_code=400, detail=f"File content does not match claimed type: {content_type}")
+
+        # Normalize EXIF orientation: rotate pixels, strip tag. Fixes the
+        # "portrait photos show up sideways" bug for all consumers (browsers,
+        # model vision, downstream agents). Hash is computed AFTER so dedupe
+        # works on the canonical (rotated) bytes.
+        content = _apply_exif_orientation(content, content_type)
 
         # Generate unique filename using content hash
         content_hash = hashlib.sha256(content).hexdigest()[:12]
@@ -3317,6 +3375,8 @@ async def websocket_endpoint(websocket: WebSocket):
             elif action == "subscribe":
                 # Client wants full state for a session - THIS IS THE KEY FOR RECONNECT
                 await handle_subscribe(websocket, data)
+            elif action == "slash_command":
+                await handle_slash_command_ws(websocket, data)
 
     except WebSocketDisconnect:
         logger.info("WebSocket disconnected - background tasks will continue processing")
@@ -3818,6 +3878,47 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
                     trigger_role="user",
                     primary_agent=agent_name or "character",
                 ))
+
+            # ========== CHAT TITLER: Fire early, in parallel with main agent ==========
+            # Titler is a fast Haiku call (~1-2s); main agent often runs 10-60s with tools.
+            # Firing here (instead of end-of-turn) means the title populates the UI while
+            # the agent is still streaming, rather than arriving after everything is done.
+            # The titler broadcasts its own `chat_title_update` WebSocket message when done,
+            # so it updates the UI independently of the main turn lifecycle.
+            if not skip_message_add:
+                try:
+                    from chat_titler import should_retitle
+
+                    # Increment exchange count (previously done at end-of-turn; moving up
+                    # is semantically safe — bg_processing at end-of-turn sees the same value,
+                    # and the only case that differs is failed/errored turns, where counting
+                    # the exchange is still correct since the user message was sent).
+                    conv.exchange_count += 1
+                    exchange_count = conv.exchange_count
+
+                    # Get current title (existing is already loaded above)
+                    current_title = existing.get("title") if existing else None
+
+                    # First exchange: always generate title based on user intent.
+                    # Every N exchanges: check if title should update.
+                    if exchange_count == 1:
+                        logger.info(f"Titler: First exchange, generating initial title (early-fire)")
+                        asyncio.create_task(_run_titler_background(
+                            early_save_id,
+                            list(conv.messages),
+                            None,
+                            is_retitle=False
+                        ))
+                    elif should_retitle(exchange_count, current_title):
+                        logger.info(f"Titler: Exchange {exchange_count}, checking for title update (early-fire)")
+                        asyncio.create_task(_run_titler_background(
+                            early_save_id,
+                            list(conv.messages),
+                            current_title,
+                            is_retitle=True
+                        ))
+                except Exception as e:
+                    logger.debug(f"Titler trigger failed: {e}")
 
         except Exception as e:
             logger.warning(f"EARLY_SAVE failed: {e}")
@@ -4808,40 +4909,8 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
     except Exception as e:
         logger.debug(f"Working memory advance_exchange failed: {e}")
 
-    # Trigger Chat Titler for ALL chats (not just Character)
-    # Skip system continuations, error-only exchanges, and empty responses
-    if not is_system_continuation and all_segments and not had_error:
-        try:
-            from chat_titler import should_retitle
-
-            # Increment exchange count
-            conv.exchange_count += 1
-            exchange_count = conv.exchange_count
-
-            # Get current title
-            existing_chat = chat_manager.load_chat(chat_id_for_storage)
-            current_title = existing_chat.get("title") if existing_chat else None
-
-            # First exchange: always generate title
-            # Every N exchanges: check if title should update
-            if exchange_count == 1:
-                logger.info(f"Titler: First exchange, generating initial title")
-                asyncio.create_task(_run_titler_background(
-                    chat_id_for_storage,
-                    list(conv.messages),
-                    None,
-                    is_retitle=False
-                ))
-            elif should_retitle(exchange_count, current_title):
-                logger.info(f"Titler: Exchange {exchange_count}, checking for title update")
-                asyncio.create_task(_run_titler_background(
-                    chat_id_for_storage,
-                    list(conv.messages),
-                    current_title,
-                    is_retitle=True
-                ))
-        except Exception as e:
-            logger.debug(f"Titler trigger failed: {e}")
+    # Chat Titler now fires at turn-start (see EARLY_SAVE block above) so the title
+    # populates the UI in parallel with the agent's response, not after it.
 
     # ========== Background processing trigger ==========
     if not is_system_continuation and all_segments and not had_error:
@@ -5236,6 +5305,102 @@ async def handle_reaction(websocket: WebSocket, data: dict):
     })
 
     logger.info(f"REACTION: {'Removed' if remove else 'Added'} {emoji} on {message_id} in {session_id}")
+
+
+async def handle_slash_command_ws(websocket: WebSocket, data: dict):
+    """
+    Handle a /slash command from the user.
+
+    Two paths:
+      1. Quick-pick / explicit: client sends {command: "compact", args: {...}}
+      2. Raw text: client sends {raw: "/compact strip_tools 3"} which is parsed
+         server-side.
+
+    The command runs server-side directly (no agent invocation), then we:
+      - Append a "notice" message to display_messages so the user sees a chip
+        in chat (and it persists across reloads).
+      - Broadcast the result to all clients viewing this session.
+    """
+    session_id = data.get("sessionId")
+    command = data.get("command")
+    args = data.get("args") or {}
+    raw = data.get("raw")
+
+    if not session_id:
+        await websocket.send_json({
+            "type": "slash_command_result",
+            "ok": False,
+            "title": "No session",
+            "text": "Slash commands require an active chat. Send a message first.",
+        })
+        return
+
+    # If only raw was provided, parse it
+    positional = None
+    if raw and not command:
+        parsed = parse_slash_input(raw)
+        if not parsed:
+            await websocket.send_json({
+                "type": "slash_command_result",
+                "ok": False,
+                "title": "Invalid command",
+                "text": f"Could not parse: {raw}",
+                "sessionId": session_id,
+            })
+            return
+        command = parsed["command"]
+        positional = parsed["positional"]
+
+    if not command:
+        await websocket.send_json({
+            "type": "slash_command_result",
+            "ok": False,
+            "title": "No command",
+            "text": "No command specified.",
+            "sessionId": session_id,
+        })
+        return
+
+    logger.info(f"SLASH: /{command} session={session_id} args={args} positional={positional}")
+
+    # If the conversation isn't loaded into memory yet (e.g. user opened the
+    # chat and immediately ran /compact without sending a message), boot it.
+    if session_id not in active_conversations:
+        existing = chat_manager.load_chat(session_id) if chat_manager else None
+        if existing:
+            try:
+                conv = ConversationState()
+                # Use compact `messages` (agent-context) — matches what compaction modifies
+                conv.messages = list(existing.get("messages") or existing.get("display_messages", []))
+                # Restore cumulative usage if present
+                cu = existing.get("cumulative_usage")
+                if cu and hasattr(conv, "cumulative_usage"):
+                    conv.cumulative_usage = cu
+                active_conversations[session_id] = conv
+                logger.info(f"SLASH: Lazy-loaded conversation {session_id} for /{command}")
+            except Exception as e:
+                logger.error(f"SLASH: Failed to lazy-load conversation {session_id}: {e}")
+
+    result = await dispatch_slash_command(
+        session_id=session_id,
+        command=command,
+        args=args if args else None,
+        positional=positional,
+    )
+
+    # NOTE: We deliberately do NOT persist slash command results to display_messages.
+    # These are ephemeral confirmations (like a toast), not conversation content.
+    # The client appends them transiently and auto-fades them after a few seconds.
+    if "id" not in result:
+        result["id"] = str(uuid.uuid4())
+
+    # Broadcast result to all clients viewing this session
+    payload = {
+        "type": "slash_command_result",
+        "sessionId": session_id,
+        **result,
+    }
+    await broadcast_to_session(session_id, payload)
 
 
 async def handle_inject(websocket: WebSocket, data: dict):
@@ -6586,6 +6751,17 @@ async def startup_event():
     asyncio.create_task(scheduler_loop())
     asyncio.create_task(agent_notification_wakeup_loop())
     asyncio.create_task(_background_processing_idle_watcher())
+
+    # Clear any stale locks on agent-to-agent conversations left by a crash
+    # or an unclean restart. Server just came up — nothing's legitimately
+    # in-flight yet, so anything with a lock is stale.
+    try:
+        from agent_conversation_manager import get_manager as _get_agent_conv_mgr
+        cleared = _get_agent_conv_mgr().sweep_stale_locks(max_age_minutes=5)
+        if cleared:
+            logger.info(f"Agent conversations: cleared {cleared} stale lock(s) on startup")
+    except Exception as e:
+        logger.warning(f"Agent conversations: startup lock sweep failed: {e}")
 
     # If there's a restart continuation, launch the wakeup task
     if restart_continuation:

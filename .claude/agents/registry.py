@@ -40,12 +40,16 @@ AGENT_NAME_ALIASES = {
     "chat_coder": "patch",
     # information_gatherer -> kestrel (renamed 2026-03-07)
     "information_gatherer": "kestrel",
-    # zeke_coder -> coder (historical)
-    "zeke_coder": "coder",
+    # zeke_coder -> patch (was -> coder, which was absorbed into patch 2026-04-23)
+    "zeke_coder": "patch",
     # general_purpose -> jack (historical)
     "general_purpose": "jack",
     # ren -> character (historical)
     "ren": "character",
+    # coder -> patch (absorbed 2026-04-23)
+    "coder": "patch",
+    # deep_research -> ash (absorbed 2026-04-23)
+    "deep_research": "ash",
 }
 
 

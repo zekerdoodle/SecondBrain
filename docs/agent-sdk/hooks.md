@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/hooks
 title: Intercept and control agent behavior with hooks
-last_fetched: 2026-04-23T09:01:28.983582+00:00
+last_fetched: 2026-04-24T09:02:01.492829+00:00
 ---
 
 [Claude Code Docs home page![light logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/light.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=78fd01ff4f4340295a4f66e2ea54903c)![dark logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/dark.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=1298a0c3b3a1da603b190d0de0e31712)](/docs/en/overview)
@@ -22,7 +22,7 @@ Control and observability
 
 Intercept and control agent behavior with hooks
 
-[Getting started](/docs/en/overview)[Build with Claude Code](/docs/en/sub-agents)[Deployment](/docs/en/third-party-integrations)[Administration](/docs/en/setup)[Configuration](/docs/en/settings)[Reference](/docs/en/cli-reference)[Agent SDK](/docs/en/agent-sdk/overview)[What's New](/docs/en/whats-new)[Resources](/docs/en/legal-and-compliance)
+[Getting started](/docs/en/overview)[Build with Claude Code](/docs/en/sub-agents)[Deployment](/docs/en/third-party-integrations)[Administration](/docs/en/admin-setup)[Configuration](/docs/en/settings)[Reference](/docs/en/cli-reference)[Agent SDK](/docs/en/agent-sdk/overview)[What's New](/docs/en/whats-new)[Resources](/docs/en/legal-and-compliance)
 
 ##### Agent SDK
 
@@ -184,6 +184,7 @@ The SDK provides hooks for different stages of agent execution. Some hooks are a
 | `PreToolUse` | Yes | Yes | Tool call request (can block or modify) | Block dangerous shell commands |
 | `PostToolUse` | Yes | Yes | Tool execution result | Log all file changes to audit trail |
 | `PostToolUseFailure` | Yes | Yes | Tool execution failure | Handle or log tool errors |
+| `PostToolBatch` | No | Yes | A full batch of tool calls resolves, once per batch before the next model call | Inject conventions once for the whole batch |
 | `UserPromptSubmit` | Yes | Yes | User prompt submission | Inject additional context into prompts |
 | `Stop` | Yes | Yes | Agent execution stop | Save session state before exit |
 | `SubagentStart` | Yes | Yes | Subagent initialization | Track parallel task spawning |

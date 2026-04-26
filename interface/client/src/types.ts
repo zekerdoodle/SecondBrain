@@ -64,8 +64,14 @@ export interface ChatTab {
 
 export interface ChatMessage {
   id: string;
-  role: 'user' | 'assistant' | 'system';
+  role: 'user' | 'assistant' | 'system' | 'notice';
   content: string;
+  // Notice-only fields (for slash command results, etc.)
+  title?: string;
+  command?: string;
+  ok?: boolean;
+  kind?: string;  // "noop" | "error" | undefined (success)
+  icon?: string | null;
   isError?: boolean;
   isStreaming?: boolean;
   // @mention agent messages — present when message is from a mentioned agent

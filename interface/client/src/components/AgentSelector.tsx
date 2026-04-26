@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { ChevronDown } from 'lucide-react';
+import { ChevronDown, UserRound } from 'lucide-react';
 import { clsx } from 'clsx';
 import type { Agent } from '../types';
 import { getAgentIcon } from '../utils/agentIcons';
@@ -34,9 +34,9 @@ export const AgentSelector: React.FC<AgentSelectorProps> = ({
   }, [open]);
 
   const agent = selectedAgent;
-  const IconComponent = getAgentIcon(agent?.icon);
-  const color = 'var(--accent-primary)';
-  const displayName = agent?.display_name || 'Character';
+  const hasAgent = !!agent;
+  const IconComponent = hasAgent ? getAgentIcon(agent?.icon) : UserRound;
+  const displayName = agent?.display_name || 'Select agent';
 
   return (
     <div ref={ref} className="relative">
@@ -48,12 +48,23 @@ export const AgentSelector: React.FC<AgentSelectorProps> = ({
         )}
       >
         <div
-          className="w-8 h-8 rounded-lg flex items-center justify-center"
-          style={{ backgroundColor: color }}
+          className={clsx(
+            "w-8 h-8 rounded-lg flex items-center justify-center",
+            !hasAgent && "border border-dashed border-[var(--border-color)]"
+          )}
+          style={hasAgent ? { backgroundColor: 'var(--accent-primary)' } : undefined}
         >
-          <IconComponent size={18} className="text-white" />
+          <IconComponent
+            size={18}
+            className={hasAgent ? 'text-white' : 'text-[var(--text-muted)]'}
+          />
         </div>
-        <span className="font-semibold text-[var(--text-primary)] tracking-tight">
+        <span
+          className={clsx(
+            "font-semibold tracking-tight",
+            hasAgent ? "text-[var(--text-primary)]" : "text-[var(--text-muted)]"
+          )}
+        >
           {displayName}
         </span>
         {!locked && agents.length > 1 && (

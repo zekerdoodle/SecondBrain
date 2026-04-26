@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useState } from 'react';
-import { Plus, X, Columns, ExternalLink, ChevronLeft, ChevronRight } from 'lucide-react';
+import { X, Columns, ExternalLink, ChevronLeft, ChevronRight } from 'lucide-react';
 import { clsx } from 'clsx';
 import type { ChatTab, Agent } from '../types';
 import { getAgentIcon } from '../utils/agentIcons';
@@ -11,7 +11,6 @@ interface ChatTabBarProps {
   activeSessionId: string;
   onTabClick: (sessionId: string) => void;
   onTabClose: (sessionId: string) => void;
-  onNewChat: () => void;
   getAgent: (name: string) => Agent | undefined;
   onContextAction?: (action: string, sessionId: string) => void;
   isSecondary?: boolean;
@@ -23,7 +22,6 @@ export const ChatTabBar: React.FC<ChatTabBarProps> = ({
   activeSessionId,
   onTabClick,
   onTabClose,
-  onNewChat,
   getAgent,
   onContextAction,
   isSecondary = false,
@@ -178,15 +176,6 @@ export const ChatTabBar: React.FC<ChatTabBarProps> = ({
           <ChevronRight size={14} />
         </button>
       )}
-
-      {/* New chat button - pinned right */}
-      <button
-        onClick={onNewChat}
-        className="flex-shrink-0 p-2 mx-1 hover:bg-[var(--bg-tertiary)] rounded-lg text-[var(--text-muted)] hover:text-[var(--text-secondary)] transition-colors"
-        title="New chat"
-      >
-        <Plus size={14} />
-      </button>
 
       {/* Context menu */}
       <ContextMenu

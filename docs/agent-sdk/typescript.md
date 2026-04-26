@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/typescript
 title: Agent SDK reference - TypeScript
-last_fetched: 2026-04-23T09:03:28.082006+00:00
+last_fetched: 2026-04-25T09:02:45.085750+00:00
 ---
 
 [Claude Code Docs home page![light logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/light.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=78fd01ff4f4340295a4f66e2ea54903c)![dark logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/dark.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=1298a0c3b3a1da603b190d0de0e31712)](/docs/en/overview)
@@ -22,7 +22,7 @@ SDK references
 
 Agent SDK reference - TypeScript
 
-[Getting started](/docs/en/overview)[Build with Claude Code](/docs/en/sub-agents)[Deployment](/docs/en/third-party-integrations)[Administration](/docs/en/setup)[Configuration](/docs/en/settings)[Reference](/docs/en/cli-reference)[Agent SDK](/docs/en/agent-sdk/overview)[What's New](/docs/en/whats-new)[Resources](/docs/en/legal-and-compliance)
+[Getting started](/docs/en/overview)[Build with Claude Code](/docs/en/sub-agents)[Deployment](/docs/en/third-party-integrations)[Administration](/docs/en/admin-setup)[Configuration](/docs/en/settings)[Reference](/docs/en/cli-reference)[Agent SDK](/docs/en/agent-sdk/overview)[What's New](/docs/en/whats-new)[Resources](/docs/en/legal-and-compliance)
 
 ##### Agent SDK
 
@@ -402,7 +402,7 @@ Configuration object for the `query()` function.
 | `disallowedTools` | `string[]` | `[]` | Tools to always deny. Deny rules are checked first and override `allowedTools` and `permissionMode` (including `bypassPermissions`) |
 | `effort` | `'low' | 'medium' | 'high' | 'xhigh' | 'max'` | `'high'` | Controls how much effort Claude puts into its response. Works with adaptive thinking to guide thinking depth |
 | `enableFileCheckpointing` | `boolean` | `false` | Enable file change tracking for rewinding. See [File checkpointing](/docs/en/agent-sdk/file-checkpointing) |
-| `env` | `Record<string, string | undefined>` | `process.env` | Environment variables. Set `CLAUDE_AGENT_SDK_CLIENT_APP` to identify your app in the User-Agent header |
+| `env` | `Record<string, string | undefined>` | `process.env` | Environment variables. See [Environment variables](/docs/en/env-vars) for variables the underlying CLI reads. Set `CLAUDE_AGENT_SDK_CLIENT_APP` to identify your app in the User-Agent header |
 | `executable` | `'bun' | 'deno' | 'node'` | Auto-detected | JavaScript runtime to use |
 | `executableArgs` | `string[]` | `[]` | Arguments to pass to the executable |
 | `extraArgs` | `Record<string, string | null>` | `{}` | Additional arguments |
@@ -1088,6 +1088,7 @@ type HookEvent =
  | "PreToolUse"
  | "PostToolUse"
  | "PostToolUseFailure"
+ | "PostToolBatch"
  | "Notification"
  | "UserPromptSubmit"
  | "SessionStart"
@@ -1138,6 +1139,7 @@ type HookInput =
  | PreToolUseHookInput
  | PostToolUseHookInput
  | PostToolUseFailureHookInput
+ | PostToolBatchHookInput
  | NotificationHookInput
  | UserPromptSubmitHookInput
  | SessionStartHookInput
@@ -1190,6 +1192,7 @@ type PostToolUseHookInput = BaseHookInput & {
  tool_input: unknown;
  tool_response: unknown;
  tool_use_id: string;
+ duration_ms?: number;
 };
 ```
 
@@ -1203,6 +1206,25 @@ type PostToolUseFailureHookInput = BaseHookInput & {
  tool_use_id: string;
  error: string;
  is_interrupt?: boolean;
+ duration_ms?: number;
+};
+```
+
+#### [​](#posttoolbatchhookinput) `PostToolBatchHookInput`
+
+Fires once after every tool call in a batch has resolved, before the next model request. `tool_response` carries the serialized `tool_result` content the model sees; the shape differs from `PostToolUseHookInput`’s structured `Output` object.
+
+```shiki
+type PostToolBatchHookInput = BaseHookInput & {
+ hook_event_name: "PostToolBatch";
+ tool_calls: PostToolBatchToolCall[];
+};
+
+type PostToolBatchToolCall = {
+ tool_name: string;
+ tool_input: unknown;
+ tool_use_id: string;
+ tool_response?: unknown;
 };
 ```
 
@@ -1426,6 +1448,10 @@ type SyncHookJSONOutput = {
  additionalContext?: string;
  }
  | {
+ hookEventName: "PostToolBatch";
+ additionalContext?: string;
+ }
+ | {
  hookEventName: "Notification";
  additionalContext?: string;
  }
@@ -1460,7 +1486,6 @@ type ToolInputSchemas =
  | AskUserQuestionInput
  | BashInput
  | TaskOutputInput
- | ConfigInput
  | EnterWorktreeInput
  | ExitPlanModeInput
  | FileEditInput
@@ -1760,19 +1785,6 @@ type ReadMcpResourceInput = {
 
 Reads a specific MCP resource from a server.
 
-### [​](#config) Config
-
-**Tool name:** `Config`
-
-```shiki
-type ConfigInput = {
- setting: string;
- value?: string | boolean | number;
-};
-```
-
-Gets or sets a configuration value.
-
 ### [​](#enterworktree) EnterWorktree
 
 **Tool name:** `EnterWorktree`
@@ -1799,7 +1811,6 @@ type ToolOutputSchemas =
  | AgentOutput
  | AskUserQuestionOutput
  | BashOutput
- | ConfigOutput
  | EnterWorktreeOutput
  | ExitPlanModeOutput
  | FileEditOutput
@@ -2215,24 +2226,6 @@ type ReadMcpResourceOutput = {
 
 Returns the contents of the requested MCP resource.
 
-### [​](#config-2) Config
-
-**Tool name:** `Config`
-
-```shiki
-type ConfigOutput = {
- success: boolean;
- operation?: "get" | "set";
- setting?: string;
- value?: unknown;
- previousValue?: unknown;
- newValue?: unknown;
- error?: string;
-};
-```
-
-Returns the result of a configuration get or set operation.
-
 ### [​](#enterworktree-2) EnterWorktree
 
 **Tool name:** `EnterWorktree`
@@ -2343,6 +2336,7 @@ type SlashCommand = {
  name: string;
  description: string;
  argumentHint: string;
+ aliases?: string[];
 };
 ```
 
@@ -2812,7 +2806,7 @@ type SDKRateLimitEvent = {
 
 ### [​](#sdklocalcommandoutputmessage) `SDKLocalCommandOutputMessage`
 
-Output from a local slash command (for example, `/voice` or `/cost`). Displayed as assistant-style text in the transcript.
+Output from a local slash command (for example, `/voice` or `/usage`). Displayed as assistant-style text in the transcript.
 
 ```shiki
 type SDKLocalCommandOutputMessage = {
