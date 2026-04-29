@@ -91,3 +91,15 @@ export function toRelativePath(path: string): string {
 
   return p;
 }
+
+const IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.svg'];
+
+/**
+ * Whether a path string ends with a recognized image extension.
+ * Case-insensitive. Does NOT verify the file exists — the renderer's
+ * onError handler is the fallback path.
+ */
+export function isImagePath(text: string): boolean {
+  const lower = text.toLowerCase();
+  return IMAGE_EXTENSIONS.some(ext => lower.endsWith(ext));
+}

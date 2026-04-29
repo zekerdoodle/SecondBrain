@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/observability
 title: Agent SDK overview
-last_fetched: 2026-04-24T09:02:27.731349+00:00
+last_fetched: 2026-04-29T09:02:31.927686+00:00
 ---
 
 [Claude Code Docs home page![light logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/light.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=78fd01ff4f4340295a4f66e2ea54903c)![dark logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/dark.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=1298a0c3b3a1da603b190d0de0e31712)](/docs/en/overview)
@@ -22,7 +22,7 @@ Agent SDK
 
 Agent SDK overview
 
-[Getting started](/docs/en/overview)[Build with Claude Code](/docs/en/sub-agents)[Deployment](/docs/en/third-party-integrations)[Administration](/docs/en/admin-setup)[Configuration](/docs/en/settings)[Reference](/docs/en/cli-reference)[Agent SDK](/docs/en/agent-sdk/overview)[What's New](/docs/en/whats-new)[Resources](/docs/en/legal-and-compliance)
+[Getting started](/docs/en/overview)[Build with Claude Code](/docs/en/sub-agents)[Administration](/docs/en/admin-setup)[Configuration](/docs/en/settings)[Reference](/docs/en/cli-reference)[Agent SDK](/docs/en/agent-sdk/overview)[What's New](/docs/en/whats-new)[Resources](/docs/en/legal-and-compliance)
 
 ##### Agent SDK
 
@@ -78,6 +78,12 @@ Agent SDK overview
 - [Migration Guide](/docs/en/agent-sdk/migration-guide)
 
 On this page
+
+> ## Documentation Index
+>
+> Fetch the complete documentation index at: <https://code.claude.com/docs/llms.txt>
+>
+> Use this file to discover all available pages before exploring further.
 
 The Claude Code SDK has been renamed to the Claude Agent SDK. If you’re migrating from the old SDK, see the [Migration Guide](/docs/en/agent-sdk/migration-guide).
 
@@ -402,6 +408,7 @@ The Claude Platform offers multiple ways to build with Claude. Here’s how the 
 
 - Agent SDK vs Client SDK
 - Agent SDK vs Claude Code CLI
+- Agent SDK vs Managed Agents
 
 The [Anthropic Client SDK](https://platform.claude.com/docs/en/api/client-sdks) gives you direct API access: you send prompts and implement tool execution yourself. The **Agent SDK** gives you Claude with built-in tool execution.With the Client SDK, you implement a tool loop. With the Agent SDK, Claude handles it:
 
@@ -432,6 +439,19 @@ Same capabilities, different interface:
 | Production automation | SDK |
 
 Many teams use both: CLI for daily development, SDK for production. Workflows translate directly between them.
+
+[Managed Agents](https://platform.claude.com/docs/en/managed-agents/overview) is a hosted REST API: Anthropic runs the agent and the sandbox, and your application sends events and streams back results. The **Agent SDK** is a library that runs the agent loop inside your own process.
+
+| | Agent SDK | Managed Agents |
+| --- | --- | --- |
+| **Runs in** | Your process, your infrastructure | Anthropic-managed infrastructure |
+| **Interface** | Python or TypeScript library | REST API |
+| **Agent works on** | Files on your infrastructure | A managed sandbox per session |
+| **Session state** | JSONL on your filesystem | Anthropic-hosted event log |
+| **Custom tools** | In-process Python or TypeScript functions | Claude triggers the tool; you execute and return results |
+| **Best for** | Local prototyping, agents that work directly on your filesystem and services | Production agents without operating sandbox or session infrastructure, long-running and asynchronous sessions |
+
+A common path is to prototype with the Agent SDK locally, then move to Managed Agents for production.
 
 ## [​](#changelog) Changelog
 

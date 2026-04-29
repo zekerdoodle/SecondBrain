@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/python
 title: Agent SDK reference - Python
-last_fetched: 2026-04-24T09:02:52.103818+00:00
+last_fetched: 2026-04-29T09:02:56.520004+00:00
 ---
 
 [Claude Code Docs home page![light logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/light.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=78fd01ff4f4340295a4f66e2ea54903c)![dark logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/dark.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=1298a0c3b3a1da603b190d0de0e31712)](/docs/en/overview)
@@ -22,7 +22,7 @@ SDK references
 
 Agent SDK reference - Python
 
-[Getting started](/docs/en/overview)[Build with Claude Code](/docs/en/sub-agents)[Deployment](/docs/en/third-party-integrations)[Administration](/docs/en/admin-setup)[Configuration](/docs/en/settings)[Reference](/docs/en/cli-reference)[Agent SDK](/docs/en/agent-sdk/overview)[What's New](/docs/en/whats-new)[Resources](/docs/en/legal-and-compliance)
+[Getting started](/docs/en/overview)[Build with Claude Code](/docs/en/sub-agents)[Administration](/docs/en/admin-setup)[Configuration](/docs/en/settings)[Reference](/docs/en/cli-reference)[Agent SDK](/docs/en/agent-sdk/overview)[What's New](/docs/en/whats-new)[Resources](/docs/en/legal-and-compliance)
 
 ##### Agent SDK
 
@@ -78,6 +78,12 @@ Agent SDK reference - Python
 - [Migration Guide](/docs/en/agent-sdk/migration-guide)
 
 On this page
+
+> ## Documentation Index
+>
+> Fetch the complete documentation index at: <https://code.claude.com/docs/llms.txt>
+>
+> Use this file to discover all available pages before exploring further.
 
 ## [​](#installation) Installation
 
@@ -3102,14 +3108,6 @@ class SandboxSettings(TypedDict, total=False):
 | `ignoreViolations` | [`SandboxIgnoreViolations`](#sandbox-ignore-violations) | `None` | Configure which sandbox violations to ignore |
 | `enableWeakerNestedSandbox` | `bool` | `False` | Enable a weaker nested sandbox for compatibility |
 
-**Filesystem and network access restrictions** are NOT configured via sandbox settings. Instead, they are derived from [permission rules](/docs/en/settings#permission-settings):
-
-- **Filesystem read restrictions**: Read deny rules
-- **Filesystem write restrictions**: Edit allow/deny rules
-- **Network restrictions**: WebFetch allow/deny rules
-
-Use sandbox settings for command execution sandboxing, and permission rules for filesystem and network access control.
-
 #### [​](#example-usage-2) Example usage
 
 ```shiki
@@ -3136,6 +3134,9 @@ Network-specific configuration for sandbox mode.
 
 ```shiki
 class SandboxNetworkConfig(TypedDict, total=False):
+ allowedDomains: list[str]
+ deniedDomains: list[str]
+ allowManagedDomainsOnly: bool
  allowLocalBinding: bool
  allowUnixSockets: list[str]
  allowAllUnixSockets: bool
@@ -3145,11 +3146,16 @@ class SandboxNetworkConfig(TypedDict, total=False):
 
 | Property | Type | Default | Description |
 | --- | --- | --- | --- |
+| `allowedDomains` | `list[str]` | `[]` | Domain names that sandboxed processes can access |
+| `deniedDomains` | `list[str]` | `[]` | Domain names that sandboxed processes cannot access. Takes precedence over `allowedDomains` |
+| `allowManagedDomainsOnly` | `bool` | `False` | Managed-settings only: when set in managed settings, ignore `allowedDomains` from non-managed settings sources. Has no effect when set via SDK options |
 | `allowLocalBinding` | `bool` | `False` | Allow processes to bind to local ports (e.g., for dev servers) |
 | `allowUnixSockets` | `list[str]` | `[]` | Unix socket paths that processes can access (e.g., Docker socket) |
 | `allowAllUnixSockets` | `bool` | `False` | Allow access to all Unix sockets |
 | `httpProxyPort` | `int` | `None` | HTTP proxy port for network requests |
 | `socksProxyPort` | `int` | `None` | SOCKS proxy port for network requests |
+
+The built-in sandbox proxy enforces the network allowlist based on the requested hostname and does not terminate or inspect TLS traffic, so techniques such as [domain fronting](https://en.wikipedia.org/wiki/Domain_fronting) can potentially bypass it. See [Sandboxing security limitations](/docs/en/sandboxing#security-limitations) for details and [Secure deployment](/docs/en/agent-sdk/secure-deployment#traffic-forwarding) for configuring a TLS-terminating proxy.
 
 ### [​](#sandboxignoreviolations) `SandboxIgnoreViolations`
 

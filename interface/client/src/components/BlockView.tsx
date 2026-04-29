@@ -108,24 +108,51 @@ function TextBlockView({ block, onOpenFile }: TextBlockViewProps) {
           code: ({ children, className, ...props }) => {
             const isInline = !className;
             const text = String(children).replace(/\n$/, '');
-            if (isInline && onOpenFile && looksLikeFilePath(text)) {
+            if (isInline && looksLikeFilePath(text)) {
               const relativePath = toRelativePath(text);
-              return (
-                <code
-                  className="file-path-link"
-                  onClick={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    onOpenFile(relativePath);
-                  }}
-                  title={`Open ${relativePath} in editor`}
-                  {...props}
-                >
-                  {children}
-                </code>
-              );
+              if (isImagePath(relativePath)) {
+                return (
+                  <InlineFilePathImage
+                    path={relativePath}
+                    originalText={text}
+                    onOpenFile={onOpenFile}
+                  />
+                );
+              }
+              if (onOpenFile) {
+                return (
+                  <code
+                    className="file-path-link"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      onOpenFile(relativePath);
+                    }}
+                    title={`Open ${relativePath} in editor`}
+                    {...props}
+                  >
+                    {children}
+                  </code>
+                );
+              }
             }
             return <code className={className} {...props}>{children}</code>;
+          },
+          img: ({ src, alt, ...props }) => {
+            if (src && looksLikeFilePath(src)) {
+              const relativePath = toRelativePath(src);
+              if (isImagePath(relativePath)) {
+                return (
+                  <InlineFilePathImage
+                    path={relativePath}
+                    originalText={src}
+                    alt={alt}
+                    onOpenFile={onOpenFile}
+                  />
+                );
+              }
+            }
+            return <img src={src} alt={alt} {...props} />;
           }
         }}
       />
@@ -134,7 +161,8 @@ function TextBlockView({ block, onOpenFile }: TextBlockViewProps) {
 }
 
 // File path detection — shared utility (no more duplication!)
-import { looksLikeFilePath, toRelativePath } from '../utils/filePaths';
+import { looksLikeFilePath, toRelativePath, isImagePath } from '../utils/filePaths';
+import { InlineFilePathImage } from './InlineFilePathImage';
 
 // --- ToolChipBlock (combined tool_use + tool_result) ---
 

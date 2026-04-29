@@ -65,7 +65,8 @@ const STALL_PHRASES = [
 
 
 // File path detection for clickable links — shared utility
-import { looksLikeFilePath, toRelativePath } from './utils/filePaths';
+import { looksLikeFilePath, toRelativePath, isImagePath } from './utils/filePaths';
+import { InlineFilePathImage } from './components/InlineFilePathImage';
 
 // --- Emoji Reaction Components ---
 const EmojiPicker = ({ onSelect, onClose }: { onSelect: (emoji: string) => void; onClose: () => void }) => {
@@ -325,24 +326,51 @@ const ChatMessageItem = React.memo<ChatMessageProps>(({
                             code: ({ children, className, ...props }) => {
                               const isInline = !className;
                               const text = String(children).replace(/\n$/, '');
-                              if (isInline && onOpenFile && looksLikeFilePath(text)) {
+                              if (isInline && looksLikeFilePath(text)) {
                                 const relativePath = toRelativePath(text);
-                                return (
-                                  <code
-                                    className="file-path-link"
-                                    onClick={(e) => {
-                                      e.preventDefault();
-                                      e.stopPropagation();
-                                      onOpenFile(relativePath);
-                                    }}
-                                    title={`Open ${relativePath} in editor`}
-                                    {...props}
-                                  >
-                                    {children}
-                                  </code>
-                                );
+                                if (isImagePath(relativePath)) {
+                                  return (
+                                    <InlineFilePathImage
+                                      path={relativePath}
+                                      originalText={text}
+                                      onOpenFile={onOpenFile}
+                                    />
+                                  );
+                                }
+                                if (onOpenFile) {
+                                  return (
+                                    <code
+                                      className="file-path-link"
+                                      onClick={(e) => {
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                        onOpenFile(relativePath);
+                                      }}
+                                      title={`Open ${relativePath} in editor`}
+                                      {...props}
+                                    >
+                                      {children}
+                                    </code>
+                                  );
+                                }
                               }
                               return <code className={className} {...props}>{children}</code>;
+                            },
+                            img: ({ src, alt, ...props }) => {
+                              if (src && looksLikeFilePath(src)) {
+                                const relativePath = toRelativePath(src);
+                                if (isImagePath(relativePath)) {
+                                  return (
+                                    <InlineFilePathImage
+                                      path={relativePath}
+                                      originalText={src}
+                                      alt={alt}
+                                      onOpenFile={onOpenFile}
+                                    />
+                                  );
+                                }
+                              }
+                              return <img src={src} alt={alt} {...props} />;
                             }
                           }}
                         />
@@ -380,24 +408,51 @@ const ChatMessageItem = React.memo<ChatMessageProps>(({
                     code: ({ children, className, ...props }) => {
                       const isInline = !className;
                       const text = String(children).replace(/\n$/, '');
-                      if (isInline && onOpenFile && looksLikeFilePath(text)) {
+                      if (isInline && looksLikeFilePath(text)) {
                         const relativePath = toRelativePath(text);
-                        return (
-                          <code
-                            className="file-path-link"
-                            onClick={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              onOpenFile(relativePath);
-                            }}
-                            title={`Open ${relativePath} in editor`}
-                            {...props}
-                          >
-                            {children}
-                          </code>
-                        );
+                        if (isImagePath(relativePath)) {
+                          return (
+                            <InlineFilePathImage
+                              path={relativePath}
+                              originalText={text}
+                              onOpenFile={onOpenFile}
+                            />
+                          );
+                        }
+                        if (onOpenFile) {
+                          return (
+                            <code
+                              className="file-path-link"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                onOpenFile(relativePath);
+                              }}
+                              title={`Open ${relativePath} in editor`}
+                              {...props}
+                            >
+                              {children}
+                            </code>
+                          );
+                        }
                       }
                       return <code className={className} {...props}>{children}</code>;
+                    },
+                    img: ({ src, alt, ...props }) => {
+                      if (src && looksLikeFilePath(src)) {
+                        const relativePath = toRelativePath(src);
+                        if (isImagePath(relativePath)) {
+                          return (
+                            <InlineFilePathImage
+                              path={relativePath}
+                              originalText={src}
+                              alt={alt}
+                              onOpenFile={onOpenFile}
+                            />
+                          );
+                        }
+                      }
+                      return <img src={src} alt={alt} {...props} />;
                     }
                   }}
                 />
@@ -1272,14 +1327,17 @@ export const Chat: React.FC<ChatProps> = ({
     }
   }, [view]);
 
-  // Belt-and-suspenders: also reset scroll synchronously when the view flips to
-  // 'history'. Covers the case where stale historyList from a previous visit is
-  // already populated at the moment the view opens (before fresh fetch resolves).
+  // Reset scroll to top when the history view opens AND when the list size
+  // changes (i.e. when the fetched data arrives and the list grows from empty
+  // to populated). The view-only dep was insufficient: the initial reset fired
+  // on an empty/short container, then the browser's overflow-anchor pushed the
+  // viewport down as items streamed in. useLayoutEffect runs synchronously
+  // after DOM commit so this catches the populated render.
   useLayoutEffect(() => {
     if (view === 'history' && historyListRef.current) {
       historyListRef.current.scrollTop = 0;
     }
-  }, [view]);
+  }, [view, historyList.length]);
 
   const handleLoad = (id: string, title?: string, agent?: string) => {
     loadChat(id, agent || null);
@@ -1832,7 +1890,7 @@ export const Chat: React.FC<ChatProps> = ({
         )}
 
         {/* History List */}
-        <div ref={historyListRef} className="flex-1 overflow-y-auto p-4">
+        <div ref={historyListRef} className="flex-1 overflow-y-auto p-4" style={{ overflowAnchor: 'none' }}>
           {historyLoading && historyList.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full text-[var(--text-muted)]">
               <Loader2 size={32} className="mb-3 animate-spin opacity-50" />
