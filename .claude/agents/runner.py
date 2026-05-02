@@ -1549,6 +1549,7 @@ async def _run_sdk_agent(config: AgentConfig, invocation: AgentInvocation) -> st
         retrieval_queries = await rewrite_query_for_retrieval(
             raw_query,
             session_id=invocation.source_chat_id or f"agent:{config.name}",
+            agent_name=config.name,
         )
         logger.info(f"Agent '{config.name}': query rewrite: '{raw_query[:80]}' -> {retrieval_queries}")
         # Run CPU-bound retrieval in a thread to avoid blocking the event loop

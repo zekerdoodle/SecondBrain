@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/typescript
 title: Agent SDK reference - TypeScript
-last_fetched: 2026-04-29T09:04:04.147164+00:00
+last_fetched: 2026-05-01T09:04:03.622894+00:00
 ---
 
 [Claude Code Docs home page![light logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/light.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=78fd01ff4f4340295a4f66e2ea54903c)![dark logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/dark.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=1298a0c3b3a1da603b190d0de0e31712)](/docs/en/overview)
@@ -907,7 +907,7 @@ type SDKAssistantMessage = {
 ```
 
 The `message` field is a [`BetaMessage`](https://platform.claude.com/docs/en/api/messages/create) from the Anthropic SDK. It includes fields like `id`, `content`, `model`, `stop_reason`, and `usage`.
-`SDKAssistantMessageError` is one of: `'authentication_failed'`, `'billing_error'`, `'rate_limit'`, `'invalid_request'`, `'server_error'`, `'max_output_tokens'`, or `'unknown'`.
+`SDKAssistantMessageError` is one of: `'authentication_failed'`, `'oauth_org_not_allowed'`, `'billing_error'`, `'rate_limit'`, `'invalid_request'`, `'server_error'`, `'max_output_tokens'`, or `'unknown'`.
 
 ### [​](#sdkusermessage) `SDKUserMessage`
 
@@ -923,6 +923,7 @@ type SDKUserMessage = {
  isSynthetic?: boolean;
  shouldQuery?: boolean;
  tool_use_result?: unknown;
+ origin?: SDKMessageOrigin;
 };
 ```
 
@@ -941,6 +942,7 @@ type SDKUserMessageReplay = {
  parent_tool_use_id: string | null;
  isSynthetic?: boolean;
  tool_use_result?: unknown;
+ origin?: SDKMessageOrigin;
  isReplay: true;
 };
 ```
@@ -968,6 +970,7 @@ type SDKResultMessage =
  permission_denials: SDKPermissionDenial[];
  structured_output?: unknown;
  deferred_tool_use?: { id: string; name: string; input: Record<string, unknown> };
+ origin?: SDKMessageOrigin;
  }
  | {
  type: "result";
@@ -988,9 +991,11 @@ type SDKResultMessage =
  modelUsage: { [modelName: string]: ModelUsage };
  permission_denials: SDKPermissionDenial[];
  errors: string[];
+ origin?: SDKMessageOrigin;
  };
 ```
 
+The `origin` field forwards the [`SDKMessageOrigin`](#sdkmessageorigin) of the user message that triggered this result. When a background task finishes and the SDK injects a synthetic follow-up turn, the resulting `SDKResultMessage` carries `origin: { kind: "task-notification" }`. Check this field to distinguish results that answer your prompt from results emitted for background-task follow-ups, so you can route or suppress the latter. The field is absent for results emitted before any user turn, such as startup errors.
 When a `PreToolUse` hook returns `permissionDecision: "defer"`, the result has `stop_reason: "tool_deferred"` and `deferred_tool_use` carries the pending tool’s `id`, `name`, and `input`. Read this field to surface the request in your own UI, then resume with the same `session_id` to continue. See [Defer a tool call for later](/docs/en/hooks#defer-a-tool-call-for-later) for the full round trip.
 
 ### [​](#sdksystemmessage) `SDKSystemMessage`
@@ -1080,6 +1085,27 @@ type SDKPermissionDenial = {
  tool_input: Record<string, unknown>;
 };
 ```
+
+### [​](#sdkmessageorigin) `SDKMessageOrigin`
+
+Provenance of a user-role message. This appears as `origin` on [`SDKUserMessage`](#sdkusermessage) and is forwarded onto the corresponding [`SDKResultMessage`](#sdkresultmessage) so you can tell what triggered a given turn.
+
+```shiki
+type SDKMessageOrigin =
+ | { kind: "human" }
+ | { kind: "channel"; server: string }
+ | { kind: "peer"; from: string; name?: string }
+ | { kind: "task-notification" }
+ | { kind: "coordinator" };
+```
+
+| `kind` | Meaning |
+| --- | --- |
+| `human` | Direct input from the end user. On user messages, an absent `origin` also means human input. |
+| `channel` | Message arriving on a [channel](/docs/en/channels). `server` is the source MCP server name. |
+| `peer` | Message from another agent session via `SendMessage`. `from` is the sender address; `name` is the sender’s display name when available. |
+| `task-notification` | Synthetic turn injected after a background task finished. See [`SDKTaskNotificationMessage`](#sdktasknotificationmessage). |
+| `coordinator` | Message from a team coordinator in an [agent team](/docs/en/agent-teams). |
 
 ## [​](#hook-types) Hook Types
 

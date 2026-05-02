@@ -649,7 +649,12 @@ class ClaudeWrapper:
                 raw_query = str(prompt)
             # No truncation — chat history is naturally bounded by model context
 
-            retrieval_queries = await rewrite_query_for_retrieval(raw_query, self._conversation_history, session_id=session_id)
+            retrieval_queries = await rewrite_query_for_retrieval(
+                raw_query,
+                self._conversation_history,
+                session_id=session_id,
+                agent_name=agent_config.name,
+            )
             # Run CPU-bound retrieval (embedding model inference) in a thread
             # to avoid blocking the event loop / freezing WebSocket heartbeats
             loop = asyncio.get_event_loop()

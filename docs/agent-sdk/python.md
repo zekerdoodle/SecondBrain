@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/python
 title: Agent SDK reference - Python
-last_fetched: 2026-04-29T09:02:56.520004+00:00
+last_fetched: 2026-04-30T09:01:56.331123+00:00
 ---
 
 [Claude Code Docs home page![light logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/light.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=78fd01ff4f4340295a4f66e2ea54903c)![dark logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/dark.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=1298a0c3b3a1da603b190d0de0e31712)](/docs/en/overview)
@@ -3137,9 +3137,10 @@ class SandboxNetworkConfig(TypedDict, total=False):
  allowedDomains: list[str]
  deniedDomains: list[str]
  allowManagedDomainsOnly: bool
- allowLocalBinding: bool
  allowUnixSockets: list[str]
  allowAllUnixSockets: bool
+ allowLocalBinding: bool
+ allowMachLookup: list[str]
  httpProxyPort: int
  socksProxyPort: int
 ```
@@ -3149,9 +3150,10 @@ class SandboxNetworkConfig(TypedDict, total=False):
 | `allowedDomains` | `list[str]` | `[]` | Domain names that sandboxed processes can access |
 | `deniedDomains` | `list[str]` | `[]` | Domain names that sandboxed processes cannot access. Takes precedence over `allowedDomains` |
 | `allowManagedDomainsOnly` | `bool` | `False` | Managed-settings only: when set in managed settings, ignore `allowedDomains` from non-managed settings sources. Has no effect when set via SDK options |
-| `allowLocalBinding` | `bool` | `False` | Allow processes to bind to local ports (e.g., for dev servers) |
 | `allowUnixSockets` | `list[str]` | `[]` | Unix socket paths that processes can access (e.g., Docker socket) |
 | `allowAllUnixSockets` | `bool` | `False` | Allow access to all Unix sockets |
+| `allowLocalBinding` | `bool` | `False` | Allow processes to bind to local ports (e.g., for dev servers) |
+| `allowMachLookup` | `list[str]` | `[]` | macOS only: XPC/Mach service names to allow. Supports a trailing wildcard |
 | `httpProxyPort` | `int` | `None` | HTTP proxy port for network requests |
 | `socksProxyPort` | `int` | `None` | SOCKS proxy port for network requests |
 
