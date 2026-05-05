@@ -649,12 +649,26 @@ class ClaudeWrapper:
                 raw_query = str(prompt)
             # No truncation — chat history is naturally bounded by model context
 
-            retrieval_queries = await rewrite_query_for_retrieval(
-                raw_query,
-                self._conversation_history,
-                session_id=session_id,
-                agent_name=agent_config.name,
-            )
+            # 20s timeout — Sonnet rewriter success is 3-5s, but the SDK
+            # subprocess can hang indefinitely (~10-20×/day). Without this
+            # wrapper, a hung subprocess freezes the user's message for
+            # 30-76s before crashing. On timeout, fall back to raw prompt.
+            try:
+                retrieval_queries = await asyncio.wait_for(
+                    rewrite_query_for_retrieval(
+                        raw_query,
+                        self._conversation_history,
+                        session_id=session_id,
+                        agent_name=agent_config.name,
+                    ),
+                    timeout=20.0,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    f"Query rewriter timed out after 20s for agent "
+                    f"'{agent_config.name}' — falling back to raw prompt."
+                )
+                retrieval_queries = [(raw_query, 1.0)]
             # Run CPU-bound retrieval (embedding model inference) in a thread
             # to avoid blocking the event loop / freezing WebSocket heartbeats
             loop = asyncio.get_event_loop()

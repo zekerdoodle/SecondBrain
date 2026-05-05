@@ -1546,11 +1546,25 @@ async def _run_sdk_agent(config: AgentConfig, invocation: AgentInvocation) -> st
         from contextual_memory import auto_retrieve_context, rewrite_query_for_retrieval
 
         raw_query = invocation.prompt or ""
-        retrieval_queries = await rewrite_query_for_retrieval(
-            raw_query,
-            session_id=invocation.source_chat_id or f"agent:{config.name}",
-            agent_name=config.name,
-        )
+        # 20s timeout — Sonnet rewriter success is 3-5s, but the SDK
+        # subprocess can hang indefinitely (~10-20×/day). Without this
+        # wrapper, a hung subprocess freezes the agent invocation for
+        # 30-76s before crashing. On timeout, fall back to raw prompt.
+        try:
+            retrieval_queries = await asyncio.wait_for(
+                rewrite_query_for_retrieval(
+                    raw_query,
+                    session_id=invocation.source_chat_id or f"agent:{config.name}",
+                    agent_name=config.name,
+                ),
+                timeout=20.0,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                f"Agent '{config.name}': query rewriter timed out after 20s "
+                f"— falling back to raw prompt."
+            )
+            retrieval_queries = [(raw_query, 1.0)]
         logger.info(f"Agent '{config.name}': query rewrite: '{raw_query[:80]}' -> {retrieval_queries}")
         # Run CPU-bound retrieval in a thread to avoid blocking the event loop
         import functools
