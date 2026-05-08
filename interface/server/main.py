@@ -49,6 +49,10 @@ from slash_commands import (
     parse_slash_input,
 )
 
+# Salon (group chat) imports — see salon_manager.py / convener.py / salon_dispatcher.py
+import salon_manager as _salon_manager_mod
+import salon_dispatcher as _salon_dispatcher_mod
+
 
 # --- Client Session Tracking (for notifications) ---
 
@@ -608,6 +612,186 @@ async def _background_processing_idle_watcher():
             break
         except Exception as e:
             logger.error(f"BG_PROCESSING: Idle watcher error: {e}")
+
+
+# --- Salon background processing ---
+#
+# Same idea as 1:1 chat bg processing, but per-agent within a salon. When an
+# agent has been quiet in a salon for their idle threshold, fire their bg
+# hook with the salon history rendered as a conversation (their messages =
+# "assistant", everyone else's = "user" prefixed with the sender's name).
+#
+# The "session ended from their POV" moment is when they hit idle in a salon.
+# Character's idea — confirmed in the spec.
+
+# Per-(salon_id, agent) gate and last-fire bookkeeping.
+_salon_bg_inflight: Set[str] = set()
+_salon_bg_last_fired: Dict[str, float] = {}  # key = f"{salon_id}:{agent}"
+
+
+def _format_salon_history_for_bg(
+    messages: List[Dict[str, Any]],
+    target_agent: str,
+) -> List[Dict[str, Any]]:
+    """Translate salon messages into chat-style messages for bg processing.
+
+    The target agent's own messages become role="assistant"; everyone else's
+    become role="user" with a "[from <name>]" prefix so the agent can tell who
+    said what without changing the role schema bg processing expects.
+    """
+    out: List[Dict[str, Any]] = []
+    for msg in messages or []:
+        sender = msg.get("from") or "unknown"
+        content = (msg.get("content") or "").strip()
+        if not content:
+            continue
+        if sender == target_agent:
+            out.append({"role": "assistant", "content": content})
+        else:
+            out.append({"role": "user", "content": f"[from {sender}] {content}"})
+    return out
+
+
+async def _run_salon_background_processing(
+    salon_id: str,
+    salon_title: str,
+    agent_name: str,
+    messages: List[Dict[str, Any]],
+    bg_prompt: str,
+) -> None:
+    """Run bg processing for one agent against a salon's history."""
+    key = f"{salon_id}:{agent_name}"
+    _salon_bg_inflight.add(key)
+    try:
+        agents_dir = Path(ROOT_DIR) / ".claude" / "agents"
+        if str(agents_dir) not in sys.path:
+            sys.path.insert(0, str(agents_dir))
+        from runner import invoke_agent
+
+        translated = _format_salon_history_for_bg(messages, agent_name)
+        history = _format_conversation_history(translated)
+        if not history.strip():
+            return
+
+        combined_prompt = (
+            f"[SALON: \"{salon_title}\" (salon_id={salon_id})]\n"
+            f"[CONTEXT: You were a participant in this salon. The conversation "
+            f"has gone idle — this is your natural 'session ended' moment.]\n\n"
+            f"[CONVERSATION HISTORY]\n{history}\n\n"
+            f"[BACKGROUND PROCESSING INSTRUCTIONS]\n{bg_prompt}"
+        )
+
+        logger.info(
+            f"SALON_BG: Starting for {agent_name} in salon {salon_id} "
+            f"({len(messages)} messages, {len(combined_prompt)} chars)"
+        )
+        result = await invoke_agent(
+            name=agent_name,
+            prompt=combined_prompt,
+            mode="trust",
+        )
+        status = result.get("status") if isinstance(result, dict) else getattr(result, "status", "unknown")
+        logger.info(
+            f"SALON_BG: Completed for {agent_name} in salon {salon_id} (status={status})"
+        )
+    except Exception as e:
+        logger.error(f"SALON_BG: Failed for {agent_name} in salon {salon_id}: {e}")
+    finally:
+        _salon_bg_inflight.discard(key)
+        _salon_bg_last_fired[key] = time.time()
+
+
+async def _salon_background_processing_watcher():
+    """Periodic task: fire each agent's bg hook when they hit idle in a salon.
+
+    For each salon, for each participating agent (not zeke):
+    - Find the most recent message they sent. If they never spoke, skip.
+    - If they've been quiet for ≥ their `idle_timeout_minutes`, fire bg
+      processing — but only if we haven't already fired for this
+      (salon_id, agent) since their last spoken message.
+    """
+    logger.info("SALON_BG: Idle watcher started (5 min interval)")
+    while True:
+        try:
+            await asyncio.sleep(300)  # 5 min — fine-grained enough; cheap
+
+            now = time.time()
+
+            # Lazy import — salon_manager only loads once per process
+            try:
+                mgr = _salon_manager_mod.get_manager()
+            except Exception:
+                continue
+
+            for summary in mgr.list_all(limit=10_000):
+                salon_id = summary.get("salon_id")
+                if not salon_id:
+                    continue
+                # Don't bg-process locked salons (active dispatch in flight)
+                if summary.get("locked"):
+                    continue
+
+                salon = mgr.load(salon_id)
+                if not salon:
+                    continue
+                messages = salon.get("messages") or []
+                if not messages:
+                    continue
+
+                participants = list(salon.get("participants") or [])
+                title = salon.get("title") or "(untitled salon)"
+
+                for agent_name in participants:
+                    if agent_name == "user":
+                        continue
+
+                    # Most recent message from this agent
+                    last_from_agent: Optional[float] = None
+                    for msg in reversed(messages):
+                        if msg.get("from") == agent_name:
+                            last_from_agent = msg.get("created_at")
+                            break
+                    if last_from_agent is None:
+                        # Agent has never spoken in this salon → no "session"
+                        # to wrap up.
+                        continue
+
+                    bg_config = _get_bg_config(agent_name)
+                    if not bg_config or not bg_config["enabled"] or not bg_config["prompt"]:
+                        continue
+
+                    idle_seconds = now - float(last_from_agent)
+                    idle_threshold = bg_config["idle_timeout_minutes"] * 60
+                    if idle_seconds < idle_threshold:
+                        continue
+
+                    key = f"{salon_id}:{agent_name}"
+                    if key in _salon_bg_inflight:
+                        continue
+                    # Don't re-fire for the same idle period — only fire
+                    # again if the agent has spoken since the last bg run.
+                    last_fired = _salon_bg_last_fired.get(key, 0.0)
+                    if last_fired >= float(last_from_agent):
+                        continue
+
+                    logger.info(
+                        f"SALON_BG: Idle trigger — {agent_name} in salon "
+                        f"{salon_id} (idle {idle_seconds:.0f}s, "
+                        f"threshold {idle_threshold}s)"
+                    )
+                    asyncio.create_task(_run_salon_background_processing(
+                        salon_id=salon_id,
+                        salon_title=title,
+                        agent_name=agent_name,
+                        messages=list(messages),
+                        bg_prompt=bg_config["prompt"],
+                    ))
+
+        except asyncio.CancelledError:
+            logger.info("SALON_BG: Idle watcher cancelled")
+            break
+        except Exception as e:
+            logger.error(f"SALON_BG: Idle watcher error: {e}")
 
 
 # --- Pydantic Models ---
@@ -1819,6 +2003,37 @@ def list_native_tools():
         return {"groups": []}
 
 
+@app.get("/api/system-models")
+def get_system_models():
+    """Return the current system_models config (convener, salon_titler, chat_titler).
+
+    Always includes all known system models — missing keys fall back to
+    defaults defined in `interface/server/system_models.py`.
+    """
+    try:
+        import system_models
+        return {"system_models": system_models.load()}
+    except Exception as e:
+        logger.error(f"Failed to load system_models: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class _SystemModelsReq(BaseModel):
+    system_models: Dict[str, Dict[str, Any]]
+
+
+@app.post("/api/system-models")
+def save_system_models(req: _SystemModelsReq):
+    """Save the system_models config. Validates + atomic-writes to JSON."""
+    try:
+        import system_models as _sm
+        merged = _sm.save(req.system_models or {})
+        return {"system_models": merged, "ok": True}
+    except Exception as e:
+        logger.error(f"Failed to save system_models: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/tools/categories")
 def list_tool_categories():
     """List available MCP tool categories for the Agent Builder."""
@@ -2109,6 +2324,265 @@ def get_room_history(room_id: str):
     if data is None:
         raise HTTPException(status_code=404)
     return data
+
+
+# ---------------------------------------------------------------------------
+# Salon (group chat) HTTP API
+# ---------------------------------------------------------------------------
+#
+# Salons are persistent N-way conversations between the user and multiple agents,
+# with routing handled by the silent Convener. See salon_manager.py and
+# salon_dispatcher.py for the runtime; these endpoints are the the user-side
+# surface (UI). Agents have their own MCP tools (mcp_tools/salons/).
+
+
+class _CreateSalonReq(BaseModel):
+    title: Optional[str] = ""  # empty = let salon_titler auto-name after first exchange
+    participants: List[str]
+    opening_message: Optional[str] = None
+
+
+class _PostToSalonReq(BaseModel):
+    content: str
+
+
+class _AddSalonParticipantReq(BaseModel):
+    participant: str
+
+
+class _PromoteChatReq(BaseModel):
+    chat_id: str
+    title: Optional[str] = None
+    participant: str  # agent to add (the one being added to make it multi-party)
+
+
+@app.get("/api/salons")
+def list_salons_endpoint(participant: Optional[str] = None, limit: int = 100):
+    """List salons. By default returns all salons in the system.
+
+    Pass ?participant=zeke to filter to a specific participant's salons.
+    """
+    mgr = _salon_manager_mod.get_manager()
+    if participant:
+        return {"salons": mgr.list_for_participant(participant, limit=limit)}
+    return {"salons": mgr.list_all(limit=limit)}
+
+
+@app.get("/api/salons/{salon_id}")
+def get_salon_endpoint(salon_id: str):
+    """Return the full salon JSON (messages, participants, hints, state)."""
+    mgr = _salon_manager_mod.get_manager()
+    data = mgr.load(salon_id)
+    if data is None:
+        raise HTTPException(status_code=404, detail="Salon not found")
+    return data
+
+
+@app.post("/api/salons")
+async def create_salon_endpoint(req: _CreateSalonReq):
+    """Create a new salon (the user-side). Creator is recorded as 'user'."""
+    title = (req.title or "").strip() or "(untitled salon)"
+    participants = [p.strip() for p in (req.participants or []) if p.strip()]
+    if not participants:
+        raise HTTPException(status_code=400, detail="participants is required")
+
+    mgr = _salon_manager_mod.get_manager()
+    salon_id = mgr.create(
+        title=title,
+        participants=participants,
+        creator="user",
+        opening_message=(req.opening_message or "").strip() or None,
+    )
+
+    # Fire dispatcher (it'll broadcast salon_created and run the convener)
+    try:
+        from salon_events import publish
+        publish("salon_created", {
+            "salon_id": salon_id,
+            "title": title,
+            "participants": participants,
+            "creator": "user",
+            "had_opening_message": bool(req.opening_message),
+        })
+        if req.opening_message:
+            # The opening message is from "user" — the convener should pick
+            # this up via salon_created → dispatch_salon_loop. No separate
+            # message_posted needed.
+            pass
+    except Exception as e:
+        logger.warning(f"Salon create: event publish failed: {e}")
+
+    return {"salon_id": salon_id, "ok": True}
+
+
+@app.post("/api/salons/{salon_id}/messages")
+async def post_to_salon_endpoint(salon_id: str, req: _PostToSalonReq):
+    """the user posts to a salon. Triggers the convener loop."""
+    content = (req.content or "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="content is required")
+
+    mgr = _salon_manager_mod.get_manager()
+    salon = mgr.load(salon_id)
+    if salon is None:
+        raise HTTPException(status_code=404, detail="Salon not found")
+
+    # Make sure zeke is a participant — otherwise the agents don't know
+    # he can post here. (UI promotion path adds him explicitly; this is a
+    # safety net.)
+    if "user" not in (salon.get("participants") or []):
+        mgr.add_participant(salon_id, "user")
+
+    msg_id = mgr.append_message(
+        salon_id=salon_id,
+        from_participant="user",
+        content=content,
+    )
+
+    try:
+        from salon_events import publish
+        publish("salon_message_posted", {
+            "salon_id": salon_id,
+            "message_id": msg_id,
+            "from": "user",
+        })
+    except Exception as e:
+        logger.warning(f"Salon post: event publish failed: {e}")
+
+    return {"message_id": msg_id, "ok": True}
+
+
+@app.post("/api/salons/{salon_id}/participants")
+async def add_salon_participant_endpoint(salon_id: str, req: _AddSalonParticipantReq):
+    """Add a participant (agent name or 'user') to an existing salon."""
+    participant = (req.participant or "").strip()
+    if not participant:
+        raise HTTPException(status_code=400, detail="participant is required")
+
+    mgr = _salon_manager_mod.get_manager()
+    if not mgr.exists(salon_id):
+        raise HTTPException(status_code=404, detail="Salon not found")
+
+    added = mgr.add_participant(salon_id, participant)
+    if added:
+        try:
+            from salon_events import publish
+            publish("salon_participant_added", {
+                "salon_id": salon_id,
+                "added_by": "user",
+                "participant": participant,
+            })
+        except Exception as e:
+            logger.warning(f"Salon add participant: event publish failed: {e}")
+
+    return {"added": added, "ok": True}
+
+
+@app.post("/api/salons/{salon_id}/title")
+def set_salon_title_endpoint(salon_id: str, payload: dict):
+    """Update a salon's title."""
+    title = (payload.get("title") or "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="title is required")
+    mgr = _salon_manager_mod.get_manager()
+    if not mgr.update_title(salon_id, title):
+        raise HTTPException(status_code=404, detail="Salon not found")
+    return {"ok": True}
+
+
+@app.delete("/api/salons/{salon_id}")
+def delete_salon_endpoint(salon_id: str):
+    """Delete a salon. No participant check."""
+    mgr = _salon_manager_mod.get_manager()
+    if not mgr.delete(salon_id):
+        raise HTTPException(status_code=404, detail="Salon not found")
+    return {"ok": True}
+
+
+@app.post("/api/salons/promote-chat")
+async def promote_chat_to_salon_endpoint(req: _PromoteChatReq):
+    """Promote a 1:1 chat to a salon by adding a second agent.
+
+    Loads the chat's message history, copies it into a new salon (rendered
+    as 'from' messages: user → 'user', assistant → original agent), adds
+    the new participant, and fires the convener loop.
+    """
+    chat_id = (req.chat_id or "").strip()
+    if not chat_id:
+        raise HTTPException(status_code=400, detail="chat_id is required")
+    new_participant = (req.participant or "").strip()
+    if not new_participant:
+        raise HTTPException(status_code=400, detail="participant is required")
+
+    chat = chat_manager.load_chat(chat_id)
+    if chat is None:
+        raise HTTPException(status_code=404, detail="Chat not found")
+
+    # Determine the original agent. Look at the chat's `agent` field, falling
+    # back to the assistant role on the first assistant message.
+    chat_agent = (chat.get("agent") or "").strip() or None
+    if not chat_agent:
+        for msg in chat.get("messages") or []:
+            if msg.get("role") == "assistant":
+                chat_agent = msg.get("agent") or None
+                if chat_agent:
+                    break
+    if not chat_agent:
+        raise HTTPException(
+            status_code=400,
+            detail="Could not determine the chat's agent — chat has no agent field",
+        )
+
+    title = (req.title or chat.get("title") or "(promoted chat)").strip()
+
+    participants = ["user", chat_agent]
+    if new_participant not in participants:
+        participants.append(new_participant)
+
+    mgr = _salon_manager_mod.get_manager()
+    salon_id = mgr.create(
+        title=title,
+        participants=participants,
+        creator="user",
+        opening_message=None,
+    )
+
+    # Copy chat messages → salon messages with role-translation.
+    for msg in chat.get("messages") or []:
+        role = msg.get("role")
+        content = msg.get("content")
+        if not content or not isinstance(content, str) or not content.strip():
+            continue
+        if role == "user":
+            from_participant = "user"
+        elif role == "assistant":
+            from_participant = msg.get("agent") or chat_agent
+        else:
+            # system / tool / etc. — skip for now
+            continue
+        try:
+            mgr.append_message(
+                salon_id=salon_id,
+                from_participant=from_participant,
+                content=content.strip(),
+            )
+        except Exception as e:
+            logger.warning(f"Promote chat: failed to copy message: {e}")
+
+    # Fire the dispatcher to bring the new participant in.
+    try:
+        from salon_events import publish
+        publish("salon_created", {
+            "salon_id": salon_id,
+            "title": title,
+            "participants": participants,
+            "creator": "user",
+            "had_opening_message": False,
+        })
+    except Exception as e:
+        logger.warning(f"Salon promote: event publish failed: {e}")
+
+    return {"salon_id": salon_id, "ok": True}
 
 
 # --- Chat Search API ---
@@ -6136,6 +6610,14 @@ async def scheduler_loop():
             # Periodic maintenance: chat image garbage collection (once daily)
             await _maybe_run_image_gc()
 
+            # Salon recall sweep: fire convener loops on any active salons
+            # whose convener_recall_at deadline has passed. Cheap; gated by
+            # per-salon locks so it can't pile up.
+            try:
+                await _salon_dispatcher_mod.check_salon_recalls()
+            except Exception as e:
+                logger.warning(f"Salon recall sweep error: {e}")
+
         except Exception as e:
             logger.error(f"Scheduler Error: {e}")
 
@@ -6751,17 +7233,34 @@ async def startup_event():
     asyncio.create_task(scheduler_loop())
     asyncio.create_task(agent_notification_wakeup_loop())
     asyncio.create_task(_background_processing_idle_watcher())
+    asyncio.create_task(_salon_background_processing_watcher())
 
     # Clear any stale locks on agent-to-agent conversations left by a crash
     # or an unclean restart. Server just came up — nothing's legitimately
     # in-flight yet, so anything with a lock is stale.
     try:
         from agent_conversation_manager import get_manager as _get_agent_conv_mgr
-        cleared = _get_agent_conv_mgr().sweep_stale_locks(max_age_minutes=5)
+        # max_age_minutes=0 → clear ALL locks. Server just came up; nothing
+        # legitimate can be in-flight, so any lock is stale by definition.
+        # (Previously 5min, which left locks acquired right before shutdown
+        # un-cleared and blocked the next dispatch.)
+        cleared = _get_agent_conv_mgr().sweep_stale_locks(max_age_minutes=0)
         if cleared:
             logger.info(f"Agent conversations: cleared {cleared} stale lock(s) on startup")
     except Exception as e:
         logger.warning(f"Agent conversations: startup lock sweep failed: {e}")
+
+    # Salon (group chat) startup: clear stale locks + wire the dispatcher
+    # into the salon_events bus. Dispatcher uses broadcast_to_all_clients to
+    # push salon updates (new messages, convener decisions, typing, state).
+    try:
+        # max_age_minutes=0 → clear ALL locks (see rationale above).
+        cleared = _salon_manager_mod.get_manager().sweep_stale_locks(max_age_minutes=0)
+        if cleared:
+            logger.info(f"Salons: cleared {cleared} stale lock(s) on startup")
+        _salon_dispatcher_mod.init_dispatcher(broadcast_to_all_clients)
+    except Exception as e:
+        logger.warning(f"Salons: startup wiring failed: {e}", exc_info=True)
 
     # If there's a restart continuation, launch the wakeup task
     if restart_continuation:

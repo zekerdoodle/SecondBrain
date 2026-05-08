@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/claude-code-features
 title: Use Claude Code features in the SDK
-last_fetched: 2026-04-29T09:01:42.332201+00:00
+last_fetched: 2026-05-06T09:02:56.639220+00:00
 ---
 
 [Claude Code Docs home page![light logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/light.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=78fd01ff4f4340295a4f66e2ea54903c)![dark logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/dark.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=1298a0c3b3a1da603b190d0de0e31712)](/docs/en/overview)
@@ -91,7 +91,7 @@ For a conceptual overview of what each feature does and when to use it, see [Ext
 
 ## [​](#control-filesystem-settings-with-settingsources) Control filesystem settings with settingSources
 
-The setting sources option ([`setting_sources`](/docs/en/agent-sdk/python#claude-agent-options) in Python, [`settingSources`](/docs/en/agent-sdk/typescript#setting-source) in TypeScript) controls which filesystem-based settings the SDK loads. Pass an explicit list to opt in to specific sources, or pass an empty array to disable user, project, and local settings.
+The setting sources option ([`setting_sources`](/docs/en/agent-sdk/python#claudeagentoptions) in Python, [`settingSources`](/docs/en/agent-sdk/typescript#settingsource) in TypeScript) controls which filesystem-based settings the SDK loads. Pass an explicit list to opt in to specific sources, or pass an empty array to disable user, project, and local settings.
 This example loads both user-level and project-level settings by setting `settingSources` to `["user", "project"]`:
 
 Python
@@ -119,7 +119,7 @@ async for message in query(
  print(f"\nResult: {message.result}")
 ```
 
-Each source loads settings from a specific location, where `<cwd>` is the working directory you pass via the `cwd` option (or the process’s current directory if unset). For the full type definition, see [`SettingSource`](/docs/en/agent-sdk/typescript#setting-source) (TypeScript) or [`SettingSource`](/docs/en/agent-sdk/python#setting-source) (Python).
+Each source loads settings from a specific location, where `<cwd>` is the working directory you pass via the `cwd` option, or the process’s current directory if unset. For the full type definition, see [`SettingSource`](/docs/en/agent-sdk/typescript#settingsource) (TypeScript) or [`SettingSource`](/docs/en/agent-sdk/python#settingsource) (Python).
 
 | Source | What it loads | Location |
 | --- | --- | --- |

@@ -21,7 +21,7 @@ import sys
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Union
 
 # The SDK's stream_input() keeps stdin open until the first `result` message arrives
 # or a timeout fires (CLAUDE_CODE_STREAM_CLOSE_TIMEOUT, default 60s).  Agents that
@@ -49,6 +49,7 @@ from claude_agent_sdk.types import (
     HookMatcher,
     PermissionResultAllow,
     ResultMessage,
+    StreamEvent,
     TextBlock,
     ThinkingBlock,
     ThinkingConfigAdaptive,
@@ -220,6 +221,9 @@ async def invoke_agent(
     is_visible: bool = False,
     conversation_id: Optional[str] = None,
     caller_agent: Optional[str] = None,
+    salon_id: Optional[str] = None,
+    stream_callback: Optional[Callable[[list], Awaitable[None]]] = None,
+    history_messages: Optional[List[Dict[str, Any]]] = None,
 ) -> Union[AgentResult, Dict[str, str]]:
     """
     Invoke an agent with the specified mode.
@@ -239,6 +243,13 @@ async def invoke_agent(
         caller_agent: Name of the agent (or caller identity) that initiated
             this invocation. Recorded as the author of the prompt message in
             the thread. Defaults to "caller" for legacy/unsourced callers.
+        salon_id: If set, this invocation is part of a salon dispatch. The
+            agent_conversations thread machinery is bypassed entirely — the
+            ``prompt`` is used as-is (caller is responsible for rendering salon
+            history), and the result has no ``conversation_id``. The salon's
+            own JSON file is the persistence layer. Only ``foreground`` mode is
+            supported when salon_id is set; the salon dispatch loop in main.py
+            owns the lifecycle.
 
     Returns:
         For foreground: AgentResult (with ``conversation_id`` set)
@@ -292,6 +303,36 @@ async def invoke_agent(
     if project:
         prompt = prompt + _build_project_metadata_block(name, project)
         logger.info(f"Injected project metadata for '{project}' into agent '{name}' prompt")
+
+    # ---- Salon fast path -----------------------------------------------------
+    # When salon_id is set, the salon owns the conversation (its JSON file). We
+    # skip thread setup entirely and just run the agent. Only foreground mode
+    # is supported — the salon dispatch loop in main.py runs us synchronously
+    # and persists the result into the salon.
+    if salon_id is not None:
+        if mode != InvocationMode.FOREGROUND:
+            return {
+                "error": (
+                    f"salon_id requires foreground mode (got {mode.value}). "
+                    f"Salon dispatches are always synchronous."
+                ),
+            }
+        invocation = AgentInvocation(
+            agent=name,
+            prompt=prompt,
+            mode=mode,
+            source_chat_id=source_chat_id,
+            model_override=model_override,
+            project=project,
+            is_visible=is_visible,
+            salon_id=salon_id,
+        )
+        logger.info(f"Invoking agent '{name}' for salon {salon_id} (no thread)")
+        return await _run_agent(
+            config, invocation,
+            stream_callback=stream_callback,
+            history_messages=history_messages,
+        )
 
     # Conversation setup: resolve / create thread + acquire invocation lock.
     # Runs synchronously for all three modes so ping/trust calls can return
@@ -618,14 +659,33 @@ async def _maybe_retitle_thread(conversation_id: str) -> None:
         logger.warning(f"Titler failed for thread {conversation_id}: {e}")
 
 
-async def _run_agent(config: AgentConfig, invocation: AgentInvocation) -> AgentResult:
+async def _run_agent(
+    config: AgentConfig,
+    invocation: AgentInvocation,
+    stream_callback: Optional[Callable[[list], Awaitable[None]]] = None,
+    history_messages: Optional[List[Dict[str, Any]]] = None,
+) -> AgentResult:
     """
     Execute an agent and return the result.
+
+    Args:
+        stream_callback: Optional async callable invoked with the current
+            block snapshot (list of ContentBlock dicts) each time the SDK
+            yields a new AssistantMessage or tool result. Used by the salon
+            dispatcher to stream live progress to the UI. Errors in the
+            callback are logged and swallowed — streaming is best-effort.
+        history_messages: Optional pre-rendered SDK input for salon dispatch.
+            When provided, the final "your turn" user message is part of the
+            list — invocation.prompt is not separately wrapped. See
+            _consume_query for full details.
     """
     started_at = datetime.utcnow()
 
     try:
-        response, transcript, blocks = await _run_sdk_agent(config, invocation)
+        response, transcript, blocks = await _run_sdk_agent(
+            config, invocation, stream_callback=stream_callback,
+            history_messages=history_messages,
+        )
 
         return AgentResult(
             agent=config.name,
@@ -1210,9 +1270,17 @@ async def _run_background_agent(
             _release_thread_lock(conversation_id, lock_id)
 
 
-async def _run_sdk_agent(config: AgentConfig, invocation: AgentInvocation) -> str:
+async def _run_sdk_agent(
+    config: AgentConfig,
+    invocation: AgentInvocation,
+    stream_callback: Optional[Callable[[list], Awaitable[None]]] = None,
+    history_messages: Optional[List[Dict[str, Any]]] = None,
+) -> str:
     """
     Run an SDK-based agent using claude_agent_sdk.query().
+
+    history_messages: Optional pre-rendered SDK input for salon dispatches.
+    Threaded through to _consume_query (see that function's docstring).
     """
     from claude_agent_sdk import query, ClaudeAgentOptions
 
@@ -1320,7 +1388,7 @@ async def _run_sdk_agent(config: AgentConfig, invocation: AgentInvocation) -> st
                     append_parts.append(
                         "\n---\n\n"
                         "Your persistent memory (notes you've saved across conversations).\n"
-                        "Only you (the agent) can see this section — it is never visible to the user.\n\n"
+                        "Only you (the agent) can see this section — it is never visible to the user.\nThe IDs (e.g. \"#427\") are tool-call handles — don't quote them at the user; they mean nothing to anyone but you.\n\n"
                         f"{memory_block}"
                     )
             except Exception as e:
@@ -1335,7 +1403,7 @@ async def _run_sdk_agent(config: AgentConfig, invocation: AgentInvocation) -> st
                         append_parts.append(
                             "\n---\n\n"
                             "Your persistent memory (notes you've saved across conversations).\n"
-                        "Only you (the agent) can see this section — it is never visible to the user.\n\n"
+                        "Only you (the agent) can see this section — it is never visible to the user.\nThe IDs (e.g. \"#427\") are tool-call handles — don't quote them at the user; they mean nothing to anyone but you.\n\n"
                             f"{memory_content}"
                         )
                 except Exception as e:
@@ -1380,7 +1448,7 @@ async def _run_sdk_agent(config: AgentConfig, invocation: AgentInvocation) -> st
                     parts.append(
                         "\n---\n\n"
                         "Your persistent memory (notes you've saved across conversations).\n"
-                        "Only you (the agent) can see this section — it is never visible to the user.\n\n"
+                        "Only you (the agent) can see this section — it is never visible to the user.\nThe IDs (e.g. \"#427\") are tool-call handles — don't quote them at the user; they mean nothing to anyone but you.\n\n"
                         f"{memory_block}"
                     )
                     logger.info(f"Agent '{config.name}': loaded {len(always_load)} always_load memories for replace-mode system prompt")
@@ -1396,7 +1464,7 @@ async def _run_sdk_agent(config: AgentConfig, invocation: AgentInvocation) -> st
                         parts.append(
                             "\n---\n\n"
                             "Your persistent memory (notes you've saved across conversations).\n"
-                        "Only you (the agent) can see this section — it is never visible to the user.\n\n"
+                        "Only you (the agent) can see this section — it is never visible to the user.\nThe IDs (e.g. \"#427\") are tool-call handles — don't quote them at the user; they mean nothing to anyone but you.\n\n"
                             f"{memory_content}"
                         )
                         logger.info(f"Agent '{config.name}': loaded memory.md for replace-mode system prompt")
@@ -1441,6 +1509,7 @@ async def _run_sdk_agent(config: AgentConfig, invocation: AgentInvocation) -> st
                     agent_name=config.name,
                     allowed_skills=config.skills,
                     chat_id=invocation.source_chat_id,
+                    salon_id=invocation.salon_id,
                 )
                 mcp_servers["brain"] = mcp_server
                 logger.info(
@@ -1494,6 +1563,12 @@ async def _run_sdk_agent(config: AgentConfig, invocation: AgentInvocation) -> st
         # --thinking-display flag, and extra_args forwards unmapped CLI flags.
         # No-op on Sonnet/Haiku (they still default to "summarized").
         "extra_args": {"thinking-display": "summarized"},
+        # Enable partial-message StreamEvents so _consume_query receives
+        # content_block_delta events for text and thinking. Without this,
+        # the SDK only emits AssistantMessage at block-completion, which means
+        # the salon UI sees text/thinking arrive as instant snapshots instead
+        # of streaming live. Same flag the 1:1 chat wrapper uses.
+        "include_partial_messages": True,
     }
 
     # Tool availability gate (whitelist-only).
@@ -1598,7 +1673,10 @@ async def _run_sdk_agent(config: AgentConfig, invocation: AgentInvocation) -> st
 
     try:
         async with asyncio.timeout(config.timeout_seconds):
-            result_text, transcript, blocks = await _consume_query(effective_prompt, options)
+            result_text, transcript, blocks = await _consume_query(
+                effective_prompt, options, stream_callback=stream_callback,
+                history_messages=history_messages,
+            )
     except asyncio.TimeoutError:
         raise
     except ExceptionGroup as eg:
@@ -1704,47 +1782,70 @@ def _captured_to_blocks(captured: list) -> list:
     - thinking: {id, type, content, status, duration_ms}
     - tool_use: {id, type, content, tool_name, tool_call_id, tool_input, status}
     - tool_result: {id, type, content, tool_call_id, is_error, status}
+
+    Block IDs are deterministic on (index, type, tool_call_id) so successive
+    calls during streaming yield stable React keys — the UI can overwrite
+    snapshots without remounting unchanged blocks.
     """
     import uuid as _uuid
 
     blocks = []
-    for entry in captured:
+    for idx, entry in enumerate(captured):
         etype = entry.get("type")
+        # Live status / timing — fall back to "complete" with no timing if
+        # entry didn't track it (e.g., tool_result, or legacy paths).
+        status = entry.get("status", "complete")
 
         if etype == "text":
-            blocks.append({
-                "id": f"blk_{_uuid.uuid4().hex[:12]}",
+            block = {
+                "id": f"blk_text_{idx}",
                 "type": "text",
                 "content": entry.get("text", ""),
-                "status": "complete",
-            })
+                "status": status,
+            }
+            if "started_at" in entry:
+                block["started_at"] = entry["started_at"]
+            if "duration_ms" in entry:
+                block["duration_ms"] = entry["duration_ms"]
+            blocks.append(block)
 
         elif etype == "thinking":
-            blocks.append({
-                "id": f"blk_{_uuid.uuid4().hex[:12]}",
+            block = {
+                "id": f"blk_thinking_{idx}",
                 "type": "thinking",
                 "content": entry.get("text", ""),
-                "status": "complete",
-            })
+                "status": status,
+            }
+            if "started_at" in entry:
+                block["started_at"] = entry["started_at"]
+            if "duration_ms" in entry:
+                block["duration_ms"] = entry["duration_ms"]
+            blocks.append(block)
 
         elif etype == "tool_use":
             tool_call_id = entry.get("id", f"toolu_{_uuid.uuid4().hex[:20]}")
-            blocks.append({
-                "id": f"blk_{_uuid.uuid4().hex[:12]}",
+            block = {
+                "id": f"blk_tooluse_{tool_call_id}",
                 "type": "tool_use",
                 "content": "",
                 "tool_name": entry.get("name", ""),
                 "tool_call_id": tool_call_id,
                 "tool_input": entry.get("input", {}),
-                "status": "complete",
-            })
+                "status": status,
+            }
+            if "started_at" in entry:
+                block["started_at"] = entry["started_at"]
+            if "duration_ms" in entry:
+                block["duration_ms"] = entry["duration_ms"]
+            blocks.append(block)
 
         elif etype == "tool_result":
+            tool_call_id = entry.get("tool_use_id", "")
             blocks.append({
-                "id": f"blk_{_uuid.uuid4().hex[:12]}",
+                "id": f"blk_toolresult_{tool_call_id}",
                 "type": "tool_result",
                 "content": entry.get("content", ""),
-                "tool_call_id": entry.get("tool_use_id", ""),
+                "tool_call_id": tool_call_id,
                 "is_error": entry.get("is_error", False),
                 "status": "complete",
             })
@@ -1752,7 +1853,12 @@ def _captured_to_blocks(captured: list) -> list:
     return blocks
 
 
-async def _consume_query(prompt: str, options) -> tuple:
+async def _consume_query(
+    prompt: str,
+    options,
+    stream_callback: Optional[Callable[[list], Awaitable[None]]] = None,
+    history_messages: Optional[List[Dict[str, Any]]] = None,
+) -> tuple:
     """
     Consume the async generator from query() and return (result_text, transcript, blocks).
 
@@ -1764,6 +1870,14 @@ async def _consume_query(prompt: str, options) -> tuple:
     When MCP servers are configured, the prompt is sent as an AsyncIterable
     (streaming mode) so the SDK keeps stdin open for the bidirectional MCP
     control protocol.
+
+    Args:
+        history_messages: Optional pre-rendered history (list of SDK envelope
+            dicts in streaming-input shape). When provided, this replaces the
+            single ``prompt`` user message — each entry is yielded as-is. Used
+            by salon dispatch to pre-seed prior turns so each agent sees their
+            own tool calls (mirrors 1:1 chat). When ``None``, falls back to
+            the legacy single-prompt-user-message behavior.
     """
     from claude_agent_sdk import query
 
@@ -1775,43 +1889,226 @@ async def _consume_query(prompt: str, options) -> tuple:
     # Always stream — can_use_tool needs it even without MCP
     if True:
         async def _prompt_stream():
-            yield {
-                "type": "user",
-                "session_id": "",
-                "message": {"role": "user", "content": prompt},
-                "parent_tool_use_id": None,
-            }
+            if history_messages:
+                # Salon path: pre-seed prior turns. Each entry is already in
+                # SDK streaming-input envelope shape (type/session_id/message/
+                # parent_tool_use_id). The final entry is the trailing "your
+                # turn" user message, so we don't append `prompt` separately.
+                for m in history_messages:
+                    yield m
+            else:
+                # Legacy / non-salon path: single user message.
+                yield {
+                    "type": "user",
+                    "session_id": "",
+                    "message": {"role": "user", "content": prompt},
+                    "parent_tool_use_id": None,
+                }
 
         effective_prompt = _prompt_stream()
     else:
         effective_prompt = prompt
 
+    import time as _time
+
     result_text = ""
-    captured = []  # List of transcript entries
+    captured = []  # List of transcript entries (each has type, content, and live status)
     result_meta = None
 
+    # Helper: emit a stream callback with the current block snapshot. The
+    # callback receives a fully-formed list of frontend ContentBlock dicts
+    # (same shape as the final ``blocks`` return value), so the consumer can
+    # just overwrite its in-progress UI state on each fire.
+    async def _emit_stream() -> None:
+        if stream_callback is None:
+            return
+        try:
+            snapshot = _captured_to_blocks(captured)
+            await stream_callback(snapshot)
+        except Exception as e:
+            # Streaming is best-effort — never fail the agent run because the
+            # broadcast channel is busted.
+            logger.warning(f"stream_callback failed (continuing): {e}")
+
+    def _seal_text_thinking() -> None:
+        """Mark any in-progress text/thinking block as complete (with duration).
+
+        Called when a new content block starts after a streamed text/thinking
+        block — e.g. text appears after thinking, or a tool_use begins. Walks
+        backward to find the most recent in-progress text/thinking entry; only
+        one is ever in-flight at a time."""
+        for entry in reversed(captured):
+            etype = entry.get("type")
+            if etype in ("text", "thinking") and entry.get("status") == "in_progress":
+                entry["status"] = "complete"
+                start = entry.get("started_at")
+                if start:
+                    entry["duration_ms"] = int((_time.time() - start) * 1000)
+                return
+
     async for message in query(prompt=effective_prompt, options=options):
+        # ---- Streaming deltas (require include_partial_messages: True) ----
+        if isinstance(message, StreamEvent):
+            event = message.event or {}
+            event_type = event.get("type", "")
+
+            if event_type == "content_block_delta":
+                delta = event.get("delta", {}) or {}
+                delta_type = delta.get("type", "")
+
+                if delta_type == "text_delta":
+                    text = delta.get("text", "")
+                    if not text:
+                        continue
+                    # Extend an in-progress text block, or start a new one.
+                    if (captured
+                            and captured[-1].get("type") == "text"
+                            and captured[-1].get("status") == "in_progress"):
+                        captured[-1]["text"] += text
+                    else:
+                        _seal_text_thinking()
+                        captured.append({
+                            "type": "text",
+                            "text": text,
+                            "status": "in_progress",
+                            "started_at": _time.time(),
+                        })
+                    await _emit_stream()
+
+                elif delta_type == "thinking_delta":
+                    thinking = delta.get("thinking", "")
+                    if not thinking:
+                        continue
+                    if (captured
+                            and captured[-1].get("type") == "thinking"
+                            and captured[-1].get("status") == "in_progress"):
+                        captured[-1]["text"] += thinking
+                    else:
+                        _seal_text_thinking()
+                        captured.append({
+                            "type": "thinking",
+                            "text": thinking,
+                            "status": "in_progress",
+                            "started_at": _time.time(),
+                        })
+                    await _emit_stream()
+
+            elif event_type == "content_block_start":
+                block = event.get("content_block", {}) or {}
+                if block.get("type") == "tool_use":
+                    # Seal any preceding text/thinking, then add a tool_use
+                    # entry immediately so the pill renders the moment the
+                    # model commits to a tool call (instead of waiting for
+                    # the AssistantMessage to land with the full input).
+                    _seal_text_thinking()
+                    tool_id = block.get("id")
+                    # Don't double-add if we already have this tool_use id
+                    # (defensive — shouldn't happen with content_block_start).
+                    already = any(
+                        c.get("type") == "tool_use" and c.get("id") == tool_id
+                        for c in captured
+                    )
+                    if not already:
+                        captured.append({
+                            "type": "tool_use",
+                            "name": block.get("name", "tool"),
+                            "id": tool_id,
+                            "input": {},  # filled in when AssistantMessage lands
+                            "status": "in_progress",
+                            "started_at": _time.time(),
+                        })
+                        await _emit_stream()
+
+            # content_block_stop is implicit — handled by the seal-on-next-start logic.
+            continue
+
         if isinstance(message, AssistantMessage):
+            # With include_partial_messages: True, text and thinking already
+            # arrived via StreamEvent deltas. AssistantMessage gives us the
+            # authoritative final state — use it to:
+            #   - confirm/seal the current text/thinking block
+            #   - fill in the tool_use block's full input (deltas don't carry input_json)
+            #   - cover the case where streaming missed events (fallback append)
+            had_change = False
             for block in (message.content or []):
                 if isinstance(block, TextBlock):
-                    captured.append({"type": "text", "text": block.text})
-                elif isinstance(block, ToolUseBlock):
-                    captured.append({
-                        "type": "tool_use",
-                        "name": block.name,
-                        "id": block.id,
-                        "input": block.input,
-                    })
+                    # Find the most recent text entry; if its content matches
+                    # (or is shorter than) the authoritative version, replace
+                    # to ensure correctness, then seal.
+                    matched = False
+                    for entry in reversed(captured):
+                        if entry.get("type") == "text":
+                            entry["text"] = block.text
+                            if entry.get("status") == "in_progress":
+                                entry["status"] = "complete"
+                                start = entry.get("started_at")
+                                if start:
+                                    entry["duration_ms"] = int((_time.time() - start) * 1000)
+                            matched = True
+                            had_change = True
+                            break
+                    if not matched:
+                        # Streaming missed this block — append it as complete.
+                        captured.append({
+                            "type": "text",
+                            "text": block.text,
+                            "status": "complete",
+                        })
+                        had_change = True
+
                 elif isinstance(block, ThinkingBlock):
-                    captured.append({
-                        "type": "thinking",
-                        "text": block.thinking or "",
-                    })
+                    matched = False
+                    for entry in reversed(captured):
+                        if entry.get("type") == "thinking":
+                            entry["text"] = block.thinking or ""
+                            if entry.get("status") == "in_progress":
+                                entry["status"] = "complete"
+                                start = entry.get("started_at")
+                                if start:
+                                    entry["duration_ms"] = int((_time.time() - start) * 1000)
+                            matched = True
+                            had_change = True
+                            break
+                    if not matched:
+                        captured.append({
+                            "type": "thinking",
+                            "text": block.thinking or "",
+                            "status": "complete",
+                        })
+                        had_change = True
+
+                elif isinstance(block, ToolUseBlock):
+                    # Update the partial tool_use entry with the full input,
+                    # or append if streaming missed the content_block_start.
+                    matched = False
+                    for entry in captured:
+                        if entry.get("type") == "tool_use" and entry.get("id") == block.id:
+                            entry["name"] = block.name
+                            entry["input"] = block.input
+                            # Stay in_progress until tool_result arrives.
+                            matched = True
+                            had_change = True
+                            break
+                    if not matched:
+                        _seal_text_thinking()
+                        captured.append({
+                            "type": "tool_use",
+                            "name": block.name,
+                            "id": block.id,
+                            "input": block.input,
+                            "status": "in_progress",
+                            "started_at": _time.time(),
+                        })
+                        had_change = True
+
+            if had_change:
+                await _emit_stream()
 
         elif isinstance(message, UserMessage):
             # UserMessage carries tool results back
             content = message.content
             if isinstance(content, list):
+                appended = False
                 for block in content:
                     if isinstance(block, ToolResultBlock):
                         captured.append({
@@ -1820,6 +2117,19 @@ async def _consume_query(prompt: str, options) -> tuple:
                             "content": _extract_tool_content(block.content),
                             "is_error": block.is_error or False,
                         })
+                        # Seal the matching tool_use as complete.
+                        for entry in captured:
+                            if (entry.get("type") == "tool_use"
+                                    and entry.get("id") == block.tool_use_id
+                                    and entry.get("status") == "in_progress"):
+                                entry["status"] = "complete"
+                                start = entry.get("started_at")
+                                if start:
+                                    entry["duration_ms"] = int((_time.time() - start) * 1000)
+                                break
+                        appended = True
+                if appended:
+                    await _emit_stream()
             # String content from UserMessage is not interesting for transcript
 
         elif isinstance(message, ResultMessage):
@@ -1832,7 +2142,12 @@ async def _consume_query(prompt: str, options) -> tuple:
                 "duration_ms": getattr(message, "duration_ms", None),
             }
 
-        # Skip SystemMessage, StreamEvent — not relevant for transcript
+        # Skip SystemMessage — not relevant for transcript
+
+    # Final seal: if the run ended with a streaming text/thinking block still
+    # marked in_progress (no AssistantMessage arrived for some reason), close
+    # it out cleanly so the persisted blocks aren't permanently "live".
+    _seal_text_thinking()
 
     transcript = _format_transcript(captured, result_meta)
     blocks = _captured_to_blocks(captured)

@@ -10,7 +10,9 @@ import { SettingsModal, useThemeInit } from './components/SettingsModal';
 import { FileSearchModal } from './components/FileSearchModal';
 import { useClaude } from './useClaude';
 import { useToast } from './Toast';
-import { Menu, FileText, MessageSquare, Sidebar, PanelRight, Settings, Layout, Columns, ArrowLeft } from 'lucide-react';
+import { useAgents } from './hooks/useAgents';
+import { Salons } from './Salons';
+import { Menu, FileText, MessageSquare, Sidebar, PanelRight, Settings, Layout, Columns, ArrowLeft, Users } from 'lucide-react';
 import { clsx } from 'clsx';
 import { API_URL } from './config';
 
@@ -94,6 +96,12 @@ function App() {
   // Split chat state (desktop only)
   const [isChatSplit, setIsChatSplit] = useState(false);
   const [activeChatPanel, setActiveChatPanel] = useState<'primary' | 'secondary'>('primary');
+
+  // Right panel mode: 'chat' or 'salons' (group chats with the Convener)
+  const [rightPanelMode, setRightPanelMode] = useState<'chat' | 'salons'>('chat');
+
+  // Agents — needed by both Chat (selector) and Salons (create/add modals)
+  const { agents } = useAgents();
 
   // Full-screen app mode
   const [fullscreenApp, setFullscreenApp] = useState<{
@@ -1050,6 +1058,55 @@ function App() {
           : undefined
         }
         >
+          {/* Mode toggle: Chat | Salons */}
+          <div className="h-8 px-2 border-b border-[var(--border-color)] bg-[var(--bg-secondary)] flex items-center gap-1 shrink-0">
+            <button
+              onClick={() => setRightPanelMode('chat')}
+              className={clsx(
+                'flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium transition-colors',
+                rightPanelMode === 'chat'
+                  ? 'bg-[var(--bg-tertiary)] text-[var(--text-primary)]'
+                  : 'text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]'
+              )}
+              title="1:1 chats"
+            >
+              <MessageSquare size={11} />
+              Chat
+            </button>
+            <button
+              onClick={() => setRightPanelMode('salons')}
+              className={clsx(
+                'flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium transition-colors',
+                rightPanelMode === 'salons'
+                  ? 'bg-[var(--bg-tertiary)] text-[var(--text-primary)]'
+                  : 'text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]'
+              )}
+              title="Group chats with the Convener"
+            >
+              <Users size={11} />
+              Salons
+            </button>
+          </div>
+
+          {/*
+            Keep <Salons> mounted at all times (toggled via display) so its
+            internal WebSocket stays connected. Previously the Salons panel
+            unmounted whenever the user switched back to chat, which dropped the
+            WS — and on next mount, events fired between mount and WS-open
+            could be missed (the bug behind the "first message took 5 min
+            and a hard refresh to appear" symptom).
+          */}
+          <div
+            className="flex-1 min-h-0 overflow-hidden"
+            style={{
+              height: 'calc(100% - 2rem)',
+              display: rightPanelMode === 'salons' ? 'block' : 'none',
+            }}
+          >
+            <Salons agents={agents} onClose={() => setRightPanelMode('chat')} isMobile={isMobile} />
+          </div>
+          {rightPanelMode === 'chat' && (
+          <>
           {/* Split chat: two panels side by side */}
           {isChatSplit && !isMobile ? (
             <PanelGroup direction="horizontal" id="chat-split" className="h-full">
@@ -1065,6 +1122,7 @@ function App() {
                     panelId="primary"
                     onSplitChat={handleSplitChat}
                     onPopoutChat={handlePopoutChat}
+                    onPromotedToSalon={() => setRightPanelMode('salons')}
                   />
                 </div>
               </Panel>
@@ -1084,6 +1142,7 @@ function App() {
                     onCloseSplit={() => setIsChatSplit(false)}
                     onSplitChat={handleSplitChat}
                     onPopoutChat={handlePopoutChat}
+                    onPromotedToSalon={() => setRightPanelMode('salons')}
                   />
                 </div>
               </Panel>
@@ -1095,7 +1154,17 @@ function App() {
               panelId="primary"
               onSplitChat={handleSplitChat}
               onPopoutChat={handlePopoutChat}
+              onPromotedToSalon={(salonId) => {
+                // Future: select the new salon by id once useSalons exposes a setter
+                // accepting an external id (currently `setActiveSalonId` is internal).
+                // For now: switch to salons mode — useSalons auto-loads list and
+                // the new one will appear at the top by last-activity.
+                void salonId;
+                setRightPanelMode('salons');
+              }}
             />
+          )}
+          </>
           )}
         </div>
       </div>

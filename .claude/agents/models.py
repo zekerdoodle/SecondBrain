@@ -116,6 +116,7 @@ class AgentInvocation:
     invoked_at: datetime = field(default_factory=datetime.utcnow)
     project: Optional[Union[str, List[str]]] = None
     is_visible: bool = False  # True for @mentions / chat-facing agents
+    salon_id: Optional[str] = None  # Set when this invocation is a salon dispatch
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""

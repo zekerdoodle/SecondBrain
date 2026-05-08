@@ -175,7 +175,39 @@ Only suggest a new title if the topic has significantly changed."""
 
 Generate a concise, descriptive title for this conversation."""
 
-    logger.info(f"Running Titler on {len(messages)} messages (retitle={is_retitle}, prompt_len={len(prompt)})")
+    # Resolve model + reasoning effort from system_models config (with haiku
+    # default). Re-read every call so agent-builder edits take effect without
+    # a server restart.
+    model = "haiku"
+    effort = ""
+    try:
+        import sys as _sys
+        from pathlib import Path as _Path
+        _server_dir = _Path(__file__).resolve().parent.parent.parent / "interface" / "server"
+        if str(_server_dir) not in _sys.path:
+            _sys.path.insert(0, str(_server_dir))
+        import system_models as _sm
+        _cfg = _sm.get("chat_titler")
+        model = _cfg.get("model") or "haiku"
+        effort = _cfg.get("effort") or ""
+    except Exception as e:
+        logger.warning(f"chat_titler: system_models load failed ({e}); using haiku default")
+
+    logger.info(f"Running Titler on {len(messages)} messages (retitle={is_retitle}, model={model}, prompt_len={len(prompt)})")
+
+    options_kwargs = dict(
+        model=model,
+        system_prompt=TITLER_SYSTEM_PROMPT,
+        max_turns=2,  # Need 2 for structured output
+        permission_mode="bypassPermissions",
+        allowed_tools=[],
+        output_format={
+            "type": "json_schema",
+            "schema": TITLER_OUTPUT_SCHEMA
+        },
+    )
+    if effort:
+        options_kwargs["effort"] = effort
 
     # One retry on SDK subprocess failure — these are usually transient
     # (exit-code-1 crashes from the CLI, typically ~1-3% of calls).
@@ -185,17 +217,7 @@ Generate a concise, descriptive title for this conversation."""
             result = None
             async for message in query(
                 prompt=prompt,
-                options=ClaudeAgentOptions(
-                    model="haiku",  # Fast and cost-effective for simple tasks
-                    system_prompt=TITLER_SYSTEM_PROMPT,
-                    max_turns=2,  # Need 2 for structured output
-                    permission_mode="bypassPermissions",
-                    allowed_tools=[],
-                    output_format={
-                        "type": "json_schema",
-                        "schema": TITLER_OUTPUT_SCHEMA
-                    }
-                )
+                options=ClaudeAgentOptions(**options_kwargs)
             ):
                 if isinstance(message, ResultMessage) and message.structured_output:
                     result = message.structured_output

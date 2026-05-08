@@ -16,6 +16,15 @@ Three modes for reclaiming context window budget in long conversations:
    summary of older messages. Semantic and slower (~10-30s), but
    preserves meaning across long-ago dialogue. Use when there's lots of OLD
    dialogue that needs collapsing (not just tool bloat).
+
+Salon mode (group chats):
+  When called from inside a salon dispatch, the tool routes to a per-agent
+  compaction path that ONLY mutates the calling agent's own tool blocks
+  (truncate/strip), or — for `summarize` — produces a single shared summary
+  message that REPLACES verbatim history for all participants. The boundary
+  for "older" is anchored to the calling agent's Nth-from-last message: every
+  message from that point forward (including other agents' replies between
+  own ones) is preserved verbatim.
 """
 
 import os
@@ -23,7 +32,7 @@ import sys
 import uuid
 import logging
 from datetime import datetime
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from claude_agent_sdk import tool
 
@@ -445,10 +454,246 @@ async def run_compaction(
     }
 
 
+def _format_salon_messages_for_summary(messages: List[Dict[str, Any]]) -> str:
+    """Render salon messages for the summarization subagent.
+
+    Salon messages have ``from`` (sender) and ``content`` (text). We also
+    inline any tool-blocks on a per-message basis as bracketed lines so the
+    summarizer sees what each agent actually did.
+    """
+    parts: List[str] = []
+    for m in messages:
+        sender = m.get("from", "unknown")
+        if m.get("kind") == "compacted":
+            # Already-compacted prior summary — pass through so rolling
+            # compaction preserves it.
+            parts.append(m.get("content", ""))
+            continue
+
+        text = (m.get("content") or "").strip()
+        block_lines: List[str] = []
+        for b in m.get("blocks") or []:
+            btype = b.get("type")
+            if btype == "tool_use":
+                tname = b.get("tool_name", "unknown")
+                if tname.startswith("mcp__brain__"):
+                    tname = tname[len("mcp__brain__"):]
+                block_lines.append(f"  [Tool: {tname}]")
+            elif btype == "tool_result":
+                content = b.get("content") or ""
+                if isinstance(content, str) and content:
+                    snippet = content if len(content) <= 400 else content[:400] + "..."
+                    block_lines.append(f"  [Output: {snippet}]")
+
+        body = text
+        if block_lines:
+            body = (text + "\n" if text else "") + "\n".join(block_lines)
+        if not body:
+            continue
+        parts.append(f"{sender}: {body}")
+    return "\n\n".join(parts)
+
+
+async def run_salon_compaction(
+    *,
+    salon_id: str,
+    agent_name: str,
+    mode: str = "truncate_tools",
+    keep_n: int = 5,
+    truncate_chars: int = 200,
+    reason: str = "Compaction requested",
+) -> Dict[str, Any]:
+    """Salon-aware compaction — per-agent for truncate/strip, shared for summarize.
+
+    See ``run_compaction`` for the 1:1 chat equivalent. This entry point is
+    used when ``compact_conversation`` is invoked from within a salon
+    dispatch (detected via ``_salon_id`` injection in mcp_tools/__init__.py).
+    """
+    if mode not in ("truncate_tools", "strip_tools", "summarize"):
+        return {
+            "ok": False,
+            "text": f"Invalid mode: {mode}. Use 'truncate_tools', 'strip_tools', or 'summarize'.",
+            "error": "invalid_mode",
+            "salon_id": salon_id,
+        }
+
+    try:
+        from salon_manager import get_manager
+    except ImportError:
+        return {
+            "ok": False,
+            "text": "Salon manager unavailable.",
+            "error": "import_failed",
+            "salon_id": salon_id,
+        }
+
+    manager = get_manager()
+    if not manager.exists(salon_id):
+        return {
+            "ok": False,
+            "text": f"Salon {salon_id} not found.",
+            "error": "salon_not_found",
+            "salon_id": salon_id,
+        }
+
+    logger.info(
+        f"Salon compaction: salon={salon_id}, agent={agent_name}, mode={mode}, "
+        f"keep_n={keep_n}, truncate_chars={truncate_chars}, reason={reason}"
+    )
+
+    if mode in ("truncate_tools", "strip_tools"):
+        result = manager.shrink_own_tool_blocks(
+            salon_id=salon_id,
+            agent_name=agent_name,
+            mode=mode,
+            keep_n=keep_n,
+            truncate_chars=truncate_chars,
+        )
+        if not result["ok"]:
+            return {
+                "ok": False,
+                "text": f"Compaction failed: {result.get('error')}",
+                "error": result.get("error"),
+                "salon_id": salon_id,
+            }
+
+        if result["num_shrunk"] == 0:
+            text = (
+                f"[salon mode={mode}] Nothing to compact for {agent_name} — "
+                f"either you have no own tool blocks older than your last "
+                f"{keep_n} message(s), or they're already at-or-beyond this "
+                f"mode/threshold. (Older own messages scanned: "
+                f"{result['older_own_count']}.)"
+            )
+        else:
+            text = (
+                f"[salon mode={mode}] Shrunk tool blocks in {result['num_shrunk']} "
+                f"of your own older message(s) (~{result['bytes_saved']:,} chars saved). "
+                f"Other participants are unaffected — they never saw your tool blocks. "
+                f"Your last {keep_n} message(s) and everything between them remain verbatim."
+            )
+
+        return {
+            "ok": True,
+            "text": text,
+            "mode": mode,
+            "salon_id": salon_id,
+            "agent_name": agent_name,
+            "num_shrunk": result["num_shrunk"],
+            "bytes_saved": result["bytes_saved"],
+            "error": None,
+        }
+
+    # mode == "summarize" — shared, destructive operation.
+    data = manager.load(salon_id)
+    if not data:
+        return {
+            "ok": False, "text": "Failed to load salon for summarize.",
+            "error": "load_failed", "salon_id": salon_id,
+        }
+
+    messages = data.get("messages") or []
+    split = manager._split_index_for_agent(messages, agent_name, keep_n)
+    older = messages[:split]
+
+    if not older:
+        return {
+            "ok": False,
+            "text": (
+                f"Nothing to compact — older history is empty for keep_n={keep_n} "
+                f"anchored on {agent_name}."
+            ),
+            "error": "nothing_to_compact",
+            "salon_id": salon_id,
+        }
+
+    rendered_older = _format_salon_messages_for_summary(older)
+    if not rendered_older.strip():
+        return {
+            "ok": False,
+            "text": "Older messages are all empty after rendering — nothing to summarize.",
+            "error": "empty_older",
+            "salon_id": salon_id,
+        }
+
+    # Reuse the 1:1 compaction subagent, with a salon-flavored prompt.
+    from claude_agent_sdk import query, ClaudeAgentOptions, ResultMessage
+    salon_intro = (
+        f"This is a group-chat (\"salon\") between the user and multiple AI agents. "
+        f"Participants visible in this excerpt: "
+        f"{', '.join(sorted({m.get('from','?') for m in older}))}.\n\n"
+        f"Summarize the conversation history below."
+    )
+
+    try:
+        summary_text: Optional[str] = None
+        async for msg in query(
+            prompt=f"{salon_intro}\n\n{rendered_older}",
+            options=ClaudeAgentOptions(
+                model="opus",
+                system_prompt=COMPACTION_SYSTEM_PROMPT,
+                max_turns=1,
+                permission_mode="bypassPermissions",
+                allowed_tools=[],
+                setting_sources=[],
+            ),
+        ):
+            if isinstance(msg, ResultMessage) and msg.result:
+                summary_text = msg.result
+    except Exception as e:
+        logger.error(f"Salon summarize failed: {e}", exc_info=True)
+        return {
+            "ok": False,
+            "text": f"Salon summarize subagent failed: {e}",
+            "error": "summarize_exception",
+            "salon_id": salon_id,
+        }
+
+    if not summary_text:
+        return {
+            "ok": False,
+            "text": "Salon summarize subagent produced no output.",
+            "error": "summarize_empty",
+            "salon_id": salon_id,
+        }
+
+    write_result = manager.replace_older_with_summary(
+        salon_id=salon_id,
+        target_agent=agent_name,
+        keep_n=keep_n,
+        summary_text=summary_text,
+        triggered_by=agent_name,
+    )
+
+    if not write_result["ok"]:
+        return {
+            "ok": False,
+            "text": f"Failed to write summary back to salon: {write_result.get('error')}",
+            "error": write_result.get("error"),
+            "salon_id": salon_id,
+        }
+
+    text = (
+        f"[salon mode=summarize] Replaced {write_result['older_count']} earlier "
+        f"message(s) with a single shared summary. ALL participants will now see "
+        f"the summary instead of verbatim history when this salon is next rendered."
+    )
+    return {
+        "ok": True,
+        "text": text,
+        "mode": "summarize",
+        "salon_id": salon_id,
+        "agent_name": agent_name,
+        "older_count": write_result["older_count"],
+        "compacted_msg_id": write_result["compacted_msg_id"],
+        "error": None,
+    }
+
+
 @register_tool("utilities")
 @tool(
     name="compact_conversation",
-    description="""Compact the current conversation's history to free up context window.
+    description="""Compact the conversation's history to free up your context window.
 
 Three modes — pick based on WHY context is bloated:
 
@@ -456,9 +701,17 @@ Three modes — pick based on WHY context is bloated:
 
 - **"strip_tools"**: More aggressive — replace tool outputs entirely with "[output stripped]", keeping only tool name + short arg hint. Dialogue still verbatim. Fast, free. Use when truncate isn't enough, or when the tool results are truly unneeded going forward.
 
-- **"summarize"**: Opus-powered semantic summary of older messages. Collapses BOTH dialogue and tools into a narrative. Slower (~10-30s). Use only when there's lots of old user/assistant discussion that also needs collapsing — not just tool bloat.
+- **"summarize"**: Opus-powered semantic summary of older messages. Collapses BOTH dialogue and tools into a narrative. Slower (~10-30s). ⚠️ **In a group chat (salon), this summarizes the conversation for EVERYONE — verbatim chat history is permanently lost from every other participant who may still need it.** Think carefully before using summarize in a salon. Generally prefer `truncate_tools` or `strip_tools` to avoid burdening other agents. In a 1:1 chat with the user, summarize is safe.
 
-Always preserves the last `keep_exchanges` exchanges (default 5) completely verbatim. Setting keep_exchanges=0 compacts EVERYTHING including the current in-flight exchange's tool outputs — useful when a single tool call produced a massive output. Modifies the conversation in-place and saves to disk.
+**`keep_exchanges` semantics:**
+- In a 1:1 chat with the user: counts user→assistant exchanges (default 5).
+- In a salon (group chat): counts YOUR OWN past messages (default 5). The boundary is anchored to your Nth-from-last message — every message from that point forward (including OTHER agents' replies between your own messages) is preserved verbatim. So if you've spoken sparsely in a busy salon, a small `keep_exchanges` may still preserve a lot of others' messages by design (so they don't lose context that came after your last turn).
+
+**Salon scope rules:**
+- `truncate_tools` / `strip_tools` only mutate YOUR OWN tool blocks. Other agents are unaffected — they never saw your tool blocks anyway. Safe to call freely.
+- `summarize` collapses ALL older messages (yours and everyone else's) into a single shared summary visible to everyone. Use sparingly.
+
+Setting `keep_exchanges=0` compacts EVERYTHING. Modifies the conversation in-place and saves to disk.
 
 Call proactively when context feels heavy, or when the user asks you to compact/shrink the conversation.""",
     input_schema={
@@ -490,13 +743,50 @@ Call proactively when context feels heavy, or when the user asks you to compact/
     },
 )
 async def compact_conversation(args: Dict[str, Any]) -> Dict[str, Any]:
-    """Compact the current conversation's history (MCP tool wrapper)."""
+    """Compact the current conversation's history (MCP tool wrapper).
+
+    Routing:
+      - If ``_salon_id`` is present (injected when called from a salon
+        dispatch), route to ``run_salon_compaction`` — per-agent for
+        truncate/strip, shared for summarize. NEVER falls through to the
+        1:1 path, which would otherwise risk clobbering an unrelated 1:1
+        chat that happens to be processing concurrently.
+      - Otherwise (1:1 chat), auto-detect the active session and run
+        ``run_compaction``.
+    """
     mode = args.get("mode", "truncate_tools")
     keep_n = args.get("keep_exchanges", 5)
     truncate_chars = args.get("truncate_chars", 200)
     reason = args.get("reason", "Conversation compaction requested")
 
-    # Auto-detect which session is calling this tool
+    # Salon mode — injected by mcp_tools/__init__.py::_inject_agent_context
+    # when the calling agent is part of a salon dispatch.
+    salon_id = args.get("_salon_id")
+    agent_name = args.get("_agent_name")
+
+    if salon_id:
+        if not agent_name:
+            return {
+                "content": [{
+                    "type": "text",
+                    "text": "Error: salon compaction requires _agent_name (internal injection bug).",
+                }],
+                "is_error": True,
+            }
+        result = await run_salon_compaction(
+            salon_id=salon_id,
+            agent_name=agent_name,
+            mode=mode,
+            keep_n=keep_n,
+            truncate_chars=truncate_chars,
+            reason=reason,
+        )
+        return {
+            "content": [{"type": "text", "text": result["text"]}],
+            "is_error": not result["ok"],
+        }
+
+    # 1:1 chat — auto-detect which session is calling this tool.
     main_module = sys.modules.get("main") or sys.modules.get("__main__")
     active_convs = getattr(main_module, "active_conversations", {})
     active_processing = getattr(main_module, "active_processing_sessions", {})

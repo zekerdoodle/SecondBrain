@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/hosting
 title: Hosting the Agent SDK
-last_fetched: 2026-04-29T09:02:10.115418+00:00
+last_fetched: 2026-05-06T09:06:00.362938+00:00
 ---
 
 [Claude Code Docs home page![light logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/light.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=78fd01ff4f4340295a4f66e2ea54903c)![dark logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/dark.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=1298a0c3b3a1da603b190d0de0e31712)](/docs/en/overview)
@@ -94,7 +94,7 @@ For security hardening beyond basic sandboxing (including network controls, cred
 ### [​](#container-based-sandboxing) Container-Based Sandboxing
 
 For security and isolation, the SDK should run inside a sandboxed container environment. This provides process isolation, resource limits, network control, and ephemeral filesystems.
-The SDK also supports [programmatic sandbox configuration](/docs/en/agent-sdk/typescript#sandbox-settings) for command execution.
+The SDK also supports [programmatic sandbox configuration](/docs/en/agent-sdk/typescript#sandboxsettings) for command execution.
 
 ### [​](#system-requirements) System Requirements
 
@@ -201,7 +201,7 @@ An agent session will not timeout, but consider setting a ‘maxTurns’ propert
 ## [​](#next-steps) Next Steps
 
 - [Secure Deployment](/docs/en/agent-sdk/secure-deployment) - Network controls, credential management, and isolation hardening
-- [TypeScript SDK - Sandbox Settings](/docs/en/agent-sdk/typescript#sandbox-settings) - Configure sandbox programmatically
+- [TypeScript SDK - Sandbox Settings](/docs/en/agent-sdk/typescript#sandboxsettings) - Configure sandbox programmatically
 - [Sessions Guide](/docs/en/agent-sdk/sessions) - Learn about session management
 - [Permissions](/docs/en/agent-sdk/permissions) - Configure tool permissions
 - [Cost Tracking](/docs/en/agent-sdk/cost-tracking) - Monitor API usage

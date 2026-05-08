@@ -3,8 +3,9 @@ import {
   Send, Loader2, Plus, History, ChevronLeft, Pencil, RotateCcw, X,
   File as FileIcon, Trash2, MessageCircle, Clock, Square, Search,
   Check, CheckCheck, AlertCircle, Crown, ImagePlus, Circle, Copy,
-  SmilePlus, Sparkles
+  SmilePlus, Sparkles, Users
 } from 'lucide-react';
+import { promoteChatToSalon } from './salonApi';
 import { ChatSearch } from './ChatSearch';
 import { useClaude, type ClaudeHook, type NotificationData, type ChessGameState } from './useClaude';
 import { useToast } from './Toast';
@@ -523,6 +524,9 @@ interface ChatProps {
   onPopoutChat?: (sessionId: string) => void;       // Bubble up "open in new window" action
   onCloseSplit?: () => void;                         // Close this split panel
   isSecondary?: boolean;                             // Visual hint for secondary panel
+  // Bubble up to App so it can switch the right panel into salons mode and
+  // focus the freshly created salon.
+  onPromotedToSalon?: (salonId: string) => void;
 }
 
 export const Chat: React.FC<ChatProps> = ({
@@ -534,6 +538,7 @@ export const Chat: React.FC<ChatProps> = ({
   onPopoutChat,
   onCloseSplit,
   isSecondary = false,
+  onPromotedToSalon,
 }) => {
   // Per-session message drafts — composer text is remembered per room.
   // Namespaced by panelId for split view independence.
@@ -562,6 +567,8 @@ export const Chat: React.FC<ChatProps> = ({
   const [attachments, setAttachments] = useState<{ name: string, path: string }[]>([]);
   const [imageAttachments, setImageAttachments] = useState<(ChatImageRef & { previewUrl?: string })[]>([]);
   const [showSearch, setShowSearch] = useState(false);
+  const [showPromoteModal, setShowPromoteModal] = useState(false);
+  const [promoting, setPromoting] = useState(false);
   const { showToast } = useToast();
   const imageInputRef = useRef<HTMLInputElement>(null);
 
@@ -1999,6 +2006,16 @@ export const Chat: React.FC<ChatProps> = ({
               <Crown size={18} />
             </button>
           )}
+          {/* Promote to salon — only meaningful for an existing 1:1 chat */}
+          {sessionId && sessionId !== 'new' && messages.length > 0 && effectiveAgentName && (
+            <button
+              onClick={() => setShowPromoteModal(true)}
+              className="p-2 rounded-lg transition-colors hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)]"
+              title="Promote to salon (add another agent)"
+            >
+              <Users size={18} />
+            </button>
+          )}
           <button
             onClick={startNewChat}
             className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg transition-colors hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)]"
@@ -2618,6 +2635,97 @@ export const Chat: React.FC<ChatProps> = ({
           onNewGame={chessGame.startNewGame}
         />
       )}
+
+      {/* Promote-to-salon Modal */}
+      {showPromoteModal && effectiveAgentName && sessionId && sessionId !== 'new' && (
+        <PromoteToSalonModal
+          chatAgent={effectiveAgentName}
+          agents={agents}
+          submitting={promoting}
+          onCancel={() => !promoting && setShowPromoteModal(false)}
+          onPromote={async (newParticipant) => {
+            setPromoting(true);
+            try {
+              const res = await promoteChatToSalon({
+                chat_id: sessionId,
+                participant: newParticipant,
+              });
+              setShowPromoteModal(false);
+              showToast({ title: 'Promoted to salon', type: 'success' });
+              onPromotedToSalon?.(res.salon_id);
+            } catch (e: any) {
+              showToast({ title: 'Promote failed', message: e?.message || String(e), type: 'warning' });
+            } finally {
+              setPromoting(false);
+            }
+          }}
+        />
+      )}
+    </div>
+  );
+};
+
+// ---------------------------------------------------------------------------
+// Promote-to-Salon Modal
+//
+// Shows a list of agents (excluding the current chat's agent + zeke). Picking
+// one calls POST /api/salons/promote-chat — backend copies the chat history
+// into a new salon and brings the new agent in.
+// ---------------------------------------------------------------------------
+
+const PromoteToSalonModal: React.FC<{
+  chatAgent: string;
+  agents: ReturnType<typeof useAgents>['agents'];
+  submitting: boolean;
+  onCancel: () => void;
+  onPromote: (newParticipant: string) => Promise<void>;
+}> = ({ chatAgent, agents, submitting, onCancel, onPromote }) => {
+  const candidates = useMemo(() => {
+    return agents
+      .filter((a) => a.chattable !== false)
+      .filter((a) => a.name !== chatAgent && a.name !== 'user');
+  }, [agents, chatAgent]);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4"
+      onClick={onCancel}
+    >
+      <div
+        className="bg-[var(--bg-primary)] border border-[var(--border-color)] rounded-lg w-full max-w-sm p-4 space-y-3 shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-semibold text-[var(--text-primary)]">Promote to salon</h3>
+          <button onClick={onCancel} className="p-1 hover:bg-[var(--bg-tertiary)] rounded" disabled={submitting}>
+            <X size={14} />
+          </button>
+        </div>
+        <p className="text-xs text-[var(--text-muted)]">
+          This 1:1 chat with <strong>{chatAgent}</strong> will become a salon. Pick another agent to invite — the convener will take over routing.
+        </p>
+        <div className="border border-[var(--border-color)] rounded max-h-72 overflow-y-auto bg-[var(--bg-secondary)]">
+          {candidates.length === 0 && (
+            <div className="px-3 py-4 text-xs text-[var(--text-muted)] text-center">
+              No other chattable agents available.
+            </div>
+          )}
+          {candidates.map((a) => (
+            <button
+              key={a.name}
+              disabled={submitting}
+              onClick={() => onPromote(a.name)}
+              className="w-full text-left px-3 py-2 hover:bg-[var(--bg-tertiary)] text-sm text-[var(--text-primary)] flex items-center justify-between disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <span>{a.display_name || a.name}</span>
+              <span className="text-[10px] text-[var(--text-muted)]">{a.name}</span>
+            </button>
+          ))}
+        </div>
+        {submitting && (
+          <div className="text-[11px] text-[var(--text-muted)] text-center">Promoting…</div>
+        )}
+      </div>
     </div>
   );
 };

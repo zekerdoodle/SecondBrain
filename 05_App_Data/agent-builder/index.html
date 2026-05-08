@@ -732,6 +732,94 @@ select {
     </div>
     <div id="save-status" class="status-msg" style="display:none"></div>
   </div>
+
+  <!-- System Models (cross-agent infrastructure) -->
+  <div id="system-models-section" class="card" style="margin-top:24px">
+    <div class="card-header">System Models</div>
+    <div class="banner banner-info" style="margin-bottom:14px; font-size: var(--font-size-xs); line-height: 1.5">
+      Models the platform uses for orchestration tasks (not agents the user chats with). Saved to <code>.claude/system_models.json</code>. Re-read on every call — no restart needed.
+    </div>
+
+    <!-- Convener -->
+    <div class="field" style="margin-top:8px">
+      <label style="font-weight:600">Convener (salon orchestrator)</label>
+      <div class="hint" style="margin-bottom:8px">Routes who speaks next in a salon. Sonnet floor recommended — has to read the room.</div>
+      <div style="display:flex; gap:10px; align-items:flex-start">
+        <div style="flex:2">
+          <label style="font-size:var(--font-size-xs)">Model</label>
+          <select id="f-sm-convener-model">
+            <option value="haiku">Haiku</option>
+            <option value="sonnet" selected>Sonnet</option>
+            <option value="opus">Opus</option>
+          </select>
+        </div>
+        <div style="flex:1">
+          <label style="font-size:var(--font-size-xs)">Reasoning</label>
+          <select id="f-sm-convener-effort">
+            <option value="">Default</option>
+            <option value="low">Low</option>
+            <option value="medium">Medium</option>
+            <option value="high">High</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <!-- Salon Titler -->
+    <div class="field" style="margin-top:14px">
+      <label style="font-weight:600">Salon Titler</label>
+      <div class="hint" style="margin-bottom:8px">Auto-names salons after the first exchange and re-titles every 8 messages.</div>
+      <div style="display:flex; gap:10px; align-items:flex-start">
+        <div style="flex:2">
+          <label style="font-size:var(--font-size-xs)">Model</label>
+          <select id="f-sm-salontitler-model">
+            <option value="haiku" selected>Haiku</option>
+            <option value="sonnet">Sonnet</option>
+            <option value="opus">Opus</option>
+          </select>
+        </div>
+        <div style="flex:1">
+          <label style="font-size:var(--font-size-xs)">Reasoning</label>
+          <select id="f-sm-salontitler-effort">
+            <option value="">Default</option>
+            <option value="low">Low</option>
+            <option value="medium">Medium</option>
+            <option value="high">High</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <!-- Chat Titler -->
+    <div class="field" style="margin-top:14px">
+      <label style="font-weight:600">Chat Titler</label>
+      <div class="hint" style="margin-bottom:8px">Auto-names 1:1 chats after the first message and re-titles every 5 exchanges.</div>
+      <div style="display:flex; gap:10px; align-items:flex-start">
+        <div style="flex:2">
+          <label style="font-size:var(--font-size-xs)">Model</label>
+          <select id="f-sm-chattitler-model">
+            <option value="haiku" selected>Haiku</option>
+            <option value="sonnet">Sonnet</option>
+            <option value="opus">Opus</option>
+          </select>
+        </div>
+        <div style="flex:1">
+          <label style="font-size:var(--font-size-xs)">Reasoning</label>
+          <select id="f-sm-chattitler-effort">
+            <option value="">Default</option>
+            <option value="low">Low</option>
+            <option value="medium">Medium</option>
+            <option value="high">High</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <div class="btn-row" style="margin-top:16px">
+      <button class="btn btn-primary" id="sm-save-btn" onclick="saveSystemModels()">Save System Models</button>
+    </div>
+    <div id="sm-status" class="status-msg" style="display:none"></div>
+  </div>
 </div>
 
 <script src="/file/05_App_Data/_shared/brain-kit.js"></script>
@@ -841,11 +929,82 @@ async function init() {
   updateThinkingUI();
   // Fetch native tools first so the chip list reflects the server's source of truth
   // before the initial render. Other fetches can run in parallel.
-  await Promise.all([fetchNativeTools(), fetchAgents(), fetchToolCategories(), fetchSkills()]);
+  await Promise.all([fetchNativeTools(), fetchAgents(), fetchToolCategories(), fetchSkills(), fetchSystemModels()]);
   renderNativeTools();
   renderMcpCategories();
   renderSkillChips();
   updateRestrictSkillsUI();
+}
+
+// =============================================================================
+// System Models (convener / salon_titler / chat_titler)
+// =============================================================================
+async function fetchSystemModels() {
+  try {
+    const res = await fetch(`${API}/system-models`);
+    const data = await res.json();
+    const sm = data.system_models || {};
+    setSystemModelField('convener', sm.convener || {});
+    setSystemModelField('salontitler', sm.salon_titler || {});
+    setSystemModelField('chattitler', sm.chat_titler || {});
+  } catch (e) {
+    console.error('Failed to fetch system_models:', e);
+  }
+}
+
+function setSystemModelField(key, cfg) {
+  const m = document.getElementById(`f-sm-${key}-model`);
+  const eff = document.getElementById(`f-sm-${key}-effort`);
+  if (m && cfg.model) m.value = cfg.model;
+  if (eff) eff.value = cfg.effort || '';
+}
+
+async function saveSystemModels() {
+  const btn = document.getElementById('sm-save-btn');
+  const status = document.getElementById('sm-status');
+  const payload = {
+    system_models: {
+      convener: {
+        model: document.getElementById('f-sm-convener-model').value,
+        effort: document.getElementById('f-sm-convener-effort').value || '',
+      },
+      salon_titler: {
+        model: document.getElementById('f-sm-salontitler-model').value,
+        effort: document.getElementById('f-sm-salontitler-effort').value || '',
+      },
+      chat_titler: {
+        model: document.getElementById('f-sm-chattitler-model').value,
+        effort: document.getElementById('f-sm-chattitler-effort').value || '',
+      },
+    },
+  };
+
+  btn.disabled = true;
+  status.style.display = 'block';
+  status.style.color = 'var(--accent)';
+  status.textContent = 'Saving...';
+  try {
+    const res = await fetch(`${API}/system-models`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    const sm = data.system_models || {};
+    setSystemModelField('convener', sm.convener || {});
+    setSystemModelField('salontitler', sm.salon_titler || {});
+    setSystemModelField('chattitler', sm.chat_titler || {});
+    status.style.color = 'var(--success)';
+    status.textContent = 'Saved.';
+    setTimeout(() => { status.style.display = 'none'; }, 2200);
+  } catch (e) {
+    console.error('System models save failed:', e);
+    status.style.color = 'var(--danger)';
+    status.textContent = `Save failed: ${e.message || e}`;
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 async function fetchNativeTools() {

@@ -375,7 +375,7 @@ class ClaudeWrapper:
                     parts.append(
                         "\n---\n\n"
                         "Your persistent memory (notes you've saved across conversations).\n"
-                            "Only you (the agent) can see this section — it is never visible to the user.\n\n"
+                            "Only you (the agent) can see this section — it is never visible to the user.\nThe IDs (e.g. \"#427\") are tool-call handles — don't quote them at the user; they mean nothing to anyone but you.\n\n"
                         f"{memory_block}"
                     )
                     logger.info(f"Agent '{agent_config.name}': loaded {len(always_load)} always_load memories")
@@ -391,7 +391,7 @@ class ClaudeWrapper:
                         parts.append(
                             "\n---\n\n"
                             "Your persistent memory (notes you've saved across conversations).\n"
-                            "Only you (the agent) can see this section — it is never visible to the user.\n\n"
+                            "Only you (the agent) can see this section — it is never visible to the user.\nThe IDs (e.g. \"#427\") are tool-call handles — don't quote them at the user; they mean nothing to anyone but you.\n\n"
                             f"{content}"
                         )
                         logger.info(f"Agent '{agent_config.name}': loaded memory.md ({memory_path.stat().st_size} bytes)")
@@ -435,7 +435,7 @@ class ClaudeWrapper:
                     append_parts.append(
                         "\n---\n\n"
                         "Your persistent memory (notes you've saved across conversations).\n"
-                            "Only you (the agent) can see this section — it is never visible to the user.\n\n"
+                            "Only you (the agent) can see this section — it is never visible to the user.\nThe IDs (e.g. \"#427\") are tool-call handles — don't quote them at the user; they mean nothing to anyone but you.\n\n"
                         f"{memory_block}"
                     )
                     logger.info(f"Agent '{agent_config.name}': loaded {len(always_load)} always_load memories for preset append")
@@ -451,7 +451,7 @@ class ClaudeWrapper:
                         append_parts.append(
                             "\n---\n\n"
                             "Your persistent memory (notes you've saved across conversations).\n"
-                            "Only you (the agent) can see this section — it is never visible to the user.\n\n"
+                            "Only you (the agent) can see this section — it is never visible to the user.\nThe IDs (e.g. \"#427\") are tool-call handles — don't quote them at the user; they mean nothing to anyone but you.\n\n"
                             f"{content}"
                         )
                         logger.info(f"Agent '{agent_config.name}': loaded memory.md for preset append")

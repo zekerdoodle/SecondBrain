@@ -202,6 +202,14 @@ MOOD_TOOLS = [
     "set_mood",
 ]
 
+SALON_TOOLS = [
+    "create_salon",
+    "add_to_salon",
+    "list_salons",
+    "read_salon",
+    "post_to_salon",
+]
+
 
 # =============================================================================
 # Category Mapping - Maps category names to tool lists
@@ -231,6 +239,7 @@ TOOL_CATEGORIES = {
     "messaging": MESSAGING_TOOLS,
     "presence": PRESENCE_TOOLS,
     "mood": MOOD_TOOLS,
+    "salons": SALON_TOOLS,
 }
 
 
@@ -257,7 +266,8 @@ ALL_TOOL_NAMES = (
     SKILLS_TOOLS +
     MESSAGING_TOOLS +
     PRESENCE_TOOLS +
-    MOOD_TOOLS
+    MOOD_TOOLS +
+    SALON_TOOLS
 )
 
 # Set for O(1) lookup

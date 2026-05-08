@@ -80,13 +80,17 @@ def _inject_chat_context(tools, chat_id: str):
     return wrapped
 
 
-def _inject_agent_context(tools, agent_name: str):
+def _inject_agent_context(tools, agent_name: str, salon_id: Optional[str] = None):
     """Wrap agent-context-sensitive tool handlers to inject the calling agent's name.
 
     Injects ``_agent_name`` into the args dict so that:
     - ``memory_create/update/delete/search`` target ``.claude/agents/{name}/memories.json``.
     - ``schedule_self`` creates an agent-type scheduled task dispatched via the agent runner.
     - ``message_user`` tags new rooms with the calling agent's name.
+
+    When ``salon_id`` is provided, also injects ``_salon_id`` for tools in
+    ``SALON_CONTEXT_TOOLS`` — currently ``compact_conversation``, which
+    branches into salon-aware compaction when a salon_id is present.
     """
     from claude_agent_sdk import SdkMcpTool
 
@@ -106,7 +110,16 @@ def _inject_agent_context(tools, agent_name: str):
         "invoke_agent", "invoke_agent_parallel",
         "list_agent_conversations", "read_agent_conversation",
         "delete_agent_conversation",
+        # Salon tools — calling agent is creator/poster.
+        "create_salon", "add_to_salon", "list_salons", "read_salon",
+        "post_to_salon",
+        # compact_conversation needs to know the calling agent in salon mode
+        # so it can find which messages are "own" for per-agent compaction.
+        "compact_conversation",
     }
+
+    # Tools that also receive _salon_id (when this MCP server is bound to a salon).
+    SALON_CONTEXT_TOOLS = {"compact_conversation"}
 
     wrapped = []
     for t in tools:
@@ -114,9 +127,11 @@ def _inject_agent_context(tools, agent_name: str):
         if tool_name in AGENT_CONTEXT_TOOLS:
             original_handler = t.handler
 
-            def _make_wrapper(handler, name):
+            def _make_wrapper(handler, name, sid, inject_salon: bool):
                 async def wrapper(args):
                     args["_agent_name"] = name
+                    if inject_salon and sid is not None:
+                        args["_salon_id"] = sid
                     return await handler(args)
                 return wrapper
 
@@ -145,7 +160,12 @@ def _inject_agent_context(tools, agent_name: str):
                 name=t.name,
                 description=description,
                 input_schema=t.input_schema,
-                handler=_make_wrapper(original_handler, agent_name),
+                handler=_make_wrapper(
+                    original_handler,
+                    agent_name,
+                    salon_id,
+                    tool_name in SALON_CONTEXT_TOOLS,
+                ),
                 annotations=getattr(t, 'annotations', None),
             ))
         else:
@@ -201,6 +221,7 @@ def create_mcp_server(
     chat_id: Optional[str] = None,
     agent_name: Optional[str] = None,
     allowed_skills=None,
+    salon_id: Optional[str] = None,
 ):
     """
     Create MCP server with specified tools.
@@ -245,14 +266,14 @@ def create_mcp_server(
 
     # Inject agent context for memory isolation
     if agent_name:
-        tools = _inject_agent_context(tools, agent_name)
+        tools = _inject_agent_context(tools, agent_name, salon_id=salon_id)
 
     # Inject skill context (allowed_skills filtering) for fetch_skill tool
     # Skip if allowed_skills is the sentinel "NO_SKILLS" (agent has skills: [])
     if allowed_skills != "NO_SKILLS":
         tools = _inject_skill_context(tools, allowed_skills)
 
-    logger.info(f"Creating MCP server '{name}' with {len(tools)} tools (chat_id={chat_id}, agent={agent_name})")
+    logger.info(f"Creating MCP server '{name}' with {len(tools)} tools (chat_id={chat_id}, agent={agent_name}, salon={salon_id})")
 
     return create_sdk_mcp_server(
         name=name,
@@ -284,6 +305,7 @@ def _load_all_tools():
     from . import skills
     from . import messaging
     from . import mood
+    from . import salons
 
 
 # Auto-load tools when module is imported

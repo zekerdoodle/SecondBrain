@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/subagents
 title: Subagents in the SDK
-last_fetched: 2026-04-29T09:03:44.905170+00:00
+last_fetched: 2026-05-06T09:15:56.968230+00:00
 ---
 
 [Claude Code Docs home page![light logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/light.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=78fd01ff4f4340295a4f66e2ea54903c)![dark logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/dark.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=1298a0c3b3a1da603b190d0de0e31712)](/docs/en/overview)
@@ -93,7 +93,7 @@ This guide explains how to define and use subagents in the SDK using the `agents
 
 You can create subagents in three ways:
 
-- **Programmatically**: use the `agents` parameter in your `query()` options ([TypeScript](/docs/en/agent-sdk/typescript#agent-definition), [Python](/docs/en/agent-sdk/python#agent-definition))
+- **Programmatically**: use the `agents` parameter in your `query()` options ([TypeScript](/docs/en/agent-sdk/typescript#agentdefinition), [Python](/docs/en/agent-sdk/python#agentdefinition))
 - **Filesystem-based**: define agents as markdown files in `.claude/agents/` directories (see [defining subagents as files](/docs/en/sub-agents))
 - **Built-in general-purpose**: Claude can invoke the built-in `general-purpose` subagent at any time via the Agent tool without you defining anything
 
@@ -199,7 +199,7 @@ asyncio.run(main())
 | `effort` | `'low' | 'medium' | 'high' | 'xhigh' | 'max' | number` | No | Reasoning effort level for this agent |
 | `permissionMode` | `PermissionMode` | No | Permission mode for tool execution within this agent |
 
-In the Python SDK, these field names use camelCase to match the wire format. See the [`AgentDefinition` reference](/docs/en/agent-sdk/python#agent-definition) for details.
+In the Python SDK, these field names use camelCase to match the wire format. See the [`AgentDefinition` reference](/docs/en/agent-sdk/python#agentdefinition) for details.
 
 Subagents cannot spawn their own subagents. Don’t include `Agent` in a subagent’s `tools` array.
 

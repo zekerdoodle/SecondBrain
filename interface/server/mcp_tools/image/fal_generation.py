@@ -151,8 +151,12 @@ def _get_multi_ref_config(model: str) -> dict:
     # Default for unknown models: try image_urls as a list
     return {"param": "image_urls", "mode": "list", "use_image_size": True}
 
-# Timeout: generation can take a while, especially multi-ref
-HTTP_TIMEOUT = httpx.Timeout(connect=10.0, read=180.0, write=30.0, pool=10.0)
+# Timeout: generation can take a while, especially multi-ref.
+# Write timeout bumped to 180s for fal CDN uploads — large reference images (5+ MB)
+# can take 30-60s through fal's signed-URL upload pipeline. The previous 30s write
+# timeout was tripping consistently for ~6MB PNGs and surfacing as `httpx.WriteTimeout('')`
+# (empty message) — which made the failure look like a generic "fal multi-ref failed:".
+HTTP_TIMEOUT = httpx.Timeout(connect=10.0, read=180.0, write=180.0, pool=10.0)
 # Queue polling config
 QUEUE_POLL_INTERVAL = 1.0
 QUEUE_MAX_WAIT = 300  # 5 minutes
@@ -455,6 +459,19 @@ def _error(text: str) -> dict:
     return {"content": [{"type": "text", "text": text}], "is_error": True}
 
 
+def _fmt_exc(e: Exception) -> str:
+    """Render an exception in a useful way even when str(e) is empty.
+
+    Some httpx exceptions (notably WriteTimeout, ReadTimeout) raise with an empty
+    message, which surfaces as `failed:` with nothing after the colon — useless
+    for debugging. Fall back to the type name so callers can see what went wrong.
+    """
+    s = str(e)
+    if s:
+        return f"{type(e).__name__}: {s}"
+    return type(e).__name__
+
+
 # =============================================================================
 # MCP Tools
 # =============================================================================
@@ -569,8 +586,9 @@ async def fal_text_to_image(args: Dict[str, Any]) -> Dict[str, Any]:
         return _success(text)
 
     except Exception as e:
-        logger.error(f"fal text-to-image failed: {e}")
-        return _error(f"fal text-to-image failed: {e}")
+        msg = _fmt_exc(e)
+        logger.error(f"fal text-to-image failed: {msg}")
+        return _error(f"fal text-to-image failed: {msg}")
 
 
 @register_tool("image")
@@ -694,8 +712,9 @@ async def fal_image_to_image(args: Dict[str, Any]) -> Dict[str, Any]:
         return _success(text)
 
     except Exception as e:
-        logger.error(f"fal image-to-image failed: {e}")
-        return _error(f"fal image-to-image failed: {e}")
+        msg = _fmt_exc(e)
+        logger.error(f"fal image-to-image failed: {msg}")
+        return _error(f"fal image-to-image failed: {msg}")
 
 
 @register_tool("image")
@@ -860,8 +879,9 @@ async def fal_multi_ref_image(args: Dict[str, Any]) -> Dict[str, Any]:
         return _success(text)
 
     except Exception as e:
-        logger.error(f"fal multi-ref failed: {e}")
-        return _error(f"fal multi-ref failed: {e}")
+        msg = _fmt_exc(e)
+        logger.error(f"fal multi-ref failed: {msg}")
+        return _error(f"fal multi-ref failed: {msg}")
 
 
 @register_tool("image")

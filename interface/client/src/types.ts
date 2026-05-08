@@ -94,6 +94,59 @@ export interface ChatMessage {
   reactions?: Record<string, string[]>;
 }
 
+// ---------------------------------------------------------------------------
+// Salons (group chats with the Convener) — see interface/server/salon_manager.py
+// ---------------------------------------------------------------------------
+
+export interface ConvenerDecision {
+  invoke_agent_in_gc: string[];
+  /** "yes" | "" | "no" | <int minutes> — see Convener docs */
+  gc_active_or_not: string | number;
+  reasoning: string;
+  hint_updates?: Record<string, any> | null;
+  from_message_id?: string;
+  chain_index?: number;
+}
+
+export interface SalonMessage {
+  id: string;
+  from: string;          // participant name ("user", "ash", "patch", etc.)
+  content: string;
+  created_at: number;    // unix seconds
+  convener_decision?: ConvenerDecision;
+  /** Optional rich blocks (parity with chat). Present on streamed content. */
+  blocks?: ContentBlock[];
+}
+
+export interface SalonHint {
+  mode?: string;
+  topics?: string[];
+  set_at?: number;
+  [key: string]: any;
+}
+
+export interface SalonSummary {
+  salon_id: string;
+  title: string;
+  creator: string;
+  participants: string[];
+  message_count: number;
+  created_at: number;
+  last_message_at: number;
+  gc_active: boolean;
+  gc_recheck_minutes?: number;
+  convener_recall_at?: number | null;
+  locked?: boolean;
+  locked_by?: string | null;
+}
+
+export interface SalonFull extends SalonSummary {
+  agent_hints?: Record<string, SalonHint>;
+  messages: SalonMessage[];
+  cumulative_usage?: { input_tokens: number; output_tokens: number; total_tokens: number };
+  lock?: { locked_at: number; locked_by: string; lock_id: string } | null;
+}
+
 /** Persisted tool call message (role: 'tool_call', hidden: true in server data) */
 export interface ToolCallMessage {
   id: string;
