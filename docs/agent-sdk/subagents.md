@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/subagents
 title: Subagents in the SDK
-last_fetched: 2026-05-06T09:15:56.968230+00:00
+last_fetched: 2026-05-09T09:15:57.717956+00:00
 ---
 
 [Claude Code Docs home page![light logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/light.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=78fd01ff4f4340295a4f66e2ea54903c)![dark logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/dark.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=1298a0c3b3a1da603b190d0de0e31712)](/docs/en/overview)
@@ -73,7 +73,7 @@ Subagents in the SDK
 ##### SDK references
 
 - [TypeScript SDK](/docs/en/agent-sdk/typescript)
-- [TypeScript V2 (preview)](/docs/en/agent-sdk/typescript-v2-preview)
+- [TypeScript V2 (deprecated)](/docs/en/agent-sdk/typescript-v2-preview)
 - [Python SDK](/docs/en/agent-sdk/python)
 - [Migration Guide](/docs/en/agent-sdk/migration-guide)
 
@@ -191,7 +191,7 @@ asyncio.run(main())
 | `tools` | `string[]` | No | Array of allowed tool names. If omitted, inherits all tools |
 | `disallowedTools` | `string[]` | No | Array of tool names to remove from the agent’s tool set |
 | `model` | `string` | No | Model override for this agent. Accepts an alias such as `'sonnet'`, `'opus'`, `'haiku'`, `'inherit'`, or a full model ID. Defaults to main model if omitted |
-| `skills` | `string[]` | No | List of skill names available to this agent |
+| `skills` | `string[]` | No | List of skill names to preload into the agent’s context at startup. Unlisted skills remain invocable through the Skill tool |
 | `memory` | `'user' | 'project' | 'local'` | No | Memory source for this agent |
 | `mcpServers` | `(string | object)[]` | No | MCP servers available to this agent, by name or inline config |
 | `maxTurns` | `number` | No | Maximum number of agentic turns before the agent stops |
@@ -216,7 +216,7 @@ A subagent’s context window starts fresh (no parent conversation) but isn’t 
 | The subagent receives | The subagent does not receive |
 | --- | --- |
 | Its own system prompt (`AgentDefinition.prompt`) and the Agent tool’s prompt | The parent’s conversation history or tool results |
-| Project CLAUDE.md (loaded via `settingSources`) | Skills (unless listed in `AgentDefinition.skills`) |
+| Project CLAUDE.md (loaded via `settingSources`) | Preloaded skill content, unless listed in `AgentDefinition.skills` |
 | Tool definitions (inherited from parent, or the subset in `tools`) | The parent’s system prompt |
 
 The parent receives the subagent’s final message verbatim as the Agent tool result, but may summarize it in its own response. To preserve subagent output verbatim in the user-facing response, include an instruction to do so in the prompt or `systemPrompt` option you pass to the **main** `query()` call.

@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/typescript-v2-preview
-title: TypeScript SDK V2 interface (preview)
-last_fetched: 2026-04-29T09:04:09.530851+00:00
+title: TypeScript SDK V2 session API (deprecated)
+last_fetched: 2026-05-09T09:18:27.925301+00:00
 ---
 
 [Claude Code Docs home page![light logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/light.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=78fd01ff4f4340295a4f66e2ea54903c)![dark logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/dark.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=1298a0c3b3a1da603b190d0de0e31712)](/docs/en/overview)
@@ -20,7 +20,7 @@ Navigation
 
 SDK references
 
-TypeScript SDK V2 interface (preview)
+TypeScript SDK V2 session API (deprecated)
 
 [Getting started](/docs/en/overview)[Build with Claude Code](/docs/en/sub-agents)[Administration](/docs/en/admin-setup)[Configuration](/docs/en/settings)[Reference](/docs/en/cli-reference)[Agent SDK](/docs/en/agent-sdk/overview)[What's New](/docs/en/whats-new)[Resources](/docs/en/legal-and-compliance)
 
@@ -73,7 +73,7 @@ TypeScript SDK V2 interface (preview)
 ##### SDK references
 
 - [TypeScript SDK](/docs/en/agent-sdk/typescript)
-- [TypeScript V2 (preview)](/docs/en/agent-sdk/typescript-v2-preview)
+- [TypeScript V2 (deprecated)](/docs/en/agent-sdk/typescript-v2-preview)
 - [Python SDK](/docs/en/agent-sdk/python)
 - [Migration Guide](/docs/en/agent-sdk/migration-guide)
 
@@ -85,9 +85,9 @@ On this page
 >
 > Use this file to discover all available pages before exploring further.
 
-The V2 interface is an **unstable preview**. APIs may change based on feedback before becoming stable. Some features like session forking are only available in the [V1 SDK](/docs/en/agent-sdk/typescript).
+The V2 session API functions `unstable_v2_createSession`, `unstable_v2_resumeSession`, and `unstable_v2_prompt` are deprecated and will be removed in a future release. Use the [V1 `query()` API](/docs/en/agent-sdk/typescript) instead.
 
-The V2 Claude Agent TypeScript SDK removes the need for async generators and yield coordination. This makes multi-turn conversations simpler, instead of managing generator state across turns, each turn is a separate `send()`/`stream()` cycle. The API surface reduces to three concepts:
+V2 was an experimental session API that removed the need for async generators and yield coordination. Instead of managing generator state across turns, each turn was a separate `send()`/`stream()` cycle. The API surface reduced to three concepts:
 
 - `createSession()` / `resumeSession()`: Start or continue a conversation
 - `session.send()`: Send a message
@@ -319,14 +319,10 @@ interface SDKSession {
 
 ## [​](#feature-availability) Feature availability
 
-Not all V1 features are available in V2 yet. The following require using the [V1 SDK](/docs/en/agent-sdk/typescript):
+The V2 session API does not support every V1 feature. The following require the [V1 SDK](/docs/en/agent-sdk/typescript):
 
 - Session forking (`forkSession` option)
 - Some advanced streaming input patterns
-
-## [​](#feedback) Feedback
-
-Share your feedback on the V2 interface before it becomes stable. Report issues and suggestions through [GitHub Issues](https://github.com/anthropics/claude-code/issues).
 
 ## [​](#see-also) See also
 

@@ -2053,7 +2053,7 @@ export const Chat: React.FC<ChatProps> = ({
         // Dismiss mobile reaction picker when tapping the scroll background (not a message)
         if (isMobile && reactionMsgId && e.target === e.currentTarget) setReactionMsgId(null);
       }}>
-        <div className="max-w-5xl mx-auto px-4 py-6 space-y-6">
+        <div className="max-w-[1440px] mx-auto px-4 py-6 space-y-6">
           {processedMessages.length === 0 && (() => {
             const EmptyIcon = getAgentIcon(selectedAgentObj?.icon);
             return (
@@ -2324,7 +2324,7 @@ export const Chat: React.FC<ChatProps> = ({
       {/* Todo Strip - shown when any agent uses TodoWrite */}
       {todos.length > 0 && (
         <div className="border-t border-[var(--border-color)] bg-[var(--bg-secondary)] px-4 pt-3 pb-0">
-          <div className="max-w-5xl mx-auto">
+          <div className="max-w-[1440px] mx-auto">
             <div className="flex flex-col gap-1">
               {todos.map((todo, idx) => {
                 const isActive = todo.status === 'in_progress';
@@ -2366,7 +2366,7 @@ export const Chat: React.FC<ChatProps> = ({
       {/* Queued messages strip — fixed above input, visually distinct */}
       {queuedMessages.length > 0 && (
         <div className="border-t-2 border-amber-500/40 bg-amber-50/10 dark:bg-amber-900/10 px-4 py-2">
-          <div className="max-w-5xl mx-auto space-y-2">
+          <div className="max-w-[1440px] mx-auto space-y-2">
             {queuedMessages.map((qMsg) => (
               <div key={qMsg.id} className="flex items-center gap-3 animate-in">
                 {/* Status icon */}
@@ -2434,7 +2434,7 @@ export const Chat: React.FC<ChatProps> = ({
 
       {/* Input Area */}
       <div className="border-t border-[var(--border-color)] bg-[var(--bg-secondary)] p-4">
-        <div className="max-w-5xl mx-auto">
+        <div className="max-w-[1440px] mx-auto">
           {/* Attachments */}
           {attachments.length > 0 && (
             <div className="flex flex-wrap gap-2 mb-3">

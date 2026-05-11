@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/slash-commands
 title: Slash Commands in the SDK
-last_fetched: 2026-04-29T09:03:23.370711+00:00
+last_fetched: 2026-05-09T09:13:30.921378+00:00
 ---
 
 [Claude Code Docs home page![light logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/light.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=78fd01ff4f4340295a4f66e2ea54903c)![dark logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/dark.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=1298a0c3b3a1da603b190d0de0e31712)](/docs/en/overview)
@@ -73,7 +73,7 @@ Slash Commands in the SDK
 ##### SDK references
 
 - [TypeScript SDK](/docs/en/agent-sdk/typescript)
-- [TypeScript V2 (preview)](/docs/en/agent-sdk/typescript-v2-preview)
+- [TypeScript V2 (deprecated)](/docs/en/agent-sdk/typescript-v2-preview)
 - [Python SDK](/docs/en/agent-sdk/python)
 - [Migration Guide](/docs/en/agent-sdk/migration-guide)
 

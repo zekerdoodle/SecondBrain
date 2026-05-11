@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/skills
 title: Agent Skills in the SDK
-last_fetched: 2026-05-06T09:12:53.273047+00:00
+last_fetched: 2026-05-09T09:12:54.263562+00:00
 ---
 
 [Claude Code Docs home page![light logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/light.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=78fd01ff4f4340295a4f66e2ea54903c)![dark logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/dark.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=1298a0c3b3a1da603b190d0de0e31712)](/docs/en/overview)
@@ -73,7 +73,7 @@ Agent Skills in the SDK
 ##### SDK references
 
 - [TypeScript SDK](/docs/en/agent-sdk/typescript)
-- [TypeScript V2 (preview)](/docs/en/agent-sdk/typescript-v2-preview)
+- [TypeScript V2 (deprecated)](/docs/en/agent-sdk/typescript-v2-preview)
 - [Python SDK](/docs/en/agent-sdk/python)
 - [Migration Guide](/docs/en/agent-sdk/migration-guide)
 
@@ -98,7 +98,7 @@ When using the Claude Agent SDK, Skills are:
 2. **Loaded from filesystem**: Skills are loaded from filesystem locations governed by `settingSources` (TypeScript) or `setting_sources` (Python)
 3. **Automatically discovered**: Once filesystem settings are loaded, Skill metadata is discovered at startup from user and project directories; full content loaded when triggered
 4. **Model-invoked**: Claude autonomously chooses when to use them based on context
-5. **Enabled via allowed\_tools**: Add `"Skill"` to your `allowed_tools` to enable Skills
+5. **Filtered via the `skills` option**: Discovered skills are enabled by default. Pass a list of skill names, `"all"`, or `[]` to control which are available in the session
 
 Unlike subagents (which can be defined programmatically), Skills must be created as filesystem artifacts. The SDK does not provide a programmatic API for registering Skills.
 
@@ -106,12 +106,8 @@ Skills are discovered through the filesystem setting sources. With default `quer
 
 ## [​](#using-skills-with-the-sdk) Using Skills with the SDK
 
-To use Skills with the SDK, you need to:
-
-1. Include `"Skill"` in your `allowed_tools` configuration
-2. Configure `settingSources`/`setting_sources` to load Skills from the filesystem
-
-Once configured, Claude automatically discovers Skills from the specified directories and invokes them when relevant to the user’s request.
+Set the `skills` option on `query()` to control which Skills are available to the session. When omitted, discovered Skills are enabled and the Skill tool is available, matching CLI behavior. Pass `"all"` to enable every discovered Skill, a list of Skill names to enable only those, or `[]` to disable all. When you set `skills`, the SDK enables the Skill tool automatically, so you do not need to list it in `allowedTools`.
+Once configured, Claude automatically discovers Skills from the filesystem and invokes them when relevant to the user’s request.
 
 Python
 
@@ -125,7 +121,8 @@ async def main():
  options = ClaudeAgentOptions(
  cwd="/path/to/project", # Project with .claude/skills/
  setting_sources=["user", "project"], # Load Skills from filesystem
- allowed_tools=["Skill", "Read", "Write", "Bash"], # Enable Skill tool
+ skills="all", # Enable every discovered Skill
+ allowed_tools=["Read", "Write", "Bash"],
  )
 
  async for message in query(
@@ -135,6 +132,18 @@ async def main():
 
 asyncio.run(main())
 ```
+
+To enable only specific Skills, pass their names. Names match the `name` field in `SKILL.md` or the Skill’s directory name. Use `plugin:skill` for plugin-provided Skills.
+
+Python
+
+TypeScript
+
+```shiki
+options = ClaudeAgentOptions(skills=["pdf", "docx"])
+```
+
+The `skills` option is a context filter, not a sandbox. Unlisted Skills are hidden from the model and rejected by the Skill tool, but their files remain on disk and are reachable through Read and Bash.
 
 ## [​](#skill-locations) Skill Locations
 
@@ -174,7 +183,8 @@ TypeScript
 ```shiki
 options = ClaudeAgentOptions(
  setting_sources=["user", "project"], # Load Skills from filesystem
- allowed_tools=["Skill", "Read", "Grep", "Glob"],
+ skills="all",
+ allowed_tools=["Read", "Grep", "Glob"],
 )
 
 async for message in query(prompt="Analyze the codebase structure", options=options):
@@ -192,7 +202,7 @@ TypeScript
 ```shiki
 options = ClaudeAgentOptions(
  setting_sources=["user", "project"], # Load Skills from filesystem
- allowed_tools=["Skill"],
+ skills="all",
 )
 
 async for message in query(prompt="What Skills are available?", options=options):
@@ -213,7 +223,8 @@ TypeScript
 options = ClaudeAgentOptions(
  cwd="/path/to/project",
  setting_sources=["user", "project"], # Load Skills from filesystem
- allowed_tools=["Skill", "Read", "Bash"],
+ skills="all",
+ allowed_tools=["Read", "Bash"],
 )
 
 async for message in query(prompt="Extract text from invoice.pdf", options=options):
@@ -234,12 +245,12 @@ TypeScript
 
 ```shiki
 # Skills not loaded: setting_sources excludes user and project
-options = ClaudeAgentOptions(setting_sources=[], allowed_tools=["Skill"])
+options = ClaudeAgentOptions(setting_sources=[], skills="all")
 
 # Skills loaded: user and project sources included
 options = ClaudeAgentOptions(
  setting_sources=["user", "project"],
- allowed_tools=["Skill"],
+ skills="all",
 )
 ```
 
@@ -255,7 +266,7 @@ TypeScript
 options = ClaudeAgentOptions(
  cwd="/path/to/project", # Must contain .claude/skills/
  setting_sources=["user", "project"], # Loads skills from these sources
- allowed_tools=["Skill"],
+ skills="all",
 )
 ```
 
@@ -272,7 +283,7 @@ ls ~/.claude/skills/*/SKILL.md
 
 ### [​](#skill-not-being-used) Skill Not Being Used
 
-**Check the Skill tool is enabled**: Confirm `"Skill"` is in your `allowedTools`.
+**Check the `skills` option**: If you passed a `skills` list, confirm the skill’s name is included. Passing `[]` disables all skills.
 **Check the description**: Ensure it’s specific and includes relevant keywords. See [Agent Skills Best Practices](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices#writing-effective-descriptions) for guidance on writing effective descriptions.
 
 ### [​](#additional-troubleshooting) Additional Troubleshooting

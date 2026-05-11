@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/claude-code-features
 title: Use Claude Code features in the SDK
-last_fetched: 2026-05-06T09:02:56.639220+00:00
+last_fetched: 2026-05-09T09:02:58.299627+00:00
 ---
 
 [Claude Code Docs home page![light logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/light.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=78fd01ff4f4340295a4f66e2ea54903c)![dark logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/dark.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=1298a0c3b3a1da603b190d0de0e31712)](/docs/en/overview)
@@ -73,7 +73,7 @@ Use Claude Code features in the SDK
 ##### SDK references
 
 - [TypeScript SDK](/docs/en/agent-sdk/typescript)
-- [TypeScript V2 (preview)](/docs/en/agent-sdk/typescript-v2-preview)
+- [TypeScript V2 (deprecated)](/docs/en/agent-sdk/typescript-v2-preview)
 - [Python SDK](/docs/en/agent-sdk/python)
 - [Migration Guide](/docs/en/agent-sdk/migration-guide)
 
@@ -167,7 +167,7 @@ For how to structure and organize CLAUDE.md content, see [Manage Claude’s memo
 ## [​](#skills) Skills
 
 Skills are markdown files that give your agent specialized knowledge and invocable workflows. Unlike `CLAUDE.md` (which loads every session), skills load on demand. The agent receives skill descriptions at startup and loads the full content when relevant.
-Skills are discovered from the filesystem through `settingSources`. With default options, user and project skills load automatically. The `Skill` tool is enabled by default when you don’t specify `allowedTools`. If you are using an `allowedTools` allowlist, include `"Skill"` explicitly.
+Skills are discovered from the filesystem through `settingSources`. When the `skills` option on `query()` is omitted, discovered user and project skills are enabled and the Skill tool is available, matching CLI behavior. To control which skills are enabled, pass `skills` as `"all"`, a list of skill names, or `[]` to disable all. The SDK enables the Skill tool automatically when `skills` is set, so you do not need to add it to `allowedTools`.
 
 Python
 
@@ -182,7 +182,8 @@ async for message in query(
  prompt="Review this PR using our code review checklist",
  options=ClaudeAgentOptions(
  setting_sources=["user", "project"],
- allowed_tools=["Skill", "Read", "Grep", "Glob"],
+ skills="all",
+ allowed_tools=["Read", "Grep", "Glob"],
  ),
 ):
  if isinstance(message, ResultMessage) and message.subtype == "success":
@@ -255,8 +256,8 @@ The Agent SDK gives you access to several ways to extend your agent’s behavior
 | You want to… | Use | SDK surface |
 | --- | --- | --- |
 | Set project conventions your agent always follows | [CLAUDE.md](/docs/en/memory) | `settingSources: ["project"]` loads it automatically |
-| Give the agent reference material it loads when relevant | [Skills](/docs/en/agent-sdk/skills) | `settingSources` + `allowedTools: ["Skill"]` |
-| Run a reusable workflow (deploy, review, release) | [User-invocable skills](/docs/en/agent-sdk/skills) | `settingSources` + `allowedTools: ["Skill"]` |
+| Give the agent reference material it loads when relevant | [Skills](/docs/en/agent-sdk/skills) | `settingSources` + `skills` option |
+| Run a reusable workflow (deploy, review, release) | [User-invocable skills](/docs/en/agent-sdk/skills) | `settingSources` + `skills` option |
 | Delegate an isolated subtask to a fresh context (research, review) | [Subagents](/docs/en/agent-sdk/subagents) | `agents` parameter + `allowedTools: ["Agent"]` |
 | Coordinate multiple Claude Code instances with shared task lists and direct inter-agent messaging | [Agent teams](/docs/en/agent-teams) | Not directly configured via SDK options. Agent teams are a CLI feature where one session acts as the team lead, coordinating work across independent teammates |
 | Run deterministic logic on tool calls (audit, block, transform) | [Hooks](/docs/en/agent-sdk/hooks) | `hooks` parameter with callbacks, or shell scripts loaded via `settingSources` |

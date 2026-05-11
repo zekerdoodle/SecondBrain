@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/python
 title: Agent SDK reference - Python
-last_fetched: 2026-05-07T09:03:04.848487+00:00
+last_fetched: 2026-05-09T09:10:27.422827+00:00
 ---
 
 [Claude Code Docs home page![light logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/light.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=78fd01ff4f4340295a4f66e2ea54903c)![dark logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/dark.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=1298a0c3b3a1da603b190d0de0e31712)](/docs/en/overview)
@@ -73,7 +73,7 @@ Agent SDK reference - Python
 ##### SDK references
 
 - [TypeScript SDK](/docs/en/agent-sdk/typescript)
-- [TypeScript V2 (preview)](/docs/en/agent-sdk/typescript-v2-preview)
+- [TypeScript V2 (deprecated)](/docs/en/agent-sdk/typescript-v2-preview)
 - [Python SDK](/docs/en/agent-sdk/python)
 - [Migration Guide](/docs/en/agent-sdk/migration-guide)
 
@@ -889,6 +889,7 @@ class ClaudeAgentOptions:
 | `plugins` | `list[SdkPluginConfig]` | `[]` | Load custom plugins from local paths. See [Plugins](/docs/en/agent-sdk/plugins) for details |
 | `sandbox` | [`SandboxSettings`](#sandboxsettings) `| None` | `None` | Configure sandbox behavior programmatically. See [Sandbox settings](#sandboxsettings) for details |
 | `setting_sources` | `list[SettingSource] | None` | `None` (CLI defaults: all sources) | Control which filesystem settings to load. Pass `[]` to disable user, project, and local settings. Managed policy settings load regardless. See [Use Claude Code features](/docs/en/agent-sdk/claude-code-features#what-settingsources-does-not-control) |
+| `skills` | `list[str] | Literal["all"] | None` | `None` | Skills available to the session. Pass `"all"` to enable every discovered skill, or a list of skill names. When set, the SDK enables the Skill tool automatically without listing it in `allowed_tools`. See [Skills](/docs/en/agent-sdk/skills) |
 | `max_thinking_tokens` | `int | None` | `None` | *Deprecated* - Maximum tokens for thinking blocks. Use `thinking` instead |
 | `thinking` | [`ThinkingConfig`](#thinkingconfig) `| None` | `None` | Controls extended thinking behavior. Takes precedence over `max_thinking_tokens` |
 | `effort` | `Literal["low", "medium", "high", "xhigh", "max"] | None` | `None` | Effort level for thinking depth |
@@ -1102,7 +1103,7 @@ class AgentDefinition:
 | `tools` | No | Array of allowed tool names. If omitted, inherits all tools |
 | `disallowedTools` | No | Array of tool names to remove from the agent’s tool set |
 | `model` | No | Model override for this agent. Accepts an alias such as `"sonnet"`, `"opus"`, `"haiku"`, or `"inherit"`, or a full model ID. If omitted, uses the main model |
-| `skills` | No | List of skill names available to this agent |
+| `skills` | No | List of skill names to preload into the agent’s context at startup. Unlisted skills remain invocable through the Skill tool |
 | `memory` | No | Memory source for this agent: `"user"`, `"project"`, or `"local"` |
 | `mcpServers` | No | MCP servers available to this agent. Each entry is a server name or an inline `{name: config}` dict |
 | `initialPrompt` | No | Auto-submitted as the first user turn when this agent runs as the main thread agent |
@@ -1545,13 +1546,17 @@ class ResultMessage:
  is_error: bool
  num_turns: int
  session_id: str
+ stop_reason: str | None = None
  total_cost_usd: float | None = None
  usage: dict[str, Any] | None = None
  result: str | None = None
- stop_reason: str | None = None
  structured_output: Any = None
  model_usage: dict[str, Any] | None = None
+ permission_denials: list[Any] | None = None
  deferred_tool_use: DeferredToolUse | None = None
+ errors: list[str] | None = None
+ api_error_status: int | None = None
+ uuid: str | None = None
 ```
 
 The `usage` dict contains the following keys when present:
@@ -2354,7 +2359,9 @@ Asks the user clarifying questions during execution. See [Handle approvals and u
  "multiSelect": bool, # Set to true to allow multiple selections
  }
  ],
- "answers": dict | None, # User answers populated by the permission system
+ "answers": dict[str, str | list[str]] | None,
+ # User answers populated by the permission system. Multi-select
+ # answers may be a list of labels or a comma-joined string
 }
 ```
 
@@ -3290,7 +3297,7 @@ Was this page helpful?
 
 YesNo
 
-[TypeScript V2 (preview)](/docs/en/agent-sdk/typescript-v2-preview)[Migration Guide](/docs/en/agent-sdk/migration-guide)
+[TypeScript V2 (deprecated)](/docs/en/agent-sdk/typescript-v2-preview)[Migration Guide](/docs/en/agent-sdk/migration-guide)
 
 Ctrl+I
 

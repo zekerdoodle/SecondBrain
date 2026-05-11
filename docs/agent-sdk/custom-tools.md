@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/custom-tools
 title: Give Claude custom tools
-last_fetched: 2026-05-06T09:04:10.059203+00:00
+last_fetched: 2026-05-09T09:04:11.876639+00:00
 ---
 
 [Claude Code Docs home page![light logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/light.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=78fd01ff4f4340295a4f66e2ea54903c)![dark logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/dark.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=1298a0c3b3a1da603b190d0de0e31712)](/docs/en/overview)
@@ -73,7 +73,7 @@ Give Claude custom tools
 ##### SDK references
 
 - [TypeScript SDK](/docs/en/agent-sdk/typescript)
-- [TypeScript V2 (preview)](/docs/en/agent-sdk/typescript-v2-preview)
+- [TypeScript V2 (deprecated)](/docs/en/agent-sdk/typescript-v2-preview)
 - [Python SDK](/docs/en/agent-sdk/python)
 - [Migration Guide](/docs/en/agent-sdk/migration-guide)
 
@@ -99,6 +99,7 @@ This guide covers how to define tools with input schemas and handlers, bundle th
 | Let Claude call tools in parallel | Set `readOnlyHint: true` on tools with no side effects. See [Add tool annotations](#add-tool-annotations). |
 | Handle errors without stopping the loop | Return `isError: true` instead of throwing. See [Handle errors](#handle-errors). |
 | Return images or files | Use `image` or `resource` blocks in the content array. See [Return images and resources](#return-images-and-resources). |
+| Return a machine-readable JSON result | Set `structuredContent` on the result. See [Return structured data](#return-structured-data). |
 | Scale to many tools | Use [tool search](/docs/en/agent-sdk/tool-search) to load tools on demand. |
 
 ## [​](#create-a-custom-tool) Create a custom tool
@@ -110,6 +111,7 @@ A tool is defined by four parts, passed as arguments to the [`tool()`](/docs/en/
 - **Input schema:** the arguments Claude must provide. In TypeScript this is always a [Zod schema](https://zod.dev/), and the handler’s `args` are typed from it automatically. In Python this is a dict mapping names to types, like `{"latitude": float}`, which the SDK converts to JSON Schema for you. The Python decorator also accepts a full [JSON Schema](https://json-schema.org/understanding-json-schema/about) dict directly when you need enums, ranges, optional fields, or nested objects.
 - **Handler:** the async function that runs when Claude calls the tool. It receives the validated arguments and must return an object with:
  - `content` (required): an array of result blocks, each with a `type` of `"text"`, `"image"`, or `"resource"`. See [Return images and resources](#return-images-and-resources) for non-text blocks.
+ - `structuredContent` (optional): a JSON object holding the result as machine-readable data, returned alongside `content`. See [Return structured data](#return-structured-data).
  - `isError` (optional): set to `true` to signal a tool failure so Claude can react to it. See [Handle errors](#handle-errors).
 
 After defining a tool, wrap it in a server with [`createSdkMcpServer`](/docs/en/agent-sdk/typescript#createsdkmcpserver) (TypeScript) or [`create_sdk_mcp_server`](/docs/en/agent-sdk/python#create_sdk_mcp_server) (Python). The server runs in-process inside your application, not as a separate process.
@@ -439,6 +441,32 @@ return {
 ```
 
 These block shapes come from the MCP `CallToolResult` type. See the [MCP specification](https://modelcontextprotocol.io/specification/2025-06-18/server/tools#tool-result) for the full definition.
+
+## [​](#return-structured-data) Return structured data
+
+`structuredContent` is an optional JSON object on the result, separate from the `content` array. Use it to return raw values that Claude can read as exact fields instead of parsing them out of a text string or image.
+When `structuredContent` is set, Claude receives the JSON plus any image or resource blocks from `content`. Text blocks in `content` are not forwarded, since they are assumed to duplicate the structured data. The example below renders a chart as an image block and returns the data points behind it in `structuredContent` from the same handler.
+
+TypeScript
+
+```shiki
+return {
+ content: [
+ {
+ type: "image",
+ data: chartPngBuffer.toString("base64"),
+ mimeType: "image/png"
+ }
+ ],
+ structuredContent: {
+ series: "temperature_2m",
+ unit: "fahrenheit",
+ points: [62.1, 63.4, 65.0, 64.2]
+ }
+};
+```
+
+The Python `@tool` decorator forwards only `content` and `is_error` from the handler’s return dict. To return `structuredContent` from Python, run a [standalone MCP server](/docs/en/agent-sdk/mcp) instead of an in-process SDK server.
 
 ## [​](#example-unit-converter) Example: unit converter
 

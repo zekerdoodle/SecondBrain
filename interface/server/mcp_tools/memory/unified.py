@@ -11,6 +11,7 @@ Single JSON-backed store per agent with five tools:
 Data file: .claude/agents/{name}/memories.json
 """
 
+import asyncio
 import datetime
 import json
 import logging
@@ -97,12 +98,62 @@ def _get_retriever():
 
 
 def _reindex_agent(agent_name: Optional[str]):
-    """Re-index agent memories after a change."""
+    """Full agent reindex — rebuilds embeddings for ALL memories.
+
+    Use only for cold starts or recovery. For per-memory mutations, prefer
+    the incremental helpers (_reindex_after_upsert / _reindex_after_delete)
+    which avoid the multi-second event-loop freeze.
+    """
     try:
         retriever = _get_retriever()
         retriever.index_agent_memory(agent_name)
     except Exception as e:
         logger.warning(f"Re-indexing failed for agent '{agent_name}': {e}")
+
+
+async def _reindex_after_upsert(agent_name: Optional[str], mem_dict: Dict[str, Any]) -> None:
+    """Incrementally update the index after a memory_create or memory_update.
+
+    Holds the per-agent asyncio lock to serialize concurrent index mutations
+    (e.g. multiple BG_PROCESSING tool calls running in parallel), and runs
+    the actual embedding work in a worker thread so the FastAPI event loop
+    keeps servicing WebSocket heartbeats and incoming messages.
+
+    Falls back to a logged warning on any error — the caller already
+    committed the data write to memories.json, so a stale index is far
+    preferable to surfacing an exception in the agent's tool output.
+    """
+    try:
+        retriever = _get_retriever()
+        lock = retriever.get_index_lock(agent_name)
+        async with lock:
+            await asyncio.to_thread(
+                retriever.update_memory_in_index, agent_name, mem_dict
+            )
+    except Exception as e:
+        logger.warning(
+            f"Incremental index upsert failed for agent '{agent_name}', "
+            f"memory #{mem_dict.get('id')}: {e}"
+        )
+
+
+async def _reindex_after_delete(agent_name: Optional[str], mem_id: Any) -> None:
+    """Incrementally update the index after a memory_delete.
+
+    See _reindex_after_upsert for locking/threading semantics.
+    """
+    try:
+        retriever = _get_retriever()
+        lock = retriever.get_index_lock(agent_name)
+        async with lock:
+            await asyncio.to_thread(
+                retriever.remove_memory_from_index, agent_name, mem_id
+            )
+    except Exception as e:
+        logger.warning(
+            f"Incremental index removal failed for agent '{agent_name}', "
+            f"memory #{mem_id}: {e}"
+        )
 
 
 def _error(msg: str) -> Dict[str, Any]:
@@ -282,7 +333,7 @@ async def memory_create(args: Dict[str, Any]) -> Dict[str, Any]:
 
         memories.append(memory)
         _save_memories(path, memories)
-        _reindex_agent(agent_name)
+        await _reindex_after_upsert(agent_name, memory)
 
         trigger_str = ", ".join(f'"{t}"' for t in triggers)
         al_str = " [always_load]" if always_load else ""
@@ -498,8 +549,9 @@ async def memory_update(args: Dict[str, Any]) -> Dict[str, Any]:
         memories[target_idx] = target
         _save_memories(path, memories)
 
-        # Re-index (triggers or content may have changed)
-        _reindex_agent(agent_name)
+        # Incrementally re-index this memory (triggers or content may have changed).
+        # Avoids the multi-second event-loop freeze of a full corpus rebuild.
+        await _reindex_after_upsert(agent_name, target)
 
         logger.info(f"[{author}] memory_update: #{mem_id} changed {changed}")
         return {"content": [{"type": "text", "text": f"Updated memory #{mem_id}: {', '.join(changed)}\n\n{_format_brief(target)}"}]}
@@ -552,7 +604,7 @@ async def memory_delete(args: Dict[str, Any]) -> Dict[str, Any]:
             return _error(f"Memory #{mem_id} not found")
 
         _save_memories(path, new_memories)
-        _reindex_agent(agent_name)
+        await _reindex_after_delete(agent_name, mem_id)
 
         triggers = ", ".join(f'"{t}"' for t in target.get("triggers", []))
         snippet = target.get("content", "")[:100]

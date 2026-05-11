@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/user-input
 title: Handle approvals and user input
-last_fetched: 2026-05-06T09:19:03.114561+00:00
+last_fetched: 2026-05-09T09:19:04.926849+00:00
 ---
 
 [Claude Code Docs home page![light logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/light.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=78fd01ff4f4340295a4f66e2ea54903c)![dark logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/dark.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=1298a0c3b3a1da603b190d0de0e31712)](/docs/en/overview)
@@ -73,7 +73,7 @@ Handle approvals and user input
 ##### SDK references
 
 - [TypeScript SDK](/docs/en/agent-sdk/typescript)
-- [TypeScript V2 (preview)](/docs/en/agent-sdk/typescript-v2-preview)
+- [TypeScript V2 (deprecated)](/docs/en/agent-sdk/typescript-v2-preview)
 - [Python SDK](/docs/en/agent-sdk/python)
 - [Migration Guide](/docs/en/agent-sdk/migration-guide)
 
@@ -411,7 +411,7 @@ Build the `answers` object as a record where each key is the `question` text and
 | `question` field (e.g., `"How should I format the output?"`) | Key |
 | Selected option’s `label` field (e.g., `"Summary"`) | Value |
 
-For multi-select questions, join multiple labels with `", "`. If you [support free-text input](#support-free-text-input), use the user’s custom text as the value.
+For multi-select questions, pass an array of labels or join them with `", "`. If you [support free-text input](#support-free-text-input), use the user’s custom text as the value.
 
 Python
 
@@ -423,7 +423,7 @@ return PermissionResultAllow(
  "questions": input_data.get("questions", []),
  "answers": {
  "How should I format the output?": "Summary",
- "Which sections should I include?": "Introduction, Conclusion",
+ "Which sections should I include?": ["Introduction", "Conclusion"],
  },
  }
 )
@@ -508,7 +508,7 @@ Return an `answers` object mapping each question’s `question` field to the sel
 | `questions` | Pass through the original questions array (required for tool processing) |
 | `answers` | Object where keys are question text and values are selected labels |
 
-For multi-select questions, join multiple labels with `", "`. For free-text input, use the user’s custom text directly.
+For multi-select questions, pass an array of labels or join them with `", "`. For free-text input, use the user’s custom text directly.
 
 ```shiki
 {
@@ -517,7 +517,7 @@ For multi-select questions, join multiple labels with `", "`. For free-text inpu
  ],
  "answers": {
  "How should I format the output?": "Summary",
- "Which sections should I include?": "Introduction, Conclusion"
+ "Which sections should I include?": ["Introduction", "Conclusion"]
  }
 }
 ```

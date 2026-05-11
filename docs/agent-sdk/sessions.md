@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/sessions
 title: Work with sessions
-last_fetched: 2026-05-06T09:12:16.549547+00:00
+last_fetched: 2026-05-09T09:12:17.627832+00:00
 ---
 
 [Claude Code Docs home page![light logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/light.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=78fd01ff4f4340295a4f66e2ea54903c)![dark logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/dark.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=1298a0c3b3a1da603b190d0de0e31712)](/docs/en/overview)
@@ -73,7 +73,7 @@ Work with sessions
 ##### SDK references
 
 - [TypeScript SDK](/docs/en/agent-sdk/typescript)
-- [TypeScript V2 (preview)](/docs/en/agent-sdk/typescript-v2-preview)
+- [TypeScript V2 (deprecated)](/docs/en/agent-sdk/typescript-v2-preview)
 - [Python SDK](/docs/en/agent-sdk/python)
 - [Migration Guide](/docs/en/agent-sdk/migration-guide)
 
@@ -205,7 +205,7 @@ for await (const message of query({
 }
 ```
 
-There’s also a [V2 preview](/docs/en/agent-sdk/typescript-v2-preview) of the TypeScript SDK that provides `createSession()` with a `send` / `stream` pattern, closer to Python’s `ClaudeSDKClient` in feel. V2 is unstable and its APIs may change; the rest of this documentation uses the stable V1 `query()` function.
+The experimental [V2 session API](/docs/en/agent-sdk/typescript-v2-preview), which provided `createSession()` with a `send` / `stream` pattern, is deprecated. Use the V1 `query()` function and the session options described on this page instead.
 
 ## [​](#use-session-options-with-query) Use session options with `query()`
 

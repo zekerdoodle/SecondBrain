@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/
 title: Anthropic Agent SDK Documentation Index
-last_fetched: 2026-05-07T09:04:25.727647+00:00
+last_fetched: 2026-05-11T09:18:01.166728+00:00
 ---
 
 # Anthropic Agent SDK Documentation
@@ -36,7 +36,7 @@ This is a local mirror of the [Anthropic Agent SDK documentation](https://platfo
 - [Subagents in the SDK](./subagents.md)
 - [Todo Lists](./todo-tracking.md)
 - [Track cost and usage](./cost-tracking.md)
-- [TypeScript SDK V2 interface (preview)](./typescript-v2-preview.md)
+- [TypeScript SDK V2 session API (deprecated)](./typescript-v2-preview.md)
 - [Use Claude Code features in the SDK](./claude-code-features.md)
 - [Work with sessions](./sessions.md)
 
@@ -45,7 +45,7 @@ This is a local mirror of the [Anthropic Agent SDK documentation](https://platfo
 This documentation mirror is automatically synced from the official Anthropic documentation.
 Claude Code agents can reference these files directly for up-to-date information.
 
-**Last sync:** 2026-05-07T09:04:25.727647+00:00
+**Last sync:** 2026-05-11T09:18:01.166728+00:00
 
 To manually sync, run:
 ```bash
