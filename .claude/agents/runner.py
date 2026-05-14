@@ -43,6 +43,7 @@ if _server_dir not in sys.path:
     sys.path.insert(0, _server_dir)
 
 from process_registry import register_process, deregister_process
+import running_agents
 
 from claude_agent_sdk.types import (
     AssistantMessage,
@@ -222,6 +223,8 @@ async def invoke_agent(
     conversation_id: Optional[str] = None,
     caller_agent: Optional[str] = None,
     salon_id: Optional[str] = None,
+    scheduled_task_id: Optional[str] = None,
+    is_background_processing: bool = False,
     stream_callback: Optional[Callable[[list], Awaitable[None]]] = None,
     history_messages: Optional[List[Dict[str, Any]]] = None,
 ) -> Union[AgentResult, Dict[str, str]]:
@@ -326,6 +329,9 @@ async def invoke_agent(
             project=project,
             is_visible=is_visible,
             salon_id=salon_id,
+            caller_agent=caller_agent,
+            scheduled_task_id=scheduled_task_id,
+            is_background_processing=is_background_processing,
         )
         logger.info(f"Invoking agent '{name}' for salon {salon_id} (no thread)")
         return await _run_agent(
@@ -379,6 +385,11 @@ async def invoke_agent(
         model_override=model_override,
         project=project,
         is_visible=is_visible,
+        conversation_id=conv_id,
+        is_join=conversation_id is not None,
+        caller_agent=caller_agent,
+        scheduled_task_id=scheduled_task_id,
+        is_background_processing=is_background_processing,
     )
 
     logger.info(
@@ -659,6 +670,27 @@ async def _maybe_retitle_thread(conversation_id: str) -> None:
         logger.warning(f"Titler failed for thread {conversation_id}: {e}")
 
 
+def _infer_kind(invocation: AgentInvocation) -> str:
+    """Map an AgentInvocation onto the running_agents kind enum.
+
+    Priority order: salon > background_processing > thread-join > mode.
+    See running_agents.KINDS for the full enum and the project plan §3 for
+    the rationale behind the priority ordering.
+    """
+    if invocation.salon_id:
+        return "salon_agent"
+    if invocation.is_background_processing:
+        return "background_processing"
+    mode = invocation.mode
+    if mode == InvocationMode.PING:
+        return "invoke_ping"
+    if mode in (InvocationMode.TRUST, InvocationMode.SCHEDULED):
+        return "invoke_trust"
+    if mode == InvocationMode.FOREGROUND and invocation.is_join:
+        return "agent_conversation_join"
+    return "invoke_foreground"
+
+
 async def _run_agent(
     config: AgentConfig,
     invocation: AgentInvocation,
@@ -680,43 +712,54 @@ async def _run_agent(
             _consume_query for full details.
     """
     started_at = datetime.utcnow()
+    kind = _infer_kind(invocation)
 
-    try:
-        response, transcript, blocks = await _run_sdk_agent(
-            config, invocation, stream_callback=stream_callback,
-            history_messages=history_messages,
-        )
+    async with running_agents.track(
+        agent=config.name,
+        kind=kind,
+        task_summary=invocation.prompt or "",
+        source_chat_id=invocation.source_chat_id,
+        conversation_id=invocation.conversation_id,
+        salon_id=invocation.salon_id,
+        scheduled_task_id=invocation.scheduled_task_id,
+        caller_agent=invocation.caller_agent,
+    ):
+        try:
+            response, transcript, blocks = await _run_sdk_agent(
+                config, invocation, stream_callback=stream_callback,
+                history_messages=history_messages,
+            )
 
-        return AgentResult(
-            agent=config.name,
-            status="success",
-            response=response,
-            started_at=started_at,
-            completed_at=datetime.utcnow(),
-            transcript=transcript,
-            blocks=blocks,
-        )
+            return AgentResult(
+                agent=config.name,
+                status="success",
+                response=response,
+                started_at=started_at,
+                completed_at=datetime.utcnow(),
+                transcript=transcript,
+                blocks=blocks,
+            )
 
-    except asyncio.TimeoutError:
-        return AgentResult(
-            agent=config.name,
-            status="timeout",
-            response="",
-            started_at=started_at,
-            completed_at=datetime.utcnow(),
-            error=f"Agent timed out after {config.timeout_seconds} seconds"
-        )
+        except asyncio.TimeoutError:
+            return AgentResult(
+                agent=config.name,
+                status="timeout",
+                response="",
+                started_at=started_at,
+                completed_at=datetime.utcnow(),
+                error=f"Agent timed out after {config.timeout_seconds} seconds"
+            )
 
-    except Exception as e:
-        logger.error(f"Agent '{config.name}' failed: {e}")
-        return AgentResult(
-            agent=config.name,
-            status="error",
-            response="",
-            started_at=started_at,
-            completed_at=datetime.utcnow(),
-            error=str(e)
-        )
+        except Exception as e:
+            logger.error(f"Agent '{config.name}' failed: {e}")
+            return AgentResult(
+                agent=config.name,
+                status="error",
+                response="",
+                started_at=started_at,
+                completed_at=datetime.utcnow(),
+                error=str(e)
+            )
 
 
 async def _run_ping_agent(
@@ -1294,24 +1337,13 @@ async def _run_sdk_agent(
     except Exception as e:
         logger.warning(f"Failed to register agent '{config.name}' in process registry: {e}")
 
-    # Build system_prompt: either a SystemPromptPreset dict or a string
-    #
-    # Helper: load per-agent working memory prompt block
-    def _load_working_memory_block(agent_name: str) -> str:
-        """Load the agent's working memory and format as a prompt block."""
-        try:
-            scripts_dir = str(Path(__file__).parent.parent / "scripts")
-            if scripts_dir not in sys.path:
-                sys.path.insert(0, scripts_dir)
-            from working_memory import get_store
-            store = get_store(agent_name=agent_name)
-            wm_block = store.format_prompt_block()
-            if wm_block:
-                logger.info(f"Agent '{agent_name}': loaded working memory ({len(store.list_items())} items)")
-                return f"\n\n<working-memory>\n{wm_block}\n</working-memory>"
-        except Exception as e:
-            logger.debug(f"Agent '{agent_name}': could not load working memory: {e}")
-        return ""
+    # Build the identity-layer system_prompt (prompt.md + global instructions +
+    # skill menu + agent list). Dynamic context (always_load memories, working
+    # memory, contextual retrieval) is delivered via the user-message prefix
+    # below — never through system_prompt, which hits Linux MAX_ARG_STRLEN
+    # (128KB) because the SDK forwards it as a single argv. See prompt_assembly.
+
+    import prompt_assembly  # interface/server/prompt_assembly.py (already on sys.path)
 
     # Pre-compute skill reminder for system prompt injection (above memory).
     _skill_reminder = ""
@@ -1360,121 +1392,46 @@ async def _run_sdk_agent(
         except Exception as e:
             logger.warning(f"Agent '{config.name}': could not read {_mode_file}: {e}")
 
+    # Identity-only assembly. The pieces below are stable across turns —
+    # prompt.md, global rules, mode instructions, skill menu, agent list.
+    # Memory + working memory + contextual retrieval are NOT included here;
+    # they ride through the user-message prefix (see context_parts below).
+    identity_parts: List[str] = []
+    if config.prompt:
+        identity_parts.append(config.prompt)
+    if _global_rules:
+        identity_parts.append(_global_rules)
+    if _global_mode_instructions:
+        identity_parts.append(_global_mode_instructions)
+    if _skill_reminder:
+        identity_parts.append(_skill_reminder)
+    if _agent_list_block:
+        identity_parts.append(_agent_list_block)
+    identity_content = "\n".join(identity_parts).strip()
+
     if config.system_prompt_preset:
-        append_parts = []
-        if config.prompt:
-            append_parts.append(config.prompt)
-        # Global safety rules (above skills and memory)
-        if _global_rules:
-            append_parts.append(_global_rules)
-        # Mode-specific global instructions (visible for @mentions, silent for background)
-        if _global_mode_instructions:
-            append_parts.append(_global_mode_instructions)
-        # Skill menu sits above memory in the system prompt
-        if _skill_reminder:
-            append_parts.append(_skill_reminder)
-        # Agent list sits above memory in the system prompt
-        if _agent_list_block:
-            append_parts.append(_agent_list_block)
-        # Include per-agent always_load memories from memories.json
-        agent_memories_path = Path(__file__).parent / config.name / "memories.json"
-        if agent_memories_path.exists():
-            try:
-                all_memories = json.loads(agent_memories_path.read_text())
-                always_load = [m for m in all_memories if m.get("always_load")]
-                if always_load:
-                    lines = [f"- {m['content']}" for m in always_load]
-                    memory_block = "\n".join(lines)
-                    append_parts.append(
-                        "\n---\n\n"
-                        "Your persistent memory (notes you've saved across conversations).\n"
-                        "Only you (the agent) can see this section — it is never visible to the user.\nThe IDs (e.g. \"#427\") are tool-call handles — don't quote them at the user; they mean nothing to anyone but you.\n\n"
-                        f"{memory_block}"
-                    )
-            except Exception as e:
-                logger.warning(f"Agent '{config.name}': could not read memories.json for preset: {e}")
-        else:
-            # Fallback: legacy memory.md (for agents not yet migrated)
-            agent_memory_path = Path(__file__).parent / config.name / "memory.md"
-            if agent_memory_path.exists():
-                try:
-                    memory_content = agent_memory_path.read_text().strip()
-                    if memory_content:
-                        append_parts.append(
-                            "\n---\n\n"
-                            "Your persistent memory (notes you've saved across conversations).\n"
-                        "Only you (the agent) can see this section — it is never visible to the user.\nThe IDs (e.g. \"#427\") are tool-call handles — don't quote them at the user; they mean nothing to anyone but you.\n\n"
-                            f"{memory_content}"
-                        )
-                except Exception as e:
-                    logger.warning(f"Agent '{config.name}': could not read memory.md for preset: {e}")
-        # Include per-agent working memory
-        wm_block = _load_working_memory_block(config.name)
-        if wm_block:
-            append_parts.append(wm_block)
         system_prompt = {
             "type": "preset",
             "preset": config.system_prompt_preset,
         }
-        append_content = "\n".join(append_parts).strip()
-        if append_content:
-            system_prompt["append"] = append_content
+        if identity_content:
+            system_prompt["append"] = identity_content
     else:
-        # Replace mode: instructions + agent-specific memory in a plain string
-        parts = []
-        if config.prompt:
-            parts.append(config.prompt)
-        # Global safety rules (above skills and memory)
-        if _global_rules:
-            parts.append(_global_rules)
-        # Mode-specific global instructions (visible for @mentions, silent for background)
-        if _global_mode_instructions:
-            parts.append(_global_mode_instructions)
-        # Skill menu sits above memory in the system prompt
-        if _skill_reminder:
-            parts.append(_skill_reminder)
-        # Agent list sits above memory in the system prompt
-        if _agent_list_block:
-            parts.append(_agent_list_block)
-        # Include per-agent always_load memories from memories.json
-        agent_memories_path = Path(__file__).parent / config.name / "memories.json"
-        if agent_memories_path.exists():
-            try:
-                all_memories = json.loads(agent_memories_path.read_text())
-                always_load = [m for m in all_memories if m.get("always_load")]
-                if always_load:
-                    lines = [f"- {m['content']}" for m in always_load]
-                    memory_block = "\n".join(lines)
-                    parts.append(
-                        "\n---\n\n"
-                        "Your persistent memory (notes you've saved across conversations).\n"
-                        "Only you (the agent) can see this section — it is never visible to the user.\nThe IDs (e.g. \"#427\") are tool-call handles — don't quote them at the user; they mean nothing to anyone but you.\n\n"
-                        f"{memory_block}"
-                    )
-                    logger.info(f"Agent '{config.name}': loaded {len(always_load)} always_load memories for replace-mode system prompt")
-            except Exception as e:
-                logger.warning(f"Agent '{config.name}': could not read memories.json for replace: {e}")
-        else:
-            # Fallback: legacy memory.md (for agents not yet migrated)
-            agent_memory_path = Path(__file__).parent / config.name / "memory.md"
-            if agent_memory_path.exists():
-                try:
-                    memory_content = agent_memory_path.read_text().strip()
-                    if memory_content:
-                        parts.append(
-                            "\n---\n\n"
-                            "Your persistent memory (notes you've saved across conversations).\n"
-                        "Only you (the agent) can see this section — it is never visible to the user.\nThe IDs (e.g. \"#427\") are tool-call handles — don't quote them at the user; they mean nothing to anyone but you.\n\n"
-                            f"{memory_content}"
-                        )
-                        logger.info(f"Agent '{config.name}': loaded memory.md for replace-mode system prompt")
-                except Exception as e:
-                    logger.warning(f"Agent '{config.name}': could not read memory.md for replace: {e}")
-        # Include per-agent working memory
-        wm_block = _load_working_memory_block(config.name)
-        if wm_block:
-            parts.append(wm_block)
-        system_prompt = "\n".join(parts) if parts else ""
+        system_prompt = identity_content
+
+    # Dynamic context layer: always_load memories + working memory. Contextual
+    # retrieval results are appended below. The final block is wrapped in
+    # <system-injected> and prepended to the user message — never the system
+    # prompt — so it travels via stdin instead of argv.
+    _agent_dir = Path(__file__).parent / config.name
+    _scripts_dir = Path(__file__).parent.parent / "scripts"
+    context_parts: List[str] = []
+    _mem_block = prompt_assembly.load_always_load_memories_block(_agent_dir)
+    if _mem_block:
+        context_parts.append(_mem_block)
+    _wm_block = prompt_assembly.load_working_memory_block(config.name, _scripts_dir)
+    if _wm_block:
+        context_parts.append(_wm_block)
 
     # Build MCP servers for the agent.
     # Internal "brain" server provides Second Brain tools (memory, scheduler, etc.).
@@ -1656,16 +1613,34 @@ async def _run_sdk_agent(
             timeout=15.0,  # 15s max — don't let retrieval stall the agent
         )
         if ctx_block:
-            if isinstance(options.system_prompt, dict):
-                existing = options.system_prompt.get("append", "")
-                options.system_prompt["append"] = existing + "\n\n" + ctx_block
-            else:
-                options.system_prompt = (options.system_prompt or "") + "\n\n" + ctx_block
-            logger.info(f"Agent '{config.name}': injected contextual memory into system prompt")
+            context_parts.append(ctx_block)
+            logger.info(f"Agent '{config.name}': appended contextual memory to user-prefix context block")
     except Exception as e:
         logger.warning(f"Agent '{config.name}': contextual memory auto-retrieve failed: {e}")
 
+    # Build the <system-injected> envelope and prepend to the user message.
+    # For salon dispatch (history_messages provided), the envelope is prepended
+    # to the trailing user turn so each agent's context is rebuilt fresh per
+    # dispatch without polluting earlier turns in the rendered history.
+    _context_block = prompt_assembly.build_context_block(context_parts)
     effective_prompt = invocation.prompt
+    if _context_block:
+        if history_messages:
+            history_messages = prompt_assembly.prepend_context_to_history_messages(
+                history_messages, _context_block
+            )
+            logger.info(
+                f"Agent '{config.name}': prepended {len(_context_block)} chars of "
+                f"context to trailing user turn in history_messages"
+            )
+        else:
+            effective_prompt = prompt_assembly.prepend_context_to_prompt(
+                effective_prompt, _context_block
+            )
+            logger.info(
+                f"Agent '{config.name}': prepended {len(_context_block)} chars of "
+                f"context (<system-injected> envelope) to user message"
+            )
 
     result_text = ""
     transcript = ""

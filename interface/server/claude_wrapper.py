@@ -290,23 +290,6 @@ class ClaudeWrapper:
             self._current_task.cancel()
 
 
-    def _load_agent_working_memory(self, agent_name: str) -> str:
-        """Load per-agent working memory and format as a prompt block."""
-        try:
-            import sys
-            scripts_dir = Path(self.cwd) / ".claude" / "scripts"
-            if str(scripts_dir) not in sys.path:
-                sys.path.insert(0, str(scripts_dir))
-            from working_memory import get_store
-            store = get_store(agent_name=agent_name)
-            wm_block = store.format_prompt_block()
-            if wm_block:
-                logger.info(f"Agent '{agent_name}': loaded working memory ({len(store.list_items())} items)")
-                return f"\n\n<working-memory>\n{wm_block}\n</working-memory>"
-        except Exception as e:
-            logger.debug(f"Agent '{agent_name}': could not load working memory: {e}")
-        return ""
-
     def _get_skill_reminder(self, agent_config) -> str:
         """Get skill menu block for an agent, or empty string."""
         agent_skills = getattr(agent_config, "skills", None)
@@ -344,123 +327,44 @@ class ClaudeWrapper:
         return ""
 
     def _build_system_prompt(self, agent_config, agent_list_block: str = "") -> str:
-        """Build system prompt for a chattable agent (prompt.md + always_load memories).
+        """Build the identity-layer system prompt for a chattable agent.
 
-        Memory is loaded from .claude/agents/{name}/memories.json (always_load items).
-        Falls back to memory.md for agents not yet migrated.
+        Dynamic context (memories, working memory, contextual retrieval) is
+        delivered via the user-message prefix in `run_chat`, NOT here — this
+        function builds only the stable identity layer that the SDK forwards
+        as an argv (bounded by Linux MAX_ARG_STRLEN).
         """
         parts = []
         if agent_config.prompt:
             parts.append(agent_config.prompt)
-        # Global visible-mode instructions (for chat agents)
         global_visible = self._load_global_instructions("global_visible.md")
         if global_visible:
             parts.append(global_visible)
-        # Skill menu sits above memory in the system prompt
         skill_reminder = self._get_skill_reminder(agent_config)
         if skill_reminder:
             parts.append(skill_reminder)
-        # Agent list sits above memory in the system prompt
         if agent_list_block:
             parts.append(agent_list_block)
-        # Per-agent always_load memories from memories.json
-        memories_path = Path(self.cwd) / ".claude" / "agents" / agent_config.name / "memories.json"
-        if memories_path.exists():
-            try:
-                all_memories = json.loads(memories_path.read_text())
-                always_load = [m for m in all_memories if m.get("always_load")]
-                if always_load:
-                    lines = [f"- {m['content']}" for m in always_load]
-                    memory_block = "\n".join(lines)
-                    parts.append(
-                        "\n---\n\n"
-                        "Your persistent memory (notes you've saved across conversations).\n"
-                            "Only you (the agent) can see this section — it is never visible to the user.\nThe IDs (e.g. \"#427\") are tool-call handles — don't quote them at the user; they mean nothing to anyone but you.\n\n"
-                        f"{memory_block}"
-                    )
-                    logger.info(f"Agent '{agent_config.name}': loaded {len(always_load)} always_load memories")
-            except Exception as e:
-                logger.warning(f"Agent '{agent_config.name}': could not read memories.json: {e}")
-        else:
-            # Fallback: legacy memory.md
-            memory_path = Path(self.cwd) / ".claude" / "agents" / agent_config.name / "memory.md"
-            if memory_path.exists():
-                try:
-                    content = memory_path.read_text().strip()
-                    if content:
-                        parts.append(
-                            "\n---\n\n"
-                            "Your persistent memory (notes you've saved across conversations).\n"
-                            "Only you (the agent) can see this section — it is never visible to the user.\nThe IDs (e.g. \"#427\") are tool-call handles — don't quote them at the user; they mean nothing to anyone but you.\n\n"
-                            f"{content}"
-                        )
-                        logger.info(f"Agent '{agent_config.name}': loaded memory.md ({memory_path.stat().st_size} bytes)")
-                except Exception as e:
-                    logger.warning(f"Agent '{agent_config.name}': could not read memory.md: {e}")
-        # Per-agent working memory
-        wm_block = self._load_agent_working_memory(agent_config.name)
-        if wm_block:
-            parts.append(wm_block)
         return "\n".join(parts)
 
     def _build_system_prompt_preset(self, agent_config, agent_list_block: str = "") -> dict:
-        """Build a SystemPromptPreset dict for agents using a system prompt preset.
+        """Build an identity-only SystemPromptPreset dict.
 
-        The agent's prompt.md content and always_load memories become the 'append' field,
-        layered on top of Claude Code's native system instructions.
+        Identical separation to `_build_system_prompt`: dynamic context layers
+        ride through the user-message prefix in `run_chat`. This builder only
+        emits the preset's `append` with the stable identity layer.
         """
         append_parts = []
         if agent_config.prompt:
             append_parts.append(agent_config.prompt)
-        # Global visible-mode instructions (for chat agents)
         global_visible = self._load_global_instructions("global_visible.md")
         if global_visible:
             append_parts.append(global_visible)
-        # Skill menu sits above memory in the system prompt
         skill_reminder = self._get_skill_reminder(agent_config)
         if skill_reminder:
             append_parts.append(skill_reminder)
-        # Agent list sits above memory in the system prompt
         if agent_list_block:
             append_parts.append(agent_list_block)
-        # Per-agent always_load memories from memories.json
-        memories_path = Path(self.cwd) / ".claude" / "agents" / agent_config.name / "memories.json"
-        if memories_path.exists():
-            try:
-                all_memories = json.loads(memories_path.read_text())
-                always_load = [m for m in all_memories if m.get("always_load")]
-                if always_load:
-                    lines = [f"- {m['content']}" for m in always_load]
-                    memory_block = "\n".join(lines)
-                    append_parts.append(
-                        "\n---\n\n"
-                        "Your persistent memory (notes you've saved across conversations).\n"
-                            "Only you (the agent) can see this section — it is never visible to the user.\nThe IDs (e.g. \"#427\") are tool-call handles — don't quote them at the user; they mean nothing to anyone but you.\n\n"
-                        f"{memory_block}"
-                    )
-                    logger.info(f"Agent '{agent_config.name}': loaded {len(always_load)} always_load memories for preset append")
-            except Exception as e:
-                logger.warning(f"Agent '{agent_config.name}': could not read memories.json: {e}")
-        else:
-            # Fallback: legacy memory.md
-            memory_path = Path(self.cwd) / ".claude" / "agents" / agent_config.name / "memory.md"
-            if memory_path.exists():
-                try:
-                    content = memory_path.read_text().strip()
-                    if content:
-                        append_parts.append(
-                            "\n---\n\n"
-                            "Your persistent memory (notes you've saved across conversations).\n"
-                            "Only you (the agent) can see this section — it is never visible to the user.\nThe IDs (e.g. \"#427\") are tool-call handles — don't quote them at the user; they mean nothing to anyone but you.\n\n"
-                            f"{content}"
-                        )
-                        logger.info(f"Agent '{agent_config.name}': loaded memory.md for preset append")
-                except Exception as e:
-                    logger.warning(f"Agent '{agent_config.name}': could not read memory.md: {e}")
-        # Per-agent working memory
-        wm_block = self._load_agent_working_memory(agent_config.name)
-        if wm_block:
-            append_parts.append(wm_block)
 
         preset = {
             "type": "preset",
@@ -470,6 +374,27 @@ class ClaudeWrapper:
         if append_content:
             preset["append"] = append_content
         return preset
+
+    def _build_context_parts(self, agent_config) -> List[str]:
+        """Collect the dynamic context layer for an agent.
+
+        Returns a list of formatted blocks (always_load memories + working
+        memory). These are wrapped into a single <system-injected> envelope
+        by `prompt_assembly.build_context_block` and prepended to the user
+        message in `run_chat`. Contextual-retrieval results are appended to
+        this list by the retrieval step.
+        """
+        import prompt_assembly
+        agent_dir = Path(self.cwd) / ".claude" / "agents" / agent_config.name
+        scripts_dir = Path(self.cwd) / ".claude" / "scripts"
+        parts: List[str] = []
+        mem_block = prompt_assembly.load_always_load_memories_block(agent_dir)
+        if mem_block:
+            parts.append(mem_block)
+        wm_block = prompt_assembly.load_working_memory_block(agent_config.name, scripts_dir)
+        if wm_block:
+            parts.append(wm_block)
+        return parts
 
     def _build_options(self, agent_config) -> ClaudeAgentOptions:
         """Build SDK options for any chattable agent (including Character)."""
@@ -633,6 +558,12 @@ class ClaudeWrapper:
         self._current_task = asyncio.current_task()
         options = self._build_options(agent_config)
 
+        # Build the dynamic context layer (always_load memories + working memory).
+        # Contextual retrieval is appended below. The final block is prepended to
+        # the user message — not to system_prompt — so it travels over stdin
+        # rather than argv (sidesteps Linux MAX_ARG_STRLEN cliff on system_prompt).
+        context_parts = self._build_context_parts(agent_config)
+
         # Auto-retrieve contextual memories relevant to the user's message
         try:
             scripts_dir = str(Path(self.cwd) / ".claude" / "scripts")
@@ -684,12 +615,8 @@ class ClaudeWrapper:
                 timeout=15.0,  # 15s max — don't let retrieval stall the agent
             )
             if ctx_block:
-                if isinstance(options.system_prompt, dict):
-                    existing = options.system_prompt.get("append", "")
-                    options.system_prompt["append"] = existing + "\n\n" + ctx_block
-                else:
-                    options.system_prompt = (options.system_prompt or "") + "\n\n" + ctx_block
-                logger.info(f"Agent '{agent_config.name}': injected contextual memory into system prompt")
+                context_parts.append(ctx_block)
+                logger.info(f"Agent '{agent_config.name}': appended contextual memory to user-prefix context block")
         except asyncio.CancelledError:
             # User pressed stop during rewriter / retrieval — bail out cleanly
             # before we create the SDK client and start a real agent turn.
@@ -707,6 +634,18 @@ class ClaudeWrapper:
             logger.info(f"Agent '{agent_config.name}': interrupt flag set — aborting before SDK init")
             self._current_task = None
             return
+
+        # Wrap the dynamic context in a <system-injected> envelope and prepend
+        # to the user message. This is the stdin path — no MAX_ARG_STRLEN limit,
+        # even when always_load memories grow into the hundreds-of-KB range.
+        import prompt_assembly
+        context_block = prompt_assembly.build_context_block(context_parts)
+        if context_block:
+            prompt = prompt_assembly.prepend_context_to_prompt(prompt, context_block)
+            logger.info(
+                f"Agent '{agent_config.name}': prepended {len(context_block)} chars of "
+                f"context (<system-injected> envelope) to user message"
+            )
 
         logger.info(f"Running agent chat '{agent_config.name}': model={agent_config.model}, streaming_input={use_streaming_input}")
 

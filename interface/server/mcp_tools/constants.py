@@ -210,6 +210,13 @@ SALON_TOOLS = [
     "post_to_salon",
 ]
 
+# Safe-deploy: code-merging-to-main primitive. Patch-only caller; consent-
+# prompt gated. See interface/server/mcp_tools/safe_deploy/ and
+# codebase/projects/active/apply-patch-mcp-tool.md.
+SAFE_DEPLOY_TOOLS = [
+    "apply_patch_deploy",
+]
+
 
 # =============================================================================
 # Category Mapping - Maps category names to tool lists
@@ -240,6 +247,7 @@ TOOL_CATEGORIES = {
     "presence": PRESENCE_TOOLS,
     "mood": MOOD_TOOLS,
     "salons": SALON_TOOLS,
+    "safe_deploy": SAFE_DEPLOY_TOOLS,
 }
 
 
@@ -267,7 +275,8 @@ ALL_TOOL_NAMES = (
     MESSAGING_TOOLS +
     PRESENCE_TOOLS +
     MOOD_TOOLS +
-    SALON_TOOLS
+    SALON_TOOLS +
+    SAFE_DEPLOY_TOOLS
 )
 
 # Set for O(1) lookup

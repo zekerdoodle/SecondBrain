@@ -10,9 +10,11 @@ from .models import WorkingMemoryItem
 
 _HEADER = (
     "Your active scratchpad. These are notes you have set for yourself during\n"
-    "recent conversations. They auto-expire after a set number of exchanges\n"
-    "unless pinned. Use them to track tasks, reminders, and context you need\n"
-    "to carry across turns. Review and prune regularly.\n"
+    "recent conversations. They auto-expire on whichever TTL fires first —\n"
+    "either an exchange-count countdown (shown as `age N/N`) or a wall-clock\n"
+    "expiration (shown as `expires T-Nh`). Pinned items ignore both. Use them\n"
+    "to track tasks, reminders, and context you need to carry across turns.\n"
+    "Review and prune regularly.\n"
     "Only you (the agent) can see this section — it is never visible to the user."
 )
 _MAX_PREVIEW_CHARS = 160
@@ -40,12 +42,12 @@ def format_time_until(seconds: float) -> str:
 
 
 def parse_duration(duration_str: str) -> int:
-    """Parse duration string like '2h', '30m', '1d' to seconds."""
+    """Parse duration string like '2h', '30m', '1d', '1w' to seconds."""
     if not duration_str:
         return 0
 
     duration_str = duration_str.strip().lower()
-    match = re.match(r'^(\d+)\s*(m|h|d)$', duration_str)
+    match = re.match(r'^(\d+)\s*(m|h|d|w)$', duration_str)
     if not match:
         return 0
 
@@ -58,6 +60,8 @@ def parse_duration(duration_str: str) -> int:
         return value * 3600
     elif unit == 'd':
         return value * 86400
+    elif unit == 'w':
+        return value * 604800
 
     return 0
 
@@ -102,7 +106,8 @@ def _format_item_header(item: WorkingMemoryItem, index: int) -> str:
     tag = item.tag or "note"
     parts.append(f"[{tag}]")
 
-    # Deadline or TTL info
+    # Deadline (reminder semantics) takes display priority; otherwise show
+    # time-based expiration countdown if set; otherwise fall back to TTL age.
     if item.deadline_at:
         time_until = item.time_until_deadline
         if time_until is not None:
@@ -117,6 +122,10 @@ def _format_item_header(item: WorkingMemoryItem, index: int) -> str:
 
             if item.deadline_type == "hard":
                 parts.append("[hard]")
+    elif item.expires_at:
+        time_until = item.time_until_expires
+        if time_until is not None:
+            parts.append(f"expires {format_time_until(time_until)}")
     else:
         # Show TTL for non-deadline items
         parts.append(f"(age {item.age_exchanges}/{item.ttl_initial})")

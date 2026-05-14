@@ -142,8 +142,33 @@ class WorkingMemoryStore:
     def version(self) -> str:
         return str(self._version)
 
+    def _sweep_time_expired(self) -> bool:
+        """Purge items whose expires_at has passed (pinned items immune).
+
+        Independent from TTL countdown — runs whenever the store is read or
+        written, since wall-clock time advances between exchanges.
+        """
+        if not self._items:
+            return False
+        keep: List[WorkingMemoryItem] = []
+        removed: List[WorkingMemoryItem] = []
+        for item in self._items:
+            if not item.pinned and item.is_time_expired:
+                removed.append(item)
+            else:
+                keep.append(item)
+        if not removed:
+            return False
+        self._items = keep
+        for item in removed:
+            logger.info(f"WM: Expired (time) item {item.item_id[:8]}")
+        self._next_version()
+        self._save()
+        return True
+
     def list_items(self) -> Sequence[WorkingMemoryItem]:
         """Get sorted list of all items."""
+        self._sweep_time_expired()
         self._sort_items()
         return tuple(self._items)
 
@@ -157,11 +182,18 @@ class WorkingMemoryStore:
         deadline_at: Optional[datetime] = None,
         remind_before: Optional[str] = None,
         deadline_type: str = "soft",
+        expires_at: Optional[datetime] = None,
     ) -> WorkingMemoryItem:
         """Add a new working memory item."""
         normalized = (content or "").strip()
         if not normalized:
             raise WorkingMemoryError("Cannot add empty content.")
+
+        # Reject expiration already in the past — caller likely made a mistake.
+        if expires_at is not None and expires_at <= datetime.now(timezone.utc):
+            raise WorkingMemoryError("expires_at is in the past.")
+
+        self._sweep_time_expired()
 
         # Check pinned limit
         if pinned:
@@ -186,6 +218,7 @@ class WorkingMemoryStore:
             deadline_at=deadline_at,
             remind_before=remind_before,
             deadline_type=deadline_type if deadline_type in ("soft", "hard") else "soft",
+            expires_at=expires_at,
         )
 
         self._items.insert(0, item)
@@ -217,8 +250,12 @@ class WorkingMemoryStore:
         deadline_at: Optional[datetime] = None,
         remind_before: Optional[str] = None,
         deadline_type: Optional[str] = None,
+        expires_at: Optional[datetime] = None,
+        clear_expires_at: bool = False,
     ) -> WorkingMemoryItem:
         """Update an existing item."""
+        if expires_at is not None and expires_at <= datetime.now(timezone.utc):
+            raise WorkingMemoryError("expires_at is in the past.")
         _, item = self._find_by_index(index)
         changed = False
 
@@ -290,6 +327,17 @@ class WorkingMemoryStore:
                 item.deadline_type = validated_type
                 changed = True
 
+        # Time-based expiration. clear_expires_at takes precedence: caller
+        # passing both an unset and a new value is nonsensical, so prefer clear.
+        if clear_expires_at:
+            if item.expires_at is not None:
+                item.expires_at = None
+                changed = True
+        elif expires_at is not None:
+            if item.expires_at != expires_at:
+                item.expires_at = expires_at
+                changed = True
+
         if changed:
             item.touch()
             self._next_version()
@@ -304,13 +352,16 @@ class WorkingMemoryStore:
 
         Rules:
         - Pinned items never expire
-        - Items with active deadlines ignore TTL until deadline passes
-        - After deadline passes, TTL countdown begins
+        - Items with active reminder-deadlines ignore TTL countdown until deadline passes
+        - After reminder-deadline passes, TTL countdown begins
+        - Time-based expiration (expires_at) is independent: whichever fires first wins
         """
-        if not self._items:
-            return False
+        # First, sweep any items whose wall-clock expiration has passed.
+        changed = self._sweep_time_expired()
 
-        changed = False
+        if not self._items:
+            return changed
+
         to_remove: List[WorkingMemoryItem] = []
 
         for item in self._items:

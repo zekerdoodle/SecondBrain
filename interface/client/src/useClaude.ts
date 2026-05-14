@@ -1255,6 +1255,9 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
             } catch (e) {
               console.error('Failed to persist theme update:', e);
             }
+            // Tell SettingsModal to re-read state (so an agent-created custom
+            // theme shows up in the editor list without a refresh).
+            window.dispatchEvent(new CustomEvent('theme-preferences-synced'));
           }
           break;
         }

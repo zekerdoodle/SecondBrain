@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/user-input
 title: Handle approvals and user input
-last_fetched: 2026-05-09T09:19:04.926849+00:00
+last_fetched: 2026-05-13T13:05:16.130962+00:00
 ---
 
 [Claude Code Docs home page![light logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/light.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=78fd01ff4f4340295a4f66e2ea54903c)![dark logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/dark.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=1298a0c3b3a1da603b190d0de0e31712)](/docs/en/overview)
@@ -22,7 +22,7 @@ Input and output
 
 Handle approvals and user input
 
-[Getting started](/docs/en/overview)[Build with Claude Code](/docs/en/sub-agents)[Administration](/docs/en/admin-setup)[Configuration](/docs/en/settings)[Reference](/docs/en/cli-reference)[Agent SDK](/docs/en/agent-sdk/overview)[What's New](/docs/en/whats-new)[Resources](/docs/en/legal-and-compliance)
+[Getting started](/docs/en/overview)[Build with Claude Code](/docs/en/agents)[Administration](/docs/en/admin-setup)[Configuration](/docs/en/settings)[Reference](/docs/en/cli-reference)[Agent SDK](/docs/en/agent-sdk/overview)[What's New](/docs/en/whats-new)[Resources](/docs/en/legal-and-compliance)
 
 ##### Agent SDK
 
@@ -88,7 +88,7 @@ On this page
 While working on a task, Claude sometimes needs to check in with users. It might need permission before deleting files, or need to ask which database to use for a new project. Your application needs to surface these requests to users so Claude can continue with their input.
 Claude requests user input in two situations: when it needs **permission to use a tool** (like deleting files or running commands), and when it has **clarifying questions** (via the `AskUserQuestion` tool). Both trigger your `canUseTool` callback, which pauses execution until you return a response. This is different from normal conversation turns where Claude finishes and waits for your next message.
 For clarifying questions, Claude generates the questions and options. Your role is to present them to users and return their selections. You can’t add your own questions to this flow; if you need to ask users something yourself, do that separately in your application logic.
-The callback can stay pending indefinitely. Execution remains paused until your callback returns, and the SDK only cancels the wait when the query itself is cancelled. If a user might take longer to respond than your process can reasonably stay running, the TypeScript SDK supports the [`defer` hook decision](/docs/en/hooks#defer-a-tool-call-for-later), which lets the process exit and resume later from the persisted session; this option is not available in the Python SDK.
+The callback can stay pending indefinitely. Execution remains paused until your callback returns, and the SDK only cancels the wait when the query itself is cancelled. If a user might take longer to respond than your process can reasonably stay running, return the [`defer` hook decision](/docs/en/hooks#defer-a-tool-call-for-later), which lets the process exit and resume later from the persisted session.
 This guide shows you how to detect each type of request and respond appropriately.
 
 ## [​](#detect-when-claude-needs-input) Detect when Claude needs input
@@ -235,12 +235,14 @@ Beyond allowing or denying, you can modify the tool’s input or provide context
 
 - **Approve**: let the tool execute as Claude requested
 - **Approve with changes**: modify the input before execution (e.g., sanitize paths, add constraints)
+- **Approve and remember**: echo a suggested permission rule back so matching calls skip the prompt next time
 - **Reject**: block the tool and tell Claude why
 - **Suggest alternative**: block but guide Claude toward what the user wants instead
 - **Redirect entirely**: use [streaming input](/docs/en/agent-sdk/streaming-vs-single-mode) to send Claude a completely new instruction
 
 - Approve
 - Approve with changes
+- Approve and remember
 - Reject
 - Suggest alternative
 - Redirect entirely
@@ -277,6 +279,28 @@ async def can_use_tool(tool_name, input_data, context):
  )
  return PermissionResultAllow(updated_input=sandboxed_input)
  return PermissionResultAllow(updated_input=input_data)
+```
+
+The user approves and doesn’t want to be asked again for this kind of call. The third callback argument carries `suggestions`, an array of ready-made [`PermissionUpdate`](/docs/en/agent-sdk/typescript#permissionupdate) entries. Echo one back in `updatedPermissions` to apply it. A suggestion with the `localSettings` destination writes the rule to `.claude/settings.local.json` so future sessions skip the prompt for matching calls.The Python example requires `claude-agent-sdk` 0.1.80 or later.
+
+Python
+
+TypeScript
+
+```shiki
+async def can_use_tool(tool_name, input_data, context):
+ choice = await ask_user(f"Allow {tool_name}?", ["once", "always", "no"])
+
+ if choice == "always":
+ persist = [
+ s for s in context.suggestions if s.destination == "localSettings"
+ ]
+ return PermissionResultAllow(
+ updated_input=input_data, updated_permissions=persist
+ )
+ if choice == "once":
+ return PermissionResultAllow(updated_input=input_data)
+ return PermissionResultDeny(message="User declined")
 ```
 
 The user doesn’t want this action to happen. Block the tool and provide a message explaining why. Claude sees this message and may try a different approach.

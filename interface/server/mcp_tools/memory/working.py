@@ -31,30 +31,92 @@ def _get_agent_store(args: Dict[str, Any]):
     return get_store(agent_name=agent_name), agent_name
 
 
+def _resolve_time_expiration(expires_in: Any, expires_at: Any):
+    """Resolve `expires_in` / `expires_at` to a single absolute datetime.
+
+    Returns a tuple (expires_at_dt, error_message). Exactly one of the two
+    is non-None. If neither was passed, returns (None, None). If both were
+    passed, returns (None, error). If parsing fails, returns (None, error).
+    Naive ISO timestamps are interpreted as America/Chicago local time.
+
+    `expires_in` accepts:
+    - Duration shorthand: '30m', '2h', '1d', '1w' (minutes/hours/days/weeks).
+    - Aliases: 'eod' or 'today' → today 23:59 America/Chicago. If that
+      moment has already passed (e.g. caller invoked at 23:59:30), the
+      resulting timestamp will fall through to the past-timestamp guard
+      and be rejected.
+    """
+    from datetime import datetime, timezone
+    import zoneinfo
+
+    has_in = isinstance(expires_in, str) and expires_in.strip()
+    has_at = isinstance(expires_at, str) and expires_at.strip()
+
+    if has_in and has_at:
+        return None, "Pass either expires_in or expires_at, not both."
+
+    if has_in:
+        token = expires_in.strip().lower()
+        if token in ("eod", "today"):
+            chicago = zoneinfo.ZoneInfo("America/Chicago")
+            now_local = datetime.now(chicago)
+            eod = now_local.replace(hour=23, minute=59, second=0, microsecond=0)
+            return eod, None
+
+        sys.path.insert(0, SCRIPTS_DIR)
+        from working_memory import parse_duration
+        seconds = parse_duration(token)
+        if seconds <= 0:
+            return None, (
+                f"Invalid expires_in '{expires_in}'. "
+                "Accepted: '30m', '2h', '1d', '1w' (minutes/hours/days/weeks), "
+                "or aliases 'eod'/'today' (today 23:59 America/Chicago)."
+            )
+        from datetime import timedelta
+        return datetime.now(timezone.utc) + timedelta(seconds=seconds), None
+
+    if has_at:
+        try:
+            parsed = datetime.fromisoformat(expires_at.strip())
+        except Exception as e:
+            return None, f"Invalid expires_at format: {e}"
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=zoneinfo.ZoneInfo("America/Chicago"))
+        return parsed, None
+
+    return None, None
+
+
 @register_tool("memory")
 @tool(
     name="working_memory_add",
-    description="""Add a note to working memory. Working memory items are ephemeral notes that:
-- Persist across exchanges but auto-expire based on TTL (time-to-live)
-- Can be pinned to prevent expiration
-- Support deadlines with countdown display
+    description="""Add a note to working memory. Working memory items persist across exchanges and across invocations, and:
+- Auto-expire by TTL — either exchange-count (`ttl`) or wall-clock (`expires_in` / `expires_at`)
+- Support deadlines with countdown display (reminder semantics, not expiration)
 - Are injected into every prompt for context
 
 Use this for:
+- State tracking across discrete invocations — ponder-points, in-flight threads of thought, "still thinking about X" notes filed during silent or scheduled runs so the next wake picks up from a real artifact instead of starting cold. Continuity as infrastructure.
 - Observations you want to track temporarily
 - Reminders about ongoing context
 - Things to check back on later
 
-TTL is measured in "exchanges" (user message + assistant response = 1 exchange).
-Default TTL is 5 exchanges. Max is 10. Pinned items never expire.""",
+Pick the TTL unit that fits the use case. Both kinds can be set on the same item — whichever fires first kills it. Pinned items ignore both.
+- `ttl` — exchange count. Default 5, max 10. Right unit when each turn matters.
+- `expires_in` — relative duration: '30m', '2h', '1d', '1w' (minutes/hours/days/weeks), or the aliases 'eod'/'today' (today 23:59 America/Chicago). Right unit for "hold this for the rest of the day."
+- `expires_at` — absolute ISO timestamp, e.g. '2026-05-12T09:00'. Right unit for "until tomorrow morning when the user pings me." Naive timestamps are interpreted as America/Chicago local time.
+
+Passing both `expires_in` and `expires_at` in the same call is an error.""",
     input_schema={
         "type": "object",
         "properties": {
             "content": {"type": "string", "description": "The note content"},
             "tag": {"type": "string", "description": "Optional category tag (e.g., 'reminder', 'observation', 'todo')"},
             "ttl": {"type": "integer", "description": "Time-to-live in exchanges (default: 5, max: 10)"},
+            "expires_in": {"type": "string", "description": "Relative time-to-live: '30m', '2h', '1d', '1w' (minutes/hours/days/weeks), or 'eod'/'today' (today 23:59 America/Chicago)."},
+            "expires_at": {"type": "string", "description": "Absolute expiration as ISO timestamp (e.g. '2026-05-12T09:00'). Naive timestamps assumed America/Chicago."},
             "pinned": {"type": "boolean", "description": "If true, item never auto-expires (max 3 pinned items)"},
-            "deadline": {"type": "string", "description": "Optional deadline as ISO timestamp (e.g., '2026-01-25T14:00:00')"},
+            "deadline": {"type": "string", "description": "Optional reminder deadline as ISO timestamp (e.g., '2026-01-25T14:00:00'). Reminder only, does not expire the item."},
             "remind_before": {"type": "string", "description": "When to show 'due soon' warning (e.g., '2h', '24h')"}
         },
         "required": ["content"]
@@ -78,7 +140,7 @@ async def working_memory_add(args: Dict[str, Any]) -> Dict[str, Any]:
         deadline_str = args.get("deadline")
         remind_before = args.get("remind_before")
 
-        # Parse deadline if provided
+        # Parse reminder deadline if provided
         deadline_at = None
         if deadline_str:
             try:
@@ -90,6 +152,11 @@ async def working_memory_add(args: Dict[str, Any]) -> Dict[str, Any]:
             except Exception as e:
                 return {"content": [{"type": "text", "text": f"Invalid deadline format: {e}"}], "is_error": True}
 
+        # Parse time-based expiration (expires_in or expires_at)
+        expires_at, err = _resolve_time_expiration(args.get("expires_in"), args.get("expires_at"))
+        if err:
+            return {"content": [{"type": "text", "text": err}], "is_error": True}
+
         item = store.add_item(
             content=content,
             tag=tag,
@@ -97,9 +164,16 @@ async def working_memory_add(args: Dict[str, Any]) -> Dict[str, Any]:
             pinned=pinned,
             deadline_at=deadline_at,
             remind_before=remind_before,
+            expires_at=expires_at,
         )
 
-        status = "pinned" if item.pinned else f"TTL={item.ttl_initial}"
+        if item.pinned:
+            status = "pinned"
+        else:
+            bits = [f"TTL={item.ttl_initial}"]
+            if item.expires_at:
+                bits.append(f"expires_at={item.expires_at.isoformat()}")
+            status = ", ".join(bits)
         return {"content": [{"type": "text", "text": f"Added to working memory [{status}]: {content[:80]}..."}]}
 
     except Exception as e:
@@ -111,7 +185,9 @@ async def working_memory_add(args: Dict[str, Any]) -> Dict[str, Any]:
     name="working_memory_update",
     description="""Update an existing working memory item by its display index (1-based).
 
-You can update content, TTL, tag, pinned status, or deadline.""",
+Use this to evolve a state-tracking note across invocations (refine a ponder-point, append progress to an in-flight thread of thought), or edit any other working memory item.
+
+You can update content, TTL (exchange-count or time-based), tag, pinned status, or deadline. For time-based TTL: pass `expires_in` ('30m', '2h', '1d', '1w' or 'eod'/'today') or `expires_at` (ISO timestamp). Passing both is an error; whichever fires first wins against exchange-count `ttl`.""",
     input_schema={
         "type": "object",
         "properties": {
@@ -119,9 +195,11 @@ You can update content, TTL, tag, pinned status, or deadline.""",
             "content": {"type": "string", "description": "New content (replaces existing)"},
             "append": {"type": "string", "description": "Text to append to existing content"},
             "tag": {"type": "string", "description": "New tag (empty string to clear)"},
-            "ttl": {"type": "integer", "description": "Reset TTL to this value"},
+            "ttl": {"type": "integer", "description": "Reset exchange-count TTL to this value"},
+            "expires_in": {"type": "string", "description": "Relative time-based TTL: '30m', '2h', '1d', '1w' (minutes/hours/days/weeks), or 'eod'/'today' (today 23:59 America/Chicago)."},
+            "expires_at": {"type": "string", "description": "Absolute expiration ISO timestamp. Naive timestamps assumed America/Chicago."},
             "pinned": {"type": "boolean", "description": "Set pinned status"},
-            "deadline": {"type": "string", "description": "New deadline as ISO timestamp"},
+            "deadline": {"type": "string", "description": "New reminder deadline as ISO timestamp"},
             "remind_before": {"type": "string", "description": "When to show 'due soon' warning"}
         },
         "required": ["index"]
@@ -139,7 +217,7 @@ async def working_memory_update(args: Dict[str, Any]) -> Dict[str, Any]:
         if not index or index < 1:
             return {"content": [{"type": "text", "text": "Valid index (1+) is required"}], "is_error": True}
 
-        # Parse deadline if provided
+        # Parse reminder deadline if provided
         deadline_at = None
         deadline_str = args.get("deadline")
         if deadline_str:
@@ -152,6 +230,11 @@ async def working_memory_update(args: Dict[str, Any]) -> Dict[str, Any]:
             except Exception as e:
                 return {"content": [{"type": "text", "text": f"Invalid deadline format: {e}"}], "is_error": True}
 
+        # Parse time-based expiration if provided
+        expires_at, err = _resolve_time_expiration(args.get("expires_in"), args.get("expires_at"))
+        if err:
+            return {"content": [{"type": "text", "text": err}], "is_error": True}
+
         item = store.update_item(
             index=index,
             new_content=args.get("content"),
@@ -161,6 +244,7 @@ async def working_memory_update(args: Dict[str, Any]) -> Dict[str, Any]:
             pinned=args.get("pinned"),
             deadline_at=deadline_at,
             remind_before=args.get("remind_before"),
+            expires_at=expires_at,
         )
 
         return {"content": [{"type": "text", "text": f"Updated item {index}: {item.content[:80]}..."}]}
@@ -203,7 +287,7 @@ async def working_memory_remove(args: Dict[str, Any]) -> Dict[str, Any]:
 @register_tool("memory")
 @tool(
     name="working_memory_list",
-    description="List all current working memory items with their status.",
+    description="List all current working memory items with their status, including any state-tracking notes carried across invocations.",
     input_schema={"type": "object", "properties": {}}
 )
 async def working_memory_list(args: Dict[str, Any]) -> Dict[str, Any]:

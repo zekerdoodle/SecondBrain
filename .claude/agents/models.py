@@ -117,6 +117,12 @@ class AgentInvocation:
     project: Optional[Union[str, List[str]]] = None
     is_visible: bool = False  # True for @mentions / chat-facing agents
     salon_id: Optional[str] = None  # Set when this invocation is a salon dispatch
+    # Fields below feed the running_agents registry (see interface/server/running_agents.py).
+    conversation_id: Optional[str] = None  # Resolved thread id (for hyperlink in the registry view)
+    is_join: bool = False  # True iff the caller passed an existing conversation_id (vs. a fresh thread)
+    caller_agent: Optional[str] = None  # Who invoked this agent (other agent name, or "user")
+    scheduled_task_id: Optional[str] = None  # Set when launched via a scheduled-task firing
+    is_background_processing: bool = False  # Set when launched by the bg-processing idle hook
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""

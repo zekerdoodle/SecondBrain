@@ -39,6 +39,11 @@ class WorkingMemoryItem:
     remind_before: Optional[str] = None  # Duration like "2h", "24h"
     deadline_type: str = "soft"  # "soft" or "hard"
 
+    # Time-based expiration (independent from TTL exchange-count).
+    # When set, the item is purged once `datetime.now() > expires_at`,
+    # regardless of TTL. Pinned items still trump this.
+    expires_at: Optional[datetime] = None
+
     def touch(self) -> None:
         """Refresh the updated_at timestamp."""
         self.updated_at = datetime.now(timezone.utc)
@@ -58,6 +63,7 @@ class WorkingMemoryItem:
             "deadline_at": _serialize_dt(self.deadline_at),
             "remind_before": self.remind_before,
             "deadline_type": self.deadline_type,
+            "expires_at": _serialize_dt(self.expires_at),
         }
 
     @classmethod
@@ -96,6 +102,7 @@ class WorkingMemoryItem:
             deadline_at=_deserialize_dt(data.get("deadline_at")),
             remind_before=data.get("remind_before"),
             deadline_type=deadline_type,
+            expires_at=_deserialize_dt(data.get("expires_at")),
         )
 
     @property
@@ -124,6 +131,21 @@ class WorkingMemoryItem:
         if not self.deadline_at:
             return None
         delta = self.deadline_at - datetime.now(timezone.utc)
+        return delta.total_seconds()
+
+    @property
+    def is_time_expired(self) -> bool:
+        """True if expires_at is set and now is past it."""
+        if not self.expires_at:
+            return False
+        return datetime.now(timezone.utc) > self.expires_at
+
+    @property
+    def time_until_expires(self) -> Optional[float]:
+        """Seconds until time-based expiration (negative if past)."""
+        if not self.expires_at:
+            return None
+        delta = self.expires_at - datetime.now(timezone.utc)
         return delta.total_seconds()
 
 

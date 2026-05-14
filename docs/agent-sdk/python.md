@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/python
 title: Agent SDK reference - Python
-last_fetched: 2026-05-09T09:10:27.422827+00:00
+last_fetched: 2026-05-13T13:03:45.229322+00:00
 ---
 
 [Claude Code Docs home page![light logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/light.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=78fd01ff4f4340295a4f66e2ea54903c)![dark logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/dark.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=1298a0c3b3a1da603b190d0de0e31712)](/docs/en/overview)
@@ -22,7 +22,7 @@ SDK references
 
 Agent SDK reference - Python
 
-[Getting started](/docs/en/overview)[Build with Claude Code](/docs/en/sub-agents)[Administration](/docs/en/admin-setup)[Configuration](/docs/en/settings)[Reference](/docs/en/cli-reference)[Agent SDK](/docs/en/agent-sdk/overview)[What's New](/docs/en/whats-new)[Resources](/docs/en/legal-and-compliance)
+[Getting started](/docs/en/overview)[Build with Claude Code](/docs/en/agents)[Administration](/docs/en/admin-setup)[Configuration](/docs/en/settings)[Reference](/docs/en/cli-reference)[Agent SDK](/docs/en/agent-sdk/overview)[What's New](/docs/en/whats-new)[Resources](/docs/en/legal-and-compliance)
 
 ##### Agent SDK
 
@@ -949,7 +949,7 @@ class SystemPromptPreset(TypedDict):
 | `type` | Yes | Must be `"preset"` to use a preset system prompt |
 | `preset` | Yes | Must be `"claude_code"` to use Claude Code’s system prompt |
 | `append` | No | Additional instructions to append to the preset system prompt |
-| `exclude_dynamic_sections` | No | Move per-session context such as working directory, git status, and memory paths from the system prompt into the first user message. Improves prompt-cache reuse across users and machines. See [Modify system prompts](/docs/en/agent-sdk/modifying-system-prompts#improve-prompt-caching-across-users-and-machines) |
+| `exclude_dynamic_sections` | No | Move per-session context such as working directory, the git-repo flag, and auto-memory paths from the system prompt into the first user message. Improves prompt-cache reuse across users and machines. See [Modify system prompts](/docs/en/agent-sdk/modifying-system-prompts#improve-prompt-caching-across-users-and-machines) |
 
 ### [​](#settingsource) `SettingSource`
 
@@ -2623,10 +2623,12 @@ Runs a background script and delivers each stdout line to Claude as an event so 
 
 ```shiki
 {
- "response": str, # AI model's response to the prompt
+ "bytes": int, # Size of the fetched content in bytes
+ "code": int, # HTTP response code
+ "codeText": str, # HTTP response code text
+ "result": str, # Processed result from applying the prompt to the content
+ "durationMs": int, # Time to fetch and process the content, in milliseconds
  "url": str, # URL that was fetched
- "final_url": str | None, # Final URL after redirects
- "status_code": int | None, # HTTP status code
 }
 ```
 
@@ -2647,15 +2649,18 @@ Runs a background script and delivers each stdout line to Claude as an event so 
 
 ```shiki
 {
- "results": [{"title": str, "url": str, "snippet": str, "metadata": dict | None}],
- "total_results": int,
- "query": str,
+ "query": str, # The search query
+ "results": list[str | {"tool_use_id": str, "content": list[{"title": str, "url": str}]}],
+ "durationSeconds": float, # Search duration in seconds
 }
 ```
 
 ### [​](#todowrite) TodoWrite
 
 **Tool name:** `TodoWrite`
+
+`TodoWrite` is deprecated and will be removed in a future release. Use `TaskCreate`, `TaskGet`, `TaskUpdate`, and `TaskList` instead. Set `CLAUDE_CODE_ENABLE_TASKS=1` to opt in. See [Migrate to Task tools](/docs/en/agent-sdk/todo-tracking#migrate-to-task-tools) for how monitoring code changes.
+
 **Input:**
 
 ```shiki
@@ -2676,6 +2681,110 @@ Runs a background script and delivers each stdout line to Claude as an event so 
 {
  "message": str, # Success message
  "stats": {"total": int, "pending": int, "in_progress": int, "completed": int},
+}
+```
+
+### [​](#taskcreate) TaskCreate
+
+**Tool name:** `TaskCreate`
+**Input:**
+
+```shiki
+{
+ "subject": str, # Short task title
+ "description": str, # Detailed task body
+ "activeForm": str | None, # Present-tense label shown while in progress
+ "metadata": dict | None, # Arbitrary caller metadata
+}
+```
+
+**Output:**
+
+```shiki
+{
+ "task": {"id": str, "subject": str}, # Created task with assigned ID
+}
+```
+
+### [​](#taskupdate) TaskUpdate
+
+**Tool name:** `TaskUpdate`
+**Input:**
+
+```shiki
+{
+ "taskId": str, # ID of the task to patch
+ "status": Literal["pending", "in_progress", "completed", "deleted"] | None,
+ "subject": str | None,
+ "description": str | None,
+ "activeForm": str | None,
+ "addBlocks": list[str] | None, # Task IDs this task now blocks
+ "addBlockedBy": list[str] | None, # Task IDs that now block this task
+ "owner": str | None,
+ "metadata": dict | None,
+}
+```
+
+**Output:**
+
+```shiki
+{
+ "success": bool,
+ "taskId": str,
+ "updatedFields": list[str], # Names of fields that changed
+ "error": str | None,
+ "statusChange": {"from": str, "to": str} | None,
+}
+```
+
+### [​](#taskget) TaskGet
+
+**Tool name:** `TaskGet`
+**Input:**
+
+```shiki
+{
+ "taskId": str, # ID of the task to read
+}
+```
+
+**Output:**
+
+```shiki
+{
+ "task": {
+ "id": str,
+ "subject": str,
+ "description": str,
+ "status": Literal["pending", "in_progress", "completed"],
+ "blocks": list[str],
+ "blockedBy": list[str],
+ } | None, # None when the ID is not found
+}
+```
+
+### [​](#tasklist) TaskList
+
+**Tool name:** `TaskList`
+**Input:**
+
+```shiki
+{}
+```
+
+**Output:**
+
+```shiki
+{
+ "tasks": [
+ {
+ "id": str,
+ "subject": str,
+ "status": Literal["pending", "in_progress", "completed"],
+ "owner": str | None,
+ "blockedBy": list[str],
+ }
+ ],
 }
 ```
 

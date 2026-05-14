@@ -12,6 +12,12 @@ PORT=8000
 # Prevent nested-session detection when restarted from inside Claude Code
 unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT CLAUDE_AGENT_SDK_VERSION
 
+# Strip apply_patch test-only env vars so they cannot survive a restart.
+# These were introduced during Phase 3 testing (force-fail smoke tests) and
+# leaked into the server process's ancestry, causing every subsequent deploy
+# to roll back. Unset defensively — they should NEVER be live in normal ops.
+unset APPLY_PATCH_FORCE_SMOKE_FAIL APPLY_PATCH_FORCE_SMOKE_FAIL_ALWAYS
+
 # Disable tool search/deferral — load all tools upfront
 export ENABLE_TOOL_SEARCH=false
 
@@ -32,7 +38,17 @@ if [ ! -d "venv" ]; then
 fi
 
 source venv/bin/activate
-pip install -q fastapi uvicorn websockets claude-agent-sdk 2>/dev/null
+# Honor the canonical dependency list at the repo root. Fast when everything
+# is already installed (pip just verifies); slow only when something new
+# needs to land. Wired up by apply_patch Phase 3 (replaced the hardcoded
+# 4-package list that ignored requirements.txt).
+REQS="$SCRIPT_DIR/../requirements.txt"
+if [ -f "$REQS" ]; then
+    pip install -q -r "$REQS" 2>/dev/null
+else
+    echo "WARNING: $REQS missing; falling back to hardcoded core packages"
+    pip install -q fastapi uvicorn websockets claude-agent-sdk 2>/dev/null
+fi
 
 echo "Starting server on port $PORT..."
 

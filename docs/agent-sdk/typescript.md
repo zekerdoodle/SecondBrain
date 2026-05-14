@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/typescript
 title: Agent SDK reference - TypeScript
-last_fetched: 2026-05-09T09:17:51.016801+00:00
+last_fetched: 2026-05-13T13:05:04.659829+00:00
 ---
 
 [Claude Code Docs home page![light logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/light.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=78fd01ff4f4340295a4f66e2ea54903c)![dark logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/dark.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=1298a0c3b3a1da603b190d0de0e31712)](/docs/en/overview)
@@ -22,7 +22,7 @@ SDK references
 
 Agent SDK reference - TypeScript
 
-[Getting started](/docs/en/overview)[Build with Claude Code](/docs/en/sub-agents)[Administration](/docs/en/admin-setup)[Configuration](/docs/en/settings)[Reference](/docs/en/cli-reference)[Agent SDK](/docs/en/agent-sdk/overview)[What's New](/docs/en/whats-new)[Resources](/docs/en/legal-and-compliance)
+[Getting started](/docs/en/overview)[Build with Claude Code](/docs/en/agents)[Administration](/docs/en/admin-setup)[Configuration](/docs/en/settings)[Reference](/docs/en/cli-reference)[Agent SDK](/docs/en/agent-sdk/overview)[What's New](/docs/en/whats-new)[Resources](/docs/en/legal-and-compliance)
 
 ##### Agent SDK
 
@@ -403,7 +403,7 @@ function resolveSettings(
 | --- | --- | --- | --- |
 | `options.cwd` | `string` | `process.cwd()` | Directory to resolve project and local settings relative to |
 | `options.settingSources` | [`SettingSource`](#settingsource)`[]` | All sources | Which filesystem sources to load. Pass `[]` to skip user, project, and local settings. Managed policy settings load in all cases |
-| `options.managedSettings` | `Settings` | `undefined` | Restrictive policy-tier settings merged at the managed-policy precedence level. Non-restrictive keys such as `model` are silently dropped |
+| `options.managedSettings` | `Settings` | `undefined` | Restrictive policy-tier settings supplied by the embedding host. Dropped by default when an admin-deployed managed tier is present; merged under that tier when [`parentSettingsBehavior`](/docs/en/settings#available-settings) is `"merge"`. Non-restrictive keys such as `model` are silently dropped so this option can tighten managed policy but not loosen it |
 | `options.serverManagedSettings` | `Settings` | `undefined` | Server-managed settings payload from `/api/claude_code/settings`. Non-restrictive keys pass through unfiltered |
 
 #### [​](#return-type-resolvedsettings) Return type: `ResolvedSettings`
@@ -469,6 +469,7 @@ Configuration object for the `query()` function.
 | `mcpServers` | `Record<string, [`McpServerConfig`](#mcpserverconfig)>` | `{}` | MCP server configurations |
 | `model` | `string` | Default from CLI | Claude model to use |
 | `outputFormat` | `{ type: 'json_schema', schema: JSONSchema }` | `undefined` | Define output format for agent results. See [Structured outputs](/docs/en/agent-sdk/structured-outputs) for details |
+| `outputStyle` | `string` | `undefined` | Name of an [output style](/docs/en/output-styles) to activate for the session. The style must exist in a loaded `settingSources` location, such as `.claude/output-styles/`. See [Activate an output style](/docs/en/agent-sdk/modifying-system-prompts#activate-an-output-style) |
 | `pathToClaudeCodeExecutable` | `string` | Auto-resolved from bundled native binary | Path to Claude Code executable. Only needed if optional dependencies were skipped during install or your platform isn’t in the supported set |
 | `permissionMode` | [`PermissionMode`](#permissionmode) | `'default'` | Permission mode for the session |
 | `permissionPromptToolName` | `string` | `undefined` | MCP tool name for permission prompts |
@@ -1904,6 +1905,69 @@ type TodoWriteInput = {
 
 Creates and manages a structured task list for tracking progress.
 
+`TodoWrite` is deprecated and will be removed in a future release. Use `TaskCreate`, `TaskGet`, `TaskUpdate`, and `TaskList` instead. Set `CLAUDE_CODE_ENABLE_TASKS=1` to opt in. See [Migrate to Task tools](/docs/en/agent-sdk/todo-tracking#migrate-to-task-tools) for how monitoring code changes.
+
+### [​](#taskcreate) TaskCreate
+
+**Tool name:** `TaskCreate`
+
+```shiki
+// Not yet exported from the SDK; define locally.
+type TaskCreateInput = {
+ subject: string;
+ description: string;
+ activeForm?: string;
+ metadata?: Record<string, unknown>;
+};
+```
+
+Creates a single task and returns its assigned ID.
+
+### [​](#taskupdate) TaskUpdate
+
+**Tool name:** `TaskUpdate`
+
+```shiki
+// Not yet exported from the SDK; define locally.
+type TaskUpdateInput = {
+ taskId: string;
+ status?: "pending" | "in_progress" | "completed" | "deleted";
+ subject?: string;
+ description?: string;
+ activeForm?: string;
+ addBlocks?: string[];
+ addBlockedBy?: string[];
+ owner?: string;
+ metadata?: Record<string, unknown>;
+};
+```
+
+Patches one task by ID. Set `status` to `"deleted"` to remove it.
+
+### [​](#taskget) TaskGet
+
+**Tool name:** `TaskGet`
+
+```shiki
+// Not yet exported from the SDK; define locally.
+type TaskGetInput = {
+ taskId: string;
+};
+```
+
+Returns full details for one task, or `null` when the ID is not found.
+
+### [​](#tasklist) TaskList
+
+**Tool name:** `TaskList`
+
+```shiki
+// Not yet exported from the SDK; define locally.
+type TaskListInput = {};
+```
+
+Returns a snapshot of all tasks in the current list.
+
 ### [​](#exitplanmode) ExitPlanMode
 
 **Tool name:** `ExitPlanMode`
@@ -2335,6 +2399,83 @@ type TodoWriteOutput = {
 ```
 
 Returns the previous and updated task lists.
+
+`TodoWrite` is deprecated and will be removed in a future release. Use `TaskCreate`, `TaskGet`, `TaskUpdate`, and `TaskList` instead. Set `CLAUDE_CODE_ENABLE_TASKS=1` to opt in. See [Migrate to Task tools](/docs/en/agent-sdk/todo-tracking#migrate-to-task-tools) for how monitoring code changes.
+
+### [​](#taskcreate-2) TaskCreate
+
+**Tool name:** `TaskCreate`
+
+```shiki
+// Not yet exported from the SDK; define locally.
+type TaskCreateOutput = {
+ task: {
+ id: string;
+ subject: string;
+ };
+};
+```
+
+Returns the created task with its assigned ID.
+
+### [​](#taskupdate-2) TaskUpdate
+
+**Tool name:** `TaskUpdate`
+
+```shiki
+// Not yet exported from the SDK; define locally.
+type TaskUpdateOutput = {
+ success: boolean;
+ taskId: string;
+ updatedFields: string[];
+ error?: string;
+ statusChange?: {
+ from: string;
+ to: string;
+ };
+};
+```
+
+Returns the update result, including which fields changed.
+
+### [​](#taskget-2) TaskGet
+
+**Tool name:** `TaskGet`
+
+```shiki
+// Not yet exported from the SDK; define locally.
+type TaskGetOutput = {
+ task: {
+ id: string;
+ subject: string;
+ description: string;
+ status: "pending" | "in_progress" | "completed";
+ blocks: string[];
+ blockedBy: string[];
+ } | null;
+};
+```
+
+Returns the full task record, or `null` when the ID is not found.
+
+### [​](#tasklist-2) TaskList
+
+**Tool name:** `TaskList`
+
+```shiki
+// Not yet exported from the SDK; define locally.
+type TaskListOutput = {
+ tasks: Array<{
+ id: string;
+ subject: string;
+ status: "pending" | "in_progress" | "completed";
+ owner?: string;
+ blockedBy: string[];
+ }>;
+};
+```
+
+Returns a snapshot of all tasks in the current list.
 
 ### [​](#exitplanmode-2) ExitPlanMode
 

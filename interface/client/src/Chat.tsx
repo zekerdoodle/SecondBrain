@@ -279,7 +279,7 @@ const ChatMessageItem = React.memo<ChatMessageProps>(({
                 "rounded-2xl px-4 py-3 text-[15px] leading-relaxed",
                 !msg.isStreaming && "animate-in",
                 isUser
-                  ? "bg-[var(--user-bg)] text-white rounded-br-md"
+                  ? "bg-[var(--user-bg)] text-[var(--user-text)] rounded-br-md"
                   : "w-full bg-[var(--bg-secondary)] border border-[var(--border-color)] text-[var(--text-primary)] rounded-bl-md shadow-warm",
                 msg.isError && "border-red-200 bg-red-50 text-red-800 dark:border-red-800 dark:bg-red-900/30 dark:text-red-300",
                 msg.isStreaming && "border-[var(--accent-primary)]/30",

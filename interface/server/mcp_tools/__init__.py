@@ -116,6 +116,10 @@ def _inject_agent_context(tools, agent_name: str, salon_id: Optional[str] = None
         # compact_conversation needs to know the calling agent in salon mode
         # so it can find which messages are "own" for per-agent compaction.
         "compact_conversation",
+        # Safe-deploy: the tool reads _agent_name to enforce its
+        # patch-only caller restriction (defense in depth on top of the
+        # consent prompt).
+        "apply_patch_deploy",
     }
 
     # Tools that also receive _salon_id (when this MCP server is bound to a salon).
@@ -306,6 +310,7 @@ def _load_all_tools():
     from . import messaging
     from . import mood
     from . import salons
+    from . import safe_deploy
 
 
 # Auto-load tools when module is imported

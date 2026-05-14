@@ -1,9 +1,10 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { X, Sun, Moon, Check, Palette, FolderX, Plus, Settings, FileEdit, Type, RefreshCw, Monitor } from 'lucide-react';
+import { X, Sun, Moon, Check, Palette, FolderX, Plus, Settings, FileEdit, Type, RefreshCw, Monitor, Pencil } from 'lucide-react';
 import { clsx } from 'clsx';
 import { API_URL } from '../config';
 import ColorPicker from './ColorPicker';
+import { CustomThemeEditor } from './CustomThemeEditor';
 
 // Font options for each category
 const UI_FONTS = [
@@ -91,6 +92,7 @@ interface ThemePresetColors {
   preText: string;
   scrollbarThumb: string;
   scrollbarThumbHover: string;
+  userText: string;
 }
 
 interface ThemePreset {
@@ -113,6 +115,7 @@ export const THEME_PRESETS: ThemePreset[] = [
       borderColor: '#E8E6E3', borderHover: '#D4D2CF',
       codeBg: '#F3F4F6', preBg: '#1F2937', preText: '#E5E7EB',
       scrollbarThumb: '#D4D2CF', scrollbarThumbHover: '#B8B6B3',
+      userText: '#FFFFFF',
     },
     defaultAccent: { color: '#D97757', hover: '#C4684A' },
   },
@@ -126,6 +129,7 @@ export const THEME_PRESETS: ThemePreset[] = [
       borderColor: '#E4E4E7', borderHover: '#D4D4D8',
       codeBg: '#F4F4F5', preBg: '#18181B', preText: '#E4E4E7',
       scrollbarThumb: '#D4D4D8', scrollbarThumbHover: '#A1A1AA',
+      userText: '#FFFFFF',
     },
     defaultAccent: { color: '#3B82F6', hover: '#2563EB' },
   },
@@ -139,6 +143,7 @@ export const THEME_PRESETS: ThemePreset[] = [
       borderColor: '#E6DDD0', borderHover: '#D4C8B8',
       codeBg: '#EDE5D8', preBg: '#2C1810', preText: '#E8DED4',
       scrollbarThumb: '#D4C8B8', scrollbarThumbHover: '#B8A898',
+      userText: '#FFFFFF',
     },
     defaultAccent: { color: '#D97757', hover: '#C4684A' },
   },
@@ -152,6 +157,7 @@ export const THEME_PRESETS: ThemePreset[] = [
       borderColor: '#E2E8F0', borderHover: '#CBD5E1',
       codeBg: '#E2E8F0', preBg: '#1E293B', preText: '#E2E8F0',
       scrollbarThumb: '#CBD5E1', scrollbarThumbHover: '#94A3B8',
+      userText: '#FFFFFF',
     },
     defaultAccent: { color: '#6366F1', hover: '#4F46E5' },
   },
@@ -166,6 +172,7 @@ export const THEME_PRESETS: ThemePreset[] = [
       borderColor: '#3d3d3d', borderHover: '#4d4d4d',
       codeBg: '#2d2d2d', preBg: '#0d0d0d', preText: '#E5E7EB',
       scrollbarThumb: '#4d4d4d', scrollbarThumbHover: '#5d5d5d',
+      userText: '#FFFFFF',
     },
     defaultAccent: { color: '#D97757', hover: '#C4684A' },
   },
@@ -179,6 +186,7 @@ export const THEME_PRESETS: ThemePreset[] = [
       borderColor: '#334155', borderHover: '#475569',
       codeBg: '#1E293B', preBg: '#0B1120', preText: '#CBD5E1',
       scrollbarThumb: '#475569', scrollbarThumbHover: '#64748B',
+      userText: '#FFFFFF',
     },
     defaultAccent: { color: '#3B82F6', hover: '#2563EB' },
   },
@@ -192,6 +200,7 @@ export const THEME_PRESETS: ThemePreset[] = [
       borderColor: '#3E332C', borderHover: '#524539',
       codeBg: '#322723', preBg: '#160F0D', preText: '#D4C4B8',
       scrollbarThumb: '#524539', scrollbarThumbHover: '#6B5A4C',
+      userText: '#FFFFFF',
     },
     defaultAccent: { color: '#F97316', hover: '#EA580C' },
   },
@@ -205,6 +214,7 @@ export const THEME_PRESETS: ThemePreset[] = [
       borderColor: '#2A2A2A', borderHover: '#383838',
       codeBg: '#141414', preBg: '#050505', preText: '#CCCCCC',
       scrollbarThumb: '#383838', scrollbarThumbHover: '#4A4A4A',
+      userText: '#FFFFFF',
     },
     defaultAccent: { color: '#8B5CF6', hover: '#7C3AED' },
   },
@@ -221,6 +231,7 @@ export interface ThemePreferences {
   accentHover: string;
   lightPreset?: string;  // preset id for light mode (default: 'parchment')
   darkPreset?: string;   // preset id for dark mode (default: 'charcoal')
+  customThemes?: ThemePreset[];  // user-defined themes (saved alongside presets)
 }
 
 export interface TypographyPreferences {
@@ -247,6 +258,7 @@ const DEFAULT_THEME: ThemePreferences = {
   accentHover: '#C4684A',
   lightPreset: 'parchment',
   darkPreset: 'charcoal',
+  customThemes: [],
 };
 
 const DEFAULT_TYPOGRAPHY: TypographyPreferences = {
@@ -370,16 +382,23 @@ function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
   } : null;
 }
 
+// Get all available themes (built-in + custom)
+export function getAllThemes(prefs: ThemePreferences): ThemePreset[] {
+  return [...THEME_PRESETS, ...(prefs.customThemes || [])];
+}
+
 // Resolve which preset is active given preferences and effective mode
 function getActivePreset(prefs: ThemePreferences, effectiveMode: 'light' | 'dark'): ThemePreset | undefined {
   const presetId = effectiveMode === 'light'
     ? (prefs.lightPreset || 'parchment')
     : (prefs.darkPreset || 'charcoal');
-  return THEME_PRESETS.find(p => p.id === presetId);
+  return getAllThemes(prefs).find(p => p.id === presetId);
 }
 
 // Apply theme to document
-export function applyTheme(prefs: ThemePreferences): void {
+// Optional `previewColors` lets the custom-theme editor live-preview a draft
+// palette without persisting it to customThemes.
+export function applyTheme(prefs: ThemePreferences, opts?: { previewColors?: ThemePresetColors }): void {
   const root = document.documentElement;
   const effectiveMode = getEffectiveMode(prefs.mode);
 
@@ -388,8 +407,9 @@ export function applyTheme(prefs: ThemePreferences): void {
 
   // Apply preset palette colors (overrides CSS defaults with curated palette)
   const preset = getActivePreset(prefs, effectiveMode);
-  if (preset) {
-    const c = preset.colors;
+  const colors = opts?.previewColors ?? preset?.colors;
+  if (colors) {
+    const c = colors;
     root.style.setProperty('--bg-primary', c.bgPrimary);
     root.style.setProperty('--bg-secondary', c.bgSecondary);
     root.style.setProperty('--bg-tertiary', c.bgTertiary);
@@ -403,6 +423,8 @@ export function applyTheme(prefs: ThemePreferences): void {
     root.style.setProperty('--pre-text', c.preText);
     root.style.setProperty('--scrollbar-thumb', c.scrollbarThumb);
     root.style.setProperty('--scrollbar-thumb-hover', c.scrollbarThumbHover);
+    // userText is new — fall back to white for old saved customs that lack it
+    root.style.setProperty('--user-text', c.userText || '#FFFFFF');
   }
 
   // Set accent color CSS variables
@@ -428,7 +450,7 @@ export function applyTheme(prefs: ThemePreferences): void {
   // Update mobile browser chrome (status bar + navigation bar)
   // Chrome 93+ on Android uses the theme-color meta tag for BOTH the
   // status bar (top) and gesture navigation bar (bottom).
-  const bgColor = preset ? preset.colors.bgPrimary : (effectiveMode === 'dark' ? '#000000' : '#FAF8F5');
+  const bgColor = colors ? colors.bgPrimary : (effectiveMode === 'dark' ? '#000000' : '#FAF8F5');
   // Update the plain (no-media) meta tag — this is the one Android Chrome reads
   const plainMeta = document.querySelector('meta[name="theme-color"]:not([media])');
   if (plainMeta) plainMeta.setAttribute('content', bgColor);
@@ -489,6 +511,82 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
   const [restartLoading, setRestartLoading] = useState(false);
   const [restartStatus, setRestartStatus] = useState<'idle' | 'restarting' | 'error'>('idle');
   const [restartError, setRestartError] = useState<string | null>(null);
+
+  // Custom theme editor state
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [editorEditing, setEditorEditing] = useState<ThemePreset | undefined>(undefined);
+  const [editorCloneFrom, setEditorCloneFrom] = useState<ThemePreset | undefined>(undefined);
+
+  // Re-sync state from localStorage whenever:
+  // (a) the modal opens (catches the case where async server-load completed
+  //     after first mount — e.g. a freshly-installed device pulling
+  //     customThemes for the first time), or
+  // (b) a "theme-preferences-synced" event fires (dispatched by useThemeInit
+  //     and the WS theme_update handler, so customThemes appear without needing
+  //     to close+reopen the modal).
+  useEffect(() => {
+    if (!isOpen) return;
+    const fresh = loadThemePreferences();
+    setPreferences(fresh);
+    setTypography(loadTypographyPreferences());
+  }, [isOpen]);
+
+  useEffect(() => {
+    const handler = () => {
+      setPreferences(loadThemePreferences());
+      setTypography(loadTypographyPreferences());
+    };
+    window.addEventListener('theme-preferences-synced', handler);
+    return () => window.removeEventListener('theme-preferences-synced', handler);
+  }, []);
+
+  const customThemes = preferences.customThemes || [];
+
+  const openCreateEditor = useCallback((cloneFrom?: ThemePreset) => {
+    setEditorEditing(undefined);
+    setEditorCloneFrom(cloneFrom);
+    setEditorOpen(true);
+  }, []);
+
+  const openEditEditor = useCallback((theme: ThemePreset) => {
+    setEditorEditing(theme);
+    setEditorCloneFrom(undefined);
+    setEditorOpen(true);
+  }, []);
+
+  const saveCustomTheme = useCallback((theme: ThemePreset) => {
+    setPreferences(prev => {
+      const existing = prev.customThemes || [];
+      const idx = existing.findIndex(t => t.id === theme.id);
+      const updated = idx >= 0
+        ? existing.map((t, i) => (i === idx ? theme : t))
+        : [...existing, theme];
+      const next: ThemePreferences = {
+        ...prev,
+        customThemes: updated,
+        // Activate the saved theme in its mode
+        ...(theme.mode === 'light' ? { lightPreset: theme.id } : { darkPreset: theme.id }),
+        // If user was in the opposite mode, flip to the theme's mode
+        mode: prev.mode === 'system' ? prev.mode : theme.mode,
+        // Use the theme's default accent
+        accentColor: theme.defaultAccent.color,
+        accentHover: theme.defaultAccent.hover,
+      };
+      return next;
+    });
+  }, []);
+
+  const deleteCustomTheme = useCallback((id: string) => {
+    setPreferences(prev => {
+      const existing = prev.customThemes || [];
+      const filtered = existing.filter(t => t.id !== id);
+      const next: ThemePreferences = { ...prev, customThemes: filtered };
+      // If the deleted theme was active, fall back to a built-in
+      if (prev.lightPreset === id) next.lightPreset = 'parchment';
+      if (prev.darkPreset === id) next.darkPreset = 'charcoal';
+      return next;
+    });
+  }, []);
 
   // Re-read preferences from localStorage when modal opens (picks up server-synced values)
   useEffect(() => {
@@ -766,51 +864,79 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
               });
             };
 
-            const renderPresetCard = (preset: ThemePreset) => {
+            const renderPresetCard = (preset: ThemePreset, opts?: { editable?: boolean }) => {
               const isActive = activePresetId === preset.id;
+              const editable = !!opts?.editable;
               return (
-                <button
-                  key={preset.id}
-                  onClick={() => selectPreset(preset)}
-                  className={clsx(
-                    "rounded-xl overflow-hidden border-2 transition-all hover:scale-[1.03] active:scale-[0.97] focus:outline-none touch-manipulation",
-                    isActive
-                      ? "ring-1 ring-offset-1 ring-offset-[var(--bg-secondary)] shadow-lg"
-                      : "border-[var(--border-color)] hover:border-[var(--border-hover)] hover:shadow-md"
-                  )}
-                  style={isActive ? { borderColor: preferences.accentColor, '--tw-ring-color': preferences.accentColor } as React.CSSProperties : undefined}
-                  title={preset.name}
-                >
-                  {/* Mini palette preview */}
-                  <div className="h-[52px] relative overflow-hidden">
-                    {/* Primary background */}
-                    <div className="absolute inset-0" style={{ backgroundColor: preset.colors.bgPrimary }} />
-                    {/* Secondary background strip */}
-                    <div className="absolute bottom-0 left-0 right-0 h-[18px]" style={{ backgroundColor: preset.colors.bgSecondary }} />
-                    {/* Border line between */}
-                    <div className="absolute bottom-[18px] left-0 right-0 h-px" style={{ backgroundColor: preset.colors.borderColor }} />
-                    {/* Text sample */}
-                    <div className="absolute top-2 left-2.5 text-[11px] font-bold tracking-tight" style={{ color: preset.colors.textPrimary }}>Aa</div>
-                    {/* Muted text sample */}
-                    <div className="absolute top-[18px] left-2.5 text-[8px]" style={{ color: preset.colors.textSecondary }}>Preview</div>
-                    {/* Accent dot */}
-                    <div className="absolute top-2.5 right-2.5 w-3 h-3 rounded-full shadow-sm" style={{ backgroundColor: preset.defaultAccent.color }} />
-                    {/* Check indicator for active */}
-                    {isActive && (
-                      <div className="absolute bottom-1.5 right-1.5 w-4 h-4 rounded-full flex items-center justify-center" style={{ backgroundColor: preferences.accentColor }}>
-                        <Check size={10} className="text-white" />
-                      </div>
+                <div key={preset.id} className="relative group">
+                  <button
+                    onClick={() => selectPreset(preset)}
+                    className={clsx(
+                      "w-full rounded-xl overflow-hidden border-2 transition-all hover:scale-[1.03] active:scale-[0.97] focus:outline-none touch-manipulation",
+                      isActive
+                        ? "ring-1 ring-offset-1 ring-offset-[var(--bg-secondary)] shadow-lg"
+                        : "border-[var(--border-color)] hover:border-[var(--border-hover)] hover:shadow-md"
                     )}
-                  </div>
-                  {/* Name */}
-                  <div className="px-2 py-1.5 text-center" style={{ backgroundColor: preset.colors.bgTertiary }}>
-                    <span className="text-[11px] font-medium" style={{ color: preset.colors.textPrimary }}>
-                      {preset.name}
-                    </span>
-                  </div>
-                </button>
+                    style={isActive ? { borderColor: preferences.accentColor, '--tw-ring-color': preferences.accentColor } as React.CSSProperties : undefined}
+                    title={preset.name}
+                  >
+                    {/* Mini palette preview */}
+                    <div className="h-[52px] relative overflow-hidden">
+                      {/* Primary background */}
+                      <div className="absolute inset-0" style={{ backgroundColor: preset.colors.bgPrimary }} />
+                      {/* Secondary background strip */}
+                      <div className="absolute bottom-0 left-0 right-0 h-[18px]" style={{ backgroundColor: preset.colors.bgSecondary }} />
+                      {/* Border line between */}
+                      <div className="absolute bottom-[18px] left-0 right-0 h-px" style={{ backgroundColor: preset.colors.borderColor }} />
+                      {/* Text sample */}
+                      <div className="absolute top-2 left-2.5 text-[11px] font-bold tracking-tight" style={{ color: preset.colors.textPrimary }}>Aa</div>
+                      {/* Muted text sample */}
+                      <div className="absolute top-[18px] left-2.5 text-[8px]" style={{ color: preset.colors.textSecondary }}>Preview</div>
+                      {/* Accent dot */}
+                      <div className="absolute top-2.5 right-2.5 w-3 h-3 rounded-full shadow-sm" style={{ backgroundColor: preset.defaultAccent.color }} />
+                      {/* Check indicator for active */}
+                      {isActive && (
+                        <div className="absolute bottom-1.5 right-1.5 w-4 h-4 rounded-full flex items-center justify-center" style={{ backgroundColor: preferences.accentColor }}>
+                          <Check size={10} className="text-white" />
+                        </div>
+                      )}
+                    </div>
+                    {/* Name */}
+                    <div className="px-2 py-1.5 text-center" style={{ backgroundColor: preset.colors.bgTertiary }}>
+                      <span className="text-[11px] font-medium" style={{ color: preset.colors.textPrimary }}>
+                        {preset.name}
+                      </span>
+                    </div>
+                  </button>
+                  {editable && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); openEditEditor(preset); }}
+                      className="absolute top-1 left-1 p-1 rounded-md bg-black/40 backdrop-blur-sm text-white opacity-0 group-hover:opacity-100 transition-opacity hover:bg-black/60 focus:opacity-100"
+                      title="Edit theme"
+                    >
+                      <Pencil size={10} />
+                    </button>
+                  )}
+                </div>
               );
             };
+
+            // "Create custom theme" card — visually matches the preset card grid
+            const renderCreateCard = (mode: 'light' | 'dark') => (
+              <button
+                key={`__create_${mode}`}
+                onClick={() => {
+                  // Seed from currently-active preset of the same mode for a nice starting point
+                  const seed = THEME_PRESETS.find(p => p.id === (mode === 'light' ? (preferences.lightPreset || 'parchment') : (preferences.darkPreset || 'charcoal')));
+                  openCreateEditor(seed);
+                }}
+                className="rounded-xl overflow-hidden border-2 border-dashed border-[var(--border-color)] hover:border-[var(--accent-primary)] transition-all hover:scale-[1.03] active:scale-[0.97] flex flex-col items-center justify-center min-h-[78px] gap-1 text-[var(--text-muted)] hover:text-[var(--accent-primary)] focus:outline-none touch-manipulation"
+                title="Create custom theme"
+              >
+                <Plus size={18} strokeWidth={2.25} />
+                <span className="text-[10px] font-medium">New theme</span>
+              </button>
+            );
 
             return (
               <>
@@ -856,7 +982,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
                       Light
                     </span>
                     <div className="grid grid-cols-4 gap-2">
-                      {THEME_PRESETS.filter(p => p.mode === 'light').map(renderPresetCard)}
+                      {THEME_PRESETS.filter(p => p.mode === 'light').map(p => renderPresetCard(p))}
+                      {customThemes.filter(p => p.mode === 'light').map(p => renderPresetCard(p, { editable: true }))}
+                      {renderCreateCard('light')}
                     </div>
                   </div>
 
@@ -867,7 +995,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
                       Dark
                     </span>
                     <div className="grid grid-cols-4 gap-2">
-                      {THEME_PRESETS.filter(p => p.mode === 'dark').map(renderPresetCard)}
+                      {THEME_PRESETS.filter(p => p.mode === 'dark').map(p => renderPresetCard(p))}
+                      {customThemes.filter(p => p.mode === 'dark').map(p => renderPresetCard(p, { editable: true }))}
+                      {renderCreateCard('dark')}
                     </div>
                   </div>
                 </div>
@@ -1418,6 +1548,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
           )}
         </div>
       </div>
+
+      {/* Custom theme editor */}
+      <CustomThemeEditor
+        isOpen={editorOpen}
+        onClose={() => setEditorOpen(false)}
+        currentPrefs={preferences}
+        editing={editorEditing}
+        cloneFrom={editorCloneFrom}
+        onSave={saveCustomTheme}
+        onDelete={deleteCustomTheme}
+      />
     </div>,
     document.body
   );
@@ -1440,6 +1581,13 @@ export function useThemeInit(): void {
       }
       if (serverPrefs.typography) {
         applyTypography(serverPrefs.typography);
+      }
+      // Tell any mounted SettingsModal to re-read state from localStorage.
+      // Otherwise its preferences state — initialized at mount time, before
+      // this async fetch — would still have the stale local values
+      // (e.g. empty customThemes on a fresh device).
+      if (serverPrefs.theme || serverPrefs.typography) {
+        window.dispatchEvent(new CustomEvent('theme-preferences-synced'));
       }
     });
 

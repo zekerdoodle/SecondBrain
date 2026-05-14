@@ -31,6 +31,7 @@
   /* User message - matches accent color */
   --user-bg: var(--accent-primary);
   --user-hover: var(--accent-hover);
+  --user-text: #FFFFFF;
 
   /* Status colors */
   --success: #10B981;
@@ -84,6 +85,7 @@
   /* User message - matches accent color */
   --user-bg: var(--accent-primary);
   --user-hover: var(--accent-hover);
+  --user-text: #FFFFFF;
 
   /* Status colors - slightly brighter for dark mode */
   --success: #34D399;

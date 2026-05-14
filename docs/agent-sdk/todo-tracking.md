@@ -1,7 +1,7 @@
 ---
 source: https://platform.claude.com/docs/en/agent-sdk/todo-tracking
 title: Todo Lists
-last_fetched: 2026-05-09T09:16:34.430021+00:00
+last_fetched: 2026-05-13T13:04:49.719082+00:00
 ---
 
 [Claude Code Docs home page![light logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/light.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=78fd01ff4f4340295a4f66e2ea54903c)![dark logo](https://mintcdn.com/claude-code/c5r9_6tjPMzFdDDT/logo/dark.svg?fit=max&auto=format&n=c5r9_6tjPMzFdDDT&q=85&s=1298a0c3b3a1da603b190d0de0e31712)](/docs/en/overview)
@@ -22,7 +22,7 @@ Control and observability
 
 Todo Lists
 
-[Getting started](/docs/en/overview)[Build with Claude Code](/docs/en/sub-agents)[Administration](/docs/en/admin-setup)[Configuration](/docs/en/settings)[Reference](/docs/en/cli-reference)[Agent SDK](/docs/en/agent-sdk/overview)[What's New](/docs/en/whats-new)[Resources](/docs/en/legal-and-compliance)
+[Getting started](/docs/en/overview)[Build with Claude Code](/docs/en/agents)[Administration](/docs/en/admin-setup)[Configuration](/docs/en/settings)[Reference](/docs/en/cli-reference)[Agent SDK](/docs/en/agent-sdk/overview)[What's New](/docs/en/whats-new)[Resources](/docs/en/legal-and-compliance)
 
 ##### Agent SDK
 
@@ -86,6 +86,8 @@ On this page
 > Use this file to discover all available pages before exploring further.
 
 Todo tracking provides a structured way to manage tasks and display progress to users. The Claude Agent SDK includes built-in todo functionality that helps organize complex workflows and keep users informed about task progression.
+
+`TodoWrite` is the current default in the Agent SDK and the examples on this page use it. The replacement Task tools are available now behind `CLAUDE_CODE_ENABLE_TASKS=1` and will become the default in a future release. See [Migrate to Task tools](#migrate-to-task-tools) for how monitoring code changes.
 
 ### [​](#todo-lifecycle) Todo Lifecycle
 
@@ -188,6 +190,44 @@ class TodoTracker {
 // Usage
 const tracker = new TodoTracker();
 await tracker.trackQuery("Build a complete authentication system with todos");
+```
+
+## [​](#migrate-to-task-tools) Migrate to Task tools
+
+The Task tools split the single `TodoWrite` call into `TaskCreate` for each new item and `TaskUpdate` for each status change, with `TaskList` and `TaskGet` available for the model to read back the current list. Your monitoring code still inspects `tool_use` blocks in the assistant stream, but maintains a map keyed by task ID instead of replacing the whole list on every call. To opt in before the Task tools become the default, set `CLAUDE_CODE_ENABLE_TASKS=1` in `options.env`.
+
+| With `TodoWrite` | With Task tools |
+| --- | --- |
+| One tool call rewrites the full `todos` array | `TaskCreate` adds one item, `TaskUpdate` patches one item by `taskId` |
+| Match `block.name === "TodoWrite"` | Match `block.name === "TaskCreate"` or `"TaskUpdate"` |
+| Item shape: `{ content, status, activeForm }` | `TaskCreate` input: `{ subject, description, activeForm?, metadata? }`. `TaskUpdate` input: `{ taskId, status?, subject?, description?, activeForm?, addBlocks?, addBlockedBy?, owner?, metadata? }`. `status` is `"pending"`, `"in_progress"`, or `"completed"`; set `status: "deleted"` to delete |
+| Render `block.input.todos` directly | Accumulate items across calls, or read a snapshot from a `TaskList` tool result |
+
+The assigned task ID is not in the `TaskCreate` input. It comes back in the matching `tool_result` as `{ task: { id, subject } }`, so capture it from the result block to key your map. The following example shows the minimal change to the [Monitoring Todo Changes](#monitoring-todo-changes) loop. To render a complete list, watch for a `TaskList` tool result in the stream or accumulate `TaskCreate` results and `TaskUpdate` inputs into a map:
+
+TypeScript
+
+Python
+
+```shiki
+import { query } from "@anthropic-ai/claude-agent-sdk";
+
+for await (const message of query({
+ prompt: "Optimize my React app performance",
+ options: { env: { ...process.env, CLAUDE_CODE_ENABLE_TASKS: "1" } },
+})) {
+ if (message.type !== "assistant") continue;
+ for (const block of message.message.content) {
+ if (block.type !== "tool_use") continue;
+ if (block.name === "TaskCreate") {
+ const input = block.input as { subject: string };
+ console.log(`+ ${input.subject}`);
+ } else if (block.name === "TaskUpdate") {
+ const input = block.input as { taskId: string; status?: string };
+ if (input.status) console.log(` ${input.taskId} -> ${input.status}`);
+ }
+ }
+}
 ```
 
 ## [​](#related-documentation) Related Documentation

@@ -41,6 +41,7 @@ from notifications import should_notify, send_notification, NotificationDecision
 from message_wal import init_wal, get_wal, MessageWAL
 from tool_serializers import serialize_tool_call, format_tool_for_history
 from process_registry import register_process, deregister_by_pid, clear_registry
+import running_agents
 from mention_parser import parse_mentions
 from slash_commands import (
     SLASH_COMMANDS,
@@ -538,6 +539,7 @@ async def _run_background_processing(
             name=agent_name,
             prompt=combined_prompt,
             mode="trust",
+            is_background_processing=True,
         )
 
         status = result.get("status") if isinstance(result, dict) else getattr(result, "status", "unknown")
@@ -2882,9 +2884,51 @@ def cancel_chess_game():
 # Track connected clients with their visibility state
 client_sessions: Dict[WebSocket, ClientSession] = {}
 active_conversations: Dict[str, ConversationState] = {}
-# Track all currently processing sessions (supports concurrent chats)
-# Maps chat_id -> start_time for each active processing session
-active_processing_sessions: Dict[str, float] = {}
+# Track all currently processing sessions (supports concurrent chats).
+# Maps chat_id -> running_agents entry_id. Phase 2 migration: the value used
+# to be the start-time float; it's now the running_agents handle so that
+# membership / iteration semantics (the only thing every reader uses) keep
+# working while the same in-flight set is also visible via running_agents().
+active_processing_sessions: Dict[str, str] = {}
+
+
+async def _record_chat_session_started(
+    state_key: str,
+    agent_name: Optional[str],
+    first_message: str,
+) -> str:
+    """Register a chat-WS session with running_agents and remember the entry id
+    under ``state_key`` in ``active_processing_sessions``. Returns the entry id
+    so the caller can hand it on if needed."""
+    entry_id = await running_agents.register(
+        agent=agent_name or "character",
+        kind="chat",
+        task_summary=first_message or "",
+        source_chat_id=state_key,
+    )
+    active_processing_sessions[state_key] = entry_id
+    return entry_id
+
+
+async def _record_chat_session_ended(state_key: str) -> None:
+    """Tear down both halves: pop from ``active_processing_sessions`` and
+    unregister the running_agents entry. Idempotent — if ``state_key`` is not
+    present, no-op."""
+    entry_id = active_processing_sessions.pop(state_key, None)
+    if entry_id:
+        await running_agents.unregister(entry_id)
+
+
+async def _record_chat_session_rekey(old_key: str, new_key: str) -> None:
+    """Mid-flight state-key swap (used when a "new" chat gets its real id, or
+    when a session migrates onto its preserved chat id). Keeps the same
+    running_agents entry but moves the dict key and refreshes ``source_chat_id``
+    on the entry so the registry view matches the new key."""
+    entry_id = active_processing_sessions.pop(old_key, None)
+    if entry_id is None:
+        return
+    active_processing_sessions[new_key] = entry_id
+    await running_agents.update(entry_id, source_chat_id=new_key)
 
 # --- Session-Scoped Client Registry (for broadcast) ---
 # Track all WebSocket connections per session for multi-device sync
@@ -3545,7 +3589,10 @@ def _build_history_context(messages: List[Dict[str, Any]], current_message: str)
         return current_message
 
     history = "\n\n".join(parts)
-    return f"[Previous conversation for context - continue naturally]\n{history}\n\n[Current message]\n{current_message}"
+    return (
+        f"<chat-history>\n{history}\n</chat-history>\n\n"
+        f"<current-message>\n{current_message}\n</current-message>"
+    )
 
 
 # Serialize prompt-type scheduled tasks so only one ClaudeWrapper runs at a time.
@@ -3734,9 +3781,18 @@ async def websocket_endpoint(websocket: WebSocket):
                     # Prefer display_messages (preserves blocks/thinking) over flat messages
                     _init_messages = list(_existing_chat_data.get("display_messages") or _existing_chat_data.get("messages", []))
 
+                # Determine agent for this chat (needed for both running_agents
+                # registration and the session_init send below).
+                ws_agent = None
+                if session_id == "new":
+                    ws_agent = data.get("agent")  # Only accept agent on new chats
+                else:
+                    stored = chat_manager.load_chat(session_id)
+                    ws_agent = stored.get("agent") if stored else None
+
                 # Register streaming state IMMEDIATELY (before task runs)
                 turn_id = str(uuid.uuid4())
-                active_processing_sessions[state_key] = time.time()
+                await _record_chat_session_started(state_key, ws_agent, data.get("message", ""))
                 session_streaming_states[state_key] = SessionStreamingState(
                     status="streaming",
                     messages=_init_messages,
@@ -3746,14 +3802,6 @@ async def websocket_endpoint(websocket: WebSocket):
                 data["turnId"] = turn_id
                 register_client(websocket, state_key)
                 logger.info(f"PRE-TASK: Registered streaming state for {state_key}")
-
-                # Determine agent for this chat
-                ws_agent = None
-                if session_id == "new":
-                    ws_agent = data.get("agent")  # Only accept agent on new chats
-                else:
-                    stored = chat_manager.load_chat(session_id)
-                    ws_agent = stored.get("agent") if stored else None
 
                 # IMMEDIATELY send session_init so client can update localStorage
                 # This prevents losing the chat ID if user refreshes before background task sends it
@@ -3788,7 +3836,9 @@ async def websocket_endpoint(websocket: WebSocket):
                                 logger.info(f"EDIT: Interrupted previous Claude wrapper for {chat_id}")
                             except Exception as e:
                                 logger.warning(f"EDIT: Failed to interrupt previous wrapper: {e}")
-                    active_processing_sessions[chat_id] = time.time()
+                    _edit_chat = chat_manager.load_chat(chat_id)
+                    _edit_agent = _edit_chat.get("agent") if _edit_chat else None
+                    await _record_chat_session_started(chat_id, _edit_agent, data.get("message", ""))
                     session_streaming_states[chat_id] = SessionStreamingState(
                         status="streaming",
                         turn_id=turn_id,
@@ -3814,7 +3864,9 @@ async def websocket_endpoint(websocket: WebSocket):
                                 await prev_wrapper.interrupt()
                             except Exception:
                                 pass
-                    active_processing_sessions[session_id] = time.time()
+                    _regen_chat = chat_manager.load_chat(session_id)
+                    _regen_agent = _regen_chat.get("agent") if _regen_chat else None
+                    await _record_chat_session_started(session_id, _regen_agent, "(regenerate)")
                     session_streaming_states[session_id] = SessionStreamingState(
                         status="streaming",
                         turn_id=turn_id,
@@ -3920,7 +3972,7 @@ async def handle_subscribe(websocket: WebSocket, data: dict):
         if requested_session_id not in active_claude_wrappers:
             logger.warning(f"SUBSCRIBE: Cleaning up orphaned streaming state for {requested_session_id} (no active wrapper)")
             del session_streaming_states[requested_session_id]
-            active_processing_sessions.pop(requested_session_id, None)
+            await _record_chat_session_ended(requested_session_id)
             stop_tool_heartbeat(requested_session_id)
         else:
             active_session_id = requested_session_id
@@ -4129,7 +4181,13 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
     # Track which session is currently being processed
     # Priority: early_chat_id (pre-generated) > preserve_chat_id > session_id
     streaming_state_key = early_chat_id or preserve_chat_id or session_id
-    active_processing_sessions[streaming_state_key] = time.time()
+    # The WS loop already registered most chats at the message-receive step.
+    # Defensive register for paths that reach here without going through the
+    # WS pre-task hook (restart continuation, system continuation). The agent
+    # name is resolved a few lines later in this function; the WS-loop case
+    # has the correct agent already on its entry, so we skip if registered.
+    if streaming_state_key not in active_processing_sessions:
+        await _record_chat_session_started(streaming_state_key, data.get("agent"), data.get("message", ""))
     logger.info(f"PROCESSING: active session={streaming_state_key}, early_chat_id={early_chat_id}")
 
     # Streaming state was already initialized by websocket loop before task started
@@ -4300,9 +4358,10 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
                     if streaming_state_key in session_streaming_states:
                         session_streaming_states[early_save_id] = session_streaming_states.pop(streaming_state_key)
                         logger.info(f"EARLY_SAVE: Migrated streaming state from {streaming_state_key} to {early_save_id}")
-                    # Migrate active session tracking
-                    active_processing_sessions.pop(streaming_state_key, None)
-                    active_processing_sessions[early_save_id] = time.time()
+                    # Migrate active session tracking (running_agents entry id
+                    # follows the dict key; running_agents.update refreshes the
+                    # source_chat_id field on the live entry).
+                    await _record_chat_session_rekey(streaming_state_key, early_save_id)
                     streaming_state_key = early_save_id
 
             # BROADCAST: message_accepted to ALL clients viewing this session
@@ -4613,9 +4672,9 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
                                 _has_full_history=bool(_fallback_msgs),
                             )
                             logger.info(f"STREAMING_STATE: Created for {actual_state_key}")
-                    # Update active session tracking to the actual ID
-                    active_processing_sessions.pop(streaming_state_key, None)
-                    active_processing_sessions[actual_state_key] = time.time()
+                    # Update active session tracking to the actual ID — keep
+                    # the same running_agents entry, just rekey + update.
+                    await _record_chat_session_rekey(streaming_state_key, actual_state_key)
                     logger.info(f"STREAMING_STATE: active session now {actual_state_key}")
 
             elif event_type == "content_delta":
@@ -5412,7 +5471,7 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
     active_edit_tasks.pop(state_key, None)
     # Remove from active processing and track as recently completed
     if state_key in active_processing_sessions:
-        active_processing_sessions.pop(state_key, None)
+        await _record_chat_session_ended(state_key)
         recently_completed_sessions[state_key] = time.time()
         logger.info(f"STREAMING_STATE: Session {state_key} moved to recently_completed")
         # Clean up old entries
@@ -5665,7 +5724,7 @@ async def handle_interrupt(websocket: WebSocket, data: dict):
             del session_streaming_states[session_id]
             cleaned = True
         if session_id in active_processing_sessions:
-            active_processing_sessions.pop(session_id, None)
+            await _record_chat_session_ended(session_id)
             recently_completed_sessions[session_id] = time.time()
             cleaned = True
         stop_tool_heartbeat(session_id)
@@ -6192,6 +6251,30 @@ def _build_agent_display_messages(prompt: str, result, agent_name: str) -> list:
 
 
 async def _execute_scheduled_task(task_info):
+    """Execute a single scheduled task. Wraps the body in running_agents.track()
+    so the firing shows up in running_agents() while it's in flight. The inner
+    invoke_agent calls register their own entries (kind=invoke_foreground /
+    invoke_trust) — two entries per scheduled-agent firing is intentional (see
+    plan §2)."""
+    if isinstance(task_info, dict):
+        _t_prompt = task_info.get("prompt", "") or ""
+        _t_id = task_info.get("id")
+        _t_agent = task_info.get("agent")
+    else:
+        _t_prompt = task_info if isinstance(task_info, str) else ""
+        _t_id = None
+        _t_agent = None
+
+    async with running_agents.track(
+        agent=_t_agent or "system",
+        kind="scheduled",
+        task_summary=_t_prompt,
+        scheduled_task_id=_t_id,
+    ):
+        await _execute_scheduled_task_body(task_info)
+
+
+async def _execute_scheduled_task_body(task_info):
     """Execute a single scheduled task. Extracted from scheduler_loop to allow concurrent dispatch."""
     try:
         # Handle both old format (string) and new format (dict with metadata)
@@ -6607,6 +6690,23 @@ async def scheduler_loop():
             # Periodic maintenance: clean up stale chat locks
             _cleanup_chat_locks()
 
+            # Periodic maintenance: drop running_agents entries whose track()
+            # context never unregistered (cancellation that swallowed
+            # CancelledError, code path that escaped a finally). Flat ceiling
+            # above the longest agent timeout; see running_agents
+            # RUNNING_AGENTS_STALE_AFTER_SECONDS.
+            try:
+                stale_entries = await running_agents.sweep_stale()
+                for entry in stale_entries:
+                    logger.warning(
+                        "running_agents: dropped stale entry "
+                        f"id={entry.get('id')} agent={entry.get('agent')} "
+                        f"kind={entry.get('kind')} elapsed="
+                        f"{time.time() - entry.get('started_at', time.time()):.0f}s"
+                    )
+            except Exception as e:
+                logger.warning(f"running_agents: periodic sweep failed: {e}")
+
             # Periodic maintenance: chat image garbage collection (once daily)
             await _maybe_run_image_gc()
 
@@ -6879,7 +6979,8 @@ async def _process_notification_batch(chat_id: str, notifications: list, queue) 
 Please review the agent response(s) and take any necessary follow-up action. If there are results to report, summarize them for the user. If there are errors, explain what went wrong and suggest next steps."""
 
         # Track active session for wake-up processing
-        active_processing_sessions[chat_id] = time.time()
+        _wakeup_agent = existing_chat.get("agent") if existing_chat else None
+        await _record_chat_session_started(chat_id, _wakeup_agent, count_str + " completed")
 
         # Start fresh session with conversation history injected
         notification_prompt = _build_history_context(conversation_history, notification_prompt_raw)
@@ -6935,7 +7036,7 @@ Please review the agent response(s) and take any necessary follow-up action. If 
 
         if not wakeup_agent_config:
             logger.error("No agent config available for wake-up handler")
-            active_processing_sessions.pop(chat_id, None)
+            await _record_chat_session_ended(chat_id)
             return
 
         try:
@@ -7054,7 +7155,7 @@ Please review the agent response(s) and take any necessary follow-up action. If 
             finalize_wakeup_segment()
         finally:
             active_claude_wrappers.pop(chat_id, None)
-            active_processing_sessions.pop(chat_id, None)
+            await _record_chat_session_ended(chat_id)
 
         # Append error content to last segment if any
         if error_content:
@@ -7261,6 +7362,19 @@ async def startup_event():
         _salon_dispatcher_mod.init_dispatcher(broadcast_to_all_clients)
     except Exception as e:
         logger.warning(f"Salons: startup wiring failed: {e}", exc_info=True)
+
+    # running_agents: log + clear any stale entries on startup. The in-memory
+    # dict is built from scratch at module import so it should always be empty;
+    # a non-empty result would indicate a module-reload bug (worth surfacing).
+    try:
+        stale = await running_agents.list_all()
+        if stale:
+            logger.warning(
+                f"running_agents: {len(stale)} stale entries on startup — clearing"
+            )
+            await running_agents.clear_all()
+    except Exception as e:
+        logger.warning(f"running_agents: startup sweep failed: {e}")
 
     # If there's a restart continuation, launch the wakeup task
     if restart_continuation:
