@@ -18,12 +18,14 @@ logger = logging.getLogger("agents.registry")
 # Note: "background" is NOT in this set - it's handled specially in load_all()
 SKIP_DIRS = {"notifications", "__pycache__", ".git"}
 
-# Valid models
-VALID_MODELS = {"sonnet", "opus", "haiku"}
+# Valid model aliases. Full OpenAI model ids are accepted too.
+VALID_MODEL_ALIASES = {"sonnet", "opus", "haiku"}
+VALID_OPENAI_MODEL_PREFIXES = ("gpt-", "o")
+VALID_MODELS = VALID_MODEL_ALIASES
 
-# Native Claude Code tools that agents can use.
+# Native Codex tools that agents can use.
 # Single source of truth lives in native_tools.py — edit that file to expose
-# new Anthropic tools in the Agent Builder. This module re-exports the flat
+# new Codex tools in the Agent Builder. This module re-exports the flat
 # set for backward compatibility with any consumer that imports it from here.
 from native_tools import all_native_tools as _all_native_tools
 
@@ -151,7 +153,7 @@ class AgentRegistry:
 
         try:
             # Load config
-            with open(config_path, "r") as f:
+            with open(config_path, "r", encoding="utf-8") as f:
                 config_data = yaml.safe_load(f) or {}
 
             # Load prompt from prompt.md
@@ -159,10 +161,10 @@ class AgentRegistry:
 
             prompt_path = agent_dir / "prompt.md"
             if prompt_path.exists():
-                prompt = prompt_path.read_text()
+                prompt = prompt_path.read_text(encoding="utf-8")
                 # Add subagent header for non-chattable agents only, and only if NOT using preset
                 # Chattable agents serve as primary in their own chat — no subagent header
-                # Preset agents get Claude Code's native system prompt — no subagent header
+                # Preset agents get native Codex coding instructions — no subagent header
                 if not config_data.get("chattable", False) and not config_data.get("system_prompt_preset"):
                     prompt = self._add_subagent_header(prompt)
 
@@ -170,20 +172,21 @@ class AgentRegistry:
             background_prompt = None
             bg_prompt_path = agent_dir / "background_processing.md"
             if bg_prompt_path.exists():
-                background_prompt = bg_prompt_path.read_text()
+                background_prompt = bg_prompt_path.read_text(encoding="utf-8")
             else:
                 # Fall back to shared default template
                 default_bg_path = self.base_dir / "_default" / "background_processing.md"
                 if default_bg_path.exists():
-                    background_prompt = default_bg_path.read_text()
+                    background_prompt = default_bg_path.read_text(encoding="utf-8")
 
             # Validate config
             if "name" not in config_data:
                 config_data["name"] = agent_dir.name
 
-            # Validate model
+            # Validate model. Legacy aliases are still accepted and mapped by
+            # codex_backend at invocation time.
             model = config_data.get("model", "sonnet")
-            if model not in VALID_MODELS:
+            if model not in VALID_MODEL_ALIASES and not str(model).startswith(VALID_OPENAI_MODEL_PREFIXES):
                 logger.warning(f"Agent {config_data['name']}: invalid model '{model}', using 'sonnet'")
                 config_data["model"] = "sonnet"
 

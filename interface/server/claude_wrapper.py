@@ -1,12 +1,16 @@
 """
-Claude Agent SDK Wrapper for Second Brain Interface
+Codex Wrapper for Second Brain Interface
 
-Uses the official Python SDK with:
+Dual-runtime wrapper for Second Brain Interface.
+
+Preserves the old wrapper API with:
 - Per-agent system prompts and memory (prompt.md + memory.md)
-- Full tool access with bypassPermissions
-- Streaming message support with partial events
-- All agents (including Character) route through run_chat()
+- Native Codex tools plus Second Brain MCP tools
+- JSONL event streaming from codex exec
+- run_chat() dispatches by agent_config.type: Codex by default, SDK when configured
 """
+
+from __future__ import annotations
 
 import os
 import sys
@@ -22,43 +26,109 @@ from typing import Optional, AsyncIterator, Dict, Any, List, Callable
 
 from filelock import FileLock
 
-from claude_agent_sdk import (
-    ClaudeSDKClient,
-    ClaudeAgentOptions,
-    AssistantMessage,
-    UserMessage,
-    SystemMessage,
-    ResultMessage,
-    TextBlock,
-    ToolUseBlock,
-    ToolResultBlock,
-    ThinkingBlock,
-)
-from claude_agent_sdk.types import PermissionResultAllow, HookMatcher
+from codex_backend import CodexRunOptions, run_codex
+
+os.environ.setdefault("CLAUDE_CODE_STREAM_CLOSE_TIMEOUT", "14400000")
+
+def _load_real_claude_agent_sdk():
+    """Load the installed Anthropic SDK even when the local shim shadows its package name."""
+    import importlib.metadata
+    import importlib.util
+
+    init_path = Path(
+        importlib.metadata.distribution("claude-agent-sdk").locate_file(
+            "claude_agent_sdk/__init__.py"
+        )
+    )
+    module_name = "_second_brain_real_claude_agent_sdk"
+    if module_name in sys.modules:
+        return sys.modules[module_name]
+    spec = importlib.util.spec_from_file_location(
+        module_name,
+        init_path,
+        submodule_search_locations=[str(init_path.parent)],
+    )
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Cannot load real claude_agent_sdk from {init_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
-async def _auto_approve_tool(tool_name: str, input_data: dict, context) -> PermissionResultAllow:
-    """Auto-approve ALL tool permission requests without prompting.
+def _create_real_sdk_mcp_server(name: str, version: str, tools: List[Any]) -> Dict[str, Any]:
+    """Adapt local compatibility MCP tools to the installed SDK server type."""
+    if _real_sdk is None:
+        raise RuntimeError("Installed claude-agent-sdk package is unavailable")
+    real_tools = [
+        _real_sdk.SdkMcpTool(
+            name=tool.name,
+            description=tool.description,
+            input_schema=tool.input_schema,
+            handler=tool.handler,
+            annotations=getattr(tool, "annotations", None),
+        )
+        for tool in tools
+    ]
+    return _real_sdk.create_sdk_mcp_server(name=name, version=version, tools=real_tools)
 
-    bypassPermissions handles most cases, but Claude Code has hardcoded protection
-    for .claude/, .git/, .vscode/, .idea/ directories that still prompts even in
-    bypass mode.  In SDK sessions there is no user to respond, so the prompt times
-    out to a denial.  This callback catches those prompts and approves them.
-    """
+
+_real_sdk = None
+
+try:
+    _real_sdk = _load_real_claude_agent_sdk()
+    ClaudeSDKClient = _real_sdk.ClaudeSDKClient
+    ClaudeAgentOptions = _real_sdk.ClaudeAgentOptions
+    SDK_QUERY = _real_sdk.query
+    AssistantMessage = _real_sdk.AssistantMessage
+    UserMessage = _real_sdk.UserMessage
+    SystemMessage = getattr(_real_sdk, "SystemMessage", None)
+    ResultMessage = _real_sdk.ResultMessage
+    TextBlock = _real_sdk.TextBlock
+    ToolUseBlock = _real_sdk.ToolUseBlock
+    ToolResultBlock = _real_sdk.ToolResultBlock
+    ThinkingBlock = _real_sdk.ThinkingBlock
+    _real_sdk_types = sys.modules[f"{_real_sdk.__name__}.types"]
+    PermissionResultAllow = _real_sdk_types.PermissionResultAllow
+    HookMatcher = _real_sdk_types.HookMatcher
+    StreamEvent = _real_sdk_types.StreamEvent
+    ThinkingConfigAdaptive = _real_sdk_types.ThinkingConfigAdaptive
+    ThinkingConfigEnabled = _real_sdk_types.ThinkingConfigEnabled
+except Exception:
+    ClaudeSDKClient = ClaudeAgentOptions = SDK_QUERY = None
+    AssistantMessage = UserMessage = SystemMessage = ResultMessage = None
+    TextBlock = ToolUseBlock = ToolResultBlock = ThinkingBlock = None
+    PermissionResultAllow = HookMatcher = StreamEvent = None
+    ThinkingConfigAdaptive = ThinkingConfigEnabled = None
+
+logger = logging.getLogger(__name__)
+
+
+async def _auto_approve_tool(tool_name: str, input_data: dict, context):
+    """Auto-approve SDK tool permission prompts that bypassPermissions does not suppress."""
+    if PermissionResultAllow is None:
+        raise RuntimeError("claude_agent_sdk is unavailable")
     return PermissionResultAllow(updated_input=input_data)
 
 
 async def _keepalive_hook(input_data, tool_use_id, context):
-    """Dummy PreToolUse hook — required by the Python SDK to keep the stream open
-    for the can_use_tool callback."""
+    """PreToolUse hook required to keep SDK streaming input alive for tool callbacks."""
     return {"continue_": True}
-from claude_agent_sdk.types import (
-    StreamEvent,
-    ThinkingConfigAdaptive,
-    ThinkingConfigEnabled,
-)
 
-logger = logging.getLogger(__name__)
+
+THINKING_DEFAULTS = {
+    "opus": {
+        "thinking": ThinkingConfigAdaptive(type="adaptive") if ThinkingConfigAdaptive else None,
+        "effort": "high",
+    },
+    "sonnet": {
+        "thinking": ThinkingConfigAdaptive(type="adaptive") if ThinkingConfigAdaptive else None,
+        "effort": "high",
+    },
+    "haiku": {
+        "thinking": ThinkingConfigEnabled(type="enabled", budget_tokens=16384) if ThinkingConfigEnabled else None,
+    },
+}
 
 # Import custom MCP tools
 try:
@@ -74,29 +144,44 @@ except Exception as e:
     MCP_PREFIX = "mcp__brain__"
 
 
-# Native tool availability is controlled via the SDK's `tools=[list]` parameter
-# (whitelist-only). Source of truth is .claude/agents/native_tools.py — any
-# tool not listed there (including future Anthropic-shipped tools like Cron*,
-# Monitor, PushNotification, ScheduleWakeup, EnterWorktree, RemoteTrigger,
-# Skill, etc.) is never exposed to agents. No blacklist, no silent enabling.
+def _resolve_external_env(value: str) -> str:
+    import re
 
-# Model-aware thinking defaults — maximize thinking for every model tier
-# Keys match the short model aliases used in agent config.yaml files
-THINKING_DEFAULTS = {
-    "opus": {
-        "thinking": ThinkingConfigAdaptive(type="adaptive"),
-        "effort": "high",
-    },
-    "sonnet": {
-        "thinking": ThinkingConfigAdaptive(type="adaptive"),
-        "effort": "high",
-    },
-    "haiku": {
-        "thinking": ThinkingConfigEnabled(type="enabled", budget_tokens=16384),
-    },
-}
+    def _replace(match):
+        name = match.group(1)
+        resolved = os.environ.get(name, "")
+        if not resolved:
+            logger.warning(f"External MCP config references ${{{name}}} but it is not set")
+        return resolved
+
+    return re.sub(r"\$\{([^}]+)\}", _replace, value)
 
 
+def _load_external_mcp_servers(cwd: Path) -> Dict[str, Dict[str, Any]]:
+    config_path = cwd / ".claude" / "agents" / "external_mcp_servers.json"
+    if not config_path.exists():
+        return {}
+    try:
+        raw = json.loads(config_path.read_text())
+        resolved = {}
+        for name, config in raw.items():
+            cfg = dict(config)
+            if isinstance(cfg.get("args"), list):
+                cfg["args"] = [_resolve_external_env(v) if isinstance(v, str) else v for v in cfg["args"]]
+            if isinstance(cfg.get("env"), dict):
+                cfg["env"] = {
+                    key: _resolve_external_env(value) if isinstance(value, str) else value
+                    for key, value in cfg["env"].items()
+                }
+            resolved[name] = cfg
+        return resolved
+    except Exception as exc:
+        logger.warning(f"Failed to load external MCP servers from {config_path}: {exc}")
+        return {}
+
+
+# Native tool availability is controlled by the shared Codex backend's
+# legacy-name mapping. Source of truth is .claude/agents/native_tools.py.
 
 class MessageInjectionQueue:
     """
@@ -118,7 +203,7 @@ class MessageInjectionQueue:
 
         Args:
             prompt: Either a string or a list of content blocks (for multimodal messages).
-                    Content blocks follow the Anthropic API format:
+                    Content blocks follow the legacy multimodal content format:
                     [{"type": "text", "text": "..."}, {"type": "image", "source": {...}}]
         """
         self._initial_content = prompt
@@ -176,7 +261,7 @@ class MessageInjectionQueue:
 
 
 class ClaudeWrapper:
-    """Async wrapper for Claude Agent SDK with streaming support."""
+    """Async wrapper for Codex CLI with streaming support."""
 
     # HARD LIMIT: Must stay under Linux MAX_ARG_STRLEN (131,072 bytes / 128KB).
     # SDK's _SINGLE_ARG_LENGTH_LIMIT raised to 130,000 to avoid broken shell wrapper.
@@ -188,7 +273,7 @@ class ClaudeWrapper:
         self.cwd = cwd
         self.chat_id = chat_id  # Storage chat ID for MCP server context
         self.chat_messages = chat_messages or []
-        self.client: Optional[ClaudeSDKClient] = None
+        self.client: Optional[Any] = None
         self._current_session_id: Optional[str] = None
         self._conversation_history: List[Dict[str, Any]] = []
         # Message injection queue for mid-stream messages
@@ -261,14 +346,11 @@ class ClaudeWrapper:
         return self._injection_queue
 
     async def interrupt(self):
-        """Send interrupt signal to running Claude session.
+        """Send interrupt signal to a running Codex session.
 
-        Works in three phases:
-        1. Before SDK client exists (query rewriter / contextual memory phase):
-           cancel the running task so pre-phase awaits raise CancelledError.
-        2. After SDK client exists: call client.interrupt() normally.
-        3. Always: mark self._interrupted so the checkpoint between phases
-           can bail out cleanly even if task cancellation misses a window.
+        The Codex backend runs as an asyncio subprocess task, so interrupting is
+        task cancellation plus an app-level interrupted flag checked between
+        context assembly and process startup.
         """
         # Mark first — checkpoint reads this between rewriter and SDK init
         self._interrupted = True
@@ -280,13 +362,11 @@ class ClaudeWrapper:
         if self.client:
             try:
                 await self.client.interrupt()
-                logger.info("Claude session interrupted")
+                logger.info("SDK session interrupted")
             except Exception as e:
-                logger.error(f"Error interrupting: {e}")
+                logger.error(f"Error interrupting SDK client: {e}")
         elif self._current_task is not None and not self._current_task.done():
-            # Pre-SDK phase: cancel the running task so the rewriter /
-            # contextual memory awaits raise CancelledError and exit early.
-            logger.info("Interrupt during pre-SDK phase — cancelling current task")
+            logger.info("Interrupt during Codex/pre-runtime phase — cancelling current task")
             self._current_task.cancel()
 
 
@@ -396,12 +476,64 @@ class ClaudeWrapper:
             parts.append(wm_block)
         return parts
 
-    def _build_options(self, agent_config) -> ClaudeAgentOptions:
+    def _build_codex_identity_and_tools(self, agent_config) -> tuple[str, List[str], Any, bool]:
+        """Build Codex identity instructions and the effective legacy tool list."""
+        agent_tools = agent_config.tools or []
+        mcp_tool_names = [t for t in agent_tools if t.startswith("mcp__")]
+        internal_mcp_tool_names = [t for t in mcp_tool_names if t.startswith(MCP_PREFIX)]
+        native_tool_names = [t for t in agent_tools if not t.startswith("mcp__")]
+
+        agent_skills = getattr(agent_config, "skills", None)
+        agent_has_skills = agent_skills is None or (isinstance(agent_skills, list) and len(agent_skills) > 0)
+        fetch_skill_mcp = f"{MCP_PREFIX}fetch_skill"
+        if agent_has_skills and fetch_skill_mcp not in mcp_tool_names:
+            mcp_tool_names.append(fetch_skill_mcp)
+
+        wm_tools = [
+            f"{MCP_PREFIX}working_memory_add",
+            f"{MCP_PREFIX}working_memory_update",
+            f"{MCP_PREFIX}working_memory_remove",
+            f"{MCP_PREFIX}working_memory_list",
+            f"{MCP_PREFIX}working_memory_snapshot",
+        ]
+        for wm_tool in wm_tools:
+            if wm_tool not in mcp_tool_names:
+                mcp_tool_names.append(wm_tool)
+
+        agent_list_block = ""
+        try:
+            from mcp_tools.agents import get_agent_list_for_prompt
+            agent_list_block = get_agent_list_for_prompt(mcp_tool_names) or ""
+            if agent_list_block:
+                logger.info(f"Chattable agent '{agent_config.name}': will inject agent list into system prompt")
+        except Exception as e:
+            logger.warning(f"Chattable agent '{agent_config.name}': failed to get agent list: {e}")
+
+        system_prompt = (
+            self._build_system_prompt_preset(agent_config, agent_list_block)
+            if agent_config.system_prompt_preset
+            else self._build_system_prompt(agent_config, agent_list_block)
+        )
+        if isinstance(system_prompt, dict):
+            identity = system_prompt.get("append", "")
+        else:
+            identity = system_prompt or ""
+
+        if agent_config.system_prompt_preset:
+            effective_tools = list(mcp_tool_names)
+        else:
+            effective_tools = list(native_tool_names) + list(mcp_tool_names)
+
+        allowed_skills = agent_skills if agent_has_skills else "NO_SKILLS"
+        return identity, effective_tools, allowed_skills, bool(agent_config.system_prompt_preset)
+
+    def _build_sdk_options(self, agent_config) -> ClaudeAgentOptions:
         """Build SDK options for any chattable agent (including Character)."""
         # Separate native tools from MCP tools (needed before building system prompt
         # so we can compute the agent list block for injection above memory).
         agent_tools = agent_config.tools or []
         mcp_tool_names = [t for t in agent_tools if t.startswith("mcp__")]
+        internal_mcp_tool_names = [t for t in mcp_tool_names if t.startswith(MCP_PREFIX)]
         native_tool_names = [t for t in agent_tools if not t.startswith("mcp__")]
 
         # Auto-include fetch_skill if agent has skill access
@@ -422,6 +554,7 @@ class ClaudeWrapper:
         for wm_tool in WM_TOOLS:
             if wm_tool not in mcp_tool_names:
                 mcp_tool_names.append(wm_tool)
+        internal_mcp_tool_names = [t for t in mcp_tool_names if t.startswith(MCP_PREFIX)]
 
         # Pre-compute agent list block for injection above memory in system prompt.
         agent_list_block = ""
@@ -451,15 +584,35 @@ class ClaudeWrapper:
 
         # Create filtered MCP server (with agent_name for memory isolation, allowed_skills for fetch_skill)
         mcp_servers = {}
-        if create_mcp_server and mcp_tool_names:
-            internal_names = [t.replace(MCP_PREFIX, "") for t in mcp_tool_names]
-            mcp_servers["brain"] = create_mcp_server(
+        if create_mcp_server and internal_mcp_tool_names:
+            internal_names = [t.replace(MCP_PREFIX, "") for t in internal_mcp_tool_names]
+            mcp_server = create_mcp_server(
                 name="brain",
                 include_tools=internal_names,
                 chat_id=self.chat_id,
                 agent_name=agent_config.name,
                 allowed_skills=agent_skills if agent_has_skills else "NO_SKILLS",
             )
+            # mcp_tools returns local compatibility MCP objects for the Codex
+            # bridge. The installed Anthropic SDK subprocess can only JSON-encode
+            # its own server/tool config, so adapt the internal chat MCP server
+            # before handing it to ClaudeAgentOptions. Mirrors runner.py.
+            if isinstance(mcp_server, dict) and "tools" in mcp_server:
+                mcp_server = _create_real_sdk_mcp_server(
+                    name="brain",
+                    version=str(mcp_server.get("version") or "1.0.0"),
+                    tools=list(mcp_server["tools"]),
+                )
+            mcp_servers["brain"] = mcp_server
+
+        external_config = _load_external_mcp_servers(Path(self.cwd))
+        for server_name, server_config in external_config.items():
+            prefix = f"mcp__{server_name}__"
+            if any(t.startswith(prefix) for t in agent_tools):
+                mcp_servers[server_name] = server_config
+                logger.info(
+                    f"Added external MCP server '{server_name}' for chattable agent '{agent_config.name}'"
+                )
 
         options_kwargs = {
             "model": agent_config.model,
@@ -504,7 +657,7 @@ class ClaudeWrapper:
         #   Empty list means no native tools (only MCP) — passing [] makes the SDK
         #   emit `--tools ""`, which disables all natives at the CLI level.
         if use_preset:
-            options_kwargs["tools"] = {"type": "preset", "preset": "claude_code"}
+            options_kwargs["tools"] = {"type": "preset", "preset": agent_config.system_prompt_preset}
         else:
             options_kwargs["tools"] = list(native_tool_names)
 
@@ -544,6 +697,35 @@ class ClaudeWrapper:
         use_streaming_input: bool = True,
         session_id: Optional[str] = None,
     ) -> AsyncIterator[Dict[str, Any]]:
+        """Dispatch chat turns to the runtime selected by agent_config.type."""
+        runtime_type = getattr(getattr(agent_config, "type", None), "value", getattr(agent_config, "type", "codex"))
+        if runtime_type == "sdk":
+            async for event in self._run_chat_sdk(
+                prompt,
+                agent_config,
+                conversation_history=conversation_history,
+                use_streaming_input=use_streaming_input,
+                session_id=session_id,
+            ):
+                yield event
+        else:
+            async for event in self._run_chat_codex(
+                prompt,
+                agent_config,
+                conversation_history=conversation_history,
+                use_streaming_input=use_streaming_input,
+                session_id=session_id,
+            ):
+                yield event
+
+    async def _run_chat_sdk(
+        self,
+        prompt,
+        agent_config,
+        conversation_history: Optional[List[Dict[str, Any]]] = None,
+        use_streaming_input: bool = True,
+        session_id: Optional[str] = None,
+    ) -> AsyncIterator[Dict[str, Any]]:
         """
         Execute a prompt through an agent and stream results.
 
@@ -556,7 +738,7 @@ class ClaudeWrapper:
         # cancel us during the pre-SDK phases (rewriter, retrieval).
         self._interrupted = False
         self._current_task = asyncio.current_task()
-        options = self._build_options(agent_config)
+        options = self._build_sdk_options(agent_config)
 
         # Build the dynamic context layer (always_load memories + working memory).
         # Contextual retrieval is appended below. The final block is prepended to
@@ -786,6 +968,263 @@ class ClaudeWrapper:
                 except Exception:
                     pass
                 self.client = None
+            self._current_task = None
+
+        logger.info(f"Agent chat '{agent_config.name}' completed, session_id={self._current_session_id}")
+
+
+    async def _run_chat_codex(
+        self,
+        prompt,
+        agent_config,
+        conversation_history: Optional[List[Dict[str, Any]]] = None,
+        use_streaming_input: bool = True,
+        session_id: Optional[str] = None,
+    ) -> AsyncIterator[Dict[str, Any]]:
+        """Execute a prompt through the Codex backend and stream results."""
+        self._conversation_history = conversation_history or []
+        # Reset interrupt state and record the running task so interrupt() can
+        # cancel us during the pre-SDK phases (rewriter, retrieval).
+        self._interrupted = False
+        self._current_task = asyncio.current_task()
+        identity_instructions, effective_tools, allowed_skills, use_native_coding = self._build_codex_identity_and_tools(agent_config)
+        context_parts = []
+        if getattr(agent_config, "thinking_budget", None):
+            logger.warning(
+                "Agent '%s' still declares thinking_budget=%s; Codex maps reasoning through effort, not budget tokens",
+                agent_config.name,
+                agent_config.thinking_budget,
+            )
+
+        # Build the dynamic context layer (always_load memories + working memory).
+        # Contextual retrieval is appended below. The final block is prepended to
+        # the user message — not to system_prompt — so it travels over stdin
+        # rather than argv (sidesteps Linux MAX_ARG_STRLEN cliff on system_prompt).
+        context_parts.extend(self._build_context_parts(agent_config))
+
+        # Auto-retrieve contextual memories relevant to the user's message
+        try:
+            scripts_dir = str(Path(self.cwd) / ".claude" / "scripts")
+            if scripts_dir not in sys.path:
+                sys.path.insert(0, scripts_dir)
+            from contextual_memory import auto_retrieve_context, rewrite_query_for_retrieval
+
+            # Extract raw user text for retrieval query
+            if isinstance(prompt, list):
+                raw_query = " ".join(
+                    block.get("text", "") for block in prompt if block.get("type") == "text"
+                )
+            else:
+                raw_query = str(prompt)
+            # No truncation — chat history is naturally bounded by model context
+
+            # 20s timeout — Sonnet rewriter success is 3-5s, but the SDK
+            # subprocess can hang indefinitely (~10-20×/day). Without this
+            # wrapper, a hung subprocess freezes the user's message for
+            # 30-76s before crashing. On timeout, fall back to raw prompt.
+            try:
+                retrieval_queries = await asyncio.wait_for(
+                    rewrite_query_for_retrieval(
+                        raw_query,
+                        self._conversation_history,
+                        session_id=session_id,
+                        agent_name=agent_config.name,
+                    ),
+                    timeout=20.0,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    f"Query rewriter timed out after 20s for agent "
+                    f"'{agent_config.name}' — falling back to raw prompt."
+                )
+                retrieval_queries = [(raw_query, 1.0)]
+            # Run CPU-bound retrieval (embedding model inference) in a thread
+            # to avoid blocking the event loop / freezing WebSocket heartbeats
+            loop = asyncio.get_event_loop()
+            ctx_block = await asyncio.wait_for(
+                loop.run_in_executor(
+                    None,
+                    functools.partial(
+                        auto_retrieve_context,
+                        query=retrieval_queries,
+                        agent_name=agent_config.name,
+                    ),
+                ),
+                timeout=15.0,  # 15s max — don't let retrieval stall the agent
+            )
+            if ctx_block:
+                context_parts.append(ctx_block)
+                logger.info(f"Agent '{agent_config.name}': appended contextual memory to user-prefix context block")
+        except asyncio.CancelledError:
+            # User pressed stop during rewriter / retrieval — bail out cleanly
+            # before we create the SDK client and start a real agent turn.
+            logger.info(f"Agent '{agent_config.name}': pre-SDK phase cancelled by user interrupt")
+            self._current_task = None
+            return
+        except Exception as e:
+            logger.warning(f"Agent '{agent_config.name}': contextual memory auto-retrieve failed: {e}")
+
+        # Checkpoint: if interrupt() was called during the pre-SDK phase but
+        # cancellation didn't propagate (e.g. it hit a non-cancellable await,
+        # or landed in the broad Exception handler above), stop here before
+        # spinning up the real SDK client.
+        if self._interrupted:
+            logger.info(f"Agent '{agent_config.name}': interrupt flag set — aborting before SDK init")
+            self._current_task = None
+            return
+
+        # Wrap the dynamic context in a <system-injected> envelope and prepend
+        # to the user message. This is the stdin path — no MAX_ARG_STRLEN limit,
+        # even when always_load memories grow into the hundreds-of-KB range.
+        import prompt_assembly
+        context_block = prompt_assembly.build_context_block(context_parts)
+        if context_block:
+            prompt = prompt_assembly.prepend_context_to_prompt(prompt, context_block)
+            logger.info(
+                f"Agent '{agent_config.name}': prepended {len(context_block)} chars of "
+                f"context (<system-injected> envelope) to user message"
+            )
+
+        logger.info(f"Running agent chat '{agent_config.name}': model={agent_config.model}, streaming_input={use_streaming_input}")
+
+        try:
+            session_id = str(uuid.uuid4())
+            self._current_session_id = session_id
+            yield {"type": "session_init", "id": session_id}
+
+            started = time.time()
+            seen_blocks: set[str] = set()
+
+            async def _stream_blocks(blocks: List[Dict[str, Any]]) -> None:
+                for block in blocks:
+                    block_id = block.get("id")
+                    if not block_id or block_id in seen_blocks:
+                        continue
+                    seen_blocks.add(block_id)
+                    btype = block.get("type")
+                    if btype == "text":
+                        text = block.get("content", "")
+                        if text:
+                            yield_event = {"type": "content_delta", "text": text}
+                            await event_queue.put(yield_event)
+                    elif btype == "tool_use":
+                        tool_id = block.get("id")
+                        tool_name = block.get("name") or block.get("tool_name") or "tool"
+                        await event_queue.put({"type": "tool_start", "name": tool_name, "id": tool_id})
+                        await event_queue.put({
+                            "type": "tool_use",
+                            "name": tool_name,
+                            "id": tool_id,
+                            "args": block.get("input") or block.get("tool_input") or "{}",
+                        })
+                    elif btype == "tool_result":
+                        await event_queue.put({
+                            "type": "tool_end",
+                            "name": block.get("name", "tool"),
+                            "id": block.get("tool_call_id") or block.get("id"),
+                            "output": str(block.get("content", ""))[:2000],
+                            "is_error": bool(block.get("is_error")),
+                        })
+
+            event_queue: asyncio.Queue[Optional[Dict[str, Any]]] = asyncio.Queue()
+
+            async def _run() -> None:
+                try:
+                    run_options = CodexRunOptions(
+                        model=agent_config.model,
+                        cwd=self.cwd,
+                        identity_instructions=identity_instructions,
+                        prompt=prompt,
+                        tools=effective_tools,
+                        timeout_seconds=getattr(agent_config, "timeout_seconds", 14400),
+                        max_turns=getattr(agent_config, "max_turns", 200),
+                        effort=getattr(agent_config, "effort", None),
+                        use_native_coding_instructions=use_native_coding,
+                        chat_id=self.chat_id,
+                        agent_name=agent_config.name,
+                        allowed_skills=allowed_skills,
+                        external_mcp_servers=_load_external_mcp_servers(Path(self.cwd)),
+                    )
+                    result = await run_codex(run_options, stream_callback=_stream_blocks)
+                    if (
+                        result.returncode == 0
+                        and not result.blocks
+                        and not (result.response or "").strip()
+                        and run_options.effort != "low"
+                    ):
+                        logger.warning(
+                            "Agent chat '%s' returned empty Codex content; retrying once with effort=low",
+                            agent_config.name,
+                        )
+                        retry_prompt = (
+                            "IMPORTANT: Produce a visible assistant reply. "
+                            "If the request involves images, answer briefly in text before deciding whether to use tools.\n\n"
+                            f"{run_options.prompt}"
+                        )
+                        retry_options = CodexRunOptions(
+                            **{
+                                **run_options.__dict__,
+                                "effort": "low",
+                                "prompt": retry_prompt,
+                            }
+                        )
+                        result = await run_codex(retry_options, stream_callback=_stream_blocks)
+                    await _stream_blocks(result.blocks)
+                    if result.returncode == 0 and not result.blocks and not (result.response or "").strip():
+                        logger.warning(
+                            "Agent chat '%s' returned no Codex content blocks and no response text",
+                            agent_config.name,
+                        )
+                        await event_queue.put({
+                            "type": "error",
+                            "text": "Codex completed this turn without returning any assistant text or tool calls.",
+                        })
+                    usage = result.usage or {}
+                    input_tokens = usage.get("input_tokens", 0)
+                    output_tokens = usage.get("output_tokens", 0)
+                    cached = usage.get("cached_input_tokens", 0)
+                    await event_queue.put({
+                        "type": "result_meta",
+                        # Second Brain owns chat/session ids. Codex thread ids are
+                        # backend metadata, not durable app session identifiers.
+                        "session_id": session_id,
+                        "cost_usd": 0,
+                        "duration_ms": int((time.time() - started) * 1000),
+                        "num_turns": 0,
+                        "is_error": result.returncode != 0,
+                        "usage": {
+                            "input_tokens": input_tokens,
+                            "output_tokens": output_tokens,
+                            "cache_read_input_tokens": cached,
+                            "cache_creation_input_tokens": 0,
+                            "total_tokens": input_tokens + output_tokens,
+                        },
+                    })
+                    if result.returncode != 0:
+                        await event_queue.put({"type": "error", "text": result.stderr or f"Codex exited with {result.returncode}"})
+                except Exception as exc:
+                    logger.error(f"Agent chat Codex error: {exc}", exc_info=True)
+                    await event_queue.put({"type": "error", "text": str(exc)})
+                finally:
+                    await event_queue.put(None)
+
+            runner_task = asyncio.create_task(_run())
+            self._current_task = runner_task
+            while True:
+                event = await event_queue.get()
+                if event is None:
+                    break
+                yield event
+            try:
+                await runner_task
+            except asyncio.CancelledError:
+                logger.info(f"Agent chat '{agent_config.name}' interrupted")
+
+        finally:
+            if self._injection_queue:
+                self._injection_queue.close()
+                self._injection_queue = None
+            self.client = None
             self._current_task = None
 
         logger.info(f"Agent chat '{agent_config.name}' completed, session_id={self._current_session_id}")

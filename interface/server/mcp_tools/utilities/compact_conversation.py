@@ -137,10 +137,10 @@ async def _summarize_messages(messages: List[Dict]) -> str:
     """
     Run the compaction subagent to summarize older messages.
 
-    Uses Opus via the Claude Agent SDK for maximum comprehension and thoroughness.
+    Uses the configured Opus-equivalent Codex model for maximum comprehension and thoroughness.
     Returns a text summary.
     """
-    from claude_agent_sdk import query, ClaudeAgentOptions, ResultMessage
+    from codex_backend import CodexRunOptions, ROOT_DIR, run_codex
 
     conversation_text = _format_messages_for_summary(messages)
 
@@ -152,21 +152,19 @@ async def _summarize_messages(messages: List[Dict]) -> str:
     )
 
     try:
-        result_text = None
-
-        async for message in query(
-            prompt=prompt,
-            options=ClaudeAgentOptions(
+        result = await run_codex(
+            CodexRunOptions(
                 model="opus",
-                system_prompt=COMPACTION_SYSTEM_PROMPT,
+                cwd=str(ROOT_DIR),
+                identity_instructions=COMPACTION_SYSTEM_PROMPT,
+                prompt=prompt,
+                tools=[],
+                timeout_seconds=240,
                 max_turns=1,
-                permission_mode="bypassPermissions",
-                allowed_tools=[],
-                setting_sources=[],
-            ),
-        ):
-            if isinstance(message, ResultMessage) and message.result:
-                result_text = message.result
+                ephemeral=True,
+            )
+        )
+        result_text = result.response
 
         if result_text:
             logger.info(
@@ -617,7 +615,7 @@ async def run_salon_compaction(
         }
 
     # Reuse the 1:1 compaction subagent, with a salon-flavored prompt.
-    from claude_agent_sdk import query, ClaudeAgentOptions, ResultMessage
+    from codex_backend import CodexRunOptions, ROOT_DIR, run_codex
     salon_intro = (
         f"This is a group-chat (\"salon\") between the user and multiple AI agents. "
         f"Participants visible in this excerpt: "
@@ -626,20 +624,19 @@ async def run_salon_compaction(
     )
 
     try:
-        summary_text: Optional[str] = None
-        async for msg in query(
-            prompt=f"{salon_intro}\n\n{rendered_older}",
-            options=ClaudeAgentOptions(
+        result = await run_codex(
+            CodexRunOptions(
                 model="opus",
-                system_prompt=COMPACTION_SYSTEM_PROMPT,
+                cwd=str(ROOT_DIR),
+                identity_instructions=COMPACTION_SYSTEM_PROMPT,
+                prompt=f"{salon_intro}\n\n{rendered_older}",
+                tools=[],
+                timeout_seconds=240,
                 max_turns=1,
-                permission_mode="bypassPermissions",
-                allowed_tools=[],
-                setting_sources=[],
-            ),
-        ):
-            if isinstance(msg, ResultMessage) and msg.result:
-                summary_text = msg.result
+                ephemeral=True,
+            )
+        )
+        summary_text = result.response
     except Exception as e:
         logger.error(f"Salon summarize failed: {e}", exc_info=True)
         return {

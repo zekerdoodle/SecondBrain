@@ -21,6 +21,11 @@ unset APPLY_PATCH_FORCE_SMOKE_FAIL APPLY_PATCH_FORCE_SMOKE_FAIL_ALWAYS
 # Disable tool search/deferral — load all tools upfront
 export ENABLE_TOOL_SEARCH=false
 
+# The Codex CLI is installed under nvm on this server, while this script can be
+# launched from non-interactive processes that do not source nvm shell hooks.
+export SECOND_BRAIN_CODEX_BIN="${SECOND_BRAIN_CODEX_BIN:-/home/debian/.nvm/versions/node/v22.17.1/bin/codex}"
+export PATH="$(dirname "$SECOND_BRAIN_CODEX_BIN"):$PATH"
+
 echo "Quick restart (skipping frontend build)..."
 
 # Gracefully stop previous server (SIGTERM first so shutdown handler can save state)

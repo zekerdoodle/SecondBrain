@@ -1,6 +1,6 @@
 ---
 name: app-create
-description: Create interactive HTML apps that run in the Second Brain editor with persistence and Claude integration.
+description: Create interactive HTML apps that run in the Second Brain editor with persistence and AI bridge integration.
 updated: 2026-02-15
 ---
 
@@ -18,7 +18,7 @@ Always include the shared UI kit for consistent theming and utilities:
 ```
 
 - **theme.css** — Full Catppuccin Mocha palette as CSS custom properties + base reset + component styles (cards, buttons, inputs, tabs, modals, toasts, alerts, toggles, empty states, utility classes)
-- **brain-kit.js** — `BrainKit.store()`, `.toast()`, `.modal()`, `.tabs()`, `.askClaude()`, `.router()` helpers
+- **brain-kit.js** — `BrainKit.store()`, `.toast()`, `.modal()`, `.tabs()`, legacy-named `.askClaude()`, `.router()` helpers
 
 ## Boilerplate Structure
 
@@ -79,15 +79,15 @@ These are injected automatically into all HTML apps by the editor.
 - `path`: Relative to 05_App_Data/
 - Returns: Promise<string> (file contents)
 
-#### promptClaude(prompt) — v1, fire-and-forget
-- `prompt`: String to send to Claude (appears in chat)
+#### promptClaude(prompt) — legacy-named v1, fire-and-forget
+- `prompt`: String to send through the AI bridge (appears in chat)
 - Use `/skill-name` prefix for structured requests
 - No return value
 
-#### askClaude(prompt, options?) — v2, request-response
-- `prompt`: String prompt for Claude
+#### askClaude(prompt, options?) — legacy-named v2, request-response
+- `prompt`: String prompt for the AI bridge
 - `options.systemHint`: Optional system context
-- Returns: Promise<string> (Claude's response)
+- Returns: Promise<string> (AI bridge response)
 
 #### listFiles(dirPath?)
 - `dirPath`: Relative to 05_App_Data/ (default: root)
@@ -133,7 +133,7 @@ Promise-based choice dialog. Returns selected `value` or `null` if dismissed.
 #### BrainKit.tabs({ bar, pages, active?, onSwitch? })
 Tab switching helper. Returns `{ switchTo(tabId) }`.
 
-#### BrainKit.askClaude(prompt, { json? })
+#### BrainKit.askClaude(prompt, { json? }) — legacy-named helper
 Convenience wrapper that optionally parses JSON responses (strips markdown fences).
 
 #### BrainKit.router({ routes, el?, onNotFound? })
@@ -172,7 +172,7 @@ Route handlers receive `{ params, el }`.
 2. **Naming**: `app-name/index.html` + data files in same folder
 3. **Styling**: Use shared `theme.css` — no inline color values
 4. **State management**: Use `BrainKit.store()` for all persistence
-5. **Skills**: Create companion skills for Claude-side logic (e.g., /practice-review)
+5. **Skills**: Create companion skills for agent-side logic (e.g., /practice-review)
 6. **Registration**: Add app to `05_App_Data/apps.json` for the app launcher
 
 ## Vite Template (for Complex Apps)

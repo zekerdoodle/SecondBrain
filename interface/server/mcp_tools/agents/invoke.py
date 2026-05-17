@@ -8,9 +8,13 @@ Tools for invoking specialized agents:
 """
 
 import asyncio
+import json
 import os
 import sys
 import time
+import urllib.error
+import urllib.request
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from claude_agent_sdk import tool
@@ -18,7 +22,9 @@ from claude_agent_sdk import tool
 from ..registry import register_tool
 
 # Add agents directory to path
-AGENTS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../.claude/agents"))
+ROOT_DIR = Path(__file__).resolve().parents[4]
+AGENTS_DIR = str(ROOT_DIR / ".claude" / "agents")
+INTERNAL_AGENT_INVOKE_TOKEN_FILE = ROOT_DIR / ".claude" / ".secrets" / "internal_agent_invoke_token"
 if AGENTS_DIR not in sys.path:
     sys.path.insert(0, AGENTS_DIR)
 
@@ -133,13 +139,83 @@ def _append_conversation_footer(text: str, conversation_id: Optional[str]) -> st
     return f"{text}\n\n---\n[conversation_id: {conversation_id}]"
 
 
+def _running_under_codex_stdio_bridge() -> bool:
+    """Best-effort detection for the Codex stdio MCP bridge process."""
+    argv = " ".join(sys.argv)
+    return "mcp_tools/stdio_server.py" in argv or argv.endswith("stdio_server.py")
+
+
+def _running_in_backend_process() -> bool:
+    """Return True only in the long-lived backend process that owns ping tasks."""
+    backend_pid = os.environ.get("SECOND_BRAIN_BACKEND_PID")
+    if not backend_pid:
+        return False
+    try:
+        return int(backend_pid) == os.getpid()
+    except ValueError:
+        return False
+
+
+def _should_relay_ping_to_backend() -> bool:
+    """Ping acks are trustworthy only when launch is owned by the backend loop."""
+    return not _running_in_backend_process()
+
+
+def _get_internal_agent_invoke_token() -> Optional[str]:
+    # The backend-published token file is the canonical cross-process handoff.
+    # Codex may scrub MCP bridge env, and inherited env can be stale across
+    # backend restarts, so only fall back to env when the file is unavailable.
+    try:
+        token = INTERNAL_AGENT_INVOKE_TOKEN_FILE.read_text(encoding="utf-8").strip()
+    except OSError:
+        token = None
+    if token:
+        return token
+    return os.environ.get("SECOND_BRAIN_INTERNAL_AGENT_TOKEN") or None
+
+
+def _post_internal_agent_invoke(payload: Dict[str, Any]) -> Dict[str, Any]:
+    token = _get_internal_agent_invoke_token()
+    if not token:
+        return {"error": "internal ping relay token unavailable"}
+
+    base_url = os.environ.get("SECOND_BRAIN_INTERNAL_BASE_URL", "http://127.0.0.1:8000")
+    url = base_url.rstrip("/") + "/api/internal/agent-invoke"
+    body = json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Second-Brain-Internal-Token": token,
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            raw = response.read().decode("utf-8")
+            return json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", errors="replace")
+        try:
+            data = json.loads(detail)
+            detail = data.get("detail", detail)
+        except Exception:
+            pass
+        return {"error": f"internal ping relay failed ({e.code}): {detail}"}
+    except Exception as e:
+        return {"error": f"internal ping relay failed: {e}"}
+
+
+async def _relay_ping_to_backend(payload: Dict[str, Any]) -> Dict[str, Any]:
+    return await asyncio.to_thread(_post_internal_agent_invoke, payload)
+
+
 @register_tool("agents")
 @tool(name="invoke_agent", description=_INVOKE_DESCRIPTION, input_schema=_INVOKE_SCHEMA)
 async def invoke_agent(args: Dict[str, Any]) -> Dict[str, Any]:
     """Invoke a specialized agent."""
     try:
-        from runner import invoke_agent as _invoke_agent
-
         agent_name = args.get("agent", "")
         prompt = args.get("prompt", "")
         mode = args.get("mode", "foreground")
@@ -161,16 +237,33 @@ async def invoke_agent(args: Dict[str, Any]) -> Dict[str, Any]:
         # has no agent_name injected).
         caller_agent = args.pop("_agent_name", None) or "user"
 
-        result = await _invoke_agent(
-            name=agent_name,
-            prompt=prompt,
-            mode=mode,
-            source_chat_id=source_chat_id,
-            model_override=model_override,
-            project=project,
-            conversation_id=conversation_id,
-            caller_agent=caller_agent,
-        )
+        if mode == "ping" and _should_relay_ping_to_backend():
+            # Detached ping tasks created in caller-owned Codex/MCP processes can
+            # be cancelled when the caller exits after receiving the ack. Hand
+            # launch to the long-lived backend instead; if relay is unavailable,
+            # fail visibly before any thread is created or locked locally.
+            result = await _relay_ping_to_backend({
+                "agent": agent_name,
+                "prompt": prompt,
+                "mode": mode,
+                "source_chat_id": source_chat_id,
+                "model_override": model_override,
+                "project": project,
+                "conversation_id": conversation_id,
+                "caller_agent": caller_agent,
+            })
+        else:
+            from runner import invoke_agent as _invoke_agent
+            result = await _invoke_agent(
+                name=agent_name,
+                prompt=prompt,
+                mode=mode,
+                source_chat_id=source_chat_id,
+                model_override=model_override,
+                project=project,
+                conversation_id=conversation_id,
+                caller_agent=caller_agent,
+            )
 
         # Handle different result types based on mode
         if mode == "foreground":

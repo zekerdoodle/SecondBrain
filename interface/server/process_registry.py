@@ -19,7 +19,8 @@ from typing import Optional
 
 logger = logging.getLogger("process_registry")
 
-REGISTRY_FILE = Path("/home/debian/second_brain/.claude/process_registry.json")
+ROOT_DIR = Path(__file__).resolve().parents[2]
+REGISTRY_FILE = ROOT_DIR / ".claude" / "process_registry.json"
 
 
 def _read_registry() -> list:

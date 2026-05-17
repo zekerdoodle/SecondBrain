@@ -19,7 +19,7 @@ Phase B scope (this file's additions, marked PHASE B inline):
 Architectural invariants (from codebase/projects/active/apply-patch-mcp-plan.md):
 
     - The tool refuses to run if the calling agent is not `patch`. The
-      consent prompt is a separate layer (Claude Code's MCP permission
+      consent prompt is a separate layer (legacy MCP permission
       system); this in-tool check is defense in depth.
 
     - The deploy artifact is the `previous_main_sha` recorded in the

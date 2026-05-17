@@ -2,7 +2,7 @@
 Notification Queue for Ping Mode.
 
 Manages pending notifications from completed agents that need to be
-injected into the next Claude <3 prompt.
+delivered exactly once to their caller.
 
 Uses file locking (fcntl.flock) for safe concurrent access.
 """
@@ -27,8 +27,10 @@ class NotificationQueue:
     """
     Queue for managing ping mode notifications.
 
-    Notifications are stored in pending.json and injected into
-    Claude <3's system prompt when they're pending.
+    Notifications are stored in pending.json. Delivery is a small state
+    machine: pending -> delivering -> delivered. A notification is only marked
+    delivered after the caller-visible wake or working-memory-shaped injection
+    has completed; failed delivery releases it back to pending.
 
     Storage: .claude/agents/notifications/pending.json
     """
@@ -165,49 +167,42 @@ class NotificationQueue:
         )]
 
     def claim_pending(self, chat_id: Optional[str] = None, threshold_seconds: Optional[int] = None) -> List[PendingNotification]:
+        """Backward-compatible claim helper.
+
+        Transitions matching notifications from pending -> delivering, not delivered.
+        Callers must invoke mark_delivered() after caller visibility is guaranteed
+        or release_delivery() if the wake/injection fails.
         """
-        Atomically claim pending notifications by transitioning them from "pending" to "injected".
+        candidates = self.get_pending(chat_id=chat_id)
+        ids = []
+        for n in candidates:
+            if threshold_seconds is not None and not n.is_stale(threshold_seconds=threshold_seconds):
+                continue
+            ids.append(n.id)
+        return self.claim_by_ids(ids)
 
-        This is the safe way to grab notifications — it reads AND marks under a single
-        file lock, preventing two paths (inline injection vs wake-up loop) from both
-        grabbing the same notification.
+    def claim_by_ids(self, notification_ids: List[str]) -> List[PendingNotification]:
+        """Atomically transition selected notifications pending -> delivering."""
+        if not notification_ids:
+            return []
 
-        Args:
-            chat_id: If provided, only claim notifications for this chat
-            threshold_seconds: If provided, only claim notifications older than this (for stale/wake-up path)
-
-        Returns:
-            List of claimed notifications (status already set to "injected")
-        """
+        id_set = set(notification_ids)
         claimed: List[PendingNotification] = []
 
         def _do_claim(notifications):
             for n in notifications:
-                if n.status != "pending":
-                    continue
-                if chat_id and n.source_chat_id != chat_id:
-                    continue
-                if threshold_seconds is not None and not n.is_stale(threshold_seconds=threshold_seconds):
-                    continue
-                n.status = "injected"
-                claimed.append(n)
+                if n.id in id_set and n.status == "pending":
+                    n.status = "delivering"
+                    claimed.append(n)
             return notifications
 
         self._locked_update(_do_claim)
         if claimed:
-            logger.info(f"Claimed {len(claimed)} notifications (chat_id={chat_id}, threshold_seconds={threshold_seconds})")
+            logger.info(f"Claimed {len(claimed)} notifications for delivery")
         return claimed
 
-    def mark_injected(self, notification_ids: List[str]) -> int:
-        """
-        Mark notifications as injected.
-
-        Args:
-            notification_ids: IDs of notifications to mark
-
-        Returns:
-            Number of notifications marked
-        """
+    def mark_delivered(self, notification_ids: List[str]) -> int:
+        """Mark notifications delivered after the caller has seen them."""
         if not notification_ids:
             return 0
 
@@ -217,14 +212,39 @@ class NotificationQueue:
         def _do_mark(notifications):
             nonlocal marked
             for n in notifications:
-                if n.id in id_set and n.status == "pending":
-                    n.status = "injected"
+                if n.id in id_set and n.status == "delivering":
+                    n.status = "delivered"
                     marked += 1
             return notifications
 
         self._locked_update(_do_mark)
-        logger.info(f"Marked {marked} notifications as injected")
+        logger.info(f"Marked {marked} notifications as delivered")
         return marked
+
+    def mark_injected(self, notification_ids: List[str]) -> int:
+        """Legacy alias for mark_delivered()."""
+        return self.mark_delivered(notification_ids)
+
+    def release_delivery(self, notification_ids: List[str]) -> int:
+        """Release failed in-flight delivery attempts back to pending."""
+        if not notification_ids:
+            return 0
+
+        id_set = set(notification_ids)
+        released = 0
+
+        def _do_release(notifications):
+            nonlocal released
+            for n in notifications:
+                if n.id in id_set and n.status == "delivering":
+                    n.status = "pending"
+                    released += 1
+            return notifications
+
+        self._locked_update(_do_release)
+        if released:
+            logger.info(f"Released {released} notifications back to pending")
+        return released
 
     def mark_expired(self, notification_ids: List[str]) -> int:
         """
@@ -272,7 +292,7 @@ class NotificationQueue:
             original_count = len(notifications)
             kept = [
                 n for n in notifications
-                if n.status == "pending" or n.completed_at > cutoff
+                if n.status in ("pending", "delivering") or n.completed_at > cutoff
             ]
             removed = original_count - len(kept)
             return kept
@@ -299,8 +319,8 @@ class NotificationQueue:
 
         parts = ["""<agent-completions>
 IMPORTANT: The following agent(s) have completed their tasks since your last turn.
-You MUST acknowledge these completions to the user in your response.
-- Summarize the agent's response in a natural, conversational way
+You MUST use these completed ping replies as working context for this turn.
+- Summarize the agent's response in a natural, conversational way when user-facing
 - If the agent reported errors, explain what went wrong
 - If the agent's response requires follow-up action, suggest next steps
 """]
@@ -319,6 +339,19 @@ You MUST acknowledge these completions to the user in your response.
 
         parts.append("</agent-completions>")
         return "\n".join(parts)
+
+    def format_for_working_memory(self, notifications: List[PendingNotification]) -> str:
+        """Format notifications as a working-memory-shaped context bundle."""
+        body = self.format_for_injection(notifications)
+        if not body:
+            return ""
+        return (
+            "<working-memory>\n"
+            "<ping-completions delivery=\"exactly-once\">\n"
+            f"{body}\n"
+            "</ping-completions>\n"
+            "</working-memory>"
+        )
 
 
 def get_notification_queue(storage_dir: Optional[Path] = None) -> NotificationQueue:

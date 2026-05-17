@@ -2,7 +2,7 @@
 Second Brain Interface Server
 
 FastAPI server providing:
-- WebSocket chat interface to Claude
+- WebSocket chat interface to the assistant
 - File management API
 - Chat history management
 - Scheduled task execution
@@ -26,7 +26,7 @@ import base64
 import hashlib
 import html
 import tempfile
-from datetime import datetime
+from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
 
@@ -35,6 +35,37 @@ from dataclasses import dataclass, field
 from typing import Optional, Dict, Any, List, Set, Tuple
 from contextlib import asynccontextmanager
 from collections import defaultdict
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _load_startup_env_file(env_path):
+    """Load repo-root .env into the backend process; .env wins over shell env."""
+    loaded_keys = []
+    if not env_path.is_file():
+        return loaded_keys, None
+    try:
+        for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            if line.startswith("export "):
+                line = line[len("export "):].lstrip()
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+                value = value[1:-1]
+            if key:
+                os.environ[key] = value
+                loaded_keys.append(key)
+    except Exception as exc:
+        return loaded_keys, exc
+    return loaded_keys, None
+
+
+STARTUP_ENV_FILE = REPO_ROOT / ".env"
+STARTUP_ENV_KEYS, STARTUP_ENV_ERROR = _load_startup_env_file(STARTUP_ENV_FILE)
 
 from claude_wrapper import ClaudeWrapper, ChatManager, ConversationState
 from notifications import should_notify, send_notification, NotificationDecision
@@ -79,19 +110,89 @@ class ClientSession:
 # Logging - output to both console and rotating file
 from logging.handlers import RotatingFileHandler
 
+SERVER_DIR = Path(__file__).resolve().parent
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(),
         RotatingFileHandler(
-            '/home/debian/second_brain/interface/server/server.log',
+            SERVER_DIR / "server.log",
             maxBytes=10 * 1024 * 1024,  # 10 MB per file
             backupCount=3,              # Keep 3 rotated files (40 MB max total)
         )
     ]
 )
 logger = logging.getLogger("server")
+
+# Secret used by Codex MCP bridge subprocesses to hand ping launches back to
+# this long-lived server process without exposing an unauthenticated invoke
+# endpoint. Codex stdio MCP does not reliably inherit dynamic backend env, so a
+# local 0600 token file is the stable handoff source once it exists. That keeps
+# unrelated imports of main.py from rotating the relay token out from under the
+# live backend process.
+INTERNAL_AGENT_INVOKE_TOKEN_FILE = REPO_ROOT / ".claude" / ".secrets" / "internal_agent_invoke_token"
+
+
+def _read_internal_agent_invoke_token_file(token_file: Path = INTERNAL_AGENT_INVOKE_TOKEN_FILE) -> Optional[str]:
+    try:
+        token = token_file.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return token or None
+
+
+def _load_internal_agent_invoke_token(token_file: Path = INTERNAL_AGENT_INVOKE_TOKEN_FILE) -> str:
+    return (
+        _read_internal_agent_invoke_token_file(token_file)
+        or os.environ.get("SECOND_BRAIN_INTERNAL_AGENT_TOKEN")
+        or uuid.uuid4().hex
+    )
+
+
+INTERNAL_AGENT_INVOKE_TOKEN = _load_internal_agent_invoke_token()
+os.environ["SECOND_BRAIN_INTERNAL_AGENT_TOKEN"] = INTERNAL_AGENT_INVOKE_TOKEN
+
+
+def _write_internal_agent_invoke_token_file(token: str) -> None:
+    try:
+        secret_dir = INTERNAL_AGENT_INVOKE_TOKEN_FILE.parent
+        secret_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        try:
+            os.chmod(secret_dir, 0o700)
+        except OSError:
+            pass
+        tmp_path = INTERNAL_AGENT_INVOKE_TOKEN_FILE.with_suffix(".tmp")
+        tmp_path.write_text(token + "\n", encoding="utf-8")
+        os.chmod(tmp_path, 0o600)
+        os.replace(tmp_path, INTERNAL_AGENT_INVOKE_TOKEN_FILE)
+        os.chmod(INTERNAL_AGENT_INVOKE_TOKEN_FILE, 0o600)
+    except Exception as exc:
+        logger.error(
+            "Failed to write internal agent invoke token file %s: %s",
+            INTERNAL_AGENT_INVOKE_TOKEN_FILE,
+            exc,
+        )
+
+
+_write_internal_agent_invoke_token_file(INTERNAL_AGENT_INVOKE_TOKEN)
+# Child MCP/Codex processes that do inherit this value can compare it to
+# os.getpid() to know whether they are running in the durable backend loop or in
+# a caller-owned process that must relay ping launches back here.
+os.environ["SECOND_BRAIN_BACKEND_PID"] = str(os.getpid())
+
+if STARTUP_ENV_ERROR:
+    logger.warning("Failed to load startup env file %s: %s", STARTUP_ENV_FILE, STARTUP_ENV_ERROR)
+elif STARTUP_ENV_KEYS:
+    logger.info(
+        "Loaded startup env file %s: %d key(s): %s",
+        STARTUP_ENV_FILE,
+        len(STARTUP_ENV_KEYS),
+        ", ".join(sorted(STARTUP_ENV_KEYS)),
+    )
+else:
+    logger.info("No startup env file found at %s", STARTUP_ENV_FILE)
 
 app = FastAPI(title="Second Brain API")
 
@@ -194,28 +295,32 @@ def load_server_state() -> Optional[Dict]:
 
 
 def save_continuation_on_shutdown():
-    """Save restart continuation for any actively processing sessions.
+    """Save restart continuation for active chats and agent invocations.
 
-    Called during graceful shutdown (SIGTERM/SIGINT). Only writes the continuation
-    file if one doesn't already exist — this avoids overwriting a more detailed
-    continuation saved by the MCP restart_server tool or the Settings UI endpoint.
+    A fresh marker from restart_server may already exist. The shutdown handler
+    still merges the backend-owned running_agents snapshot into that marker so
+    child-process MCP tool calls cannot accidentally save only the triggering
+    chat and lose concurrently running agent work.
     """
-    if os.path.exists(RESTART_CONTINUATION_FILE):
-        # Check staleness: if the file is more than 2 minutes old, it's likely
-        # a leftover from a failed wakeup (deferred deletion). Overwrite it.
-        try:
-            file_age = time.time() - os.path.getmtime(RESTART_CONTINUATION_FILE)
-            if file_age < 120:  # Less than 2 minutes — fresh, from restart_server tool
-                logger.info("Shutdown: continuation file already exists (restart tool or API saved it), skipping")
-                return
-            else:
-                logger.info(f"Shutdown: continuation file is stale ({file_age:.0f}s old), overwriting")
-        except Exception:
-            logger.info("Shutdown: continuation file already exists (restart tool or API saved it), skipping")
-            return
+    try:
+        running_invocations = running_agents.snapshot_all_sync()
+    except Exception:
+        running_invocations = []
+    non_chat_running = [e for e in running_invocations if e.get("kind") != "chat"]
 
-    if not active_processing_sessions:
-        logger.info("Shutdown: no active processing sessions, no continuation needed")
+    all_active = {}
+    for sid in active_processing_sessions:
+        agent = "character"
+        try:
+            stored = chat_manager.load_chat(sid)
+            if stored and stored.get("agent"):
+                agent = stored["agent"]
+        except Exception:
+            pass
+        all_active[sid] = agent
+
+    if not all_active and not non_chat_running:
+        logger.info("Shutdown: no active processing sessions or agent invocations, no continuation needed")
         return
 
     try:
@@ -224,27 +329,84 @@ def save_continuation_on_shutdown():
             sys.path.insert(0, SCRIPTS_DIR_LOCAL)
         import restart_tool as rt
 
-        # Build map of actively processing sessions -> agent names
-        all_active = {}
-        for sid in active_processing_sessions:
-            agent = "character"
-            try:
-                stored = chat_manager.load_chat(sid)
-                if stored and stored.get("agent"):
-                    agent = stored["agent"]
-            except Exception:
-                pass
-            all_active[sid] = agent
+        resumable_running = rt.filter_resumable_agent_invocations(running_invocations)
+        if not all_active and not resumable_running:
+            logger.info("Shutdown: no active processing sessions or resumable agent invocations, no continuation needed")
+            return
 
-        # Pick the first active session as the nominal trigger
-        first_session = next(iter(all_active))
+        if os.path.exists(RESTART_CONTINUATION_FILE):
+            try:
+                file_age = time.time() - os.path.getmtime(RESTART_CONTINUATION_FILE)
+                if file_age < 120:
+                    with open(RESTART_CONTINUATION_FILE, "r") as f:
+                        existing = json.load(f)
+
+                    existing_sessions = existing.setdefault("sessions", [])
+                    existing_session_ids = {s.get("session_id") for s in existing_sessions}
+                    for sid, agent in all_active.items():
+                        if sid in existing_session_ids:
+                            continue
+                        msg_count = 0
+                        chat_file = os.path.join(CHATS_DIR, f"{sid}.json")
+                        if os.path.exists(chat_file):
+                            try:
+                                with open(chat_file) as f:
+                                    msg_count = len(json.load(f).get("messages", []))
+                            except Exception:
+                                pass
+                        existing_sessions.append({
+                            "session_id": sid,
+                            "agent": agent,
+                            "role": "bystander",
+                            "message_count": msg_count,
+                        })
+
+                    existing_invocations = existing.setdefault("agent_invocations", [])
+                    existing_invocations[:] = rt.filter_resumable_agent_invocations(existing_invocations)
+                    seen = {
+                        (e.get("agent"), e.get("kind"), e.get("conversation_id"), e.get("started_at"))
+                        for e in existing_invocations
+                    }
+                    for entry in resumable_running:
+                        key = (entry.get("agent"), entry.get("kind"), entry.get("conversation_id"), entry.get("started_at"))
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        existing_invocations.append({
+                            "id": entry.get("id"),
+                            "agent": entry.get("agent"),
+                            "kind": entry.get("kind"),
+                            "started_at": entry.get("started_at"),
+                            "task_summary": entry.get("task_summary"),
+                            "source_chat_id": entry.get("source_chat_id"),
+                            "conversation_id": entry.get("conversation_id"),
+                            "salon_id": entry.get("salon_id"),
+                            "scheduled_task_id": entry.get("scheduled_task_id"),
+                            "caller_agent": entry.get("caller_agent"),
+                        })
+                    with open(RESTART_CONTINUATION_FILE, "w") as f:
+                        json.dump(existing, f, indent=2)
+                    logger.info(
+                        f"Shutdown: merged continuation marker with {len(all_active)} active session(s) "
+                        f"and {len(resumable_running)} resumable agent invocation(s)"
+                    )
+                    return
+                logger.info(f"Shutdown: continuation file is stale ({file_age:.0f}s old), overwriting")
+            except Exception as merge_error:
+                logger.warning(f"Shutdown: could not merge fresh continuation marker, overwriting: {merge_error}")
+
+        first_session = next(iter(all_active), None)
         rt.save_continuation_state(
             session_id=first_session,
-            reason="Server shutdown with active sessions (signal handler)",
+            reason="Server shutdown with active sessions/agents (signal handler)",
             source="shutdown_handler",
-            all_active_sessions=all_active
+            all_active_sessions=all_active,
+            running_invocations=resumable_running,
         )
-        logger.info(f"Shutdown: saved continuation state for {len(all_active)} active session(s)")
+        logger.info(
+            f"Shutdown: saved continuation state for {len(all_active)} active session(s) "
+            f"and {len(resumable_running)} resumable agent invocation(s)"
+        )
     except Exception as e:
         logger.warning(f"Shutdown: could not save continuation state: {e}")
 
@@ -319,14 +481,42 @@ def load_restart_continuation() -> Optional[Dict]:
                 continuation["source"] = "character"
 
         session_count = len(continuation.get("sessions", []))
+        marker_id = continuation.get("continuation_id", "legacy")
         logger.info(
             f"Loaded restart continuation: {session_count} session(s) to resume, "
-            f"source={continuation.get('source')}, reason={continuation.get('reason')}"
+            f"source={continuation.get('source')}, reason={continuation.get('reason')}, "
+            f"marker_id={marker_id}"
         )
         return continuation
     except Exception as e:
         logger.error(f"Failed to load restart continuation: {e}")
         return None
+
+
+def _restart_continuation_marker_matches(current: Dict[str, Any], loaded: Dict[str, Any]) -> bool:
+    """Return True only when the on-disk marker is the one this task loaded.
+
+    Restart continuation can be reentrant: a continuation turn may request another
+    restart before this wakeup task reaches its cleanup block. In that case the
+    file on disk is newer work for the next process, not the marker we should
+    delete.
+    """
+    current_id = current.get("continuation_id")
+    loaded_id = loaded.get("continuation_id")
+    if current_id or loaded_id:
+        return bool(current_id and loaded_id and current_id == loaded_id)
+
+    # Legacy markers did not carry an explicit id. Compare the fields that were
+    # persisted before startup normalization; do not require `sessions` because
+    # load_restart_continuation() synthesizes it for old single-session markers.
+    for field in ("restart_time", "reason", "source", "session_id"):
+        if current.get(field) != loaded.get(field):
+            return False
+
+    if "sessions" in current and "sessions" in loaded:
+        return current.get("sessions") == loaded.get("sessions")
+
+    return True
 
 
 # Import Scheduler Tool and Room utilities
@@ -354,9 +544,9 @@ else:
 
 def strip_tool_markers(content: str) -> str:
     """
-    Remove Claude Code tool call markers from content.
+    Remove legacy tool call markers from content.
 
-    The Agent SDK's Claude Code preset outputs tool status as markdown:
+    Legacy runtime output can include tool status as markdown:
     - *Running: `tool_name`...*
     - *Result:* ```...```
 
@@ -998,6 +1188,11 @@ def restart_server_endpoint(rebuild: bool = False, reason: str = None):
             sys.path.insert(0, SCRIPTS_DIR_LOCAL)
         import restart_tool as rt
 
+        try:
+            running_invocations = running_agents.snapshot_all_sync()
+        except Exception:
+            running_invocations = []
+
         # Build map of actively processing sessions -> agent names
         all_active = {}
         for sid in active_processing_sessions:
@@ -1010,17 +1205,22 @@ def restart_server_endpoint(rebuild: bool = False, reason: str = None):
                 pass
             all_active[sid] = agent
 
-        if all_active:
-            # Pick the first active session as the "trigger" session
-            # (Settings UI isn't a session itself, so we use the first active one)
-            first_session = next(iter(all_active))
+        resumable_running = rt.filter_resumable_agent_invocations(running_invocations)
+        if all_active or resumable_running:
+            # Pick the first active session as the "trigger" session. Settings UI
+            # and agent-only restarts may have no chat trigger.
+            first_session = next(iter(all_active), None)
             rt.save_continuation_state(
                 session_id=first_session,
                 reason=restart_reason,
                 source="settings_ui",
-                all_active_sessions=all_active
+                all_active_sessions=all_active,
+                running_invocations=resumable_running,
             )
-            logger.info(f"Saved continuation state for {len(all_active)} active session(s) before UI restart")
+            logger.info(
+                f"Saved continuation state for {len(all_active)} active session(s) "
+                f"and {len(resumable_running)} resumable agent invocation(s) before UI restart"
+            )
     except Exception as e:
         logger.warning(f"Could not save continuation state for UI restart: {e}")
 
@@ -1484,10 +1684,10 @@ class AskClaudeRequest(BaseModel):
 @app.post("/api/app-bridge/ask-claude")
 async def app_bridge_ask_claude(req: AskClaudeRequest):
     """
-    Brain Bridge v2: Request-response Claude API for embedded apps.
-    Uses the Agent SDK for consistent auth and infrastructure.
+    Brain Bridge v2: Request-response Codex API for embedded apps.
+    Uses the shared Codex CLI backend for consistent auth and infrastructure.
     """
-    from claude_agent_sdk import query, ClaudeAgentOptions
+    from codex_backend import CodexRunOptions, run_codex
 
     try:
         system_prompt = (
@@ -1498,22 +1698,19 @@ async def app_bridge_ask_claude(req: AskClaudeRequest):
         if req.system_hint:
             system_prompt += f"\n\nApp context: {req.system_hint}"
 
-        options = ClaudeAgentOptions(
-            model="sonnet",
-            system_prompt=system_prompt,
-            max_turns=1,
-            permission_mode="bypassPermissions",
-            setting_sources=[],
-            # Suppress the CLI's auto-injected native skill listing, TodoWrite
-            # reminders, and other XSY() attachments. See claude_wrapper.py for
-            # the full rationale — we ship our own skills via fetch_skill.
-            env={"CLAUDE_CODE_DISABLE_ATTACHMENTS": "1"},
+        result = await run_codex(
+            CodexRunOptions(
+                model="gpt-5.4-mini",
+                cwd=str(ROOT_DIR),
+                identity_instructions=system_prompt,
+                prompt=req.prompt,
+                tools=[],
+                timeout_seconds=120,
+                max_turns=1,
+                ephemeral=True,
+            )
         )
-
-        result_text = ""
-        async for message in query(prompt=req.prompt, options=options):
-            if hasattr(message, "result"):
-                result_text = message.result
+        result_text = result.response
 
         logger.info(f"App Bridge askClaude: prompt={req.prompt[:80]}... response_len={len(result_text)}")
         return {"response": result_text}
@@ -1552,6 +1749,56 @@ async def app_bridge_ask_agent(req: AskAgentRequest):
         raise HTTPException(status_code=504, detail=f"Agent '{req.agent}' timed out")
     except Exception as e:
         logger.error(f"App Bridge askAgent error: agent={req.agent} {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class InternalAgentInvokeRequest(BaseModel):
+    agent: str
+    prompt: str
+    mode: str = "ping"
+    source_chat_id: Optional[str] = None
+    model_override: Optional[str] = None
+    project: Optional[Any] = None
+    conversation_id: Optional[str] = None
+    caller_agent: Optional[str] = None
+
+
+@app.post("/api/internal/agent-invoke")
+async def internal_agent_invoke(req: InternalAgentInvokeRequest, request: Request):
+    """Launch ping invocations from the long-lived backend process.
+
+    Codex MCP bridge subprocesses are tied to the caller agent's Codex lifetime;
+    if they create detached ping tasks locally, those tasks can be stranded when
+    the caller exits. This endpoint lets the bridge hand the launch to the
+    backend event loop before returning the ping ack.
+    """
+    token = request.headers.get("X-Second-Brain-Internal-Token")
+    if not token or token != INTERNAL_AGENT_INVOKE_TOKEN:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    if req.mode != "ping":
+        raise HTTPException(status_code=400, detail="internal_agent_invoke only supports ping mode")
+
+    agents_dir = Path(ROOT_DIR) / ".claude" / "agents"
+    if str(agents_dir) not in sys.path:
+        sys.path.insert(0, str(agents_dir))
+    from runner import invoke_agent
+
+    try:
+        result = await invoke_agent(
+            name=req.agent,
+            prompt=req.prompt,
+            mode=req.mode,
+            source_chat_id=req.source_chat_id,
+            model_override=req.model_override,
+            project=req.project,
+            conversation_id=req.conversation_id,
+            caller_agent=req.caller_agent,
+        )
+        if hasattr(result, "__dict__"):
+            return result.__dict__
+        return result
+    except Exception as e:
+        logger.error("Internal ping launch failed for agent %s: %s", req.agent, e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1988,11 +2235,11 @@ async def set_agent_mood(name: str, body: SetMoodRequest):
 
 @app.get("/api/native-tools")
 def list_native_tools():
-    """List native Claude Code tools exposed to agents (Agent Builder source of truth).
+    """List Codex-native tool labels exposed to agents (Agent Builder source of truth).
 
-    Reads from .claude/agents/native_tools.py — the single place to edit when a new
-    Anthropic tool should become available in the builder. Frontend falls back to a
-    local copy if this endpoint fails.
+    Reads from .claude/agents/native_tools.py — the single place to edit when a
+    new Codex capability or mapped compatibility label should become available
+    in the builder. Frontend falls back to a local copy if this endpoint fails.
     """
     agents_dir = Path(ROOT_DIR) / ".claude" / "agents"
     if str(agents_dir) not in sys.path:
@@ -2173,7 +2420,13 @@ def get_chat_history(session_id: str):
     data = chat_manager.load_chat(session_id)
     if data is None:
         raise HTTPException(status_code=404)
-    return data
+
+    # REST callers are UI-facing too. Return a normalized display_messages
+    # array so stale/truncated on-disk display snapshots cannot hide visible
+    # flat messages during fallback loads or restart continuation recovery.
+    response_data = dict(data)
+    response_data["display_messages"] = _messages_for_display(data, session_id)
+    return response_data
 
 
 @app.post("/api/chat/history/{session_id}")
@@ -3231,6 +3484,60 @@ active_claude_wrappers: Dict[str, ClaudeWrapper] = {}
 # Path to pending restart config file — written by the restart_server MCP tool,
 # read by the streaming loop after a clean save.
 _PENDING_RESTART_FILE = os.path.join(ROOT_DIR, ".claude", "pending_restart.json")
+_PENDING_RESTART_WAIT_SECONDS = 30.0
+_PENDING_RESTART_POLL_SECONDS = 0.25
+_PENDING_RESTART_MTIME_GRACE_SECONDS = 2.0
+
+
+async def _load_fresh_pending_restart_config(trigger_time: float) -> Dict[str, Any]:
+    """Wait for restart_server's pending config from this tool invocation.
+
+    Codex can emit the restart_server tool_end event before the MCP tool's file
+    write is visible to the streaming finalizer. Ignore stale configs from older
+    failed restarts and wait briefly for the fresh config before giving up.
+    """
+    deadline = time.time() + _PENDING_RESTART_WAIT_SECONDS
+    last_error = "pending_restart.json not found"
+    while time.time() < deadline:
+        if os.path.exists(_PENDING_RESTART_FILE):
+            try:
+                file_mtime = os.path.getmtime(_PENDING_RESTART_FILE)
+                file_age = time.time() - file_mtime
+                mtime_before_trigger = trigger_time - file_mtime
+                if file_mtime + _PENDING_RESTART_MTIME_GRACE_SECONDS >= trigger_time:
+                    with open(_PENDING_RESTART_FILE, 'r') as f:
+                        config = json.load(f)
+                    if config.get("restart_script"):
+                        logger.info(
+                            "RESTART: accepted pending_restart.json "
+                            f"(mtime={file_mtime:.6f}, trigger_time={trigger_time:.6f}, "
+                            f"mtime_before_trigger={mtime_before_trigger:.3f}s, "
+                            f"file_age={file_age:.3f}s, "
+                            f"grace={_PENDING_RESTART_MTIME_GRACE_SECONDS:.3f}s)"
+                        )
+                        return config
+                    last_error = (
+                        "pending_restart.json missing restart_script "
+                        f"(mtime={file_mtime:.6f}, trigger_time={trigger_time:.6f}, "
+                        f"mtime_before_trigger={mtime_before_trigger:.3f}s, "
+                        f"file_age={file_age:.3f}s, "
+                        f"grace={_PENDING_RESTART_MTIME_GRACE_SECONDS:.3f}s)"
+                    )
+                else:
+                    last_error = (
+                        "stale pending_restart.json "
+                        f"(mtime={file_mtime:.6f}, trigger_time={trigger_time:.6f}, "
+                        f"mtime_before_trigger={mtime_before_trigger:.3f}s, "
+                        f"file_age={file_age:.3f}s, "
+                        f"grace={_PENDING_RESTART_MTIME_GRACE_SECONDS:.3f}s)"
+                    )
+            except Exception as e:
+                last_error = str(e)
+        else:
+            last_error = "pending_restart.json not found"
+        await asyncio.sleep(_PENDING_RESTART_POLL_SECONDS)
+    logger.error(f"RESTART: pending restart config unavailable after wait ({last_error})")
+    return {}
 
 # --- Session Streaming State (Block Model) ---
 # This is the SINGLE SOURCE OF TRUTH for what the client should display during streaming.
@@ -3424,7 +3731,7 @@ async def send_tool_heartbeat(session_id: str, tool_name: str):
     """Send periodic heartbeat events while a tool is running to keep UI active.
 
     This prevents the client-side timeout from resetting to idle during
-    long-running tool executions (e.g., Claude Code, long bash commands).
+    long-running tool executions (e.g., coding tools, long bash commands).
     """
     heartbeat_interval = 10  # seconds
     try:
@@ -3477,9 +3784,9 @@ def stop_tool_heartbeat(session_id: str):
         logger.debug(f"Stopped tool heartbeat for {session_id}")
 
 
-# --- History injection for fresh SDK sessions ---
-# Every SDK session starts fresh (no --resume). Conversation context is injected
-# into the prompt so Claude knows what was discussed. This eliminates "session
+# --- History injection for fresh runtime sessions ---
+# Every runtime session starts fresh (no --resume). Conversation context is injected
+# into the prompt so the assistant knows what was discussed. This eliminates "session
 # expired" errors and ensures a single consistent prompt format across all paths
 # (normal messages, edits, regenerates, scheduled tasks, wake-ups).
 def _collect_pending_reactions(messages: List[Dict[str, Any]], display_messages: Optional[List[Dict[str, Any]]] = None) -> List[str]:
@@ -3529,6 +3836,232 @@ def _collect_pending_reactions(messages: List[Dict[str, Any]], display_messages:
 
     return lines
 
+
+
+def _display_text_for_match(msg: Dict[str, Any]) -> str:
+    """Extract user-visible text for matching flat and display messages."""
+    content = msg.get("content")
+    if isinstance(content, str) and content:
+        return content
+
+    block_text = []
+    for block in msg.get("blocks") or []:
+        if isinstance(block, dict) and block.get("type") == "text":
+            text = block.get("content")
+            if isinstance(text, str) and text:
+                block_text.append(text)
+    return "".join(block_text)
+
+
+def _display_match_key(msg: Dict[str, Any]) -> Optional[Tuple[str, str]]:
+    role = msg.get("role")
+    if role not in {"user", "assistant", "notice"} and not msg.get("formData"):
+        return None
+    text = _display_text_for_match(msg).strip()
+    if not text and not msg.get("formData"):
+        return None
+    return (role or "", text)
+
+
+def _display_normalized_text(text: str) -> str:
+    return " ".join(text.split())
+
+
+def _display_block_represents_message(block_msg: Dict[str, Any], candidate: Dict[str, Any]) -> bool:
+    if not block_msg.get("blocks") or candidate.get("blocks"):
+        return False
+    if block_msg.get("role") != candidate.get("role"):
+        return False
+    if block_msg.get("id") and block_msg.get("id") == candidate.get("id"):
+        return False
+
+    candidate_text = _display_normalized_text(_display_text_for_match(candidate).strip())
+    if not candidate_text:
+        return False
+
+    block_text = _display_normalized_text(_display_text_for_match(block_msg).strip())
+    return bool(block_text and candidate_text in block_text)
+
+
+def _display_message_represented_by_blocks(candidate: Dict[str, Any], block_messages: List[Dict[str, Any]]) -> bool:
+    return any(_display_block_represents_message(block_msg, candidate) for block_msg in block_messages)
+
+
+def _display_sort_time(msg: Dict[str, Any]) -> float:
+    for key in ("timestamp", "created_at"):
+        value = msg.get(key)
+        if isinstance(value, (int, float)):
+            return float(value)
+    msg_id = str(msg.get("id") or "")
+    match = re.match(r"msg-(\d{13})-", msg_id)
+    if match:
+        return int(match.group(1)) / 1000.0
+    return float("inf")
+
+
+def _dedupe_display_messages_by_id(display_messages: List[Dict[str, Any]], session_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Remove duplicate display messages before persistence."""
+    seen_ids: Set[str] = set()
+    seen_keys: Set[Tuple[str, str]] = set()
+    deduped: List[Dict[str, Any]] = []
+    removed = 0
+    for msg in display_messages:
+        msg_id = msg.get("id")
+        key = _display_match_key(msg)
+        if msg_id and msg_id in seen_ids:
+            removed += 1
+            continue
+        if key is not None and key in seen_keys:
+            removed += 1
+            continue
+        deduped.append(msg)
+        if msg_id:
+            seen_ids.add(msg_id)
+        if key is not None:
+            seen_keys.add(key)
+
+    if removed:
+        label = f" for {session_id}" if session_id else ""
+        logger.warning(f"DISPLAY_MSGS: Removed {removed} duplicate message(s){label} before save")
+    return deduped
+
+
+def _display_message_already_present(messages: List[Dict[str, Any]], candidate: Dict[str, Any]) -> bool:
+    candidate_id = candidate.get("id")
+    candidate_key = _display_match_key(candidate)
+    for msg in messages:
+        if candidate_id and msg.get("id") == candidate_id:
+            return True
+        if candidate_key is not None and _display_match_key(msg) == candidate_key:
+            return True
+    return False
+
+
+def _display_messages_for_save(
+    flat_messages: List[Dict[str, Any]],
+    display_messages: List[Dict[str, Any]],
+    session_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Finalize UI messages for persistence without hiding visible flat history."""
+    merged = _messages_for_display(
+        {"messages": flat_messages, "display_messages": display_messages},
+        session_id,
+    )
+    return _dedupe_display_messages_by_id(merged, session_id)
+
+
+def _messages_for_display(chat_data: Dict[str, Any], session_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Return UI-facing messages without letting stale display_messages hide flat history.
+
+    display_messages is richer than flat messages, so keep it when available.
+    If it is stale/truncated, recover visible flat messages that are not already
+    represented by id, role/content, or a block-model assistant turn. Tool/system
+    internals stay out of the UI.
+    """
+    flat_messages = list(chat_data.get("messages") or [])
+    display_messages = list(chat_data.get("display_messages") or [])
+    if not display_messages:
+        return flat_messages
+    if not flat_messages:
+        return _dedupe_display_messages_by_id(display_messages, session_id)
+
+    flat_index_by_id: Dict[str, int] = {}
+    flat_index_by_key: Dict[Tuple[str, str], int] = {}
+    visible_flat_messages: List[Tuple[int, Dict[str, Any]]] = []
+    for idx, msg in enumerate(flat_messages):
+        if msg.get("role") in {"tool_call", "system"}:
+            continue
+        msg_id = msg.get("id")
+        if msg_id and msg_id not in flat_index_by_id:
+            flat_index_by_id[msg_id] = idx
+        key = _display_match_key(msg)
+        if key is not None and key not in flat_index_by_key:
+            flat_index_by_key[key] = idx
+        if key is not None:
+            visible_flat_messages.append((idx, msg))
+
+    block_messages = [msg for msg in display_messages if msg.get("blocks")]
+
+    seen_ids: Set[str] = set()
+    seen_keys: Set[Tuple[str, str]] = set()
+    merged: List[Dict[str, Any]] = []
+    deduped = 0
+    for msg in display_messages:
+        msg_id = msg.get("id")
+        key = _display_match_key(msg)
+        if msg_id and msg_id in seen_ids:
+            deduped += 1
+            continue
+        if key is not None and key in seen_keys:
+            deduped += 1
+            continue
+        if _display_message_represented_by_blocks(msg, block_messages):
+            deduped += 1
+            continue
+        merged.append(msg)
+        if msg_id:
+            seen_ids.add(msg_id)
+        if key is not None:
+            seen_keys.add(key)
+
+    recovered = 0
+    for msg in flat_messages:
+        role = msg.get("role")
+        if role in {"tool_call", "system"}:
+            continue
+        msg_id = msg.get("id")
+        if msg_id and msg_id in seen_ids:
+            continue
+        key = _display_match_key(msg)
+        if key is None:
+            continue
+        if key in seen_keys:
+            continue
+        if _display_message_represented_by_blocks(msg, merged):
+            continue
+
+        merged.append(msg)
+        recovered += 1
+        if msg_id:
+            seen_ids.add(msg_id)
+        seen_keys.add(key)
+
+    def _display_order(msg: Dict[str, Any], original_idx: int) -> Tuple[int, float, int]:
+        msg_id = msg.get("id")
+        if msg_id and msg_id in flat_index_by_id:
+            return (0, float(flat_index_by_id[msg_id]), original_idx)
+        key = _display_match_key(msg)
+        if key is not None and key in flat_index_by_key:
+            return (0, float(flat_index_by_key[key]), original_idx)
+        if msg.get("blocks"):
+            represented_indices = [
+                idx for idx, flat_msg in visible_flat_messages
+                if _display_block_represents_message(msg, flat_msg)
+            ]
+            if represented_indices:
+                return (0, float(min(represented_indices)), original_idx)
+        msg_time = _display_sort_time(msg)
+        if msg_time != float("inf"):
+            return (1, msg_time, original_idx)
+        return (2, float(original_idx), original_idx)
+
+    merged = [
+        msg for _, msg in sorted(
+            enumerate(merged),
+            key=lambda item: _display_order(item[1], item[0]),
+        )
+    ]
+
+    if recovered or deduped:
+        label = f" for {session_id}" if session_id else ""
+        if recovered:
+            logger.warning(
+                f"DISPLAY_MSGS: Recovered {recovered} visible flat message(s){label} "
+                "missing from stale display_messages"
+            )
+        if deduped:
+            logger.warning(f"DISPLAY_MSGS: Removed {deduped} duplicate display message(s){label}")
+    return merged
 
 def _build_history_context(messages: List[Dict[str, Any]], current_message: str) -> str:
     """Build a prompt with conversation history prepended.
@@ -3605,7 +4138,8 @@ scheduled_prompt_lock = asyncio.Lock()
 # Agent tasks can be long-running (tool use, web fetches), so 15 min is generous.
 # Notification batches process wake-up events and should complete faster.
 SCHEDULED_TASK_TIMEOUT = 900   # 15 minutes
-NOTIFICATION_BATCH_TIMEOUT = 600  # 10 minutes
+NOTIFICATION_BATCH_TIMEOUT = 14400  # 4 hours; agent-thread ping wakes may do real follow-up work
+PING_COMPLETION_BUFFER_SECONDS = 30.0
 
 # Per-chat locks to serialize message processing and prevent race conditions
 # This ensures concurrent messages to the same chat are processed sequentially
@@ -3697,7 +4231,7 @@ pending_form_requests: Dict[str, Dict[str, Any]] = {}
 # Key: session_id, Value: timestamp when processing completed
 # This helps direct reconnecting clients to the right session even if they have old localStorage
 recently_completed_sessions: Dict[str, float] = {}
-RECENTLY_COMPLETED_TTL = 30.0  # Keep for 30 seconds after completion
+RECENTLY_COMPLETED_TTL = 120.0  # Keep past the 30s ping buffer plus scheduler jitter
 
 
 @app.websocket("/ws/chat")
@@ -3779,7 +4313,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     _existing_chat_data = chat_manager.load_chat(state_key)
                 if _existing_chat_data:
                     # Prefer display_messages (preserves blocks/thinking) over flat messages
-                    _init_messages = list(_existing_chat_data.get("display_messages") or _existing_chat_data.get("messages", []))
+                    _init_messages = list(_messages_for_display(_existing_chat_data, state_key))
 
                 # Determine agent for this chat (needed for both running_agents
                 # registration and the session_init send below).
@@ -4039,7 +4573,7 @@ async def handle_subscribe(websocket: WebSocket, data: dict):
             chat_data = chat_manager.load_chat(effective_session_id)
             if chat_data:
                 # Prefer display_messages (has blocks, thinking) over flat messages
-                messages = chat_data.get("display_messages") or chat_data.get("messages", [])
+                messages = _messages_for_display(chat_data, effective_session_id)
                 cumulative_usage = chat_data.get("cumulative_usage", cumulative_usage)
                 chat_agent = chat_data.get("agent")
                 logger.info(f"SUBSCRIBE: Loaded {len(messages)} messages from disk for {effective_session_id} (display_messages={'display_messages' in chat_data})")
@@ -4270,7 +4804,7 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
         user_msg_id = msg_id  # Use the same ID as in WAL
 
         # EARLY SAVE: Save user message immediately to prevent loss if connection drops
-        # This handles the case where WebSocket dies during Claude's response
+        # This handles the case where WebSocket dies during the assistant response
         # Use the pre-generated early_chat_id if available (was set before background task started)
         early_save_id = early_chat_id or preserve_chat_id or (session_id if session_id != "new" else None)
 
@@ -4306,7 +4840,13 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
                 # This ensures display_messages has the complete conversation (user + assistant w/ blocks)
                 _ss_for_user_msg = session_streaming_states.get(streaming_state_key)
                 if _ss_for_user_msg:
-                    _ss_for_user_msg.messages.append(conv.messages[-1])
+                    if _display_message_already_present(_ss_for_user_msg.messages, conv.messages[-1]):
+                        logger.warning(
+                            f"DISPLAY_MSGS: Skipped duplicate user message {user_msg_id} "
+                            f"in streaming state for {streaming_state_key}"
+                        )
+                    else:
+                        _ss_for_user_msg.messages.append(conv.messages[-1])
 
             # If this is a form submission, mark the corresponding form message as submitted
             user_msg_text = data.get("message", "")
@@ -4383,10 +4923,9 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
             })
             logger.info(f"BROADCAST: message_accepted to session {early_save_id}")
 
-            # Track the user message in streaming state for tab-switch recovery
-            _ss = session_streaming_states.get(early_save_id) or session_streaming_states.get(streaming_state_key)
-            if _ss:
-                _ss.messages.append(accepted_msg)
+            # The canonical user message was already added to streaming state
+            # immediately after conv.add_message(). The accepted_msg broadcast is
+            # only for clients; appending it here duplicates display_messages on save.
 
             # BROADCAST: chat_created to ALL clients so history list updates in real-time
             if session_id == 'new' and not skip_message_add:
@@ -4517,6 +5056,7 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
     current_tool_name = None
     had_error = False
     restart_after_save = False  # Set when restart_server tool completes — halts stream
+    restart_trigger_time = 0.0
     # Tool call history tracking
     # pending_tool_calls: stash tool_use args until tool_end pairs them
     # completed_tool_calls: list of (segment_index, serialized_tool_call) for interleaving
@@ -4537,6 +5077,8 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
                 all_segments.append(text)
             current_segment = []
 
+    claimed_notification_ids: List[str] = []
+
     # Inject pending agent notifications into the prompt (not system prompt)
     # This ensures notifications are visible even when resuming SDK sessions
     # where the system prompt may be cached from session creation
@@ -4547,15 +5089,17 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
         from agent_notifications import get_notification_queue
 
         queue = get_notification_queue()
-        # Atomically claim pending notifications — prevents wake-up loop from
-        # also grabbing the same notifications (read + mark in one lock)
-        claimed = queue.claim_pending(chat_id=streaming_state_key)
+        pending_for_chat = queue.get_pending(chat_id=streaming_state_key)
+        claimed = queue.claim_by_ids([n.id for n in pending_for_chat])
 
         if claimed:
-            notification_block = queue.format_for_injection(claimed)
-            # Prepend notifications to user's message so Claude sees them
+            claimed_notification_ids = [n.id for n in claimed]
+            notification_block = queue.format_for_working_memory(claimed)
+            # User sent during the ping buffer: deliver the completed replies as
+            # working-memory-shaped context on this wake, then mark delivered
+            # only after the turn is saved and broadcast.
             prompt = f"{notification_block}\n\n[User's message follows]\n{prompt}"
-            logger.info(f"Injected {len(claimed)} agent notifications into user prompt")
+            logger.info(f"Injected {len(claimed)} agent notifications into user prompt as working memory")
     except Exception as e:
         logger.debug(f"Could not inject agent notifications into prompt: {e}")
 
@@ -4665,7 +5209,7 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
                             _fallback_msgs = []
                             _fb_chat = chat_manager.load_chat(actual_state_key)
                             if _fb_chat:
-                                _fallback_msgs = list(_fb_chat.get("display_messages") or _fb_chat.get("messages", []))
+                                _fallback_msgs = list(_messages_for_display(_fb_chat, actual_state_key))
                             session_streaming_states[actual_state_key] = SessionStreamingState(
                                 status="streaming",
                                 messages=_fallback_msgs,
@@ -5148,6 +5692,7 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
                 if _restart_tool_name == "restart_server" and not is_error:
                     logger.info("RESTART: restart_server tool completed — halting stream for clean save")
                     restart_after_save = True
+                    restart_trigger_time = time.time()
                     break
 
             elif event_type == "error":
@@ -5344,7 +5889,7 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
             # SS is partial (late init / restart continuation) — only has current turn.
             # Prepend previous display_messages from disk to get full history.
             old_chat_for_merge = chat_manager.load_chat(chat_id_for_storage)
-            old_display = old_chat_for_merge.get("display_messages", []) if old_chat_for_merge else []
+            old_display = _messages_for_display(old_chat_for_merge, chat_id_for_storage) if old_chat_for_merge else []
             display_msgs = old_display + serialized_ss
             logger.info(f"DISPLAY_MSGS: Merged {len(old_display)} old + {len(serialized_ss)} new SS msgs "
                         f"({sum(1 for m in display_msgs if m.get('blocks'))} with blocks)")
@@ -5396,7 +5941,11 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
                         dm["reactions"] = old_reactions[msg_id]
                 logger.info(f"SAVE: Preserved {len(old_reactions)} message reaction(s)")
 
-        final_save_data["display_messages"] = display_msgs
+        final_save_data["display_messages"] = _display_messages_for_save(
+            conv.messages,
+            display_msgs,
+            chat_id_for_storage,
+        )
 
     chat_manager.save_chat(chat_id_for_storage, final_save_data)
 
@@ -5491,6 +6040,27 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
         done_payload["messages"] = conv.messages
     await broadcast_to_session(chat_id_for_storage, done_payload)
 
+    if claimed_notification_ids:
+        try:
+            agents_dir = Path(ROOT_DIR) / ".claude" / "agents"
+            if str(agents_dir) not in sys.path:
+                sys.path.insert(0, str(agents_dir))
+            from agent_notifications import get_notification_queue
+            queue = get_notification_queue()
+            if had_error:
+                queue.release_delivery(claimed_notification_ids)
+                logger.warning(
+                    f"Released {len(claimed_notification_ids)} inline notification(s) "
+                    "because the user turn ended with an error"
+                )
+            else:
+                queue.mark_delivered(claimed_notification_ids)
+                logger.info(
+                    f"Marked {len(claimed_notification_ids)} inline notification(s) delivered"
+                )
+        except Exception as e:
+            logger.error(f"Failed to update inline notification delivery state: {e}")
+
     # ========== RESTART: Spawn restart subprocess AFTER clean save ==========
     # The restart_server tool wrote config to .claude/pending_restart.json. Now that
     # all state is cleanly saved to disk (display_messages with block model,
@@ -5499,14 +6069,14 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
     if restart_after_save:
         try:
             import subprocess as _restart_sp
-            restart_config = {}
-            if os.path.exists(_PENDING_RESTART_FILE):
-                with open(_PENDING_RESTART_FILE, 'r') as f:
-                    restart_config = json.load(f)
-                os.remove(_PENDING_RESTART_FILE)
+            restart_config = await _load_fresh_pending_restart_config(restart_trigger_time)
             restart_script = restart_config.get("restart_script", "")
             log_file = restart_config.get("log_file", "/tmp/restart.log")
             if restart_script:
+                try:
+                    os.remove(_PENDING_RESTART_FILE)
+                except FileNotFoundError:
+                    pass
                 logger.info(f"RESTART: Spawning restart subprocess (script={restart_script})")
                 _restart_sp.Popen(
                     f"sleep 1 && bash {restart_script} > {log_file} 2>&1",
@@ -5516,7 +6086,7 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
                     stderr=_restart_sp.DEVNULL,
                 )
             else:
-                logger.error("RESTART: No restart_script in pending_restart.json — cannot spawn subprocess")
+                logger.error("RESTART: No fresh restart_script in pending_restart.json — cannot spawn subprocess")
         except Exception as e:
             logger.error(f"RESTART: Failed to spawn restart subprocess: {e}")
 
@@ -5579,7 +6149,7 @@ async def handle_edit(websocket: WebSocket, data: dict):
     if stored_agent:
         data["agent"] = stored_agent
 
-    # Send the edited message with a FRESH Claude session but WITH context
+    # Send the edited message with a fresh assistant session but WITH context
     data["message"] = new_content
     data["sessionId"] = chat_id
     data["forceNewSession"] = True
@@ -5713,7 +6283,7 @@ async def handle_interrupt(websocket: WebSocket, data: dict):
         try:
             await wrapper.interrupt()
             interrupted = True
-            logger.info(f"INTERRUPT: Successfully interrupted Claude session")
+            logger.info(f"INTERRUPT: Successfully interrupted assistant session")
         except Exception as e:
             logger.error(f"INTERRUPT: Error interrupting: {e}")
     elif session_id:
@@ -6343,7 +6913,6 @@ You are running as a scheduled task. Your output will be delivered directly to r
 
 - Your final response text will be appended to the room's conversation
 - Be conversational and provide a complete response
-- DO NOT write output files - respond directly
 """
                             augmented_prompt = f"{history_context}{prompt}{routing_instructions}"
 
@@ -6394,7 +6963,7 @@ You are running as a scheduled task. Your output will be delivered directly to r
                         routing_instructions = f"""
 
 SCHEDULED TASK CONTEXT:
-You are running as a scheduled task, not a live invocation. Your output will be reviewed asynchronously by Primary Claude.
+You are running as a scheduled task, not a live invocation. Your output will be reviewed asynchronously by Primary assistant.
 
 - Write your complete output to: 00_Inbox/agent_outputs/{output_filename}
 - Include at the top of the file: the original task/question you were asked, so the reviewer has full context
@@ -6440,7 +7009,6 @@ You are running as a scheduled task. Your output will be shown to the user.
 
 - Your final response text will be appended to the room's conversation
 - Be conversational and provide a complete response
-- DO NOT write output files - respond directly
 """
                             augmented_prompt = f"{history_context}{prompt}{routing_instructions}"
 
@@ -6481,7 +7049,6 @@ You are running as a scheduled task. Your output will be shown to the user.
 SCHEDULED TASK CONTEXT:
 You are running as a scheduled task. Your output will be shown to the user in a chat.
 - Provide a complete, conversational response
-- DO NOT write output files - respond directly in your final output
 """
                         augmented_prompt = prompt + routing_instructions
 
@@ -6523,7 +7090,7 @@ You are running as a scheduled task. Your output will be shown to the user in a 
                 return
 
         # === Prompt task handling (skip for agent tasks — they're handled above) ===
-        # Prompt tasks use ClaudeWrapper which shares a single SDK session,
+        # Prompt tasks use the legacy wrapper, which shares a single runtime session,
         # so we serialize them to prevent "conversation not found" races.
         if task_type != "agent":
           async with scheduled_prompt_lock:
@@ -6540,7 +7107,7 @@ You are running as a scheduled task. Your output will be shown to the user in a 
                     augmented_prompt = _build_history_context(existing_messages, prompt)
 
                     claude = ClaudeWrapper(session_id="new", cwd=ROOT_DIR, chat_id=target_room_id, chat_messages=existing_messages)
-                    logger.info(f"Starting fresh SDK session for room {target_room_id}")
+                    logger.info(f"Starting fresh runtime session for room {target_room_id}")
 
                     all_segments, completed_tool_calls, _ = await _collect_structured_output(claude, augmented_prompt)
 
@@ -6722,6 +7289,115 @@ async def scheduler_loop():
             logger.error(f"Scheduler Error: {e}")
 
 
+class _RestartContinuationNoopWebSocket:
+    """Minimal websocket stand-in for headless restart continuation."""
+
+    async def send_json(self, payload: Dict[str, Any]) -> None:
+        logger.debug(
+            f"Restart continuation: headless send_json ignored "
+            f"(type={payload.get('type') if isinstance(payload, dict) else 'unknown'})"
+        )
+
+
+def _cleanup_restart_continuation_websocket(ws: _RestartContinuationNoopWebSocket) -> int:
+    """Remove a synthetic restart transport from session broadcast registries."""
+    removed = 0
+    for sid, clients in list(session_clients.items()):
+        if ws in clients:
+            clients.discard(ws)
+            removed += 1
+        if not clients:
+            del session_clients[sid]
+    client_sessions.pop(ws, None)
+    return removed
+
+
+def _restart_agent_resume_prompt(reason: str, source: str, role_note: str = "") -> str:
+    return (
+        "[SYSTEM NOTICE - NOT VISIBLE TO USER]\n"
+        "Backend restart completed successfully.\n"
+        f"Restart reason: {reason}\n"
+        f"Restart source: {source}.\n"
+        f"{role_note}\n"
+        "Continue where you left off using the existing thread/context. "
+        "Do not restart the task from scratch unless the saved context requires it."
+    )
+
+
+def _resume_mode_for_running_kind(kind: Optional[str]) -> str:
+    # Foreground callers died with the backend, so resume them as ping work when
+    # possible: the thread continues and completion is still delivered to the
+    # original chat/agent-thread target. Trust/scheduled work remains scheduled.
+    if kind in {"invoke_trust", "scheduled", "background_processing"}:
+        return "scheduled"
+    return "ping"
+
+
+async def _resume_agent_invocation_after_restart(entry: Dict[str, Any], reason: str, source: str) -> bool:
+    agent = entry.get("agent")
+    kind = entry.get("kind")
+    conversation_id = entry.get("conversation_id")
+    if not agent:
+        logger.error(f"Restart continuation: running-agent entry missing agent: {entry}")
+        return False
+    if kind == "salon_agent":
+        logger.warning(
+            f"Restart continuation: salon agent '{agent}' cannot be safely resumed "
+            "by the generic agent-thread path; salon dispatcher owns that lifecycle"
+        )
+        return True
+    if not conversation_id:
+        logger.error(
+            f"Restart continuation: cannot resume agent '{agent}' kind={kind}; "
+            "no durable conversation_id in running_agents entry"
+        )
+        return False
+
+    try:
+        agents_dir = Path(ROOT_DIR) / ".claude" / "agents"
+        if str(agents_dir) not in sys.path:
+            sys.path.insert(0, str(agents_dir))
+        from runner import invoke_agent as _invoke_agent
+
+        mode = _resume_mode_for_running_kind(kind)
+        prompt = _restart_agent_resume_prompt(
+            reason=reason,
+            source=source,
+            role_note=(
+                f"You were running as agent '{agent}' in invocation kind "
+                f"'{kind}' when the backend restarted."
+            ),
+        )
+        result = await _invoke_agent(
+            name=agent,
+            prompt=prompt,
+            mode=mode,
+            source_chat_id=entry.get("source_chat_id"),
+            conversation_id=conversation_id,
+            caller_agent=entry.get("caller_agent") or "restart_continuation",
+            scheduled_task_id=entry.get("scheduled_task_id"),
+            is_background_processing=(kind == "background_processing"),
+        )
+        if isinstance(result, dict) and result.get("error"):
+            logger.error(
+                f"Restart continuation: failed to resume agent '{agent}' "
+                f"thread {conversation_id}: {result.get('error')}"
+            )
+            return False
+        logger.info(
+            f"Restart continuation: resumed agent '{agent}' kind={kind} "
+            f"mode={mode} thread={conversation_id}"
+        )
+        return True
+    except Exception as e:
+        logger.error(
+            f"Restart continuation: exception resuming agent '{agent}' "
+            f"thread {conversation_id}: {e}",
+            exc_info=True,
+        )
+        return False
+
+
 async def restart_continuation_wakeup():
     """Background task that runs once after server startup to resume ALL sessions
     that were active when a restart was triggered.
@@ -6738,17 +7414,19 @@ async def restart_continuation_wakeup():
     restart_continuation = None  # Clear immediately so nothing else picks it up
 
     sessions = continuation.get("sessions", [])
+    agent_invocations = continuation.get("agent_invocations", [])
     reason = continuation.get("reason", "Server restart")
     source = continuation.get("source", "unknown")
     continuation_prompt = continuation.get("continuation_prompt", "Restart completed. Please continue.")
 
-    if not sessions:
-        logger.warning("Restart continuation has no sessions to resume")
+    if not sessions and not agent_invocations:
+        logger.warning("Restart continuation has no sessions or agent invocations to resume")
         return
 
     logger.info(
         f"Restart continuation: waiting for WebSocket connection to resume "
-        f"{len(sessions)} session(s) (source={source}, reason={reason})"
+        f"{len(sessions)} chat session(s) and {len(agent_invocations)} agent invocation(s) "
+        f"(source={source}, reason={reason})"
     )
 
     # Wait for a STABLE WebSocket connection (max 60 seconds).
@@ -6779,14 +7457,18 @@ async def restart_continuation_wakeup():
         await asyncio.sleep(0.5)
         elapsed += 0.5
 
+    headless_continuation = False
     if not ws:
         logger.warning(
             f"Restart continuation: no stable WebSocket client within {max_wait_seconds}s "
-            f"({transient_connects} transient connection(s) seen), aborting"
+            f"({transient_connects} transient connection(s) seen); continuing headlessly"
         )
-        return
+        ws = _RestartContinuationNoopWebSocket()
+        headless_continuation = True
 
     # Send a restart_continuation notification to the client for EACH session
+    resumed_count = 0
+    failed_sessions = []
     for session_info in sessions:
         session_id = session_info.get("session_id")
         agent = session_info.get("agent", "character")
@@ -6834,36 +7516,139 @@ async def restart_continuation_wakeup():
 
             logger.info(f"Auto-continuing session {session_id} (agent={agent}, role={role}) after restart")
 
-            # Use handle_message with forceNewSession to start fresh Claude session
-            # but preserve chat history context
-            await handle_message(ws, {
-                "sessionId": session_id,
-                "message": continuation_message,
-                "msgId": f"system-restart-{datetime.now().timestamp()}",
-                "forceNewSession": True,
-                "preserveChatId": session_id,
-                "contextMessages": context_messages,
-                "isSystemContinuation": True
-            })
+            # Use handle_message with forceNewSession to start a fresh assistant session
+            # but preserve chat history context. Headless continuation may register
+            # its synthetic websocket for broadcasts while streaming; always scrub
+            # it after each attempt so it cannot remain in session_clients.
+            try:
+                await handle_message(ws, {
+                    "sessionId": session_id,
+                    "message": continuation_message,
+                    "msgId": f"system-restart-{datetime.now().timestamp()}",
+                    "forceNewSession": True,
+                    "preserveChatId": session_id,
+                    "contextMessages": context_messages,
+                    "isSystemContinuation": True
+                })
+            finally:
+                if headless_continuation:
+                    removed = _cleanup_restart_continuation_websocket(ws)
+                    if removed:
+                        logger.info(
+                            f"Restart continuation: cleaned synthetic websocket from "
+                            f"{removed} session_clients registration(s) after {session_id}"
+                        )
+
+            resumed_count += 1
 
             # Brief delay between sessions to avoid overwhelming
             if len(sessions) > 1:
                 await asyncio.sleep(1.0)
 
         except Exception as e:
+            failed_sessions.append(session_id)
             logger.error(f"Failed to auto-continue session {session_id} after restart: {e}")
 
-    logger.info(f"Restart continuation complete: resumed {len(sessions)} session(s)")
+    resumed_agents = 0
+    failed_agent_invocations = []
+    for entry in agent_invocations:
+        ok = await _resume_agent_invocation_after_restart(entry, reason, source)
+        if ok:
+            resumed_agents += 1
+        else:
+            failed_agent_invocations.append(entry.get("id") or entry.get("conversation_id") or entry.get("agent"))
 
-    # Clean up the continuation file now that all sessions have been resumed.
-    # (We deferred deletion from load_restart_continuation() so that a failed
-    # wakeup leaves the file intact for the next server restart to retry.)
+    mode = "headless" if headless_continuation else "websocket"
+    logger.info(
+        f"Restart continuation complete via {mode}: resumed {resumed_count}/{len(sessions)} "
+        f"chat session(s), {resumed_agents}/{len(agent_invocations)} agent invocation(s)"
+    )
+
+    if failed_sessions or failed_agent_invocations:
+        logger.error(
+            f"Restart continuation: leaving continuation file in place after "
+            f"failed session(s): {failed_sessions}; failed agent invocation(s): "
+            f"{failed_agent_invocations}"
+        )
+        return
+
+    # Clean up the continuation file now that all sessions have been resumed,
+    # but only if it is still the marker this wakeup task loaded. A nested
+    # restart_server call can write the next marker before this older task exits.
     try:
         if os.path.exists(RESTART_CONTINUATION_FILE):
-            os.remove(RESTART_CONTINUATION_FILE)
-            logger.info("Restart continuation: cleaned up continuation file after successful resume")
+            with open(RESTART_CONTINUATION_FILE, 'r') as f:
+                current_marker = json.load(f)
+            if _restart_continuation_marker_matches(current_marker, continuation):
+                os.remove(RESTART_CONTINUATION_FILE)
+                logger.info(
+                    "Restart continuation: cleaned up continuation file after successful resume "
+                    f"(marker_id={continuation.get('continuation_id', 'legacy')})"
+                )
+            else:
+                logger.warning(
+                    "Restart continuation: preserving newer/different continuation marker during cleanup "
+                    f"(loaded_marker_id={continuation.get('continuation_id', 'legacy')}, "
+                    f"current_marker_id={current_marker.get('continuation_id', 'legacy')})"
+                )
     except Exception as e:
-        logger.warning(f"Restart continuation: failed to remove continuation file: {e}")
+        logger.warning(f"Restart continuation: failed to inspect/remove continuation file: {e}")
+
+
+AGENT_THREAD_NOTIFICATION_PREFIX = "agent-thread:"
+
+
+def _parse_agent_thread_notification_source(source_chat_id: Optional[str]) -> Optional[Tuple[str, str]]:
+    """Return (caller_agent, conversation_id) for synthetic agent ping targets."""
+    if not source_chat_id or not source_chat_id.startswith(AGENT_THREAD_NOTIFICATION_PREFIX):
+        return None
+    rest = source_chat_id[len(AGENT_THREAD_NOTIFICATION_PREFIX):]
+    if ":" not in rest:
+        return None
+    caller_agent, conversation_id = rest.split(":", 1)
+    if not caller_agent or not conversation_id:
+        return None
+    return caller_agent, conversation_id
+
+
+def _notification_completed_ts(notification: Any) -> float:
+    try:
+        completed_at = notification.completed_at
+        if isinstance(completed_at, datetime) and (
+            completed_at.tzinfo is None or completed_at.utcoffset() is None
+        ):
+            completed_at = completed_at.replace(tzinfo=timezone.utc)
+        return completed_at.timestamp()
+    except Exception:
+        return time.time()
+
+
+def _chat_notification_ready(chat_id: str, notification: Any) -> bool:
+    if chat_id in active_processing_sessions:
+        return False
+    buffer_started = max(
+        _notification_completed_ts(notification),
+        recently_completed_sessions.get(chat_id, 0),
+    )
+    return time.time() - buffer_started >= PING_COMPLETION_BUFFER_SECONDS
+
+
+def _agent_thread_caller_active(caller_agent: str, conversation_id: str) -> bool:
+    try:
+        for entry in running_agents.snapshot_all_sync():
+            if entry.get("agent") == caller_agent and entry.get("conversation_id") == conversation_id:
+                return True
+    except Exception:
+        return False
+    return False
+
+
+def _agent_thread_notification_ready(caller_agent: str, conversation_id: str, notification: Any) -> bool:
+    if _agent_thread_caller_active(caller_agent, conversation_id):
+        return False
+    caller_completed_at = running_agents.recently_completed_at_sync(caller_agent, conversation_id) or 0
+    buffer_started = max(_notification_completed_ts(notification), caller_completed_at)
+    return time.time() - buffer_started >= PING_COMPLETION_BUFFER_SECONDS
 
 
 async def agent_notification_wakeup_loop():
@@ -6873,12 +7658,13 @@ async def agent_notification_wakeup_loop():
     this loop automatically wakes Claude up with the notifications as a hidden user message.
 
     Key design decisions for concurrency safety:
-    - Uses claim_pending() to atomically transition notifications from "pending" to "injected"
-      under a file lock, preventing double-delivery with the inline injection path (Path A).
-    - Batches all notifications for the same chat_id into a single Claude call, so if 3 agents
-      complete around the same time, Claude gets one combined prompt instead of 3 serial ones.
-    - Holds chat_lock for the entire batch processing of a given chat, preventing user messages
-      from interleaving with the wake-up save.
+    - Eligibility is checked before claiming, so a wake loop never marks a
+      notification in-flight while blocked behind the caller's active turn.
+    - Claiming transitions pending -> delivering; delivered is written only
+      after the caller-visible wake/injection has completed.
+    - Batches all notifications for the same target into one delivery.
+    - Holds chat_lock for chat delivery, preventing user messages from
+      interleaving with the wake-up save.
     """
     logger.info("Agent Notification Wake-up Loop Started")
 
@@ -6897,25 +7683,58 @@ async def agent_notification_wakeup_loop():
 
             queue = get_notification_queue()
 
-            # Atomically claim all stale notifications — this prevents Path A (inline
-            # injection) and future loop iterations from grabbing the same ones.
-            claimed = queue.claim_pending(threshold_seconds=30)
+            pending = queue.get_pending()
 
-            if not claimed:
+            if not pending:
                 continue
 
-            logger.info(f"Claimed {len(claimed)} stale agent notifications for wake-up")
-
-            # Group claimed notifications by target chat_id for batched delivery
-            from collections import defaultdict
+            # Group only notifications whose caller is idle and whose 30s buffer
+            # has elapsed. User messages during the buffer use the inline
+            # working-memory-shaped path instead.
             by_chat: dict[str, list] = defaultdict(list)
-            for notification in claimed:
-                chat_id = notification.source_chat_id
-                if not chat_id:
-                    # No chat to wake up — already marked injected, just skip
+            by_agent_thread: dict[Tuple[str, str], list] = defaultdict(list)
+            for notification in pending:
+                source_id = notification.source_chat_id
+                if not source_id:
                     logger.warning(f"Notification {notification.id} has no source_chat_id, skipping")
                     continue
-                by_chat[chat_id].append(notification)
+                agent_target = _parse_agent_thread_notification_source(source_id)
+                if agent_target:
+                    caller_agent, conversation_id = agent_target
+                    if _agent_thread_notification_ready(caller_agent, conversation_id, notification):
+                        by_agent_thread[agent_target].append(notification)
+                else:
+                    if _chat_notification_ready(source_id, notification):
+                        by_chat[source_id].append(notification)
+
+            if not by_chat and not by_agent_thread:
+                continue
+
+            # Process each agent-thread batch first. These are silent scheduled
+            # caller continuations, not UI chat wake-ups.
+            for (caller_agent, conversation_id), notifications in by_agent_thread.items():
+                try:
+                    async with asyncio.timeout(NOTIFICATION_BATCH_TIMEOUT):
+                        await _process_agent_thread_notification_batch(
+                            caller_agent, conversation_id, notifications, queue
+                        )
+                except TimeoutError:
+                    agent_names = [n.agent for n in notifications]
+                    try:
+                        queue.release_delivery([n.id for n in notifications])
+                    except Exception:
+                        pass
+                    logger.error(
+                        f"Agent-thread notification batch timed out after "
+                        f"{NOTIFICATION_BATCH_TIMEOUT}s for {caller_agent} "
+                        f"thread {conversation_id} (agents: {agent_names})"
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"Error processing agent-thread notification batch for "
+                        f"{caller_agent} thread {conversation_id}: {e}",
+                        exc_info=True,
+                    )
 
             # Process each chat's batch of notifications
             for chat_id, notifications in by_chat.items():
@@ -6924,12 +7743,105 @@ async def agent_notification_wakeup_loop():
                         await _process_notification_batch(chat_id, notifications, queue)
                 except TimeoutError:
                     agent_names = [n.agent for n in notifications]
+                    try:
+                        queue.release_delivery([n.id for n in notifications])
+                    except Exception:
+                        pass
                     logger.error(f"Notification batch timed out after {NOTIFICATION_BATCH_TIMEOUT}s for chat {chat_id} (agents: {agent_names})")
                 except Exception as e:
                     logger.error(f"Error processing notification batch for chat {chat_id}: {e}", exc_info=True)
 
         except Exception as e:
             logger.error(f"Agent Notification Wake-up Error: {e}", exc_info=True)
+
+
+async def _process_agent_thread_notification_batch(
+    caller_agent: str,
+    conversation_id: str,
+    notifications: list,
+    queue,
+) -> None:
+    """Resume an agent caller for ping completions from silent/scheduled contexts."""
+    agent_names = [n.agent for n in notifications]
+    agent_names_str = ", ".join(agent_names)
+    claimed = queue.claim_by_ids([n.id for n in notifications])
+    if not claimed:
+        logger.info(
+            f"Agent-thread notification batch for {caller_agent} thread {conversation_id} "
+            "had nothing left to claim"
+        )
+        return
+    notifications = claimed
+    claimed_ids = [n.id for n in claimed]
+
+    try:
+        agents_dir = Path(ROOT_DIR) / ".claude" / "agents"
+        if str(agents_dir) not in sys.path:
+            sys.path.insert(0, str(agents_dir))
+        from registry import get_registry
+        from runner import invoke_agent
+
+        registry = get_registry()
+        if not registry.get(caller_agent):
+            logger.error(
+                f"Agent-thread ping target '{caller_agent}' is not a registered agent; "
+                f"cannot resume thread {conversation_id}"
+            )
+            queue.release_delivery(claimed_ids)
+            return
+
+        notification_parts = []
+        for n in notifications:
+            notification_parts.append(f'''<agent-completion agent="{n.agent}">
+**Invoked at:** {n.invoked_at.strftime('%Y-%m-%d %H:%M:%S')}
+**Completed at:** {n.completed_at.strftime('%Y-%m-%d %H:%M:%S')}
+
+**Agent Response:**
+{n.agent_response}
+</agent-completion>''')
+
+        count_str = (
+            f"{len(notifications)} agent(s)"
+            if len(notifications) > 1
+            else f'Agent "{notifications[0].agent}"'
+        )
+        notification_prompt = f'''<agent-completion-notification count="{len(notifications)}">
+{count_str} completed their task(s).
+
+{chr(10).join(notification_parts)}
+</agent-completion-notification>
+
+You are being re-invoked because you requested ping mode from a silent or scheduled agent context. Continue the existing agent-to-agent thread, review the completed response(s), and take any necessary follow-up action. If no action is needed, finish briefly.'''
+
+        result = await invoke_agent(
+            name=caller_agent,
+            prompt=notification_prompt,
+            mode="foreground",
+            source_chat_id=None,
+            conversation_id=conversation_id,
+            caller_agent="agent_notification_wakeup",
+        )
+
+        if isinstance(result, dict) and result.get("error"):
+            logger.error(
+                f"Failed to resume caller agent '{caller_agent}' for ping "
+                f"thread {conversation_id}: {result.get('error')}"
+            )
+            queue.release_delivery(claimed_ids)
+            return
+
+        queue.mark_delivered(claimed_ids)
+        logger.info(
+            f"Completed agent-thread ping wake-up for {caller_agent} on "
+            f"thread {conversation_id} ({agent_names_str})"
+        )
+    except Exception as e:
+        queue.release_delivery(claimed_ids)
+        logger.error(
+            f"Agent-thread ping wake-up failed for {caller_agent} "
+            f"thread {conversation_id} ({agent_names_str}): {e}",
+            exc_info=True,
+        )
 
 
 async def _process_notification_batch(chat_id: str, notifications: list, queue) -> None:
@@ -6950,9 +7862,21 @@ async def _process_notification_batch(chat_id: str, notifications: list, queue) 
     # Acquire chat lock to prevent race conditions with concurrent user messages
     chat_lock = get_chat_lock(chat_id)
     async with chat_lock:
+        if chat_id in active_processing_sessions:
+            logger.info(f"Wake-up: chat {chat_id} became active before delivery; leaving notifications pending")
+            return
+
+        claimed = queue.claim_by_ids([n.id for n in notifications])
+        if not claimed:
+            logger.info(f"Wake-up: no notifications left to claim for chat {chat_id}")
+            return
+        notifications = claimed
+        claimed_ids = [n.id for n in claimed]
+
         # Re-load chat inside the lock (may have changed since we checked)
         existing_chat = chat_manager.load_chat(chat_id)
         if not existing_chat:
+            queue.release_delivery(claimed_ids)
             return
 
         # Build conversation history for context injection
@@ -7036,6 +7960,7 @@ Please review the agent response(s) and take any necessary follow-up action. If 
 
         if not wakeup_agent_config:
             logger.error("No agent config available for wake-up handler")
+            queue.release_delivery(claimed_ids)
             await _record_chat_session_ended(chat_id)
             return
 
@@ -7157,9 +8082,25 @@ Please review the agent response(s) and take any necessary follow-up action. If 
             active_claude_wrappers.pop(chat_id, None)
             await _record_chat_session_ended(chat_id)
 
-        # Append error content to last segment if any
         if error_content:
-            all_segments.append(f"\n\n**Errors:**\n" + "\n".join(error_content))
+            queue.release_delivery(claimed_ids)
+            logger.warning(
+                f"Wake-up failed for {agent_names_str} -> chat {chat_id}; "
+                "leaving notification(s) pending for retry"
+            )
+            await broadcast_to_session(chat_id, {
+                "type": "state",
+                "seq": 0,
+                "sessionId": chat_id,
+                "messages": existing_chat.get("display_messages") or existing_chat.get("messages", []),
+                "isProcessing": False,
+                "status": "idle",
+                "agent": existing_chat.get("agent"),
+                "cumulative_usage": existing_chat.get("cumulative_usage", {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}),
+                "pending_form": None,
+                "todos": None,
+            })
+            return
 
         # Build interleaved messages (same as scheduler)
         interleaved = _build_interleaved_messages(all_segments, completed_tool_calls_wakeup)
@@ -7195,6 +8136,7 @@ Please review the agent response(s) and take any necessary follow-up action. If 
             if chat_id in active_conversations:
                 active_conversations[chat_id].messages = existing_chat["messages"].copy()
 
+            queue.mark_delivered(claimed_ids)
             logger.info(f"Triggered wake-up for {len(notifications)} notification(s): {agent_names_str} -> chat {chat_id}")
 
             # Broadcast state event so the client syncs the new messages.
@@ -7215,7 +8157,32 @@ Please review the agent response(s) and take any necessary follow-up action. If 
                 "todos": None,
             })
         else:
-            logger.warning(f"Wake-up produced no content for {agent_names_str} -> chat {chat_id}")
+            # The correctness contract is that the caller model invocation saw
+            # the completion once. A no-op model response still satisfies that;
+            # do not keep replaying the same ping just because there is no
+            # visible assistant text to persist.
+            latest_completed = max(n.completed_at for n in notifications)
+            hidden_user_msg = {
+                "id": str(uuid.uuid4()),
+                "role": "user",
+                "content": notification_prompt_raw,
+                "hidden": True,
+                "timestamp": int(latest_completed.timestamp() * 1000)
+            }
+            existing_chat["messages"].append(hidden_user_msg)
+            if "display_messages" in existing_chat:
+                existing_chat["display_messages"].append(hidden_user_msg)
+
+            chat_manager.save_chat(chat_id, existing_chat)
+
+            if chat_id in active_conversations:
+                active_conversations[chat_id].messages = existing_chat["messages"].copy()
+
+            queue.mark_delivered(claimed_ids)
+            logger.info(
+                f"Triggered model-only wake-up for {len(notifications)} "
+                f"notification(s): {agent_names_str} -> chat {chat_id}"
+            )
             # Still send state to clear processing state
             await broadcast_to_session(chat_id, {
                 "type": "state",
@@ -7277,26 +8244,20 @@ async def startup_event():
         logger.warning(f"WAL: {len(recovery_state['pending_messages'])} pending messages")
         logger.warning(f"WAL: {len(recovery_state['streaming_responses'])} incomplete responses")
 
-        # Recover streaming responses to chat files
+        # Clear stale streaming responses without writing them into chat files.
+        #
+        # This recovery path was built for true token streaming. Codex headless
+        # emits item-level completed message blocks, and stale WAL entries can
+        # contain whole completed assistant turns. Appending them on startup
+        # duplicates prior replies in the visible chat after a server restart.
         for resp in recovery_state["streaming_responses"]:
             chat_id = resp.get("chat_id")
             segments = resp.get("content_segments", [])
-            if chat_id and segments:
-                # Load existing chat and append recovered content
-                existing = chat_manager.load_chat(chat_id)
-                if existing:
-                    # Mark recovered content
-                    recovered_content = "\n\n".join(s for s in segments if s.strip())
-                    if recovered_content:
-                        # Add a note about recovery
-                        recovered_content += "\n\n[Response recovered after server restart - may be incomplete]"
-                        existing["messages"].append({
-                            "id": str(uuid.uuid4()),
-                            "role": "assistant",
-                            "content": recovered_content
-                        })
-                        chat_manager.save_chat(chat_id, existing)
-                        logger.info(f"WAL: Recovered partial response for chat {chat_id}")
+            recovered_chars = sum(len(s or "") for s in segments)
+            logger.warning(
+                f"WAL: Discarding stale streaming response for chat {chat_id} "
+                f"({recovered_chars} chars); not appending recovered content to chat"
+            )
 
         # FIX BUG 3: Clear ALL stale WAL entries on server restart
         # Any 'processing' status entries are now stale because the server was restarted
@@ -7440,7 +8401,7 @@ def sync_chat_state(req: SyncRequest):
         )
 
     # Prefer display_messages (has blocks/thinking) over flat messages
-    messages = chat_data.get("display_messages") or chat_data.get("messages", [])
+    messages = _messages_for_display(chat_data, session_id)
 
     # Check if there's a pending message in the WAL for this session
     wal = get_wal()

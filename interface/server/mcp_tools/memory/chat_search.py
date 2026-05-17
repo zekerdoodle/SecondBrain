@@ -96,7 +96,7 @@ def _find_chat_file(chat_id: str) -> Optional[Tuple[Path, str]]:
     if json_path.exists():
         return json_path, "json"
 
-    # Check Claude Code JSONL projects
+    # Check legacy JSONL projects
     projects_path = Path(PROJECTS_DIR)
     if projects_path.exists():
         for proj_dir in projects_path.iterdir():
@@ -117,7 +117,7 @@ def _load_messages_json(chat_path: Path) -> List[Dict[str, Any]]:
 
 
 def _load_messages_jsonl(chat_path: Path) -> List[Dict[str, Any]]:
-    """Load messages from a Claude Code JSONL chat file.
+    """Load messages from a legacy JSONL chat file.
 
     Converts JSONL format to the same {role, content} structure as JSON chats.
     Only returns user/assistant messages (skips tool results, system messages).
@@ -628,35 +628,30 @@ Return ONLY a JSON object with this exact structure (no markdown, no explanation
 
 
 async def _call_haiku(prompt: str, system_prompt: str) -> Optional[str]:
-    """Make a single Haiku SDK call and return the result text."""
+    """Make a single small-model Codex call and return the result text."""
     try:
-        from claude_agent_sdk import query as sdk_query, ClaudeAgentOptions, ResultMessage
+        from codex_backend import CodexRunOptions, ROOT_DIR, run_codex
     except Exception as import_err:
-        logger.error(f"SDK import failed: {import_err}")
+        logger.error(f"Codex backend import failed: {import_err}")
         return None
 
     try:
-        result_text = None
-        async for message in sdk_query(
-            prompt=prompt,
-            options=ClaudeAgentOptions(
+        result = await run_codex(
+            CodexRunOptions(
                 model="haiku",
-                system_prompt=system_prompt,
+                cwd=str(ROOT_DIR),
+                identity_instructions=system_prompt,
+                prompt=prompt,
+                tools=[],
+                timeout_seconds=120,
                 max_turns=1,
-                permission_mode="bypassPermissions",
-                allowed_tools=[],
-                setting_sources=[],
             )
-        ):
-            if isinstance(message, ResultMessage):
-                if message.is_error:
-                    logger.warning(f"Haiku extraction error: {message.result}")
-                elif message.result:
-                    result_text = message.result
-
-        return result_text
+        )
+        if result.returncode != 0:
+            logger.warning(f"Small-model extraction error: {result.stderr}")
+        return result.response or None
     except BaseException as e:
-        logger.error(f"Haiku call failed ({type(e).__name__}): {e}", exc_info=True)
+        logger.error(f"Small-model call failed ({type(e).__name__}): {e}", exc_info=True)
         return None
 
 

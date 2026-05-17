@@ -22,6 +22,7 @@ import json
 import time
 import signal
 import subprocess
+import uuid
 from pathlib import Path
 from datetime import datetime
 
@@ -34,6 +35,61 @@ SERVER_DIR = SECOND_BRAIN_ROOT / "interface" / "server"
 START_SCRIPT = SECOND_BRAIN_ROOT / "interface" / "start.sh"
 QUICK_RESTART_SCRIPT = SECOND_BRAIN_ROOT / "interface" / "restart-server.sh"
 FULL_RESTART_SCRIPT = SECOND_BRAIN_ROOT / "interface" / "restart-server-full.sh"
+
+
+RESUMABLE_AGENT_INVOCATION_KINDS = frozenset({
+    "invoke_foreground",
+    "invoke_ping",
+    "invoke_trust",
+    "scheduled",
+    "background_processing",
+    "agent_conversation_join",
+})
+
+
+def is_resumable_agent_invocation(entry):
+    """Return True when a running_agents entry can be resumed after restart."""
+    if not isinstance(entry, dict):
+        return False
+    if entry.get("kind") not in RESUMABLE_AGENT_INVOCATION_KINDS:
+        return False
+    if not entry.get("agent") or not entry.get("conversation_id"):
+        return False
+    if entry.get("caller_agent") == "restart_continuation":
+        return False
+    return True
+
+
+def filter_resumable_agent_invocations(running_invocations):
+    """Return deduped restart-continuation snapshots for durable agent work.
+
+    The restart marker intentionally stores resumable thread-level work, not
+    every row from running_agents. Outer scheduled wrappers without a durable
+    conversation_id remain visible in running_agents for idle/restart safety;
+    their inner invoke_* entry is the unit restart continuation can resume.
+    """
+    agent_invocations = []
+    seen_invocation_keys = set()
+    for entry in running_invocations or []:
+        if not is_resumable_agent_invocation(entry):
+            continue
+        key = (entry.get("agent"), entry.get("kind"), entry.get("conversation_id"), entry.get("started_at"))
+        if key in seen_invocation_keys:
+            continue
+        seen_invocation_keys.add(key)
+        agent_invocations.append({
+            "id": entry.get("id"),
+            "agent": entry.get("agent"),
+            "kind": entry.get("kind"),
+            "started_at": entry.get("started_at"),
+            "task_summary": entry.get("task_summary"),
+            "source_chat_id": entry.get("source_chat_id"),
+            "conversation_id": entry.get("conversation_id"),
+            "salon_id": entry.get("salon_id"),
+            "scheduled_task_id": entry.get("scheduled_task_id"),
+            "caller_agent": entry.get("caller_agent"),
+        })
+    return agent_invocations
 
 
 def find_server_pid():
@@ -74,7 +130,8 @@ def save_continuation_state(
     reason: str = None,
     source: str = None,
     messages: list = None,
-    all_active_sessions: dict = None
+    all_active_sessions: dict = None,
+    running_invocations: list = None,
 ):
     """Save continuation marker for post-restart resumption.
 
@@ -88,6 +145,8 @@ def save_continuation_state(
         messages: Optional messages for the triggering session.
         all_active_sessions: Optional dict of {session_id: agent_name} for ALL
             sessions that were actively processing at restart time.
+        running_invocations: Optional running_agents snapshots for non-chat
+            agent work that must be resumed on startup.
     """
     reason = reason or "Server restart requested"
     source = source or "unknown"
@@ -105,23 +164,26 @@ def save_continuation_state(
     # (no specific session triggered the restart)
     is_external_trigger = source in ("settings_ui", "shutdown_handler")
 
-    # The triggering session is first (unless this is an external trigger like Settings UI)
-    triggering_msg_count = 0
-    if messages is not None:
-        triggering_msg_count = len(messages)
-    else:
-        chat_file = CHATS_DIR / f"{session_id}.json"
-        if chat_file.exists():
-            with open(chat_file) as f:
-                chat_data = json.load(f)
-                triggering_msg_count = len(chat_data.get("messages", []))
+    # The triggering session is first (unless this is an external trigger like Settings UI).
+    # Agent-only shutdowns may have no chat session; those persist only
+    # agent_invocations below and are still valid restart-continuation markers.
+    if session_id:
+        triggering_msg_count = 0
+        if messages is not None:
+            triggering_msg_count = len(messages)
+        else:
+            chat_file = CHATS_DIR / f"{session_id}.json"
+            if chat_file.exists():
+                with open(chat_file) as f:
+                    chat_data = json.load(f)
+                    triggering_msg_count = len(chat_data.get("messages", []))
 
-    sessions.append({
-        "session_id": session_id,
-        "agent": trigger_agent,
-        "role": "bystander" if is_external_trigger else "trigger",
-        "message_count": triggering_msg_count,
-    })
+        sessions.append({
+            "session_id": session_id,
+            "agent": trigger_agent,
+            "role": "bystander" if is_external_trigger else "trigger",
+            "message_count": triggering_msg_count,
+        })
 
     # Add remaining sessions (actively processing but didn't trigger the restart)
     if all_active_sessions:
@@ -145,11 +207,15 @@ def save_continuation_state(
                 "message_count": bystander_msg_count,
             })
 
+    agent_invocations = filter_resumable_agent_invocations(running_invocations)
+
     continuation = {
+        "continuation_id": str(uuid.uuid4()),
         "restart_time": datetime.now().isoformat(),
         "reason": reason,
         "source": source,
         "sessions": sessions,
+        "agent_invocations": agent_invocations,
         # Legacy field for backwards compat
         "session_id": session_id,
         "continuation_prompt": (

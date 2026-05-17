@@ -28,7 +28,7 @@ interface QueuedMessage {
   serverTimestamp?: number;
 }
 
-// User message being injected mid-stream (while Claude is responding)
+// User message being injected mid-stream (while assistant is responding)
 export type QueuedMessageStatus = 'pending' | 'confirmed' | 'not_delivered';
 
 export interface UserQueuedMessage {
@@ -74,7 +74,7 @@ export interface ClaudeHook {
   loadChat: (id: string, agentHint?: string | null) => Promise<void>;
   sessionId: string;
   connectionStatus: ConnectionStatus;
-  // Message queue for sending while Claude is responding
+  // Message queue for sending while assistant is responding
   queuedMessages: UserQueuedMessage[];
   clearQueuedMessages: () => void;
   dismissQueuedMessage: (id: string) => void;
@@ -250,7 +250,7 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
   const pendingMessages = useRef<Map<string, QueuedMessage>>(new Map());
   const ackTimeoutMs = 5000; // 5 seconds to receive ACK before showing warning
 
-  // User message queue - messages sent while Claude is responding
+  // User message queue - messages sent while assistant is responding
   // These will be sent automatically when the current turn completes
   // Restore from sessionStorage on mount so queued messages survive refresh
   const queuedMsgKey = `brain_queued_msgs${keySuffix}`;
@@ -1632,7 +1632,7 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
     }
 
     // CRITICAL FIX: Use much longer timeout during tool_use because tools can legitimately
-    // take a long time (e.g., waiting for Claude Code to finish, long bash commands, etc.)
+    // take a long time (e.g., waiting for coding tool to finish, long bash commands, etc.)
     // Only use short timeout for 'thinking' and 'processing' states which shouldn't stall.
     const timeoutMs = status === 'tool_use' ? 300000 : 30000; // 5 minutes for tools, 30 seconds otherwise
 
@@ -1820,7 +1820,7 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
     return true;
   }, [sessionId]);
 
-  // Inject a message mid-stream (while Claude is working)
+  // Inject a message mid-stream (while assistant is working)
   const injectMessage = useCallback((text: string): boolean => {
     if (!ws.current || ws.current.readyState !== WebSocket.OPEN) {
       console.error("Cannot inject message: WebSocket not open");
@@ -1858,10 +1858,10 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
     return sendMessageInternal(text, images, agent);
   }, [status, sendMessageInternal, injectMessage]);
 
-  // Public send function - injects messages if Claude is busy, sends normally if idle
+  // Public send function - injects messages if assistant is busy, sends normally if idle
   const sendMessage = useCallback((text: string, images?: ChatImageRef[]): boolean => {
-    // If Claude is currently responding, inject the message into the stream
-    // This allows mid-stream corrections/additions that Claude sees immediately
+    // If assistant is currently responding, inject the message into the stream
+    // This allows mid-stream corrections/additions that assistant sees immediately
     // Note: images are not supported for injection (mid-stream)
     if (status !== 'idle') {
       return injectMessage(text);
@@ -1872,7 +1872,7 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
   }, [status, sendMessageInternal, injectMessage]);
 
   // NOTE: We no longer queue messages for post-completion processing.
-  // Messages sent while Claude is busy are now INJECTED immediately into
+  // Messages sent while assistant is busy are now INJECTED immediately into
   // the active stream. The queued messages state is used for UI display only.
 
   // Sync with server to recover from connection issues

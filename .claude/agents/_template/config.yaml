@@ -1,12 +1,12 @@
 name: your_agent_name
 description: Brief description of what this agent does.
-model: sonnet
-type: sdk
+model: gpt-5.4-mini
+type: codex
 timeout_seconds: 1800
 max_turns: 200
 chattable: false
 icon: bot
-# system_prompt_preset: claude_code  # Use Claude Code's native system prompt; prompt.md becomes append content
+# system_prompt_preset: codex_code  # Use Codex's native coding instructions; prompt.md becomes append content
 # Native tools (Read, Write, Edit, etc.) are auto-included when none are listed.
 # List specific native tools only to RESTRICT to that subset.
 tools: []

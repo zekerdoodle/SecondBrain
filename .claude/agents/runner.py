@@ -19,21 +19,16 @@ import logging
 import os
 import sys
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Union
+from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional, Set, Union
 
-# The SDK's stream_input() keeps stdin open until the first `result` message arrives
-# or a timeout fires (CLAUDE_CODE_STREAM_CLOSE_TIMEOUT, default 60s).  Agents that
-# use page_parser with summary subagents can take 90-120 seconds, which hits the
-# default 60s timeout and closes stdin while Claude is still mid-conversation,
-# causing CLIConnectionError: ProcessTransport is not ready for writing.
-# Set to 4 hours — well above any agent's timeout_seconds (4 hr default).
 os.environ.setdefault("CLAUDE_CODE_STREAM_CLOSE_TIMEOUT", "14400000")
 os.environ["ENABLE_TOOL_SEARCH"] = "false"
 
 from models import (
-    AgentConfig, AgentInvocation, AgentResult, InvocationMode
+    AgentConfig, AgentInvocation, AgentResult, InvocationMode, AgentType
 )
 from agent_notifications import get_notification_queue
 
@@ -45,53 +40,115 @@ if _server_dir not in sys.path:
 from process_registry import register_process, deregister_process
 import running_agents
 
-from claude_agent_sdk.types import (
-    AssistantMessage,
-    HookMatcher,
-    PermissionResultAllow,
-    ResultMessage,
-    StreamEvent,
-    TextBlock,
-    ThinkingBlock,
-    ThinkingConfigAdaptive,
-    ThinkingConfigEnabled,
-    ToolResultBlock,
-    ToolUseBlock,
-    UserMessage,
-)
+def _load_real_claude_agent_sdk():
+    """Load the installed Anthropic SDK even when the local shim shadows its package name."""
+    import importlib.metadata
+    import importlib.util
+
+    init_path = Path(
+        importlib.metadata.distribution("claude-agent-sdk").locate_file(
+            "claude_agent_sdk/__init__.py"
+        )
+    )
+    module_name = "_second_brain_real_claude_agent_sdk"
+    if module_name in sys.modules:
+        return sys.modules[module_name]
+    spec = importlib.util.spec_from_file_location(
+        module_name,
+        init_path,
+        submodule_search_locations=[str(init_path.parent)],
+    )
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Cannot load real claude_agent_sdk from {init_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _create_real_sdk_mcp_server(name: str, version: str, tools: List[Any]) -> Dict[str, Any]:
+    """Adapt local compatibility MCP tools to the installed SDK server type."""
+    if _real_sdk is None:
+        raise RuntimeError("Installed claude-agent-sdk package is unavailable")
+    real_tools = [
+        _real_sdk.SdkMcpTool(
+            name=tool.name,
+            description=tool.description,
+            input_schema=tool.input_schema,
+            handler=tool.handler,
+            annotations=getattr(tool, "annotations", None),
+        )
+        for tool in tools
+    ]
+    return _real_sdk.create_sdk_mcp_server(name=name, version=version, tools=real_tools)
+
+
+_real_sdk = None
+
+try:
+    _real_sdk = _load_real_claude_agent_sdk()
+    ClaudeSDKClient = _real_sdk.ClaudeSDKClient
+    ClaudeAgentOptions = _real_sdk.ClaudeAgentOptions
+    SDK_QUERY = _real_sdk.query
+    AssistantMessage = _real_sdk.AssistantMessage
+    UserMessage = _real_sdk.UserMessage
+    SystemMessage = getattr(_real_sdk, "SystemMessage", None)
+    ResultMessage = _real_sdk.ResultMessage
+    TextBlock = _real_sdk.TextBlock
+    ToolUseBlock = _real_sdk.ToolUseBlock
+    ToolResultBlock = _real_sdk.ToolResultBlock
+    ThinkingBlock = _real_sdk.ThinkingBlock
+    _real_sdk_types = sys.modules[f"{_real_sdk.__name__}.types"]
+    PermissionResultAllow = _real_sdk_types.PermissionResultAllow
+    HookMatcher = _real_sdk_types.HookMatcher
+    StreamEvent = _real_sdk_types.StreamEvent
+    ThinkingConfigAdaptive = _real_sdk_types.ThinkingConfigAdaptive
+    ThinkingConfigEnabled = _real_sdk_types.ThinkingConfigEnabled
+except Exception:
+    ClaudeSDKClient = ClaudeAgentOptions = SDK_QUERY = None
+    AssistantMessage = UserMessage = SystemMessage = ResultMessage = None
+    TextBlock = ToolUseBlock = ToolResultBlock = ThinkingBlock = None
+    PermissionResultAllow = HookMatcher = StreamEvent = None
+    ThinkingConfigAdaptive = ThinkingConfigEnabled = None
 
 logger = logging.getLogger("agents.runner")
 
+# Keep strong references to detached ping/trust tasks until they finish.
+_BACKGROUND_INVOCATION_TASKS: Set[asyncio.Task] = set()
 
-async def _auto_approve_tool(tool_name: str, input_data: dict, context) -> PermissionResultAllow:
-    """Auto-approve ALL tool permission requests without prompting.
+# Synthetic source used when ping mode is requested by an agent that has no
+# foreground chat to wake. main.py consumes these durable notifications and
+# resumes the caller on the same agent-conversation thread.
+AGENT_THREAD_NOTIFICATION_PREFIX = "agent-thread:"
 
-    bypassPermissions handles most cases, but Claude Code has hardcoded protection
-    for .claude/, .git/, .vscode/, .idea/ directories that still prompts even in
-    bypass mode.  In SDK sessions there is no user to respond, so the prompt times
-    out to a denial.  This callback catches those prompts and approves them.
-    """
+
+def _agent_thread_notification_source(caller_agent: str, conversation_id: str) -> str:
+    return f"{AGENT_THREAD_NOTIFICATION_PREFIX}{caller_agent}:{conversation_id}"
+
+
+async def _auto_approve_tool(tool_name: str, input_data: dict, context):
+    """Auto-approve SDK tool permission prompts that bypassPermissions does not suppress."""
+    if PermissionResultAllow is None:
+        raise RuntimeError("claude_agent_sdk is unavailable")
     return PermissionResultAllow(updated_input=input_data)
 
 
 async def _keepalive_hook(input_data, tool_use_id, context):
-    """Dummy PreToolUse hook — required by the Python SDK to keep the stream open
-    for the can_use_tool callback."""
+    """PreToolUse hook required to keep SDK streaming input alive for tool callbacks."""
     return {"continue_": True}
 
-# Model-aware thinking defaults — maximize thinking for every model tier
-# Keys match the short model aliases used in agent config.yaml files
+
 THINKING_DEFAULTS = {
     "opus": {
-        "thinking": ThinkingConfigAdaptive(type="adaptive"),
+        "thinking": ThinkingConfigAdaptive(type="adaptive") if ThinkingConfigAdaptive else None,
         "effort": "high",
     },
     "sonnet": {
-        "thinking": ThinkingConfigAdaptive(type="adaptive"),
+        "thinking": ThinkingConfigAdaptive(type="adaptive") if ThinkingConfigAdaptive else None,
         "effort": "high",
     },
     "haiku": {
-        "thinking": ThinkingConfigEnabled(type="enabled", budget_tokens=16384),
+        "thinking": ThinkingConfigEnabled(type="enabled", budget_tokens=16384) if ThinkingConfigEnabled else None,
     },
 }
 
@@ -410,16 +467,85 @@ async def invoke_agent(
         return result
 
     elif mode == InvocationMode.PING:
-        if not source_chat_id:
-            _release_thread_lock(conv_id, lock_id)
+        notification_source_id = source_chat_id
+        if not notification_source_id:
+            if effective_caller and effective_caller not in {"user", "caller"}:
+                notification_source_id = _agent_thread_notification_source(
+                    effective_caller, conv_id
+                )
+                logger.info(
+                    f"Ping mode for agent '{name}' has no source chat; "
+                    f"routing completion to caller agent '{effective_caller}' "
+                    f"via thread {conv_id}"
+                )
+            else:
+                _release_thread_lock(conv_id, lock_id)
+                return {
+                    "error": "source_chat_id required for ping mode",
+                    "conversation_id": conv_id,
+                }
+
+        running_entry_id = await _register_running_agent_entry(config, invocation)
+        ping_coro = _run_ping_agent(
+            config,
+            invocation,
+            conversation_id=conv_id,
+            lock_id=lock_id,
+            notification_source_id=notification_source_id,
+            running_entry_id=running_entry_id,
+        )
+        try:
+            _create_background_invocation_task(
+                ping_coro,
+                agent=name,
+                mode=mode.value,
+                conversation_id=conv_id,
+                lock_id=lock_id,
+                source_chat_id=notification_source_id,
+                invoked_at=invocation.invoked_at,
+                running_entry_id=running_entry_id,
+            )
+        except Exception as e:
+            close = getattr(ping_coro, "close", None)
+            if close is not None:
+                close()
+            await running_agents.unregister(running_entry_id)
+            logger.error(
+                f"Failed to launch ping task for agent '{name}' on thread {conv_id}: {e}",
+                exc_info=True,
+            )
+            failure = AgentResult(
+                agent=name,
+                status="error",
+                response="",
+                started_at=invocation.invoked_at,
+                completed_at=datetime.utcnow(),
+                error=f"Ping task launch failed before ack: {e}",
+                conversation_id=conv_id,
+            )
+            await _finalize_thread_turn(conv_id, lock_id, name, failure)
+            response_text = (
+                f"Error: Agent '{name}' ping task failed to launch before ack: {e}"
+                f"\n\n---\n[conversation_id: {conv_id}]"
+            )
+            try:
+                get_notification_queue().add(
+                    agent=name,
+                    agent_response=response_text,
+                    source_chat_id=notification_source_id,
+                    invoked_at=invocation.invoked_at,
+                    completed_at=datetime.utcnow(),
+                )
+            except Exception as notify_error:
+                logger.error(
+                    f"Failed to queue ping launch-failure notification for agent "
+                    f"'{name}': {notify_error}"
+                )
             return {
-                "error": "source_chat_id required for ping mode",
+                "error": f"Ping task launch failed before ack: {e}",
                 "conversation_id": conv_id,
             }
 
-        asyncio.create_task(
-            _run_ping_agent(config, invocation, conversation_id=conv_id, lock_id=lock_id)
-        )
         return {
             "status": "accepted",
             "agent": name,
@@ -432,11 +558,48 @@ async def invoke_agent(
         }
 
     elif mode in (InvocationMode.TRUST, InvocationMode.SCHEDULED):
-        asyncio.create_task(
-            _run_background_agent(
-                config, invocation, conversation_id=conv_id, lock_id=lock_id
-            )
+        running_entry_id = await _register_running_agent_entry(config, invocation)
+        bg_coro = _run_background_agent(
+            config,
+            invocation,
+            conversation_id=conv_id,
+            lock_id=lock_id,
+            running_entry_id=running_entry_id,
         )
+        try:
+            _create_background_invocation_task(
+                bg_coro,
+                agent=name,
+                mode=mode.value,
+                conversation_id=conv_id,
+                lock_id=lock_id,
+                source_chat_id=None,
+                invoked_at=invocation.invoked_at,
+                running_entry_id=running_entry_id,
+            )
+        except Exception as e:
+            close = getattr(bg_coro, "close", None)
+            if close is not None:
+                close()
+            await running_agents.unregister(running_entry_id)
+            logger.error(
+                f"Failed to launch {mode.value} task for agent '{name}' on thread {conv_id}: {e}",
+                exc_info=True,
+            )
+            failure = AgentResult(
+                agent=name,
+                status="error",
+                response="",
+                started_at=invocation.invoked_at,
+                completed_at=datetime.utcnow(),
+                error=f"{mode.value.title()} task launch failed before ack: {e}",
+                conversation_id=conv_id,
+            )
+            await _finalize_thread_turn(conv_id, lock_id, name, failure)
+            return {
+                "error": f"{mode.value.title()} task launch failed before ack: {e}",
+                "conversation_id": conv_id,
+            }
         return {
             "status": "accepted",
             "agent": name,
@@ -574,6 +737,151 @@ def _release_thread_lock(conversation_id: str, lock_id: str) -> None:
         )
 
 
+def _create_background_invocation_task(
+    coro: Awaitable[None],
+    *,
+    agent: str,
+    mode: str,
+    conversation_id: Optional[str],
+    lock_id: Optional[str],
+    source_chat_id: Optional[str],
+    invoked_at: Optional[datetime],
+    running_entry_id: Optional[str] = None,
+) -> asyncio.Task:
+    """Create a detached invocation task with durable cleanup on failure.
+
+    Ping/trust callers get an ack before the agent finishes, so the task must
+    remain strongly referenced. If a ping task is cancelled or crashes after
+    ack, record that failure in the thread when possible, queue the caller
+    notification, and release the lock. Process death before this callback runs
+    still requires a persisted job queue; this is the bounded in-process guard.
+    """
+    failure_state = {"recorded": False}
+
+    async def record_failure(reason: str) -> None:
+        if failure_state["recorded"]:
+            return
+        failure_state["recorded"] = True
+
+        if running_entry_id:
+            try:
+                await running_agents.unregister(running_entry_id)
+            except Exception as unregister_error:
+                logger.error(
+                    f"Failed to unregister running agent entry {running_entry_id} "
+                    f"after background {mode} failure: {unregister_error}",
+                    exc_info=True,
+                )
+
+        response_text = f"Error: Agent '{agent}' ping task ended before completion ({reason})."
+        if conversation_id:
+            response_text = f"{response_text}\n\n---\n[conversation_id: {conversation_id}]"
+
+        if mode == InvocationMode.PING.value and conversation_id and lock_id:
+            failure = AgentResult(
+                agent=agent,
+                status="error",
+                response="",
+                started_at=invoked_at or datetime.utcnow(),
+                completed_at=datetime.utcnow(),
+                error=f"Ping task ended before completion after ack: {reason}",
+                conversation_id=conversation_id,
+            )
+            try:
+                await _finalize_thread_turn(conversation_id, lock_id, agent, failure)
+            except Exception as finalize_error:
+                logger.error(
+                    f"Failed to finalize ping failure for agent '{agent}' "
+                    f"on thread {conversation_id}: {finalize_error}",
+                    exc_info=True,
+                )
+                _release_thread_lock(conversation_id, lock_id)
+        elif conversation_id and lock_id:
+            logger.error(
+                f"Background {mode} task for agent '{agent}' ended before normal "
+                f"thread finalization ({reason}); releasing lock on {conversation_id}"
+            )
+            _release_thread_lock(conversation_id, lock_id)
+
+        if mode == InvocationMode.PING.value and source_chat_id:
+            try:
+                get_notification_queue().add(
+                    agent=agent,
+                    agent_response=response_text,
+                    source_chat_id=source_chat_id,
+                    invoked_at=invoked_at or datetime.utcnow(),
+                    completed_at=datetime.utcnow(),
+                )
+            except Exception as notify_error:
+                logger.error(
+                    f"Failed to queue ping failure notification for agent '{agent}': "
+                    f"{notify_error}"
+                )
+
+    async def guarded() -> None:
+        try:
+            await coro
+        except asyncio.CancelledError:
+            await record_failure("cancelled")
+            raise
+        except Exception:
+            await record_failure("uncaught exception")
+            raise
+
+    task = asyncio.create_task(guarded())
+    _BACKGROUND_INVOCATION_TASKS.add(task)
+
+    def on_done(done_task: asyncio.Task) -> None:
+        _BACKGROUND_INVOCATION_TASKS.discard(done_task)
+
+        def schedule_cleanup(reason: str) -> None:
+            if failure_state["recorded"]:
+                return
+            try:
+                loop = done_task.get_loop()
+                if not loop.is_closed():
+                    loop.create_task(record_failure(reason))
+                    return
+            except Exception as schedule_error:
+                logger.error(
+                    f"Failed to schedule background {mode} cleanup for agent "
+                    f"'{agent}' [thread: {conversation_id}]: {schedule_error}",
+                    exc_info=True,
+                )
+            if conversation_id and lock_id:
+                _release_thread_lock(conversation_id, lock_id)
+
+        if done_task.cancelled():
+            logger.error(
+                f"Background {mode} task for agent '{agent}' was cancelled "
+                f"before cleanup completed [thread: {conversation_id}]"
+            )
+            schedule_cleanup("cancelled before cleanup completed")
+            return
+        try:
+            exc = done_task.exception()
+        except asyncio.CancelledError:
+            logger.error(
+                f"Background {mode} task for agent '{agent}' was cancelled "
+                f"before exception retrieval [thread: {conversation_id}]"
+            )
+            schedule_cleanup("cancelled before exception retrieval")
+            return
+        if exc is not None:
+            logger.error(
+                f"Background {mode} task for agent '{agent}' failed after ack: {exc}",
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
+            schedule_cleanup("uncaught exception observed by done callback")
+
+    task.add_done_callback(on_done)
+    logger.info(
+        f"Background {mode} task registered for agent '{agent}'"
+        + (f" [thread: {conversation_id}]" if conversation_id else "")
+    )
+    return task
+
+
 async def _finalize_thread_turn(
     conversation_id: str,
     lock_id: str,
@@ -691,11 +999,46 @@ def _infer_kind(invocation: AgentInvocation) -> str:
     return "invoke_foreground"
 
 
+async def _register_running_agent_entry(config: AgentConfig, invocation: AgentInvocation) -> str:
+    """Register an invocation in running_agents using runner metadata.
+
+    Detached ping/trust/scheduled tasks call this before returning their ack so
+    restart snapshots can see the work immediately, even before the event loop
+    first schedules the background coroutine.
+    """
+    return await running_agents.register(
+        agent=config.name,
+        kind=_infer_kind(invocation),
+        task_summary=invocation.prompt or "",
+        source_chat_id=invocation.source_chat_id,
+        conversation_id=invocation.conversation_id,
+        salon_id=invocation.salon_id,
+        scheduled_task_id=invocation.scheduled_task_id,
+        caller_agent=invocation.caller_agent,
+    )
+
+
+@asynccontextmanager
+async def _running_agent_scope(
+    config: AgentConfig,
+    invocation: AgentInvocation,
+    running_entry_id: Optional[str] = None,
+) -> AsyncIterator[str]:
+    """Own the running_agents entry for the duration of actual execution."""
+    if running_entry_id is None:
+        running_entry_id = await _register_running_agent_entry(config, invocation)
+    try:
+        yield running_entry_id
+    finally:
+        await running_agents.unregister(running_entry_id)
+
+
 async def _run_agent(
     config: AgentConfig,
     invocation: AgentInvocation,
     stream_callback: Optional[Callable[[list], Awaitable[None]]] = None,
     history_messages: Optional[List[Dict[str, Any]]] = None,
+    running_entry_id: Optional[str] = None,
 ) -> AgentResult:
     """
     Execute an agent and return the result.
@@ -709,26 +1052,21 @@ async def _run_agent(
         history_messages: Optional pre-rendered SDK input for salon dispatch.
             When provided, the final "your turn" user message is part of the
             list — invocation.prompt is not separately wrapped. See
-            _consume_query for full details.
+            the legacy streaming consumer for full details.
     """
     started_at = datetime.utcnow()
-    kind = _infer_kind(invocation)
-
-    async with running_agents.track(
-        agent=config.name,
-        kind=kind,
-        task_summary=invocation.prompt or "",
-        source_chat_id=invocation.source_chat_id,
-        conversation_id=invocation.conversation_id,
-        salon_id=invocation.salon_id,
-        scheduled_task_id=invocation.scheduled_task_id,
-        caller_agent=invocation.caller_agent,
-    ):
+    async with _running_agent_scope(config, invocation, running_entry_id):
         try:
-            response, transcript, blocks = await _run_sdk_agent(
-                config, invocation, stream_callback=stream_callback,
-                history_messages=history_messages,
-            )
+            if config.type == AgentType.SDK:
+                response, transcript, blocks = await _run_anthropic_sdk_agent(
+                    config, invocation, stream_callback=stream_callback,
+                    history_messages=history_messages,
+                )
+            else:
+                response, transcript, blocks = await _run_codex_agent(
+                    config, invocation, stream_callback=stream_callback,
+                    history_messages=history_messages,
+                )
 
             return AgentResult(
                 agent=config.name,
@@ -767,6 +1105,8 @@ async def _run_ping_agent(
     invocation: AgentInvocation,
     conversation_id: Optional[str] = None,
     lock_id: Optional[str] = None,
+    notification_source_id: Optional[str] = None,
+    running_entry_id: Optional[str] = None,
 ) -> None:
     """Run agent and add notification when done.
 
@@ -774,7 +1114,7 @@ async def _run_ping_agent(
     (append response + release lock + kick off titler) exactly like foreground.
     """
     try:
-        result = await _run_agent(config, invocation)
+        result = await _run_agent(config, invocation, running_entry_id=running_entry_id)
 
         # Finalize thread turn (append response, release lock, trigger titler).
         if conversation_id and lock_id:
@@ -796,7 +1136,7 @@ async def _run_ping_agent(
         queue.add(
             agent=config.name,
             agent_response=response_text,
-            source_chat_id=invocation.source_chat_id,
+            source_chat_id=notification_source_id or invocation.source_chat_id,
             invoked_at=invocation.invoked_at,
             completed_at=result.completed_at,
         )
@@ -807,9 +1147,43 @@ async def _run_ping_agent(
             f"Background ping task for agent '{config.name}' failed: {e}",
             exc_info=True,
         )
-        # Ensure the lock gets released on catastrophic failure.
+        completed_at = datetime.utcnow()
+        failure = AgentResult(
+            agent=config.name,
+            status="error",
+            response="",
+            started_at=invocation.invoked_at,
+            completed_at=completed_at,
+            error=f"Ping task failed before completion: {e}",
+            conversation_id=conversation_id,
+        )
         if conversation_id and lock_id:
-            _release_thread_lock(conversation_id, lock_id)
+            try:
+                await _finalize_thread_turn(conversation_id, lock_id, config.name, failure)
+            except Exception as finalize_error:
+                logger.error(
+                    f"Failed to finalize ping failure for agent '{config.name}' "
+                    f"on thread {conversation_id}: {finalize_error}",
+                    exc_info=True,
+                )
+                _release_thread_lock(conversation_id, lock_id)
+        response_text = f"Error: Agent '{config.name}' ping task failed before completion: {e}"
+        if conversation_id:
+            response_text = f"{response_text}\n\n---\n[conversation_id: {conversation_id}]"
+        try:
+            get_notification_queue().add(
+                agent=config.name,
+                agent_response=response_text,
+                source_chat_id=notification_source_id or invocation.source_chat_id,
+                invoked_at=invocation.invoked_at,
+                completed_at=completed_at,
+            )
+        except Exception as notify_error:
+            logger.error(
+                f"Failed to queue ping failure notification for agent "
+                f"'{config.name}': {notify_error}"
+            )
+
 
 
 async def invoke_agent_chain(
@@ -1291,6 +1665,7 @@ async def _run_background_agent(
     invocation: AgentInvocation,
     conversation_id: Optional[str] = None,
     lock_id: Optional[str] = None,
+    running_entry_id: Optional[str] = None,
 ) -> None:
     """Run agent and log (no notification).
 
@@ -1299,7 +1674,7 @@ async def _run_background_agent(
     foreground / ping do.
     """
     try:
-        result = await _run_agent(config, invocation)
+        result = await _run_agent(config, invocation, running_entry_id=running_entry_id)
         if conversation_id and lock_id:
             result.conversation_id = conversation_id
             await _finalize_thread_turn(conversation_id, lock_id, config.name, result)
@@ -1313,7 +1688,285 @@ async def _run_background_agent(
             _release_thread_lock(conversation_id, lock_id)
 
 
-async def _run_sdk_agent(
+async def _run_codex_agent(
+    config: AgentConfig,
+    invocation: AgentInvocation,
+    stream_callback: Optional[Callable[[list], Awaitable[None]]] = None,
+    history_messages: Optional[List[Dict[str, Any]]] = None,
+) -> str:
+    """
+    Run a Codex/GPT agent through the shared Codex CLI backend.
+
+    history_messages: Optional pre-rendered input for salon dispatches.
+    Threaded through to the shared Codex backend.
+    """
+    from codex_backend import CodexRunOptions, run_codex
+
+    logger.info(f"Running Codex agent '{config.name}' with model {config.model}")
+
+    # Register in process registry (SDK agents: pid=None since SDK manages subprocess internally)
+    task_desc = invocation.prompt[:80] if invocation.prompt else "active"
+    reg_id = None
+    try:
+        reg_id = register_process(config.name, task=task_desc, pid=None)
+    except Exception as e:
+        logger.warning(f"Failed to register agent '{config.name}' in process registry: {e}")
+
+    # Build the identity-layer system_prompt (prompt.md + global instructions +
+    # skill menu + agent list). Dynamic context (always_load memories, working
+    # memory, contextual retrieval) is delivered via the user-message prefix
+    # below — never through system_prompt, which hits Linux MAX_ARG_STRLEN
+    # (128KB) because the SDK forwards it as a single argv. See prompt_assembly.
+
+    import prompt_assembly  # interface/server/prompt_assembly.py (already on sys.path)
+
+    # Pre-compute skill reminder for system prompt injection (above memory).
+    _skill_reminder = ""
+    agent_has_skills = config.skills is None or (isinstance(config.skills, list) and len(config.skills) > 0)
+    if agent_has_skills:
+        try:
+            from skill_injector import get_skill_reminder
+            _skill_reminder = get_skill_reminder(allowed_skills=config.skills) or ""
+            if _skill_reminder:
+                logger.info(f"Agent '{config.name}': will inject skill menu into system prompt")
+        except Exception as e:
+            logger.warning(f"Skill menu generation failed for agent '{config.name}': {e}")
+
+    # Pre-compute agent list block for injection above memory.
+    _effective_tools = list(config.tools) if config.tools else []
+    _agent_list_block = ""
+    try:
+        from mcp_tools.agents import get_agent_list_for_prompt
+        _agent_list_block = get_agent_list_for_prompt(_effective_tools) or ""
+        if _agent_list_block:
+            logger.info(f"Agent '{config.name}': will inject agent list into system prompt")
+    except Exception as e:
+        logger.warning(f"Agent '{config.name}': failed to get agent list: {e}")
+
+    # Load global safety rules (injected into ALL agents)
+    _global_rules = ""
+    global_rules_path = Path(__file__).parent / "global_rules.md"
+    if global_rules_path.exists():
+        try:
+            _global_rules = global_rules_path.read_text().strip()
+        except Exception as e:
+            logger.warning(f"Agent '{config.name}': could not read global_rules.md: {e}")
+
+    # Load mode-specific global instructions based on visibility flag
+    _global_mode_instructions = ""
+    if invocation.is_visible:
+        _mode_file = "global_visible.md"
+    else:
+        _mode_file = "global_silent.md"
+    _mode_path = Path(__file__).parent / _mode_file
+    if _mode_path.exists():
+        try:
+            _global_mode_instructions = _mode_path.read_text().strip()
+            if _global_mode_instructions:
+                logger.info(f"Agent '{config.name}': loaded {_mode_file} (is_visible={invocation.is_visible})")
+        except Exception as e:
+            logger.warning(f"Agent '{config.name}': could not read {_mode_file}: {e}")
+
+    # Identity-only assembly. The pieces below are stable across turns —
+    # prompt.md, global rules, mode instructions, skill menu, agent list.
+    # Memory + working memory + contextual retrieval are NOT included here;
+    # they ride through the user-message prefix (see context_parts below).
+    identity_parts: List[str] = []
+    if config.prompt:
+        identity_parts.append(config.prompt)
+    if _global_rules:
+        identity_parts.append(_global_rules)
+    if _global_mode_instructions:
+        identity_parts.append(_global_mode_instructions)
+    if _skill_reminder:
+        identity_parts.append(_skill_reminder)
+    if _agent_list_block:
+        identity_parts.append(_agent_list_block)
+    identity_content = "\n".join(identity_parts).strip()
+
+    if config.system_prompt_preset:
+        system_prompt = {
+            "type": "preset",
+            "preset": config.system_prompt_preset,
+        }
+        if identity_content:
+            system_prompt["append"] = identity_content
+    else:
+        system_prompt = identity_content
+
+    # Dynamic context layer: always_load memories + working memory. Contextual
+    # retrieval results are appended below. The final block is wrapped in
+    # <system-injected> and prepended to the user message — never the system
+    # prompt — so it travels via stdin instead of argv.
+    _agent_dir = Path(__file__).parent / config.name
+    _scripts_dir = Path(__file__).parent.parent / "scripts"
+    context_parts: List[str] = []
+    _mem_block = prompt_assembly.load_always_load_memories_block(_agent_dir)
+    if _mem_block:
+        context_parts.append(_mem_block)
+    _wm_block = prompt_assembly.load_working_memory_block(config.name, _scripts_dir)
+    if _wm_block:
+        context_parts.append(_wm_block)
+
+    effective_tools = list(config.tools) if config.tools else []
+    fetch_skill_mcp = "mcp__brain__fetch_skill"
+    if agent_has_skills and fetch_skill_mcp not in effective_tools:
+        effective_tools.append(fetch_skill_mcp)
+        logger.info(f"Agent '{config.name}': auto-added fetch_skill MCP tool for configured skills")
+    if config.thinking_budget:
+        logger.warning(
+            "Agent '%s' still declares thinking_budget=%s; Codex maps reasoning through effort, not budget tokens",
+            config.name,
+            config.thinking_budget,
+        )
+
+    # Auto-retrieve contextual memories relevant to the agent's task prompt
+    try:
+        scripts_dir = str(Path(__file__).parent.parent / "scripts")
+        if scripts_dir not in sys.path:
+            sys.path.insert(0, scripts_dir)
+        from contextual_memory import auto_retrieve_context, rewrite_query_for_retrieval
+
+        raw_query = invocation.prompt or ""
+        # 20s timeout — Sonnet rewriter success is 3-5s, but the SDK
+        # subprocess can hang indefinitely (~10-20×/day). Without this
+        # wrapper, a hung subprocess freezes the agent invocation for
+        # 30-76s before crashing. On timeout, fall back to raw prompt.
+        try:
+            retrieval_queries = await asyncio.wait_for(
+                rewrite_query_for_retrieval(
+                    raw_query,
+                    session_id=invocation.source_chat_id or f"agent:{config.name}",
+                    agent_name=config.name,
+                ),
+                timeout=20.0,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                f"Agent '{config.name}': query rewriter timed out after 20s "
+                f"— falling back to raw prompt."
+            )
+            retrieval_queries = [(raw_query, 1.0)]
+        logger.info(f"Agent '{config.name}': query rewrite: '{raw_query[:80]}' -> {retrieval_queries}")
+        # Run CPU-bound retrieval in a thread to avoid blocking the event loop
+        import functools
+        loop = asyncio.get_event_loop()
+        ctx_block = await asyncio.wait_for(
+            loop.run_in_executor(
+                None,
+                functools.partial(
+                    auto_retrieve_context,
+                    query=retrieval_queries,
+                    agent_name=config.name,
+                ),
+            ),
+            timeout=15.0,  # 15s max — don't let retrieval stall the agent
+        )
+        if ctx_block:
+            context_parts.append(ctx_block)
+            logger.info(f"Agent '{config.name}': appended contextual memory to user-prefix context block")
+    except Exception as e:
+        logger.warning(f"Agent '{config.name}': contextual memory auto-retrieve failed: {e}")
+
+    # Build the <system-injected> envelope and prepend to the user message.
+    # For salon dispatch (history_messages provided), the envelope is prepended
+    # to the trailing user turn so each agent's context is rebuilt fresh per
+    # dispatch without polluting earlier turns in the rendered history.
+    _context_block = prompt_assembly.build_context_block(context_parts)
+    effective_prompt = invocation.prompt
+    if _context_block:
+        if history_messages:
+            history_messages = prompt_assembly.prepend_context_to_history_messages(
+                history_messages, _context_block
+            )
+            logger.info(
+                f"Agent '{config.name}': prepended {len(_context_block)} chars of "
+                f"context to trailing user turn in history_messages"
+            )
+        else:
+            effective_prompt = prompt_assembly.prepend_context_to_prompt(
+                effective_prompt, _context_block
+            )
+            logger.info(
+                f"Agent '{config.name}': prepended {len(_context_block)} chars of "
+                f"context (<system-injected> envelope) to user message"
+            )
+
+    result_text = ""
+    transcript = ""
+    blocks = []
+
+    try:
+        async with asyncio.timeout(config.timeout_seconds):
+            run_options = CodexRunOptions(
+                model=config.model,
+                cwd=WORKING_DIR,
+                identity_instructions=identity_content,
+                prompt=effective_prompt,
+                tools=effective_tools,
+                timeout_seconds=config.timeout_seconds,
+                max_turns=config.max_turns,
+                effort=config.effort,
+                output_schema=config.output_format,
+                use_native_coding_instructions=bool(config.system_prompt_preset),
+                chat_id=invocation.source_chat_id,
+                agent_name=config.name,
+                allowed_skills=config.skills,
+                salon_id=invocation.salon_id,
+                history_messages=history_messages,
+                external_mcp_servers=_load_external_mcp_servers(),
+            )
+            codex_result = await run_codex(run_options, stream_callback=stream_callback)
+            if (
+                codex_result.returncode == 0
+                and not codex_result.blocks
+                and not (codex_result.response or "").strip()
+                and run_options.effort != "low"
+            ):
+                logger.warning(
+                    "Agent '%s' returned empty Codex content; retrying once with effort=low",
+                    config.name,
+                )
+                retry_prompt = (
+                    "IMPORTANT: Produce a visible assistant reply. "
+                    "If the request involves images, answer briefly in text before deciding whether to use tools.\n\n"
+                    f"{run_options.prompt}"
+                )
+                retry_options = CodexRunOptions(
+                    **{**run_options.__dict__, "effort": "low", "prompt": retry_prompt}
+                )
+                codex_result = await run_codex(retry_options, stream_callback=stream_callback)
+            result_text = codex_result.response
+            transcript = codex_result.transcript
+            blocks = codex_result.blocks
+            if codex_result.returncode != 0:
+                raise RuntimeError(codex_result.stderr or f"Codex exited with {codex_result.returncode}")
+    except asyncio.TimeoutError:
+        raise
+    except ExceptionGroup as eg:
+        # Unwrap TaskGroup/ExceptionGroup to log actual sub-exceptions
+        import traceback
+        for i, exc in enumerate(eg.exceptions):
+            logger.error(f"Agent '{config.name}' sub-exception {i}: {type(exc).__name__}: {exc}")
+            logger.error("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
+        raise
+    except Exception as e:
+        import traceback
+        logger.error(f"Agent '{config.name}' exception: {type(e).__name__}: {e}")
+        logger.error("".join(traceback.format_exception(type(e), e, e.__traceback__)))
+        raise
+
+    finally:
+        if reg_id:
+            try:
+                deregister_process(reg_id)
+            except Exception as e:
+                logger.warning(f"Failed to deregister agent '{config.name}': {e}")
+
+    return result_text, transcript, blocks
+
+
+async def _run_anthropic_sdk_agent(
     config: AgentConfig,
     invocation: AgentInvocation,
     stream_callback: Optional[Callable[[list], Awaitable[None]]] = None,
@@ -1325,7 +1978,8 @@ async def _run_sdk_agent(
     history_messages: Optional pre-rendered SDK input for salon dispatches.
     Threaded through to _consume_query (see that function's docstring).
     """
-    from claude_agent_sdk import query, ClaudeAgentOptions
+    if ClaudeAgentOptions is None or SDK_QUERY is None:
+        raise RuntimeError("Installed claude-agent-sdk package is unavailable")
 
     logger.info(f"Running SDK agent '{config.name}' with model {config.model}")
 
@@ -1468,6 +2122,16 @@ async def _run_sdk_agent(
                     chat_id=invocation.source_chat_id,
                     salon_id=invocation.salon_id,
                 )
+                # mcp_tools still returns the local compatibility shape for the
+                # Codex stdio bridge; Anthropic SDK agents need the installed
+                # SDK's native server config so the CLI receives only
+                # serializable metadata and routes calls to the in-process server.
+                if isinstance(mcp_server, dict) and "tools" in mcp_server:
+                    mcp_server = _create_real_sdk_mcp_server(
+                        name="brain",
+                        version=str(mcp_server.get("version") or "1.0.0"),
+                        tools=list(mcp_server["tools"]),
+                    )
                 mcp_servers["brain"] = mcp_server
                 logger.info(
                     f"Created MCP server for agent '{config.name}' with "
@@ -1835,7 +2499,7 @@ async def _consume_query(
     history_messages: Optional[List[Dict[str, Any]]] = None,
 ) -> tuple:
     """
-    Consume the async generator from query() and return (result_text, transcript, blocks).
+    Consume the async generator from claude_agent_sdk.query().
 
     Captures all SDK messages into a structured transcript and UI-ready blocks.
     - result_text: the final ResultMessage.result (used for compact ping notifications)
@@ -1854,7 +2518,9 @@ async def _consume_query(
             own tool calls (mirrors 1:1 chat). When ``None``, falls back to
             the legacy single-prompt-user-message behavior.
     """
-    from claude_agent_sdk import query
+    if SDK_QUERY is None:
+        raise RuntimeError("Installed claude-agent-sdk package is unavailable")
+    query = SDK_QUERY
 
     # Always use streaming mode — required for can_use_tool callback (Python SDK)
     # and for MCP bridge protocol.  Without streaming, permission prompts from

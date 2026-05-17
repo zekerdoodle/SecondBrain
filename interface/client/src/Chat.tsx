@@ -12,7 +12,7 @@ import { useToast } from './Toast';
 import { useTabFlash } from './hooks/useTabFlash';
 import { useCodeBlockWrap } from './hooks/useCodeBlockWrap';
 import { useAgents } from './hooks/useAgents';
-import type { ChatMessage, ChatImageRef, FormField, ToolCallMessage } from './types';
+import type { ChatMessage, ChatImageRef, ContentBlock, FormField, ToolCallMessage } from './types';
 import { clsx } from 'clsx';
 import MDEditor from '@uiw/react-md-editor';
 import { escapeNonHtmlTags } from './utils/escapeNonHtmlTags';
@@ -36,6 +36,8 @@ import type { EmojiClickData } from 'emoji-picker-react';
 const CHAT_TABS_KEY = 'second_brain_chat_tabs';
 const CHAT_DRAFTS_KEY = 'second_brain_chat_drafts';
 const MAX_CHAT_TABS = 8;
+const MESSAGE_ROLES = new Set(['user', 'assistant', 'system', 'notice', 'tool_call']);
+const BLOCK_TYPES = new Set(['thinking', 'text', 'tool_use', 'tool_result']);
 
 // Fun phrases for different generation phases
 const INITIAL_PHRASES = [
@@ -63,6 +65,64 @@ const STALL_PHRASES = [
   'Just a sec...',
   'Percolating...',
 ];
+
+const isRecord = (value: unknown): value is Record<string, any> =>
+  typeof value === 'object' && value !== null;
+
+const normalizeContentBlock = (value: unknown, fallbackId: string): ContentBlock | null => {
+  if (!isRecord(value) || typeof value.type !== 'string' || !BLOCK_TYPES.has(value.type)) {
+    return null;
+  }
+
+  return {
+    id: typeof value.id === 'string' && value.id ? value.id : fallbackId,
+    type: value.type as ContentBlock['type'],
+    content: typeof value.content === 'string' ? value.content : '',
+    status: value.status === 'in_progress' ? 'in_progress' : 'complete',
+    tool_name: typeof value.tool_name === 'string' ? value.tool_name : undefined,
+    tool_call_id: typeof value.tool_call_id === 'string' ? value.tool_call_id : undefined,
+    tool_input: isRecord(value.tool_input) ? value.tool_input : undefined,
+    is_error: typeof value.is_error === 'boolean' ? value.is_error : undefined,
+    started_at: typeof value.started_at === 'number' ? value.started_at : undefined,
+    duration_ms: typeof value.duration_ms === 'number' ? value.duration_ms : undefined,
+  };
+};
+
+const normalizeMessageForRender = (value: unknown, index: number): ChatMessage[] => {
+  if (!isRecord(value)) return [];
+
+  const role = typeof value.role === 'string' ? value.role : undefined;
+  if (role && MESSAGE_ROLES.has(role)) {
+    const blocks = Array.isArray(value.blocks)
+      ? value.blocks
+          .map((block, blockIndex) => normalizeContentBlock(block, `block-${index}-${blockIndex}`))
+          .filter((block): block is ContentBlock => block !== null)
+      : undefined;
+
+    return [{
+      ...(value as ChatMessage),
+      id: typeof value.id === 'string' && value.id ? value.id : `message-${index}`,
+      content: typeof value.content === 'string' ? value.content : '',
+      blocks,
+    }];
+  }
+
+  // Some persisted chats contain raw content blocks in the message array.
+  // Render them as assistant block messages instead of letting one malformed
+  // item crash the full chat view.
+  const block = normalizeContentBlock(value, `block-${index}`);
+  if (block) {
+    return [{
+      id: `message-${block.id}`,
+      role: 'assistant',
+      content: block.type === 'text' ? block.content : '',
+      blocks: [block],
+      isStreaming: block.status === 'in_progress',
+    }];
+  }
+
+  return [];
+};
 
 
 // File path detection for clickable links — shared utility
@@ -788,6 +848,10 @@ export const Chat: React.FC<ChatProps> = ({
 
   // Keep ref updated
   loadChatRef.current = loadChat;
+  const renderMessages = useMemo(
+    () => messages.flatMap((message, index) => normalizeMessageForRender(message, index)),
+    [messages]
+  );
 
   // Derive current composer text from per-session drafts.
   // Empty drafts are pruned from the map to keep storage clean.
@@ -819,7 +883,7 @@ export const Chat: React.FC<ChatProps> = ({
   useEffect(() => {
     const now = Date.now();
     const timeouts: number[] = [];
-    for (const msg of messages) {
+    for (const msg of renderMessages) {
       if (msg.role !== 'notice') continue;
       if (fadingNotices.has(msg.id) || hiddenNotices.has(msg.id)) continue;
       // If notice has a timestamp older than 6s (e.g. came in via subscribe before
@@ -840,7 +904,7 @@ export const Chat: React.FC<ChatProps> = ({
     }
     return () => { timeouts.forEach(t => clearTimeout(t)); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [messages]);
+  }, [renderMessages]);
   useEffect(() => {
     let cancelled = false;
     fetch(`${API_URL}/slash-commands`)
@@ -1790,8 +1854,8 @@ export const Chat: React.FC<ChatProps> = ({
     // These will attach to the NEXT assistant message instead.
     let pendingToolCalls: ToolCallData[] = [];
 
-    for (let i = 0; i < messages.length; i++) {
-      const msg = messages[i];
+    for (let i = 0; i < renderMessages.length; i++) {
+      const msg = renderMessages[i];
       if (msg.role === 'system') continue;
 
       // New format: has blocks — render directly, no grouping needed
@@ -1842,7 +1906,7 @@ export const Chat: React.FC<ChatProps> = ({
     }
 
     return result;
-  }, [messages]);
+  }, [renderMessages]);
 
 
   // Connection status indicator
@@ -2312,7 +2376,7 @@ export const Chat: React.FC<ChatProps> = ({
           {/* Status indicator — shows during initializing/stalled phases, hidden while content flows */}
           {status !== 'idle' && activeTools.size === 0 &&
            streamPhase !== 'streaming' &&
-           !messages.some(m => m.isStreaming && m.blocks && m.blocks.length > 0 && m.blocks.some(b => b.type === 'text' && b.content.trim())) && (
+           !renderMessages.some(m => m.isStreaming && m.blocks && m.blocks.length > 0 && m.blocks.some(b => b.type === 'text' && b.content.trim())) && (
             <div className="flex items-center gap-2 pl-11 animate-in">
               <Loader2 size={14} className="animate-spin" style={{ color: 'var(--accent-primary)' }} />
               <span className="text-xs text-[var(--text-muted)]">{getStatusDisplay()}</span>

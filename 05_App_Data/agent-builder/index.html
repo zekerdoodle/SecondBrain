@@ -589,9 +589,12 @@ select {
       <div class="field">
         <label>Model</label>
         <select id="f-model" onchange="updateThinkingInfo()">
-          <option value="haiku">Haiku (fastest, cheapest)</option>
-          <option value="sonnet" selected>Sonnet (balanced)</option>
-          <option value="opus">Opus (most capable)</option>
+          <option value="gpt-5.4-mini" selected>GPT-5.4 Mini (balanced)</option>
+          <option value="gpt-5.5">GPT-5.5 (most capable)</option>
+          <option value="gpt-5.4-nano">GPT-5.4 Nano (fastest)</option>
+          <option value="sonnet">Legacy Sonnet alias -> GPT-5.4 Mini</option>
+          <option value="opus">Legacy Opus alias -> GPT-5.5</option>
+          <option value="haiku">Legacy Haiku alias -> GPT-5.4 Mini</option>
         </select>
       </div>
       <div class="field">
@@ -642,25 +645,25 @@ select {
         <select id="f-thinking-mode" onchange="updateThinkingUI()">
           <option value="default">Default (model-level)</option>
           <option value="adaptive">Adaptive</option>
-          <option value="budget">Fixed Budget</option>
+          <option value="budget">Legacy Budget (config)</option>
         </select>
-        <div class="hint">Adaptive: Claude decides when and how deeply to think. Fixed Budget: always allocates a set token budget for reasoning chains.</div>
+        <div class="hint">Default: Codex chooses reasoning depth from model defaults. Effort: explicitly sets reasoning depth per response.</div>
       </div>
       <div class="field" id="effort-field">
         <label>Reasoning Effort</label>
         <select id="f-effort">
-          <option value="">Default (high)</option>
+          <option value="">Default (model)</option>
           <option value="low">Low — fast, minimal reasoning</option>
           <option value="medium">Medium — balanced</option>
           <option value="high">High — thorough analysis</option>
           <option value="max">Max — deepest reasoning</option>
         </select>
-        <div class="hint">Trades latency and cost for reasoning depth within each response.</div>
+        <div class="hint">Trades latency for reasoning depth within each response.</div>
       </div>
       <div class="field" id="budget-field" style="display:none">
-        <label>Budget Tokens</label>
+        <label>Legacy Budget Tokens</label>
         <input type="number" id="f-thinking-budget" placeholder="e.g. 16384" min="1024" max="100000" />
-        <div class="hint">Token budget for extended thinking. Typical: 16,384 (Haiku) · 32,768+ (Sonnet/Opus). Must be ≥ 1,024.</div>
+        <div class="hint">Legacy config only. Prefer reasoning effort for Codex/GPT agents; keep this only when preserving an existing thinking_budget value. Must be >= 1,024.</div>
       </div>
     </div>
 
@@ -743,14 +746,14 @@ select {
     <!-- Convener -->
     <div class="field" style="margin-top:8px">
       <label style="font-weight:600">Convener (salon orchestrator)</label>
-      <div class="hint" style="margin-bottom:8px">Routes who speaks next in a salon. Sonnet floor recommended — has to read the room.</div>
+      <div class="hint" style="margin-bottom:8px">Routes who speaks next in a salon. Mini or stronger recommended — has to read the room.</div>
       <div style="display:flex; gap:10px; align-items:flex-start">
         <div style="flex:2">
           <label style="font-size:var(--font-size-xs)">Model</label>
           <select id="f-sm-convener-model">
-            <option value="haiku">Haiku</option>
-            <option value="sonnet" selected>Sonnet</option>
-            <option value="opus">Opus</option>
+            <option value="gpt-5.4-mini" selected>GPT-5.4 Mini</option>
+            <option value="gpt-5.5">GPT-5.5</option>
+            <option value="gpt-5.4-nano">GPT-5.4 Nano</option>
           </select>
         </div>
         <div style="flex:1">
@@ -760,6 +763,7 @@ select {
             <option value="low">Low</option>
             <option value="medium">Medium</option>
             <option value="high">High</option>
+            <option value="xhigh">Extra High</option>
           </select>
         </div>
       </div>
@@ -773,9 +777,9 @@ select {
         <div style="flex:2">
           <label style="font-size:var(--font-size-xs)">Model</label>
           <select id="f-sm-salontitler-model">
-            <option value="haiku" selected>Haiku</option>
-            <option value="sonnet">Sonnet</option>
-            <option value="opus">Opus</option>
+            <option value="gpt-5.4-mini">GPT-5.4 Mini</option>
+            <option value="gpt-5.5">GPT-5.5</option>
+            <option value="gpt-5.4-nano" selected>GPT-5.4 Nano</option>
           </select>
         </div>
         <div style="flex:1">
@@ -785,6 +789,7 @@ select {
             <option value="low">Low</option>
             <option value="medium">Medium</option>
             <option value="high">High</option>
+            <option value="xhigh">Extra High</option>
           </select>
         </div>
       </div>
@@ -798,9 +803,9 @@ select {
         <div style="flex:2">
           <label style="font-size:var(--font-size-xs)">Model</label>
           <select id="f-sm-chattitler-model">
-            <option value="haiku" selected>Haiku</option>
-            <option value="sonnet">Sonnet</option>
-            <option value="opus">Opus</option>
+            <option value="gpt-5.4-mini">GPT-5.4 Mini</option>
+            <option value="gpt-5.5">GPT-5.5</option>
+            <option value="gpt-5.4-nano" selected>GPT-5.4 Nano</option>
           </select>
         </div>
         <div style="flex:1">
@@ -810,6 +815,7 @@ select {
             <option value="low">Low</option>
             <option value="medium">Medium</option>
             <option value="high">High</option>
+            <option value="xhigh">Extra High</option>
           </select>
         </div>
       </div>
@@ -862,15 +868,15 @@ const ICON_CATEGORIES = ['all', ...new Set(AGENT_ICONS.map(i => i.category))];
 
 // Native tool list is populated from the server at init time via /api/native-tools.
 // The server's source of truth lives in .claude/agents/native_tools.py — add new
-// Anthropic tools there and they appear in the builder automatically. The array
+// Codex tools there and they appear in the builder automatically. The array
 // below is only used as an offline/fallback copy if the fetch fails.
 let NATIVE_TOOL_GROUPS = [
   { label: 'File System', tools: ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'NotebookEdit'] },
-  { label: 'Execution',   tools: ['Bash', 'Task', 'TaskOutput', 'TaskStop', 'KillShell'] },
+  { label: 'Execution',   tools: ['Bash', 'BashOutput', 'Task', 'TaskOutput', 'TaskStop', 'KillShell'] },
   { label: 'Web',         tools: ['WebFetch', 'WebSearch'] },
   { label: 'Interaction', tools: ['AskUserQuestion', 'TodoWrite', 'EnterPlanMode', 'ExitPlanMode'] },
-  { label: 'Sub-agents',  tools: ['Agent', 'Skill'] },
-  { label: 'Scheduling',  tools: ['CronCreate', 'CronDelete', 'CronList', 'ScheduleWakeup', 'Monitor'] },
+  { label: 'Sub-agents',  tools: ['Agent', 'Skill', 'SlashCommand'] },
+  { label: 'Scheduling',  tools: ['CronCreate', 'CronRead', 'CronUpdate', 'CronDelete', 'CronList', 'ScheduleWakeup', 'Monitor'] },
   { label: 'System',      tools: ['PushNotification', 'RemoteTrigger'] },
   { label: 'Worktrees',   tools: ['EnterWorktree', 'ExitWorktree'] },
 ];
@@ -1075,7 +1081,7 @@ function resetForm() {
   document.getElementById('f-name').value = '';
   document.getElementById('f-display-name').value = '';
   document.getElementById('f-desc').value = '';
-  document.getElementById('f-model').value = 'sonnet';
+  document.getElementById('f-model').value = 'gpt-5.4-mini';
   document.getElementById('f-timeout').value = '300';
   document.getElementById('f-max-turns').value = '200';
   document.getElementById('f-prompt').value = '';
@@ -1138,12 +1144,12 @@ async function loadAgentForEdit() {
     if (!res.ok) throw new Error('Agent not found');
     const data = await res.json();
     const config = data.config || {};
-    editOriginalType = config.type || 'sdk';
+    editOriginalType = config.type || 'codex';
 
     document.getElementById('f-name').value = name;
     document.getElementById('f-display-name').value = config.display_name || '';
     document.getElementById('f-desc').value = config.description || '';
-    document.getElementById('f-model').value = config.model || 'sonnet';
+    document.getElementById('f-model').value = config.model || 'gpt-5.4-mini';
     document.getElementById('f-timeout').value = config.timeout_seconds || config.timeout || 300;
     document.getElementById('f-max-turns').value = config.max_turns || 200;
     document.getElementById('f-prompt').value = data.prompt || '';
@@ -1454,9 +1460,12 @@ function renderSkillChips() {
 // Thinking Mode
 // =============================================================================
 const THINKING_MODEL_DEFAULTS = {
-  opus:   { mode: 'Adaptive thinking', effort: 'High' },
-  sonnet: { mode: 'Adaptive thinking', effort: 'High' },
-  haiku:  { mode: 'Fixed budget', effort: '16,384 tokens' },
+  'gpt-5.5':      { mode: 'Reasoning', effort: 'High' },
+  'gpt-5.4-mini': { mode: 'Reasoning', effort: 'Medium' },
+  'gpt-5.4-nano': { mode: 'Reasoning', effort: 'Low' },
+  opus:           { mode: 'Legacy alias -> GPT-5.5', effort: 'High' },
+  sonnet:         { mode: 'Legacy alias -> GPT-5.4 Mini', effort: 'Medium' },
+  haiku:          { mode: 'Legacy alias -> GPT-5.4 Mini', effort: 'Low' },
 };
 
 function updateThinkingUI() {
@@ -1481,10 +1490,10 @@ function updateThinkingInfo() {
     el.innerHTML = `<strong>Model default (${model}):</strong> ${defaults.mode} · ${defaults.effort} effort`;
     el.style.display = 'block';
   } else if (mode === 'adaptive') {
-    el.innerHTML = '<strong>Adaptive:</strong> Claude decides when extended thinking is beneficial. Effort controls reasoning depth per response.';
+    el.innerHTML = '<strong>Effort:</strong> Codex uses this as the model reasoning depth per response.';
     el.style.display = 'block';
   } else if (mode === 'budget') {
-    el.innerHTML = '<strong>Fixed Budget:</strong> Always allocates the specified token budget for internal reasoning chains.';
+    el.innerHTML = '<strong>Legacy Budget:</strong> Preserves an explicit thinking_budget config value. Prefer reasoning effort for Codex/GPT agents.';
     el.style.display = 'block';
   } else {
     el.style.display = 'none';
@@ -1529,7 +1538,7 @@ async function saveAgent() {
     name,
     description: desc,
     model,
-    type: mode === 'edit' && editOriginalType ? editOriginalType : 'sdk',
+    type: mode === 'edit' && editOriginalType ? editOriginalType : 'codex',
     timeout_seconds: timeout,
     max_turns: maxTurns,
     chattable: isChattable,

@@ -45,11 +45,11 @@ Guidelines:
 
 async def _summarize_content(title: str, url: str, content: str, truncated: bool) -> str:
     """
-    Summarize page content using Haiku via Claude Agent SDK.
+    Summarize page content using the shared Codex backend.
 
     Returns the summary text, or falls back to truncated content on error.
     """
-    from claude_agent_sdk import query, ClaudeAgentOptions, ResultMessage
+    from codex_backend import CodexRunOptions, ROOT_DIR, run_codex
 
     trunc_note = ""
     if truncated:
@@ -70,21 +70,19 @@ Produce a structured summary following your guidelines."""
     logger.info(f"Running summary subagent on {len(content)} chars from {url}")
 
     try:
-        result_text = None
-
-        async for message in query(
-            prompt=prompt,
-            options=ClaudeAgentOptions(
+        result = await run_codex(
+            CodexRunOptions(
                 model="haiku",
-                system_prompt=SUMMARY_SYSTEM_PROMPT,
+                cwd=str(ROOT_DIR),
+                identity_instructions=SUMMARY_SYSTEM_PROMPT,
+                prompt=prompt,
+                tools=[],
+                timeout_seconds=120,
                 max_turns=1,
-                permission_mode="bypassPermissions",
-                allowed_tools=[],
-                setting_sources=[],
-            ),
-        ):
-            if isinstance(message, ResultMessage) and message.result:
-                result_text = message.result
+                ephemeral=True,
+            )
+        )
+        result_text = result.response
 
         if result_text:
             logger.info(f"Summary subagent produced {len(result_text)} char summary")

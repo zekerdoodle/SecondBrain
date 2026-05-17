@@ -11,7 +11,7 @@ updated: 2026-02-03
 
 ## How This Works
 
-The Claude Agent SDK has built-in automatic compaction that triggers at ~80% context usage. This command allows manual compaction when you want to:
+The current chat runtime has built-in automatic compaction near high context usage. This command exists because automatic compaction does not provide enough direct mid-turn control, so it allows manual compaction when you want to:
 
 1. **Proactively free space** before starting a large task
 2. **Clean up** after a verbose exploration/research phase
@@ -19,7 +19,7 @@ The Claude Agent SDK has built-in automatic compaction that triggers at ~80% con
 
 ## What Happens During Compaction
 
-1. **Older messages are summarized** - Claude creates a condensed summary of earlier conversation turns
+1. **Older messages are summarized** - The runtime creates a condensed summary of earlier conversation turns
 2. **Recent interactions are preserved** - The most recent messages remain unchanged
 3. **Critical information is retained** - Key decisions, file paths, and important context survive compaction
 4. **A compact boundary is marked** - The transcript records when compaction occurred
@@ -34,7 +34,7 @@ When the user invokes `/compact`, respond with:
 
 ## Notes
 
-- Compaction is automatic when context reaches ~80% capacity (configurable via `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`)
+- Compaction is automatic when context reaches the configured high-water mark; the legacy environment variable `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` may still appear in older config
 - Manual compaction is useful before starting intensive tasks
 - Subagents have isolated context windows and compact independently
 - Session checkpoints are preserved during compaction

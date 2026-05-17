@@ -1054,7 +1054,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
                   Font Size
                 </label>
                 <p className="text-xs text-[var(--text-muted)] mb-3">
-                  Applies to all chat messages (yours and Claude's) and the message input
+                  Applies to all chat messages (yours and assistant responses) and the message input
                 </p>
                 <div className="flex gap-2">
                   {FONT_SIZES.map(({ name, value, scale }) => (
@@ -1100,7 +1100,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
                   Chat Font
                 </label>
                 <p className="text-xs text-[var(--text-muted)] mb-3">
-                  Applies to all chat messages (both your messages and Claude's responses) and the message input area
+                  Applies to all chat messages (both your messages and assistant responses) and the message input area
                 </p>
                 <select
                   value={typography.fontChat}

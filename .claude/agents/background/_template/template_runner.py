@@ -5,7 +5,7 @@ CUSTOMIZE: Replace {Agent Name} with your agent's name.
 
 This is the Python runner that:
 1. Prepares input for the background agent
-2. Invokes the agent via Claude Agent SDK
+2. Invokes the agent via Codex CLI
 3. Processes the structured JSON output
 4. Applies side effects (file writes, state updates, etc.)
 
@@ -15,6 +15,7 @@ The agent itself has NO tools — all side effects happen HERE.
 import json
 import logging
 import asyncio
+import sys
 import yaml
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -24,6 +25,10 @@ from datetime import datetime
 AGENT_NAME = "{agent_name}"
 
 logger = logging.getLogger(f"background.{AGENT_NAME}")
+
+_SERVER_DIR = Path(__file__).resolve().parents[3] / "interface" / "server"
+if str(_SERVER_DIR) not in sys.path:
+    sys.path.insert(0, str(_SERVER_DIR))
 
 # Paths relative to this file
 _PROMPT_PATH = Path(__file__).parent / "prompt.md"
@@ -86,7 +91,7 @@ async def run(data: Any) -> Optional[Dict]:
         Parsed JSON output from the agent, or None on failure
     """
     try:
-        from claude_agent_sdk import query, ClaudeAgentOptions
+        from codex_backend import CodexRunOptions, ROOT_DIR, run_codex
 
         system_prompt = _get_system_prompt()
         user_prompt = _build_input(data)
@@ -94,18 +99,18 @@ async def run(data: Any) -> Optional[Dict]:
         model = _CONFIG.get("model", "sonnet")
         max_turns = _CONFIG.get("max_turns", 200)
 
-        options = ClaudeAgentOptions(
-            model=model,
-            system_prompt=system_prompt,
-            max_turns=max_turns,
-            output_format={
-                "type": "json_schema",
-                "json_schema": OUTPUT_SCHEMA
-            }
-        )
-
         logger.info(f"Invoking {AGENT_NAME} agent with {len(user_prompt)} char prompt")
-        result = await query(prompt=user_prompt, options=options)
+        result = await run_codex(
+            CodexRunOptions(
+                model=model,
+                cwd=str(ROOT_DIR),
+                identity_instructions=system_prompt,
+                prompt=user_prompt,
+                tools=[],
+                max_turns=max_turns,
+                output_schema=OUTPUT_SCHEMA,
+            )
+        )
 
         # Parse the structured output
         if result and result.response:

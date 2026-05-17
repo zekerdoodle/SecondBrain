@@ -6,7 +6,7 @@ updated: 2026-02-08
 
 # Workflow: Post-Session Review
 
-**Trigger:** Called by the Music Practice Tracker app via `promptClaude('/practice-review {context}')` after a session is completed.
+**Trigger:** Called by the Music Practice Tracker app via the legacy-named app bridge call `promptClaude('/practice-review {context}')` after a session is completed.
 
 **Goal:** Analyze session results and provide concise, actionable coaching feedback.
 

@@ -1,6 +1,6 @@
 # CUSTOMIZE: Replace {agent_name} with your agent's name (lowercase, underscores)
 name: {agent_name}
-model: sonnet
+model: gpt-5.4-mini
 description: "{One-line description of what this agent does}"
 timeout_seconds: 300
 max_turns: 200

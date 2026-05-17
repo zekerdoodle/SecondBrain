@@ -5,10 +5,10 @@ description: Personal reflection session. Gathers context, checks friction point
 
 # Skill: /reflection
 
-Personal reflection session for Claude's self-development.
+Personal reflection session for agent self-development.
 
 ## When This Runs
-- Daily at 3 AM (Claude Time)
+- Daily at 3 AM (local agent time)
 - Can also be invoked manually when I want to reflect
 
 ## Process

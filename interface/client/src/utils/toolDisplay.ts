@@ -7,7 +7,7 @@
 
 // Tool display name mapping - maps raw tool names to [running, done] labels
 export const TOOL_DISPLAY_NAMES: Record<string, [string, string]> = {
-  // Claude Code built-in tools
+  // Legacy built-in coding tools
   'Read': ['Reading file', 'Read file'],
   'Write': ['Writing file', 'Wrote file'],
   'Edit': ['Editing file', 'Edited file'],
@@ -101,7 +101,7 @@ export const TOOL_DISPLAY_NAMES: Record<string, [string, string]> = {
   // MCP Brain tools - Utilities
   'mcp__brain__page_parser': ['Reading page', 'Read page'],
   'mcp__brain__restart_server': ['Restarting server', 'Restarted server'],
-  'mcp__brain__claude_code': ['Running Claude Code', 'Ran Claude Code'],
+  'mcp__brain__claude_code': ['Running legacy coding tool', 'Ran legacy coding tool'],
   'mcp__brain__web_search': ['Searching the web', 'Searched the web'],
   'mcp__brain__send_critical_notification': ['Sending notification', 'Sent notification'],
 
@@ -238,7 +238,7 @@ export function extractToolSummary(toolName: string, argsJson: string | Record<s
       return truncateSummary(args.query || args.content?.slice(0, 50) || '');
     }
 
-    // Claude Code
+    // Legacy claude_code tool
     if (name.includes('claude_code')) {
       return truncateSummary(args.prompt?.slice(0, 50) || args.command?.slice(0, 50) || '');
     }

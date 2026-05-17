@@ -25,7 +25,8 @@ class InvocationMode(str, Enum):
 
 class AgentType(str, Enum):
     """Type of agent implementation."""
-    SDK = "sdk"        # Uses Claude Agent SDK (query())
+    CODEX = "codex"    # Uses Codex CLI headless
+    SDK = "sdk"        # Legacy alias accepted for existing configs
 
 
 @dataclass
@@ -35,9 +36,9 @@ class AgentConfig:
 
     Attributes:
         name: Unique identifier for the agent
-        type: Implementation type (sdk)
-        model: Model to use (sonnet, opus, haiku)
-        description: Human-readable description for Claude <3
+        type: Implementation type (codex; legacy sdk accepted)
+        model: Model to use (OpenAI model id, or legacy sonnet/opus/haiku alias)
+        description: Human-readable description for the agent
         tools: List of allowed tools
         timeout_seconds: Maximum execution time
         output_format: Structured output schema
@@ -53,7 +54,7 @@ class AgentConfig:
     max_turns: int = 200
     output_format: Optional[Dict[str, Any]] = None
     prompt: Optional[str] = None
-    system_prompt_preset: Optional[str] = None  # e.g., "claude_code" — uses SDK's SystemPromptPreset; prompt.md becomes append
+    system_prompt_preset: Optional[str] = None  # e.g., "claude_code" / "codex_code" — use native coding instructions; prompt.md becomes append
     skills: Optional[List[str]] = None  # If set, only these skills can be injected. None = all skills available.
     chattable: bool = False
     hidden: bool = False
@@ -71,7 +72,7 @@ class AgentConfig:
         """Create AgentConfig from a dictionary (parsed YAML)."""
         return cls(
             name=data["name"],
-            type=AgentType(data.get("type", "sdk")),
+            type=AgentType(data.get("type", "codex")),
             model=data.get("model", "sonnet"),
             description=data.get("description", f"Agent: {data['name']}"),
             display_name=data.get("display_name"),
@@ -209,7 +210,7 @@ class PendingNotification:
         completed_at: When the agent finished
         source_chat_id: Chat to inject notification into
         agent_response: The agent's final response
-        status: pending, injected, or expired
+        status: pending, delivering, delivered, or expired
     """
     id: str
     agent: str
@@ -217,7 +218,7 @@ class PendingNotification:
     completed_at: datetime
     source_chat_id: str
     agent_response: str
-    status: Literal["pending", "injected", "expired"] = "pending"
+    status: Literal["pending", "delivering", "delivered", "injected", "expired"] = "pending"
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""
@@ -241,7 +242,7 @@ class PendingNotification:
             completed_at=datetime.fromisoformat(data["completed_at"]),
             source_chat_id=data["source_chat_id"],
             agent_response=data["agent_response"],
-            status=data.get("status", "pending"),
+            status="delivered" if data.get("status") == "injected" else data.get("status", "pending"),
         )
 
     def is_stale(self, threshold_minutes: int = 5, threshold_seconds: Optional[int] = None) -> bool:

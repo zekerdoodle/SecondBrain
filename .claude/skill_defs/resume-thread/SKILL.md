@@ -54,33 +54,33 @@ Ready to continue? Or want to take it a different direction?
 **Simple tomorrow:**
 ```
 User: Let's pick this up tomorrow
-Claude: *Captures context about current discussion*
-Claude: *Calls schedule_self with morning prompt*
-Claude: Thread saved. I'll ping you tomorrow morning to continue.
+Agent: *Captures context about current discussion*
+Agent: *Calls schedule_self with morning prompt*
+Agent: Thread saved. I'll ping you tomorrow morning to continue.
 ```
 
 **Specific time:**
 ```
 User: Resume this Saturday afternoon
-Claude: *Captures context*
-Claude: *Calls schedule_self for Saturday 14:00*
-Claude: Thread saved. I'll ping you Saturday afternoon.
+Agent: *Captures context*
+Agent: *Calls schedule_self for Saturday 14:00*
+Agent: Thread saved. I'll ping you Saturday afternoon.
 ```
 
 **With context visible:**
 ```
 User: We should continue this later, maybe after dinner
-Claude: Got it. We were exploring the LTM gardener optimization -
+Agent: Got it. We were exploring the LTM gardener optimization -
         specifically the duplicate detection threshold. You wanted
         to benchmark 0.7 vs 0.8 similarity.
 
         I'll schedule this for 8 PM. Sound right?
 User: Yeah
-Claude: *Schedules* Thread saved. See you at 8.
+Agent: *Schedules* Thread saved. See you at 8.
 ```
 
 ## Keep It Natural
 
-- Don't over-document - capture just enough for a fresh Claude instance
+- Don't over-document - capture just enough for a fresh agent instance
 - If the context is obvious from recent messages, keep it brief
 - The prompt should feel like continuing a conversation, not reading a report

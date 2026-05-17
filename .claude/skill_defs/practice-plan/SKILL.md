@@ -6,7 +6,7 @@ updated: 2026-02-08
 
 # Workflow: Generate Practice Session Plan
 
-**Trigger:** Called by the Music Practice Tracker app via `promptClaude('/practice-plan {context}')` when the user clicks "Start Session". The context JSON is appended after the skill name.
+**Trigger:** Called by the Music Practice Tracker app via the legacy-named app bridge call `promptClaude('/practice-plan {context}')` when the user clicks "Start Session". The context JSON is appended after the skill name.
 
 **Goal:** Analyze the player's current state and generate an intelligent, personalized session plan.
 

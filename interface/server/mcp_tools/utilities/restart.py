@@ -50,6 +50,8 @@ async def restart_server(args: Dict[str, Any]) -> Dict[str, Any]:
     """Restart the server with conversation continuity."""
     try:
         session_id = args.get("session_id")
+        source_chat_id = args.get("_source_chat_id")
+        calling_agent_name = args.get("_agent_name")
         reason = args.get("reason", "Server restart requested")
         rebuild = args.get("rebuild", False)
 
@@ -67,7 +69,13 @@ async def restart_server(args: Dict[str, Any]) -> Dict[str, Any]:
             chat_manager = getattr(main_module, 'chat_manager', None)
             active_processing = getattr(main_module, 'active_processing_sessions', {})
 
-        # Auto-detect which session is calling this tool
+        # Prefer the MCP server's injected calling chat. Explicit session_id still
+        # wins for manual/advanced use; active_processing remains only a fallback.
+        if not session_id and source_chat_id:
+            chat_file = rt.CHATS_DIR / f"{source_chat_id}.json"
+            if source_chat_id in active_convs or chat_file.exists():
+                session_id = source_chat_id
+
         if not session_id:
             for sid in active_processing:
                 if sid in active_convs:
@@ -75,24 +83,52 @@ async def restart_server(args: Dict[str, Any]) -> Dict[str, Any]:
                     break
 
         if not session_id:
+            try:
+                active_room_file = rt.CLAUDE_DIR / "active_room.json"
+                if active_room_file.exists():
+                    import json
+                    active_room = json.loads(active_room_file.read_text()).get("room")
+                    if active_room and (rt.CHATS_DIR / f"{active_room}.json").exists():
+                        session_id = active_room
+            except Exception:
+                pass
+
+        if not session_id:
             return {
                 "content": [{"type": "text", "text": "Error: Could not determine session_id. No active conversations found."}],
                 "is_error": True
             }
 
-        # Auto-detect the source agent from the chat's stored agent field
-        source_agent = "character"  # Default — character is the primary agent
+        # Auto-detect the source agent from the trigger chat's stored agent field.
+        # MCP tools may run outside main.py's process, so fall back to direct chat
+        # JSON and finally the injected calling agent.
+        source_agent = calling_agent_name or "character"
         try:
+            stored_chat = None
             if chat_manager:
                 stored_chat = chat_manager.load_chat(session_id)
-                if stored_chat:
-                    stored_agent = stored_chat.get("agent")
-                    if stored_agent:
-                        source_agent = stored_agent
+            if stored_chat is None:
+                chat_file = rt.CHATS_DIR / f"{session_id}.json"
+                if chat_file.exists():
+                    import json
+                    stored_chat = json.loads(chat_file.read_text())
+            if stored_chat:
+                stored_agent = stored_chat.get("agent")
+                if stored_agent:
+                    source_agent = stored_agent
         except Exception:
             pass
 
-        # Build a map of ALL actively processing sessions -> their agent names
+        running_invocations = []
+        try:
+            import running_agents
+            running_invocations = await running_agents.list_all()
+        except Exception:
+            running_invocations = []
+
+        # Build a map of ALL actively processing sessions -> their agent names.
+        # If the MCP tool is process-isolated from main.py, preserve at least the
+        # triggering session so restart continuation has a truthful agent.
         all_active = {}
         for sid in active_processing:
             agent = "character"  # Default
@@ -101,9 +137,18 @@ async def restart_server(args: Dict[str, Any]) -> Dict[str, Any]:
                     sc = chat_manager.load_chat(sid)
                     if sc and sc.get("agent"):
                         agent = sc["agent"]
+                else:
+                    chat_file = rt.CHATS_DIR / f"{sid}.json"
+                    if chat_file.exists():
+                        import json
+                        sc = json.loads(chat_file.read_text())
+                        if sc.get("agent"):
+                            agent = sc["agent"]
             except Exception:
                 pass
             all_active[sid] = agent
+        if session_id not in all_active:
+            all_active[session_id] = source_agent
 
         # NOTE: We do NOT save conv.messages here or spawn the restart subprocess.
         # The streaming loop in main.py detects that restart_server completed,
@@ -116,9 +161,11 @@ async def restart_server(args: Dict[str, Any]) -> Dict[str, Any]:
             session_id=session_id,
             reason=reason,
             source=source_agent,
-            all_active_sessions=all_active
+            all_active_sessions=all_active,
+            running_invocations=running_invocations,
         )
 
+        agent_invocation_count = len(continuation.get("agent_invocations", []))
         bystander_count = len(all_active) - 1  # Exclude the triggering session
 
         # Choose restart script based on rebuild flag
@@ -150,6 +197,8 @@ async def restart_server(args: Dict[str, Any]) -> Dict[str, Any]:
         bystander_note = ""
         if bystander_count > 0:
             bystander_note = f"\n{bystander_count} other active session(s) will also be resumed after restart."
+        if agent_invocation_count > 0:
+            bystander_note += f"\n{agent_invocation_count} active agent invocation(s) will also be resumed after restart."
 
         return {
             "content": [{

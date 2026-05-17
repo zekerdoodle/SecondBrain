@@ -143,8 +143,6 @@ async def generate_title(
     Returns:
         Dict with title, confidence, should_update, reasoning
     """
-    from claude_agent_sdk import query, ClaudeAgentOptions, ResultMessage
-
     if not messages:
         return {
             "title": "New Chat",
@@ -195,32 +193,38 @@ Generate a concise, descriptive title for this conversation."""
 
     logger.info(f"Running Titler on {len(messages)} messages (retitle={is_retitle}, model={model}, prompt_len={len(prompt)})")
 
-    options_kwargs = dict(
-        model=model,
-        system_prompt=TITLER_SYSTEM_PROMPT,
-        max_turns=2,  # Need 2 for structured output
-        permission_mode="bypassPermissions",
-        allowed_tools=[],
-        output_format={
-            "type": "json_schema",
-            "schema": TITLER_OUTPUT_SCHEMA
-        },
-    )
-    if effort:
-        options_kwargs["effort"] = effort
+    import sys as _sys
+    from pathlib import Path as _Path
+    _root_dir = _Path(__file__).resolve().parents[2]
+    _server_dir = _root_dir / "interface" / "server"
+    if str(_server_dir) not in _sys.path:
+        _sys.path.insert(0, str(_server_dir))
+    from codex_backend import CodexRunOptions, run_codex
 
     # One retry on SDK subprocess failure — these are usually transient
     # (exit-code-1 crashes from the CLI, typically ~1-3% of calls).
     last_error: Optional[Exception] = None
     for attempt in range(2):
         try:
-            result = None
-            async for message in query(
-                prompt=prompt,
-                options=ClaudeAgentOptions(**options_kwargs)
-            ):
-                if isinstance(message, ResultMessage) and message.structured_output:
-                    result = message.structured_output
+            codex_result = await run_codex(
+                CodexRunOptions(
+                    model=model,
+                    cwd=str(_root_dir),
+                    identity_instructions=TITLER_SYSTEM_PROMPT,
+                    prompt=prompt,
+                    tools=[],
+                    timeout_seconds=120,
+                    max_turns=2,
+                    effort=effort or None,
+                    output_schema=TITLER_OUTPUT_SCHEMA,
+                )
+            )
+            result = codex_result.structured_output
+            if not result and codex_result.response:
+                try:
+                    result = json.loads(codex_result.response)
+                except Exception:
+                    result = None
 
             if result:
                 # Ensure all fields are present
