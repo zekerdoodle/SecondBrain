@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { API_URL } from '../config';
+import { toRelativePath } from '../utils/filePaths';
 
 interface InlineFilePathImageProps {
   /** Project-relative path (already normalized via toRelativePath). */
@@ -8,7 +9,7 @@ interface InlineFilePathImageProps {
   originalText: string;
   /** Optional alt text (for markdown ![alt](path) syntax). */
   alt?: string;
-  /** Click handler for the fallback path-link if image fails to load. */
+  /** Click handler for opening the image file in the editor. */
   onOpenFile?: (path: string) => void;
 }
 
@@ -19,7 +20,7 @@ interface InlineFilePathImageProps {
  *   - <img> tag with API_URL/file/{path} src
  *   - loading="lazy"
  *   - same Tailwind classes
- *   - click opens raw image in a new tab
+ *   - click opens the source file in the editor when available
  *
  * Gracefully falls back to a clickable file-path-link (matching the
  * existing path-in-backticks behavior) if the image fails to load.
@@ -31,7 +32,8 @@ export function InlineFilePathImage({
   onOpenFile,
 }: InlineFilePathImageProps) {
   const [errored, setErrored] = useState(false);
-  const src = `${API_URL}/file/${path}`;
+  const normalizedPath = toRelativePath(path);
+  const src = `${API_URL}/file/${normalizedPath}`;
 
   if (errored) {
     // Fallback: render the same clickable path-link the chat uses elsewhere
@@ -42,9 +44,9 @@ export function InlineFilePathImage({
           onClick={(e) => {
             e.preventDefault();
             e.stopPropagation();
-            onOpenFile(path);
+            onOpenFile(normalizedPath);
           }}
-          title={`Open ${path} in editor`}
+          title={`Open ${normalizedPath} in editor`}
         >
           {originalText}
         </code>
@@ -56,12 +58,20 @@ export function InlineFilePathImage({
   return (
     <img
       src={src}
-      alt={alt || path}
+      alt={alt || normalizedPath}
       loading="lazy"
       className="max-h-48 max-w-full rounded-lg cursor-pointer hover:opacity-90 transition-opacity"
-      onClick={() => window.open(src, '_blank')}
+      onClick={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (onOpenFile) {
+          onOpenFile(normalizedPath);
+        } else {
+          window.open(src, '_blank');
+        }
+      }}
       onError={() => setErrored(true)}
-      title={path}
+      title={onOpenFile ? `Open ${normalizedPath} in editor` : normalizedPath}
     />
   );
 }

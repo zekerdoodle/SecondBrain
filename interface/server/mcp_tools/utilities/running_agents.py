@@ -2,10 +2,10 @@
 running_agents MCP tool — read-only view of currently in-flight agent
 invocations.
 
-The tool returns a snapshot of the in-memory registry in
-``interface/server/running_agents.py``. Filterable by agent and kind. Phase 4
-will add ``include_upcoming`` for the next-N scheduled-task firings; not in
-Phase 1.
+The tool returns a snapshot from the backend-owned registry in
+``interface/server/running_agents.py``. Codex stdio MCP bridge processes do not
+read their private module copy; they call the backend internal endpoint through
+the source-of-truth helper. Filterable by agent and kind.
 """
 
 import os
@@ -121,10 +121,16 @@ async def running_agents_tool(args: Dict[str, Any]) -> Dict[str, Any]:
     filter_agent = args.get("agent")
     filter_kind = args.get("kind")
 
-    raw = await ra_module.list_all(
-        filter_agent=filter_agent,
-        filter_kind=filter_kind,
-    )
+    try:
+        raw = await ra_module.list_source_of_truth(
+            filter_agent=filter_agent,
+            filter_kind=filter_kind,
+        )
+    except Exception as e:
+        return {
+            "content": [{"type": "text", "text": f"running_agents source-of-truth unavailable: {e}"}],
+            "is_error": True,
+        }
 
     now = time.time()
     entries = []

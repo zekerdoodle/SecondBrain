@@ -1763,6 +1763,16 @@ class InternalAgentInvokeRequest(BaseModel):
     caller_agent: Optional[str] = None
 
 
+@app.get("/api/internal/running-agents")
+async def internal_running_agents(request: Request, agent: Optional[str] = None, kind: Optional[str] = None):
+    """Read the backend-owned running_agents registry for MCP subprocesses."""
+    token = request.headers.get("X-Second-Brain-Internal-Token")
+    if not token or token != INTERNAL_AGENT_INVOKE_TOKEN:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    entries = await running_agents.list_all(filter_agent=agent, filter_kind=kind)
+    return {"entries": entries, "source": "backend", "backend_pid": os.getpid()}
+
+
 @app.post("/api/internal/agent-invoke")
 async def internal_agent_invoke(req: InternalAgentInvokeRequest, request: Request):
     """Launch ping invocations from the long-lived backend process.

@@ -28,9 +28,10 @@ Architectural invariants (from codebase/projects/active/apply-patch-mcp-plan.md)
       scope path, followed by a forward commit; live state is structurally
       absent from that pathspec and cannot be touched. See rollback.py.
 
-    - The manifest's `exclude:` list is the scope gate for the deploy.
-      Phase B's rollback uses a separate positive scope list (hardcoded
-      in rollback.py with TODO for Phase C — will be moved to manifest).
+    - The manifest's `include:` and `exclude:` lists are the shared
+      deploy/rollback scope gate. Deploy accepts only branch-diff paths
+      that match `include:` and do not match `exclude:`; rollback uses the
+      same positive scope with `exclude:` appended as negative pathspecs.
 
     - Smoke runs in a scrubbed-env subprocess with FILE-MARKER failure
       injection (no env-var injection — that's the 2026-05-12 bug that
@@ -58,7 +59,9 @@ from .manifest import (
     MANIFEST_PATH,
     REPO_ROOT,
     ManifestError,
+    include_check,
     load_exclude_spec,
+    load_include_spec,
     scope_check,
     working_tree_clean_for_deploy,
 )
@@ -269,13 +272,14 @@ def _do_phase_a(
 
     # ---- manifest -------------------------------------------------------
     try:
-        spec = load_exclude_spec()
+        include_spec = load_include_spec()
+        exclude_spec = load_exclude_spec()
     except ManifestError as e:
         raise ApplyPatchError(f"manifest: {e}") from e
     step(f"manifest loaded from {MANIFEST_PATH}")
 
     # ---- working tree check (live-state churn tolerated) ----------------
-    clean, surprises = working_tree_clean_for_deploy(dirty_paths(), spec)
+    clean, surprises = working_tree_clean_for_deploy(dirty_paths(), exclude_spec)
     if not clean:
         bullets = "\n  ".join(surprises)
         raise ApplyPatchError(
@@ -299,14 +303,24 @@ def _do_phase_a(
             f"origin/{branch} has no changes vs main — nothing to deploy"
         )
 
-    ok, violations = scope_check(changed, spec)
-    if not ok:
-        bullets = "\n  ".join(violations)
+    include_ok, out_of_include = include_check(changed, include_spec)
+    exclude_ok, excluded = scope_check(changed, exclude_spec)
+    if not include_ok or not exclude_ok:
+        sections: List[str] = []
+        if out_of_include:
+            sections.append(
+                "outside manifest include:\n  " + "\n  ".join(out_of_include)
+            )
+        if excluded:
+            sections.append(
+                "matched manifest exclude:\n  " + "\n  ".join(excluded)
+            )
         raise ApplyPatchError(
-            "scope violation — branch touches paths excluded by "
-            "codebase/safe-deploy/manifest.yaml:\n  " + bullets
+            "scope violation — branch diff must be inside `include:` and "
+            "outside `exclude:` in codebase/safe-deploy/manifest.yaml:\n"
+            + "\n".join(sections)
         )
-    step(f"scope OK — {len(changed)} files, no excluded paths touched")
+    step(f"scope OK — {len(changed)} files inside include and outside exclude")
 
     # ---- capture previous main SHA --------------------------------------
     # This SHA is the deploy artifact. There is NO full-tree backup tag.
@@ -375,7 +389,7 @@ def _do_phase_a(
     description=(
         "Deploy a coder branch into main via the safe-deploy primitive. "
         "Default flow (skip_restart=False): caller restriction (Patch only), "
-        "lock, manifest scope check, fetch, merge --no-ff, push, "
+        "lock, manifest include/exclude scope check, fetch, merge --no-ff, push, "
         "then a daemonized worker handles restart + smoke + positive-filter "
         "rollback. Synchronous portion returns immediately with "
         "state=\"deploy_in_progress\"; the worker writes the final state to "

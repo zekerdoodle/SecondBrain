@@ -49,6 +49,9 @@ export function looksLikeFilePath(text: string): boolean {
  * suitable for the `/api/file/{path}` endpoint.
  *
  * Handles:
+ *   /api/file/foo                  →  foo
+ *   /api/raw/foo                   →  foo
+ *   /file/foo                      →  foo
  *   /home/debian/second_brain/foo  →  foo
  *   ~/second_brain/foo             →  foo
  *   ./foo                          →  foo
@@ -58,33 +61,40 @@ export function looksLikeFilePath(text: string): boolean {
 export function toRelativePath(path: string): string {
   let p = path;
 
-  // 1. Absolute project prefix
+  // 1. Strip chat/API file serving prefixes before project-path handling.
+  const fileRoutePrefixes = ['/api/file/', '/api/raw/', '/file/'];
+  const routePrefix = fileRoutePrefixes.find(prefix => p.startsWith(prefix));
+  if (routePrefix) {
+    p = p.slice(routePrefix.length);
+  }
+
+  // 2. Absolute project prefix
   const absPrefix = '/home/debian/second_brain/';
   if (p.startsWith(absPrefix)) {
     p = p.slice(absPrefix.length);
   }
 
-  // 2. Tilde prefix  ~/second_brain/  or  ~/second_brain
+  // 3. Tilde prefix  ~/second_brain/  or  ~/second_brain
   if (p.startsWith('~/second_brain/')) {
     p = p.slice('~/second_brain/'.length);
   } else if (p === '~/second_brain') {
     p = '';
   }
 
-  // 3. Current-dir prefix  ./
+  // 4. Current-dir prefix  ./
   while (p.startsWith('./')) {
     p = p.slice(2);
   }
 
-  // 4. Bare leading slash (not a full absolute path — already handled above)
+  // 5. Bare leading slash (not a full absolute path — already handled above)
   if (p.startsWith('/')) {
     p = p.slice(1);
   }
 
-  // 5. Collapse double slashes
+  // 6. Collapse double slashes
   p = p.replace(/\/{2,}/g, '/');
 
-  // 6. Strip trailing slash
+  // 7. Strip trailing slash
   if (p.endsWith('/')) {
     p = p.slice(0, -1);
   }

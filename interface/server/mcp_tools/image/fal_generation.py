@@ -17,7 +17,7 @@ import logging
 import mimetypes
 import os
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
@@ -150,6 +150,37 @@ def _get_multi_ref_config(model: str) -> dict:
 
     # Default for unknown models: try image_urls as a list
     return {"param": "image_urls", "mode": "list", "use_image_size": True}
+
+
+_FAL_IMAGE_SAFETY_PARAM_KEYS = ("enable_safety_checker", "enable_safety_checks")
+
+
+def _build_fal_image_payload(
+    base_params: Dict[str, Any],
+    extra_params: Optional[Dict[str, Any]] = None,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Merge fal image payload params with safety disabled last.
+
+    Seedream documents enable_safety_checker, so keep using that supported key.
+    The common alias enable_safety_checks is stripped when callers pass it, rather
+    than added automatically, to avoid sending unsupported keys to stricter models.
+    """
+    clean_extra_params = dict(extra_params or {})
+    ignored_keys = [
+        key for key in _FAL_IMAGE_SAFETY_PARAM_KEYS if key in clean_extra_params
+    ]
+    for key in ignored_keys:
+        clean_extra_params.pop(key, None)
+
+    if ignored_keys:
+        logger.info(
+            "Ignoring caller-provided fal safety param(s): %s",
+            ", ".join(ignored_keys),
+        )
+
+    payload = {**base_params, **clean_extra_params}
+    payload["enable_safety_checker"] = False
+    return payload, clean_extra_params
 
 # Timeout: generation can take a while, especially multi-ref.
 # Write timeout bumped to 180s for fal CDN uploads — large reference images (5+ MB)
@@ -553,13 +584,14 @@ async def fal_text_to_image(args: Dict[str, Any]) -> Dict[str, Any]:
     use_queue = args.get("use_queue", False)
     extra_params = args.get("extra_params", {}) or {}
 
-    payload = {
-        "prompt": prompt,
-        "image_size": image_size,
-        "num_images": num_images,
-        "enable_safety_checker": False,
-        **extra_params,
-    }
+    payload, effective_extra_params = _build_fal_image_payload(
+        {
+            "prompt": prompt,
+            "image_size": image_size,
+            "num_images": num_images,
+        },
+        extra_params,
+    )
     if negative_prompt:
         payload["negative_prompt"] = negative_prompt
     if seed is not None:
@@ -578,8 +610,8 @@ async def fal_text_to_image(args: Dict[str, Any]) -> Dict[str, Any]:
         text += f"  Size: {image_size}\n"
         if negative_prompt:
             text += f"  Negative: {negative_prompt}\n"
-        if extra_params:
-            text += f"  Extra: {extra_params}\n"
+        if effective_extra_params:
+            text += f"  Extra: {effective_extra_params}\n"
         text += "  Files:\n"
         for p in saved:
             text += f"    - {p}\n"
@@ -680,12 +712,13 @@ async def fal_image_to_image(args: Dict[str, Any]) -> Dict[str, Any]:
 
         # Build payload
         param_name = image_param_name or "image_url"
-        payload = {
-            "prompt": prompt,
-            param_name: cdn_url,
-            "enable_safety_checker": False,
-            **extra_params,
-        }
+        payload, effective_extra_params = _build_fal_image_payload(
+            {
+                "prompt": prompt,
+                param_name: cdn_url,
+            },
+            extra_params,
+        )
         if strength is not None:
             payload["strength"] = strength
         if image_size:
@@ -704,8 +737,8 @@ async def fal_image_to_image(args: Dict[str, Any]) -> Dict[str, Any]:
             text += f"  Strength: {strength}\n"
         if image_size:
             text += f"  Size: {image_size}\n"
-        if extra_params:
-            text += f"  Extra: {extra_params}\n"
+        if effective_extra_params:
+            text += f"  Extra: {effective_extra_params}\n"
         text += "  Files:\n"
         for p in saved:
             text += f"    - {p}\n"
@@ -830,11 +863,10 @@ async def fal_multi_ref_image(args: Dict[str, Any]) -> Dict[str, Any]:
             return _error("Error: no valid reference images after upload")
 
         # Build payload with model-aware parameter handling
-        payload = {
-            "prompt": prompt,
-            "enable_safety_checker": False,
-            **extra_params,
-        }
+        payload, effective_extra_params = _build_fal_image_payload(
+            {"prompt": prompt},
+            extra_params,
+        )
 
         # Set the reference image parameter using the correct name and mode
         if ref_mode == "single":
@@ -871,8 +903,8 @@ async def fal_multi_ref_image(args: Dict[str, Any]) -> Dict[str, Any]:
         text += f"  Param: {param_name}, Mode: {ref_mode}\n"
         if use_image_size:
             text += f"  Size: {image_size}\n"
-        if extra_params:
-            text += f"  Extra: {extra_params}\n"
+        if effective_extra_params:
+            text += f"  Extra: {effective_extra_params}\n"
         text += "  Files:\n"
         for p in saved:
             text += f"    - {p}\n"

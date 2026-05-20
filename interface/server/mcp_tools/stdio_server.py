@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -134,7 +135,10 @@ async def main() -> None:
     async def handle_call_tool(name: str, arguments: Dict[str, Any] | None):
         if name not in by_name:
             raise ValueError(f"Unknown Second Brain tool: {name}")
-        result = await by_name[name].handler(arguments or {})
+        # In stdio MCP, stdout is the protocol stream. Tool-side prints and
+        # legacy CLI logger output must go to stderr so they cannot corrupt JSON-RPC framing.
+        with contextlib.redirect_stdout(sys.stderr):
+            result = await by_name[name].handler(arguments or {})
         return [TextContent(type="text", text=_as_text_content(result))]
 
     async with stdio_server() as (read_stream, write_stream):

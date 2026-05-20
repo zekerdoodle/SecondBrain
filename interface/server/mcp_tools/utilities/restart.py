@@ -119,12 +119,38 @@ async def restart_server(args: Dict[str, Any]) -> Dict[str, Any]:
         except Exception:
             pass
 
-        running_invocations = []
+        import running_agents
+
+        running_agents_bootstrap_note = ""
         try:
-            import running_agents
-            running_invocations = await running_agents.list_all()
-        except Exception:
+            running_invocations = await running_agents.list_source_of_truth()
+        except running_agents.RunningAgentsEndpointMissingError as e:
+            # First-load/deployment bootstrap only: this code can be live in the
+            # MCP subprocess before the backend has restarted into the new
+            # /api/internal/running-agents route. Let that specific restart
+            # proceed, visibly degraded, so the endpoint can be loaded. Once the
+            # endpoint exists, every other authoritative-read failure still
+            # fails closed below.
             running_invocations = []
+            running_agents_bootstrap_note = (
+                "\nWarning: authoritative running_agents endpoint is not loaded yet "
+                f"({e}). Proceeding through the narrow deployment-bootstrap "
+                "path; the live backend shutdown hook should merge its "
+                "in-process running_agents snapshot during shutdown. After "
+                "this endpoint is loaded, restart will fail closed on "
+                "authoritative read failure."
+            )
+        except Exception as e:
+            return {
+                "content": [{
+                    "type": "text",
+                    "text": (
+                        "Error: could not read authoritative running_agents "
+                        f"source before restart: {e}"
+                    ),
+                }],
+                "is_error": True,
+            }
 
         # Build a map of ALL actively processing sessions -> their agent names.
         # If the MCP tool is process-isolated from main.py, preserve at least the
@@ -211,6 +237,7 @@ async def restart_server(args: Dict[str, Any]) -> Dict[str, Any]:
                     f"The server will restart in ~{wait_time} seconds.\n"
                     f"After restart, you'll receive a continuation message."
                     f"{bystander_note}"
+                    f"{running_agents_bootstrap_note}"
                 )
             }]
         }

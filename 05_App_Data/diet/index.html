@@ -482,6 +482,7 @@ let pinnedMeals = {};    // pinned_meals.json -> { "1": [{food, amount}, ...], .
 let todayKey = '';
 let weightChart = null;
 let expandedSlot = null; // which slot is currently expanded
+let addingToSlot = null;  // logged slot currently showing the add-more interface
 let buildItems = [];     // current build-mode items [{food: key, amount: N}]
 let describingSlot = null; // slot currently waiting for AI estimate
 let selectedFeel = 0;
@@ -500,6 +501,12 @@ const OLD_OPTIONS = {
 const SEED_FOODS = {
   foods: {
     tyson_chicken: { name: "Chicken Breast (Tyson)", category: "protein", unit: "oz", cal: 45, protein: 7, fat: 2, carb: 0 },
+    homemade_chicken: { name: "Homemade Cooked Chicken Breast", category: "protein", unit: "oz cooked", cal: 47, protein: 8.8, fat: 1, carb: 0 },
+    olive_oil_5g: { name: "Olive Oil (5g toss)", category: "fat", unit: "serving", cal: 45, protein: 0, fat: 5, carb: 0 },
+    subway_standard: { name: "User's Subway Steak Footlong (1.5x)", category: "protein", unit: "sandwich", cal: 1010, protein: 71, fat: 42, carb: 82 },
+    subway_double_steak: { name: "User's Subway Steak Footlong (double steak)", category: "protein", unit: "sandwich", cal: 1085, protein: 83, fat: 48, carb: 83 },
+    whataburger_double_bacon_strips: { name: "Whataburger Double Bacon + 3 Strips/Gravy", category: "protein", unit: "order", cal: 1310, protein: 67, fat: 73, carb: 71 },
+    in_n_out_two_doubles_fries: { name: "In-N-Out 2 Double-Doubles + Fries", category: "protein", unit: "order", cal: 1545, protein: 87, fat: 74, carb: 132 },
     sirloin: { name: "Sirloin", category: "protein", unit: "oz", cal: 55, protein: 8, fat: 2.5, carb: 0 },
     ribeye: { name: "Ribeye", category: "protein", unit: "oz", cal: 75, protein: 7, fat: 5, carb: 0 },
     ground_beef_90: { name: "90/10 Ground Beef", category: "protein", unit: "oz", cal: 50, protein: 7, fat: 2.5, carb: 0 },
@@ -554,8 +561,8 @@ const SEED_MEAL_PLAN = {
       { id: "m1_default", name: "Oikos + Monster", items: [{food: "oikos", amount: 2}, {food: "monster_energy", amount: 1}] }
     ],
     "2": [
-      { id: "m2_chicken_mac", name: "Chicken & Mac", items: [{food: "tyson_chicken", amount: 6}, {food: "mac_n_cheese_cup", amount: 1}] },
-      { id: "m2_chicken_couscous", name: "Chicken & Couscous", items: [{food: "tyson_chicken", amount: 6}, {food: "couscous", amount: 1}] },
+      { id: "m2_home_chicken_mac", name: "Homemade Chicken Nuggets + Mac", items: [{food: "homemade_chicken", amount: 6}, {food: "olive_oil_5g", amount: 1}, {food: "mac_n_cheese_cup", amount: 1}] },
+      { id: "m2_home_chicken_couscous", name: "Homemade Chicken + Couscous", items: [{food: "homemade_chicken", amount: 6}, {food: "olive_oil_5g", amount: 1}, {food: "couscous", amount: 1}] },
       { id: "m2_steak_couscous", name: "Steak & Couscous", items: [{food: "sirloin", amount: 6}, {food: "couscous", amount: 1}] }
     ],
     "3": [
@@ -565,7 +572,7 @@ const SEED_MEAL_PLAN = {
     ],
     "4": [
       { id: "m4_steak_mash_mac", name: "Steak & Mash + Mac", items: [{food: "sirloin", amount: 8}, {food: "mashed_potatoes", amount: 1}, {food: "mac_n_cheese_cup", amount: 1}] },
-      { id: "m4_chicken_mac", name: "Double Chicken & Mac", items: [{food: "tyson_chicken", amount: 8}, {food: "mac_n_cheese_cup", amount: 2}] },
+      { id: "m4_home_chicken_mac", name: "Homemade Chicken + Double Mac", items: [{food: "homemade_chicken", amount: 8}, {food: "olive_oil_5g", amount: 1}, {food: "mac_n_cheese_cup", amount: 2}] },
       { id: "m4_burgers", name: "Burgers", items: [{food: "ground_beef_90", amount: 8}, {food: "burger_bun", amount: 2}, {food: "american_cheese", amount: 2}] },
       { id: "m4_burger_deluxe", name: "Burger Deluxe", items: [{food: "ground_beef_90", amount: 8}, {food: "burger_bun", amount: 2}, {food: "american_cheese", amount: 2}, {food: "bacon", amount: 4}] },
       { id: "m4_salmon_mash", name: "Salmon & Mash", items: [{food: "salmon", amount: 8}, {food: "mashed_potatoes", amount: 1}] }
@@ -981,6 +988,7 @@ function renderSlotCard(slotNum, today) {
   const hasLogged = meals.length > 0 || oldCustom.length > 0;
   const isExpanded = expandedSlot === slotNum;
   const isDescribing = describingSlot === slotNum;
+  const isAddingMore = addingToSlot === slotNum;
 
   let html = `<div class="slot-card${hasLogged ? ' logged' : ''}${isExpanded ? ' expanded' : ''}" id="slot-${slotNum}">`;
 
@@ -991,13 +999,13 @@ function renderSlotCard(slotNum, today) {
   html += `<div class="slot-target">Target: ${slotInfo.cal_target} cal / ${slotInfo.protein_target}g P</div>`;
   html += `</div>`;
 
-  if (hasLogged) {
+  if (isDescribing) {
+    html += `<div class="slot-status" style="color:var(--accent);">Estimating...</div>`;
+  } else if (hasLogged) {
     let slotCal = 0, slotPro = 0;
     meals.forEach(m => { if (m.totals) { slotCal += m.totals.cal; slotPro += m.totals.protein; } });
     oldCustom.forEach(cm => { slotCal += cm.total_cal || cm.cal || 0; slotPro += cm.total_protein || cm.protein || 0; });
     html += `<div class="slot-status"><span class="slot-check">&#10003;</span><span class="slot-logged-macros">${slotCal} cal / ${slotPro}g</span></div>`;
-  } else if (isDescribing) {
-    html += `<div class="slot-status" style="color:var(--accent);">Estimating...</div>`;
   } else {
     html += `<div class="slot-status">Tap to log</div>`;
   }
@@ -1014,8 +1022,13 @@ function renderSlotCard(slotNum, today) {
     for (const cm of oldCustom) {
       html += renderOldCustomMeal(cm);
     }
-    // Option to add more to this slot
-    html += `<button class="btn btn-ghost btn-sm" style="width:100%;margin-top:var(--sp-sm);" onclick="openLoggingForSlot(${slotNum})">+ Add more to this meal</button>`;
+    if (isDescribing) {
+      html += `<div class="describe-loading"><span class="pulse-dot"></span><span>Coach is estimating macros...</span></div>`;
+    } else if (isAddingMore) {
+      html += renderLoggingInterface(slotNum);
+    } else {
+      html += `<button class="btn btn-ghost btn-sm" style="width:100%;margin-top:var(--sp-sm);" onclick="openLoggingForSlot(${slotNum})">+ Add more to this meal</button>`;
+    }
   } else if (isDescribing) {
     html += `<div class="describe-loading"><span class="pulse-dot"></span><span>Coach is estimating macros...</span></div>`;
   } else {
@@ -1234,36 +1247,21 @@ function renderIngredientPicker(slotNum) {
 function toggleSlot(slotNum) {
   if (expandedSlot === slotNum) {
     expandedSlot = null;
+    addingToSlot = null;
+    buildItems = [];
   } else {
     expandedSlot = slotNum;
+    addingToSlot = null;
     buildItems = []; // Reset build items when opening a new slot
   }
   renderToday();
 }
 
 function openLoggingForSlot(slotNum) {
-  // Allows adding more meals to an already-logged slot
-  // We temporarily set a flag to show the logging interface
   expandedSlot = slotNum;
+  addingToSlot = slotNum;
   buildItems = [];
-  // Re-render with a special flag
-  const today = getTodayData();
-  if (!today) return;
-  const slotCard = document.getElementById('slot-' + slotNum);
-  if (!slotCard) return;
-
-  const body = slotCard.querySelector('.slot-body');
-  if (!body) return;
-
-  // Append logging interface to existing logged meals
-  const existingContent = body.innerHTML;
-  // Remove the "add more" button
-  const addMoreBtn = body.querySelector('.btn-ghost');
-  if (addMoreBtn) addMoreBtn.remove();
-
-  const tempDiv = document.createElement('div');
-  tempDiv.innerHTML = renderLoggingInterface(slotNum);
-  body.appendChild(tempDiv);
+  renderToday();
 }
 
 function switchMode(slotNum, mode, btn) {
@@ -1345,6 +1343,7 @@ async function logBuiltMeal(slotNum) {
   today.meals.push(entry);
   buildItems = [];
   expandedSlot = null;
+  addingToSlot = null;
 
   await saveLog();
   BrainKit.toast(`Logged: ${totals.cal} cal / ${totals.protein}g P`, 'success');
@@ -1427,6 +1426,7 @@ async function confirmPinnedMeal(slotNum) {
 
   today.meals.push(entry);
   expandedSlot = null;
+  addingToSlot = null;
 
   await saveLog();
   BrainKit.toast(`Logged: ${totals.cal} cal / ${totals.protein}g P`, 'success');
@@ -1534,6 +1534,7 @@ Round calories to nearest 5, protein to nearest 1g. Match portions to what the u
   } finally {
     describingSlot = null;
     expandedSlot = null;
+    addingToSlot = null;
     renderToday();
   }
 }
@@ -1605,6 +1606,7 @@ async function submitEndOfDay() {
   await saveLog();
   selectedFeel = 0;
   expandedSlot = null;
+  addingToSlot = null;
   BrainKit.toast('Day complete', 'success');
   renderToday();
 }
@@ -1624,17 +1626,22 @@ function renderDaySummarySection(today) {
 }
 
 function reopenMealLogging() {
-  // Allow logging more meals after EOD — just expand any slot
   const today = getTodayData();
   if (!today) return;
-  // Find first unlogged slot, or default to slot 5
+
+  buildItems = [];
   for (let s = 1; s <= 5; s++) {
     const meals = getMealsForSlot(s);
-    if (meals.length === 0) { expandedSlot = s; renderToday(); return; }
+    const oldCustom = (today.custom_meals || []).filter(m => m.slot === s);
+    if (meals.length === 0 && oldCustom.length === 0) {
+      expandedSlot = s;
+      addingToSlot = null;
+      renderToday();
+      return;
+    }
   }
-  // All slots logged — let them add to any slot
-  expandedSlot = 5;
-  renderToday();
+
+  openLoggingForSlot(5);
 }
 
 // ============================================================

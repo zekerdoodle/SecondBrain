@@ -1,5 +1,5 @@
 """
-Positive-filter rollback for apply_patch_deploy (Phase B).
+Positive-filter rollback for apply_patch_deploy (Phase C).
 
 This module implements the safe rollback primitive: NO `git reset --hard`,
 NO full-tree restore, NO force-push. The rollback iterates a positive list
@@ -9,10 +9,11 @@ previous main SHA — then forward-commits the result.
 Why positive-filter:
 
     Live-state paths (chats, memories, scheduler files, conversation files,
-    app data) are STRUCTURALLY ABSENT from the rollback's pathspec. They
-    cannot be touched because the rollback never names them. This is the
-    structural fix for the 2026-05-12 data-loss incident, where
-    `git reset --hard <backup-tag>` overwrote live state along with code.
+    app data) are absent from the effective rollback pathspec. The manifest's
+    positive `include:` list names the code surface, and its `exclude:` list is
+    appended as git negative pathspecs. This is the structural fix for the
+    2026-05-12 data-loss incident, where `git reset --hard <backup-tag>`
+    overwrote live state along with code.
 
 Why forward-commit:
 
@@ -35,12 +36,13 @@ Per-path handling:
     `--no-renames` keeps the matrix small (3 states instead of 5+) and the
     behavior obvious: every changed file is one of {add, modify, delete}.
 
-Phase B scope:
+Phase C scope:
 
-    The scope path list is HARDCODED in this module (see SCOPE_PATHS).
-    Phase C will move it to `codebase/safe-deploy/manifest.yaml` as a
-    positive `include:` list and read it from there. This module's API
-    accepts `scope_paths` as a parameter so the Phase C move is additive.
+    The default scope path list is read from `codebase/safe-deploy/manifest.yaml`:
+    `include:` supplies the positive scope roots, and `exclude:` is appended as
+    git negative pathspecs so live-state paths remain outside the effective
+    rollback scope. This module's API still accepts `scope_paths` as a parameter
+    for tests and emergency one-off calls.
 """
 
 from __future__ import annotations
@@ -51,37 +53,29 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Tuple
 
+try:
+    from .manifest import ManifestError, load_exclude_paths, load_include_paths
+except ImportError:
+    from manifest import ManifestError, load_exclude_paths, load_include_paths
+
 
 REPO_ROOT = Path("/home/debian/second_brain")
 
 
-# TODO Phase C: read this from codebase/safe-deploy/manifest.yaml's positive
-# `include:` list once that field is added. For now, hardcode the
-# directory-level scope so the rollback machinery exists end-to-end.
-#
-# These paths cover the deploy-scope as documented in manifest.yaml's
-# "Deploy-scope reference" section. Live-state paths (chats, memories,
-# scheduler files, PARA workspace, etc.) are deliberately NOT in this list
-# and are therefore structurally unreachable from the rollback.
-SCOPE_PATHS: Tuple[str, ...] = (
-    "interface/",
-    "codebase/",
-    ".claude/agents/",
-    ".claude/scripts/",
-    ".claude/skill_defs/",
-    ".claude/templates/",
-    ".claude/docs/",
-    "scripts/",
-    "docs/",
-    "tests/",
-    "requirements.txt",
-    "README.md",
-    ".gitignore",
-)
-
-
 class RollbackError(RuntimeError):
     """Anything that aborts the rollback flow."""
+
+
+def _git_exclude_pathspecs(paths: List[str]) -> List[str]:
+    """Convert manifest exclude patterns into git negative pathspecs."""
+    return [f":(exclude){path}" for path in paths]
+
+
+def load_default_scope_paths() -> List[str]:
+    """Load rollback's effective default pathspecs from the safe-deploy manifest."""
+    include_paths = load_include_paths()
+    exclude_paths = load_exclude_paths()
+    return [*include_paths, *_git_exclude_pathspecs(exclude_paths)]
 
 
 def _run_git(
@@ -163,8 +157,8 @@ def perform_rollback(
             rollback commit message for forensics.
         reason: the original deploy's reason text (echoed in the message).
         scope_paths: list of pathspecs to include in the rollback. Defaults
-            to SCOPE_PATHS (hardcoded for Phase B; Phase C moves this to
-            manifest.yaml).
+            to the manifest's `include:` list plus manifest `exclude:` entries
+            as git negative pathspecs.
 
     Returns:
         (ok, detail, changes) where:
@@ -186,7 +180,14 @@ def perform_rollback(
         - git restore with --worktree on broad pathspecs
         - any --force or --force-with-lease push
     """
-    paths = list(scope_paths) if scope_paths is not None else list(SCOPE_PATHS)
+    if scope_paths is not None:
+        paths = list(scope_paths)
+    else:
+        try:
+            paths = load_default_scope_paths()
+        except ManifestError as e:
+            return False, f"manifest scope load failed: {e}", []
+
     if not paths:
         return False, "scope_paths is empty — refusing to roll back anything", []
 
@@ -249,7 +250,7 @@ def perform_rollback(
         f"\n"
         f"Original deploy reason: {reason}\n"
         f"Rolled back {len(changes)} file(s) within positive-filter scope.\n"
-        f"Live-state paths were not touched (structurally absent from pathspec).\n"
+        f"Live-state paths were not touched (absent from effective pathspec).\n"
     )
     r = _run_git(["commit", "-m", commit_msg])
     if r.returncode != 0:

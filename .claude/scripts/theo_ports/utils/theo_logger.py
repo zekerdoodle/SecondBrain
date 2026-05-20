@@ -1,13 +1,19 @@
 import logging
 import sys
 
+
 class CliLogger:
+    _HANDLER_MARKER = "_theo_cli_logger_handler"
+
     def __init__(self):
         self.logger = logging.getLogger("theo_port")
         self.logger.setLevel(logging.INFO)
-        handler = logging.StreamHandler(sys.stdout)
-        handler.setFormatter(logging.Formatter('%(message)s'))
-        self.logger.addHandler(handler)
+        self.logger.propagate = False
+        if not any(getattr(handler, self._HANDLER_MARKER, False) for handler in self.logger.handlers):
+            handler = logging.StreamHandler(sys.stderr)
+            setattr(handler, self._HANDLER_MARKER, True)
+            handler.setFormatter(logging.Formatter('%(message)s'))
+            self.logger.addHandler(handler)
 
     def info(self, msg, *args):
         self.logger.info(msg % args if args else msg)
@@ -20,6 +26,7 @@ class CliLogger:
 
     def debug(self, msg, *args):
         # Mute debug by default to keep clean
-        pass 
+        pass
+
 
 cli_logger = CliLogger()
