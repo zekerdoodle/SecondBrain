@@ -88,6 +88,7 @@ async def main() -> None:
     parser.add_argument("--agent-name")
     parser.add_argument("--allowed-skills-json")
     parser.add_argument("--salon-id")
+    parser.add_argument("--restart-consumer", default="none")
     args = parser.parse_args()
 
     try:
@@ -137,8 +138,11 @@ async def main() -> None:
             raise ValueError(f"Unknown Second Brain tool: {name}")
         # In stdio MCP, stdout is the protocol stream. Tool-side prints and
         # legacy CLI logger output must go to stderr so they cannot corrupt JSON-RPC framing.
+        call_args = dict(arguments or {})
+        if name == "restart_server":
+            call_args["_restart_consumer"] = args.restart_consumer or "none"
         with contextlib.redirect_stdout(sys.stderr):
-            result = await by_name[name].handler(arguments or {})
+            result = await by_name[name].handler(call_args)
         return [TextContent(type="text", text=_as_text_content(result))]
 
     async with stdio_server() as (read_stream, write_stream):

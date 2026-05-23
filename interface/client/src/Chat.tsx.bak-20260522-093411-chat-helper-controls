@@ -3,7 +3,7 @@ import {
   Send, Loader2, Plus, History, ChevronLeft, Pencil, RotateCcw, X,
   File as FileIcon, Trash2, MessageCircle, Clock, Square, Search,
   Check, CheckCheck, AlertCircle, Crown, ImagePlus, Circle, Copy,
-  SmilePlus, Sparkles, Users, SlidersHorizontal
+  SmilePlus, Sparkles, Users
 } from 'lucide-react';
 import { promoteChatToSalon } from './salonApi';
 import { ChatSearch } from './ChatSearch';
@@ -12,7 +12,7 @@ import { useToast } from './Toast';
 import { useTabFlash } from './hooks/useTabFlash';
 import { useCodeBlockWrap } from './hooks/useCodeBlockWrap';
 import { useAgents } from './hooks/useAgents';
-import type { ChatMessage, ChatImageRef, ContentBlock, FormField, ToolCallMessage, ChatDisplaySegment, ChatReplyReference, ChatDisplayPayload, ChatHelperSettings } from './types';
+import type { ChatMessage, ChatImageRef, ContentBlock, FormField, ToolCallMessage, ChatDisplaySegment, ChatReplyReference, ChatDisplayPayload } from './types';
 import { clsx } from 'clsx';
 import MDEditor from '@uiw/react-md-editor';
 import { escapeNonHtmlTags } from './utils/escapeNonHtmlTags';
@@ -1149,7 +1149,6 @@ export const Chat: React.FC<ChatProps> = ({
   const [attachments, setAttachments] = useState<{ name: string, path: string }[]>([]);
   const [imageAttachments, setImageAttachments] = useState<(ChatImageRef & { previewUrl?: string })[]>([]);
   const [showSearch, setShowSearch] = useState(false);
-  const [helperPanelOpen, setHelperPanelOpen] = useState(false);
   const [showPromoteModal, setShowPromoteModal] = useState(false);
   const [promoting, setPromoting] = useState(false);
   const { showToast } = useToast();
@@ -1367,8 +1366,6 @@ export const Chat: React.FC<ChatProps> = ({
     streamPhase,
     toggleReaction,
     sendSlashCommand,
-    helperSettings,
-    updateHelperSettings,
   } = claude;
 
   // Keep ref updated
@@ -1461,37 +1458,6 @@ export const Chat: React.FC<ChatProps> = ({
   const effectiveAgentName: string | null = currentAgent || selectedAgentName || null;
   const selectedAgentObj = effectiveAgentName ? getAgent(effectiveAgentName) : undefined;
   const agentDisplayName = selectedAgentObj?.display_name || 'Select agent';
-
-  const saveHelperSettings = useCallback((next: ChatHelperSettings) => {
-    void updateHelperSettings(next);
-  }, [updateHelperSettings]);
-
-  const setTitlerPaused = useCallback((paused: boolean) => {
-    saveHelperSettings({
-      ...helperSettings,
-      titler: { paused },
-    });
-  }, [helperSettings, saveHelperSettings]);
-
-  const setMemoryMode = useCallback((mode: ChatHelperSettings['contextual_memory']['mode']) => {
-    saveHelperSettings({
-      ...helperSettings,
-      contextual_memory: {
-        ...helperSettings.contextual_memory,
-        mode,
-      },
-    });
-  }, [helperSettings, saveHelperSettings]);
-
-  const setManualMemoryQuery = useCallback((manualQuery: string) => {
-    saveHelperSettings({
-      ...helperSettings,
-      contextual_memory: {
-        ...helperSettings.contextual_memory,
-        manual_query: manualQuery,
-      },
-    });
-  }, [helperSettings, saveHelperSettings]);
 
   // Reset chess game when session changes (new chat or loading different chat)
   useEffect(() => {
@@ -3570,66 +3536,8 @@ export const Chat: React.FC<ChatProps> = ({
               onDragOver={handleDragOver}
               onDrop={handleDrop}
             >
-              {/* Chat helper settings */}
-              <div className="chat-helper-control relative flex-shrink-0">
-                <button
-                  type="button"
-                  onClick={() => setHelperPanelOpen(open => !open)}
-                  className={clsx(
-                    "p-2 rounded-lg hover:bg-[var(--border-color)] text-[var(--text-muted)] hover:text-[var(--text-secondary)] transition-colors",
-                    helperPanelOpen && "text-[var(--accent-primary)] bg-[var(--bg-secondary)]"
-                  )}
-                  title="Chat helpers"
-                  aria-expanded={helperPanelOpen}
-                >
-                  <SlidersHorizontal size={18} />
-                </button>
-
-                {helperPanelOpen && (
-                  <div className="chat-helper-popover">
-                    <div className="chat-helper-row">
-                      <span>Titler</span>
-                      <label className="chat-helper-toggle">
-                        <input
-                          type="checkbox"
-                          checked={helperSettings.titler.paused}
-                          onChange={(e) => setTitlerPaused(e.target.checked)}
-                        />
-                        <span>{helperSettings.titler.paused ? 'Paused' : 'On'}</span>
-                      </label>
-                    </div>
-
-                    <div className="chat-helper-row items-start">
-                      <span>Contextual Memory</span>
-                      <div className="chat-helper-segments" role="group" aria-label="Contextual memory mode">
-                        {(['auto', 'off', 'manual'] as const).map(mode => (
-                          <button
-                            key={mode}
-                            type="button"
-                            className={clsx("chat-helper-segment", helperSettings.contextual_memory.mode === mode && "active")}
-                            onClick={() => setMemoryMode(mode)}
-                          >
-                            {mode}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-
-                    {helperSettings.contextual_memory.mode === 'manual' && (
-                      <input
-                        className="chat-helper-query"
-                        value={helperSettings.contextual_memory.manual_query}
-                        onChange={(e) => setManualMemoryQuery(e.target.value)}
-                        placeholder="Manual contextual memory query"
-                      />
-                    )}
-                  </div>
-                )}
-              </div>
-
               {/* Image upload button */}
               <button
-                type="button"
                 onClick={() => imageInputRef.current?.click()}
                 className="p-2 rounded-lg hover:bg-[var(--border-color)] text-[var(--text-muted)] hover:text-[var(--text-secondary)] transition-colors flex-shrink-0"
                 title="Attach image (or paste with Ctrl+V)"

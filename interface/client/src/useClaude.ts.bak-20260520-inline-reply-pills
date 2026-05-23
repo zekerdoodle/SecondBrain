@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
-import type { ChatMessage, ChatImageRef, MessageStatus, ChatDisplayPayload, ChatHelperSettings } from './types';
+import type { ChatMessage, ChatImageRef, MessageStatus } from './types';
 import { WS_URL, API_URL } from './config';
 import { useVisibility, type VisibilityState } from './hooks/useVisibility';
 import { extractToolSummary } from './utils/toolDisplay';
@@ -8,29 +8,6 @@ import { applyTheme, loadThemePreferences } from './components/SettingsModal';
 const SESSION_KEY = 'second_brain_session_id';
 const PENDING_MSG_KEY = 'second_brain_pending_message';
 const LAST_SYNC_KEY = 'second_brain_last_sync';
-
-export const DEFAULT_CHAT_HELPER_SETTINGS: ChatHelperSettings = {
-  titler: { paused: false },
-  contextual_memory: { mode: 'auto', manual_query: '' },
-};
-
-export const normalizeHelperSettings = (value: unknown): ChatHelperSettings => {
-  const raw = value && typeof value === 'object' ? value as Record<string, any> : {};
-  const titler = raw.titler && typeof raw.titler === 'object' ? raw.titler as Record<string, any> : {};
-  const memoryRaw = raw.contextual_memory ?? raw.contextualMemory;
-  const memory = memoryRaw && typeof memoryRaw === 'object' ? memoryRaw as Record<string, any> : {};
-  const mode = memory.mode === 'off' || memory.mode === 'manual' ? memory.mode : 'auto';
-  const manualQuery = typeof memory.manual_query === 'string'
-    ? memory.manual_query
-    : typeof memory.manualQuery === 'string'
-      ? memory.manualQuery
-      : '';
-
-  return {
-    titler: { paused: Boolean(titler.paused ?? raw.titler_paused ?? false) },
-    contextual_memory: { mode, manual_query: manualQuery },
-  };
-};
 
 // Dedup state for broadcast events (broker + streaming handler + retry can send duplicates)
 let _lastThemeKey = '';
@@ -44,7 +21,6 @@ let _lastDeskTime = 0;
 interface QueuedMessage {
   id: string;
   content: string;
-  displayPayload?: ChatDisplayPayload;
   sessionId: string;
   timestamp: number;
   acknowledged: boolean;
@@ -58,7 +34,6 @@ export type QueuedMessageStatus = 'pending' | 'confirmed' | 'not_delivered';
 export interface UserQueuedMessage {
   id: string;
   content: string;
-  displayPayload?: ChatDisplayPayload;
   timestamp: number;
   status: QueuedMessageStatus;
 }
@@ -85,7 +60,7 @@ export interface TodoItem {
 
 export interface ClaudeHook {
   messages: ChatMessage[];
-  sendMessage: (text: string, images?: ChatImageRef[], displayPayload?: ChatDisplayPayload) => boolean;
+  sendMessage: (text: string, images?: ChatImageRef[]) => boolean;
   editMessage: (messageId: string, newContent: string) => boolean;
   updateFormMessage: (formId: string, submittedValues: Record<string, any>) => void;
   regenerateMessage: (messageId: string) => boolean;
@@ -105,7 +80,7 @@ export interface ClaudeHook {
   dismissQueuedMessage: (id: string) => void;
   // Multi-agent support
   currentAgent: string | null;
-  sendMessageWithAgent: (text: string, agent?: string, images?: ChatImageRef[], displayPayload?: ChatDisplayPayload) => boolean;
+  sendMessageWithAgent: (text: string, agent?: string, images?: ChatImageRef[]) => boolean;
   // Todo list from agents using TodoWrite
   todos: TodoItem[];
   // Stream phase for UI phrase selection
@@ -114,8 +89,6 @@ export interface ClaudeHook {
   toggleReaction: (messageId: string, emoji: string) => void;
   // Slash commands — runs server-side directly, bypasses agent
   sendSlashCommand: (command: string, args?: Record<string, any>) => boolean;
-  helperSettings: ChatHelperSettings;
-  updateHelperSettings: (settings: ChatHelperSettings) => Promise<void>;
 }
 
 export interface NotificationData {
@@ -200,8 +173,6 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
   const [streamPhase, setStreamPhase] = useState<StreamPhase>('idle');
   const streamPhaseRef = useRef<StreamPhase>('idle');
   const [currentAgent, setCurrentAgent] = useState<string | null>(null);
-  const [helperSettings, setHelperSettings] = useState<ChatHelperSettings>(() => normalizeHelperSettings(null));
-  const helperSettingsRef = useRef<ChatHelperSettings>(helperSettings);
   const [todos, setTodos] = useState<TodoItem[]>([]);
   // Derived: first active tool name for backward compat
   const toolName = activeTools.size > 0 ? Array.from(activeTools.values())[0].name : null;
@@ -216,7 +187,6 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
   useEffect(() => { enabledRef.current = enabled; }, [enabled]);
   const suppressGlobalEventsRef = useRef(suppressGlobalEvents);
   useEffect(() => { suppressGlobalEventsRef.current = suppressGlobalEvents; }, [suppressGlobalEvents]);
-  useEffect(() => { helperSettingsRef.current = helperSettings; }, [helperSettings]);
 
   // Visibility tracking for notifications
   const visibilityHeartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -433,7 +403,6 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
               if (awaitingStateResponse.current && msgs && Array.isArray(msgs)) {
                 awaitingStateResponse.current = false;
                 setMessages(msgs);
-                setHelperSettings(normalizeHelperSettings(data.helper_settings));
               }
               isUserInitiatedLoad.current = false;
             })
@@ -571,7 +540,6 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
             if (data.agent !== undefined) {
               setCurrentAgent(data.agent || null);
             }
-            setHelperSettings(normalizeHelperSettings(data.helper_settings));
 
             // Diagnostic logging: track block presence on state load for debugging
             if (data.messages && data.messages.length > 0) {
@@ -1637,47 +1605,55 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
     };
   }, [sendVisibilityUpdate, sessionId]);
 
-  // Tool-use stale state safety net
-  // Thinking/processing completion is owned by authoritative server events
-  // (done/interrupted/error/server idle/etc.), not a blind client timeout.
-  // Keep the old long timeout only for tool_use so abandoned tool UI can still
-  // clean itself up without hiding legitimate long model calls.
+  // FIX BUG 3: Processing state timeout safety net
+  // If we're in a processing state with no activity for 30 seconds after page load,
+  // it's likely a stale state from before a refresh/restart. Reset to idle.
+  // IMPORTANT: Don't timeout during active tool execution (tool_use status) because
+  // tools like bash can legitimately take a long time (e.g., waiting for user to review output).
   const processingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastActivityTime = useRef<number>(Date.now());
 
-  // Track activity for stream stall detection and tool-use timeout rescheduling.
+  // Track activity to prevent false timeouts during legitimate long operations
   useEffect(() => {
+    // Update activity timestamp whenever status changes
     lastActivityTime.current = Date.now();
   }, [status, statusText, toolName]);
 
   useEffect(() => {
-    // Clear any existing timeout whenever status changes.
+    // Clear any existing timeout
     if (processingTimeoutRef.current) {
       clearTimeout(processingTimeoutRef.current);
       processingTimeoutRef.current = null;
     }
 
-    if (status !== 'tool_use') {
+    // Don't set timeout if we're idle
+    if (status === 'idle') {
       return;
     }
 
-    const timeoutMs = 300000; // 5 minutes for stale tool-use UI only
+    // CRITICAL FIX: Use much longer timeout during tool_use because tools can legitimately
+    // take a long time (e.g., waiting for coding tool to finish, long bash commands, etc.)
+    // Only use short timeout for 'thinking' and 'processing' states which shouldn't stall.
+    const timeoutMs = status === 'tool_use' ? 300000 : 30000; // 5 minutes for tools, 30 seconds otherwise
 
+    // If we're in a processing state, set a timeout to auto-reset
+    // This only triggers if no 'done' event arrives (stale state scenario)
     const scheduleTimeout = () => {
       processingTimeoutRef.current = setTimeout(() => {
-        // Double-check that we haven't received any activity updates.
+        // Double-check that we haven't received any activity updates
         const timeSinceActivity = Date.now() - lastActivityTime.current;
         if (timeSinceActivity < timeoutMs - 1000) {
-          // Activity happened recently, don't reset yet - reschedule with remaining time.
+          // Activity happened recently, don't reset yet - reschedule with remaining time
           const remaining = timeoutMs - timeSinceActivity;
-          console.log(`Tool-use activity detected ${timeSinceActivity}ms ago, rescheduling timeout in ${remaining}ms`);
+          console.log(`Activity detected ${timeSinceActivity}ms ago, rescheduling timeout in ${remaining}ms`);
           processingTimeoutRef.current = setTimeout(() => {
             const recheck = Date.now() - lastActivityTime.current;
             if (recheck < timeoutMs - 1000) {
-              console.log(`Tool-use still active after reschedule (${recheck}ms ago), deferring`);
+              // Still active - let the next status change re-trigger
+              console.log(`Still active after reschedule (${recheck}ms ago), deferring`);
               return;
             }
-            console.log(`Tool-use timeout after reschedule - resetting to idle.`);
+            console.log(`Processing state timeout after reschedule - resetting to idle. Status was: ${status}`);
             setStatus('idle');
             setStatusText('');
             setActiveTools(new Map());
@@ -1689,11 +1665,11 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
           return;
         }
 
-        console.log(`Tool-use timeout after ${timeoutMs/1000}s - resetting to idle (likely stale state).`);
+        console.log(`Processing state timeout after ${timeoutMs/1000}s - resetting to idle (likely stale state). Status was: ${status}`);
         setStatus('idle');
         setStatusText('');
         setActiveTools(new Map());
-        // Finalize any streaming messages.
+        // Finalize any streaming messages
         setMessages(prev => prev.map(m =>
           m.isStreaming ? { ...m, isStreaming: false } : m
         ));
@@ -1707,7 +1683,7 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
         clearTimeout(processingTimeoutRef.current);
       }
     };
-  }, [status]); // Re-run when status changes - tool timeout resets on each status change
+  }, [status]); // Re-run when status changes - timeout resets on each status change
 
   // Stream phase management + stall detection
   // Phase transitions: idle → initializing (message sent) → streaming (first delta) → stalled (no delta for N seconds)
@@ -1755,7 +1731,7 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
   }, [streamPhase, status]);
 
   // Internal function to actually send a message (bypasses queue check)
-  const sendMessageInternal = useCallback((text: string, images?: ChatImageRef[], agent?: string, displayPayload?: ChatDisplayPayload): boolean => {
+  const sendMessageInternal = useCallback((text: string, images?: ChatImageRef[], agent?: string): boolean => {
     if (!ws.current || ws.current.readyState !== WebSocket.OPEN) {
       console.error("Cannot send message: WebSocket not open");
       return false;
@@ -1767,7 +1743,6 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
     const queuedMsg: QueuedMessage = {
       id: msgId,
       content: text,
-      displayPayload,
       sessionId,
       timestamp: Date.now(),
       acknowledged: false,
@@ -1781,7 +1756,6 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
       sessionStorage.setItem(pendingMsgKey, JSON.stringify({
         id: msgId,
         content: text,
-        displayPayload,
         sessionId,
         timestamp: Date.now(),
         status: 'pending'
@@ -1794,11 +1768,7 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
     setMessages(prev => [...prev, {
       id: msgId,
       role: 'user',
-      content: displayPayload?.displayContent ?? text,
-      displayContent: displayPayload?.displayContent,
-      displaySegments: displayPayload?.displaySegments,
-      replyReferences: displayPayload?.replyReferences,
-      agentContent: displayPayload ? text : undefined,
+      content: text,
       status: 'pending',
       timestamp: Date.now(),
       images: images,
@@ -1811,11 +1781,7 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
       action: 'message',
       sessionId,
       message: text,
-      displayMessage: displayPayload?.displayContent,
-      displaySegments: displayPayload?.displaySegments,
-      replyReferences: displayPayload?.replyReferences,
       msgId,
-      helperSettings: helperSettingsRef.current,
       // CRITICAL: Include preserveChatId to prevent server from creating duplicate files
       // If we have a valid session, tell the server to keep using that chat file
       preserveChatId: sessionId !== 'new' ? sessionId : undefined
@@ -1855,7 +1821,7 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
   }, [sessionId]);
 
   // Inject a message mid-stream (while assistant is working)
-  const injectMessage = useCallback((text: string, displayPayload?: ChatDisplayPayload): boolean => {
+  const injectMessage = useCallback((text: string): boolean => {
     if (!ws.current || ws.current.readyState !== WebSocket.OPEN) {
       console.error("Cannot inject message: WebSocket not open");
       return false;
@@ -1866,8 +1832,7 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
     // Add to queued messages for UI display
     const queuedMsg: UserQueuedMessage = {
       id: msgId,
-      content: displayPayload?.displayContent ?? text,
-      displayPayload,
+      content: text,
       timestamp: Date.now(),
       status: 'pending'
     };
@@ -1878,9 +1843,6 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
       action: 'inject',
       sessionId,
       message: text,
-      displayMessage: displayPayload?.displayContent,
-      displaySegments: displayPayload?.displaySegments,
-      replyReferences: displayPayload?.replyReferences,
       msgId
     }));
 
@@ -1889,24 +1851,24 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
   }, [sessionId]);
 
   // Send with explicit agent selection (for new chats with non-default agent)
-  const sendMessageWithAgent = useCallback((text: string, agent?: string, images?: ChatImageRef[], displayPayload?: ChatDisplayPayload): boolean => {
+  const sendMessageWithAgent = useCallback((text: string, agent?: string, images?: ChatImageRef[]): boolean => {
     if (status !== 'idle') {
-      return injectMessage(text, displayPayload);
+      return injectMessage(text);
     }
-    return sendMessageInternal(text, images, agent, displayPayload);
+    return sendMessageInternal(text, images, agent);
   }, [status, sendMessageInternal, injectMessage]);
 
   // Public send function - injects messages if assistant is busy, sends normally if idle
-  const sendMessage = useCallback((text: string, images?: ChatImageRef[], displayPayload?: ChatDisplayPayload): boolean => {
+  const sendMessage = useCallback((text: string, images?: ChatImageRef[]): boolean => {
     // If assistant is currently responding, inject the message into the stream
     // This allows mid-stream corrections/additions that assistant sees immediately
     // Note: images are not supported for injection (mid-stream)
     if (status !== 'idle') {
-      return injectMessage(text, displayPayload);
+      return injectMessage(text);
     }
 
     // Otherwise, send as a new conversation turn
-    return sendMessageInternal(text, images, undefined, displayPayload);
+    return sendMessageInternal(text, images);
   }, [status, sendMessageInternal, injectMessage]);
 
   // NOTE: We no longer queue messages for post-completion processing.
@@ -2030,7 +1992,6 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
     setActiveTools(new Map());
     setTodos([]);
     setCurrentAgent(null);
-    setHelperSettings(normalizeHelperSettings(null));
     pendingDeltas.current.clear();
     // Clear any queued/injected messages when starting a new chat
     setQueuedMessages([]);
@@ -2076,7 +2037,6 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
       setStatusText('');
       setActiveTools(new Map());
       setTodos([]);
-      setHelperSettings(normalizeHelperSettings(null));
       // Clear messages immediately to prevent flash of stale content from previous tab
       setMessages([]);
       setQueuedMessages([]);
@@ -2107,7 +2067,6 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
         const data = await res.json();
         setMessages(data.display_messages || data.messages || []);
         setCurrentAgent(data.agent || "character");
-        setHelperSettings(normalizeHelperSettings(data.helper_settings));
       }
     } catch (e) {
       console.error(e);
@@ -2115,27 +2074,6 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
       isUserInitiatedLoad.current = false;
     }
   }, []);
-
-  const updateHelperSettings = useCallback(async (settings: ChatHelperSettings): Promise<void> => {
-    const normalized = normalizeHelperSettings(settings);
-    setHelperSettings(normalized);
-    helperSettingsRef.current = normalized;
-
-    if (sessionId === 'new') return;
-
-    try {
-      const res = await fetch(`${API_URL}/chat/history/${sessionId}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ helper_settings: normalized }),
-      });
-      if (!res.ok) {
-        console.warn('Failed to persist helper settings:', await res.text());
-      }
-    } catch (e) {
-      console.warn('Failed to persist helper settings:', e);
-    }
-  }, [sessionId]);
 
   const deleteChat = useCallback(async (chatSessionId: string): Promise<boolean> => {
     try {
@@ -2248,7 +2186,5 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
     streamPhase,
     toggleReaction,
     sendSlashCommand,
-    helperSettings,
-    updateHelperSettings,
   };
 };

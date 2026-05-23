@@ -54,41 +54,12 @@ export interface ChatImageRef {
   originalName: string;
 }
 
-export interface ChatReplyReference {
-  id: string;
-  quote: string;
-  preview: string;
-  wordCount: number;
-}
-
-export type ChatDisplaySegment =
-  | { type: 'text'; text: string }
-  | { type: 'reply'; reference: ChatReplyReference };
-
-export interface ChatDisplayPayload {
-  displayContent: string;
-  displaySegments?: ChatDisplaySegment[];
-  replyReferences?: ChatReplyReference[];
-}
-
 export interface ChatTab {
   sessionId: string;
   title: string;
   agent?: string;
   hasUnread: boolean;
   lastActivity: number;
-}
-
-export type ContextualMemoryMode = 'auto' | 'off' | 'manual';
-
-export interface ChatHelperSettings {
-  titler: {
-    paused: boolean;
-  };
-  contextual_memory: {
-    mode: ContextualMemoryMode;
-    manual_query: string;
-  };
 }
 
 export interface ChatMessage {
@@ -117,67 +88,10 @@ export interface ChatMessage {
   injected?: boolean;
   // Image attachments
   images?: ChatImageRef[];
-  // User-message display metadata. content may differ from agentContent when
-  // the agent needs hidden context that should render as clean UI chips.
-  displayContent?: string;
-  displaySegments?: ChatDisplaySegment[];
-  replyReferences?: ChatReplyReference[];
-  agentContent?: string;
   // Block-based content (present on streaming/new assistant messages)
   blocks?: ContentBlock[];
   // Emoji reactions: { "👍": ["user", "character"], "🔥": ["character"] }
   reactions?: Record<string, string[]>;
-}
-
-
-// ---------------------------------------------------------------------------
-// Agent activity (running invocations + scheduled tasks)
-// ---------------------------------------------------------------------------
-
-export interface RunningAgentEntry {
-  id: string;
-  agent: string;
-  kind: string;
-  started_at: number;
-  task_summary: string;
-  source_chat_id?: string | null;
-  conversation_id?: string | null;
-  salon_id?: string | null;
-  scheduled_task_id?: string | null;
-  caller_agent?: string | null;
-}
-
-export interface UpcomingScheduledRun {
-  id?: string | null;
-  task_id?: string | null;
-  type: string;
-  agent?: string | null;
-  name?: string | null;
-  silent: boolean;
-  active: boolean;
-  schedule?: string | null;
-  next_run?: string | null;
-  due_now?: boolean;
-  last_run?: string | null;
-  prompt_summary: string;
-  project?: string | string[] | null;
-  room_id?: string | null;
-  error?: string | null;
-}
-
-export interface AgentActivityResponse {
-  generated_at: string;
-  running_agents: {
-    entries: RunningAgentEntry[] | null;
-    error?: string | null;
-    source?: string;
-    backend_pid?: number;
-  };
-  upcoming_scheduled_runs: {
-    entries: UpcomingScheduledRun[] | null;
-    error?: string | null;
-    source?: string;
-  };
 }
 
 // ---------------------------------------------------------------------------

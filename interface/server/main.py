@@ -816,9 +816,13 @@ async def _background_processing_idle_watcher():
 # The "session ended from their POV" moment is when they hit idle in a salon.
 # Character's idea — confirmed in the spec.
 
-# Per-(salon_id, agent) gate and last-fire bookkeeping.
+# Per-(salon_id, agent, frontier) overlap guard. Durable correctness lives in
+# each salon JSON's salon_bg_processing marker, not in this process-local set.
 _salon_bg_inflight: Set[str] = set()
-_salon_bg_last_fired: Dict[str, float] = {}  # key = f"{salon_id}:{agent}"
+
+
+def _salon_bg_inflight_key(salon_id: str, agent_name: str, frontier_key: str) -> str:
+    return f"{salon_id}:{agent_name}:{frontier_key}"
 
 
 def _format_salon_history_for_bg(
@@ -848,12 +852,16 @@ async def _run_salon_background_processing(
     salon_id: str,
     salon_title: str,
     agent_name: str,
+    frontier_key: str,
     messages: List[Dict[str, Any]],
     bg_prompt: str,
 ) -> None:
     """Run bg processing for one agent against a salon's history."""
-    key = f"{salon_id}:{agent_name}"
+    key = _salon_bg_inflight_key(salon_id, agent_name, frontier_key)
     _salon_bg_inflight.add(key)
+    finish_status = "failed"
+    result_status: Optional[str] = None
+    error: Optional[str] = None
     try:
         agents_dir = Path(ROOT_DIR) / ".claude" / "agents"
         if str(agents_dir) not in sys.path:
@@ -863,6 +871,8 @@ async def _run_salon_background_processing(
         translated = _format_salon_history_for_bg(messages, agent_name)
         history = _format_conversation_history(translated)
         if not history.strip():
+            finish_status = "skipped_empty_history"
+            logger.info(f"SALON_BG: No meaningful history for {agent_name} in salon {salon_id}, skipping")
             return
 
         combined_prompt = (
@@ -875,110 +885,159 @@ async def _run_salon_background_processing(
 
         logger.info(
             f"SALON_BG: Starting for {agent_name} in salon {salon_id} "
+            f"frontier={frontier_key} "
             f"({len(messages)} messages, {len(combined_prompt)} chars)"
         )
         result = await invoke_agent(
             name=agent_name,
             prompt=combined_prompt,
             mode="trust",
+            is_background_processing=True,
         )
-        status = result.get("status") if isinstance(result, dict) else getattr(result, "status", "unknown")
+        result_status = result.get("status") if isinstance(result, dict) else getattr(result, "status", "unknown")
+        finish_status = "completed"
         logger.info(
-            f"SALON_BG: Completed for {agent_name} in salon {salon_id} (status={status})"
+            f"SALON_BG: Completed for {agent_name} in salon {salon_id} "
+            f"frontier={frontier_key} (status={result_status})"
         )
     except Exception as e:
-        logger.error(f"SALON_BG: Failed for {agent_name} in salon {salon_id}: {e}")
+        error = str(e)
+        logger.error(f"SALON_BG: Failed for {agent_name} in salon {salon_id} frontier={frontier_key}: {e}")
     finally:
+        try:
+            mgr = _salon_manager_mod.get_manager()
+            if not mgr.finish_salon_bg_processing(
+                salon_id=salon_id,
+                agent_name=agent_name,
+                frontier_key=frontier_key,
+                status=finish_status,
+                result_status=result_status,
+                error=error,
+            ):
+                logger.info(
+                    f"SALON_BG: Finish marker skipped for {agent_name} in salon {salon_id} "
+                    f"frontier={frontier_key} (frontier changed or claim missing)"
+                )
+        except Exception as finish_error:
+            logger.error(
+                f"SALON_BG: Failed to finish marker for {agent_name} in salon {salon_id} "
+                f"frontier={frontier_key}: {finish_error}"
+            )
         _salon_bg_inflight.discard(key)
-        _salon_bg_last_fired[key] = time.time()
+
+
+async def _scan_salon_background_processing_once(now: Optional[float] = None) -> int:
+    """Scan salons once and schedule eligible durable bg-processing work."""
+    now = time.time() if now is None else now
+    scheduled = 0
+
+    try:
+        mgr = _salon_manager_mod.get_manager()
+    except Exception:
+        return 0
+
+    for summary in mgr.list_all(limit=10_000):
+        salon_id = summary.get("salon_id")
+        if not salon_id:
+            continue
+        # Don't bg-process locked salons (active dispatch in flight)
+        if summary.get("locked"):
+            continue
+
+        salon = mgr.load(salon_id)
+        if not salon:
+            continue
+
+        if not mgr.has_salon_bg_processing_schema(salon):
+            backfilled = mgr.backfill_salon_bg_processing_if_missing(salon_id)
+            logger.info(
+                f"SALON_BG: Backfilled {backfilled} pre-durable frontier(s) "
+                f"for salon {salon_id}"
+            )
+            salon = mgr.load(salon_id)
+            if not salon:
+                continue
+
+        messages = salon.get("messages") or []
+        if not messages:
+            continue
+
+        participants = list(salon.get("participants") or [])
+        title = salon.get("title") or "(untitled salon)"
+
+        for agent_name in participants:
+            if agent_name == "user":
+                continue
+
+            frontier = mgr.latest_agent_frontier(messages, agent_name)
+            if not frontier:
+                # Agent has never spoken in this salon, or the latest legacy
+                # message lacks enough data for a stable frontier.
+                continue
+
+            frontier_created_at = frontier.get("frontier_created_at")
+            if frontier_created_at is None:
+                logger.warning(
+                    f"SALON_BG: Skipping {agent_name} in salon {salon_id}: "
+                    f"frontier {frontier.get('frontier_key')} has no usable created_at"
+                )
+                continue
+
+            bg_config = _get_bg_config(agent_name)
+            if not bg_config or not bg_config["enabled"] or not bg_config["prompt"]:
+                continue
+
+            idle_seconds = now - float(frontier_created_at)
+            idle_threshold = bg_config["idle_timeout_minutes"] * 60
+            if idle_seconds < idle_threshold:
+                continue
+
+            frontier_key = frontier["frontier_key"]
+            key = _salon_bg_inflight_key(salon_id, agent_name, frontier_key)
+            if key in _salon_bg_inflight:
+                continue
+
+            claimed = mgr.claim_salon_bg_processing(
+                salon_id=salon_id,
+                agent_name=agent_name,
+                expected_frontier_key=frontier_key,
+                expected_frontier_message_id=frontier.get("frontier_message_id"),
+                expected_frontier_created_at=frontier_created_at,
+                expected_frontier_message_index=frontier.get("frontier_message_index"),
+            )
+            if not claimed:
+                continue
+
+            logger.info(
+                f"SALON_BG: Idle trigger — {agent_name} in salon "
+                f"{salon_id} frontier={frontier_key} (idle {idle_seconds:.0f}s, "
+                f"threshold {idle_threshold}s)"
+            )
+            asyncio.create_task(_run_salon_background_processing(
+                salon_id=salon_id,
+                salon_title=title,
+                agent_name=agent_name,
+                frontier_key=frontier_key,
+                messages=list(messages),
+                bg_prompt=bg_config["prompt"],
+            ))
+            scheduled += 1
+
+    return scheduled
 
 
 async def _salon_background_processing_watcher():
     """Periodic task: fire each agent's bg hook when they hit idle in a salon.
 
-    For each salon, for each participating agent (not zeke):
-    - Find the most recent message they sent. If they never spoke, skip.
-    - If they've been quiet for ≥ their `idle_timeout_minutes`, fire bg
-      processing — but only if we haven't already fired for this
-      (salon_id, agent) since their last spoken message.
+    For each salon, for each participating agent (not zeke), durable salon JSON
+    records whether that agent's latest own-message frontier has already been
+    claimed. Process-local state is only an overlap guard while a task runs.
     """
     logger.info("SALON_BG: Idle watcher started (5 min interval)")
     while True:
         try:
             await asyncio.sleep(300)  # 5 min — fine-grained enough; cheap
-
-            now = time.time()
-
-            # Lazy import — salon_manager only loads once per process
-            try:
-                mgr = _salon_manager_mod.get_manager()
-            except Exception:
-                continue
-
-            for summary in mgr.list_all(limit=10_000):
-                salon_id = summary.get("salon_id")
-                if not salon_id:
-                    continue
-                # Don't bg-process locked salons (active dispatch in flight)
-                if summary.get("locked"):
-                    continue
-
-                salon = mgr.load(salon_id)
-                if not salon:
-                    continue
-                messages = salon.get("messages") or []
-                if not messages:
-                    continue
-
-                participants = list(salon.get("participants") or [])
-                title = salon.get("title") or "(untitled salon)"
-
-                for agent_name in participants:
-                    if agent_name == "user":
-                        continue
-
-                    # Most recent message from this agent
-                    last_from_agent: Optional[float] = None
-                    for msg in reversed(messages):
-                        if msg.get("from") == agent_name:
-                            last_from_agent = msg.get("created_at")
-                            break
-                    if last_from_agent is None:
-                        # Agent has never spoken in this salon → no "session"
-                        # to wrap up.
-                        continue
-
-                    bg_config = _get_bg_config(agent_name)
-                    if not bg_config or not bg_config["enabled"] or not bg_config["prompt"]:
-                        continue
-
-                    idle_seconds = now - float(last_from_agent)
-                    idle_threshold = bg_config["idle_timeout_minutes"] * 60
-                    if idle_seconds < idle_threshold:
-                        continue
-
-                    key = f"{salon_id}:{agent_name}"
-                    if key in _salon_bg_inflight:
-                        continue
-                    # Don't re-fire for the same idle period — only fire
-                    # again if the agent has spoken since the last bg run.
-                    last_fired = _salon_bg_last_fired.get(key, 0.0)
-                    if last_fired >= float(last_from_agent):
-                        continue
-
-                    logger.info(
-                        f"SALON_BG: Idle trigger — {agent_name} in salon "
-                        f"{salon_id} (idle {idle_seconds:.0f}s, "
-                        f"threshold {idle_threshold}s)"
-                    )
-                    asyncio.create_task(_run_salon_background_processing(
-                        salon_id=salon_id,
-                        salon_title=title,
-                        agent_name=agent_name,
-                        messages=list(messages),
-                        bg_prompt=bg_config["prompt"],
-                    ))
-
+            await _scan_salon_background_processing_once()
         except asyncio.CancelledError:
             logger.info("SALON_BG: Idle watcher cancelled")
             break
@@ -1018,9 +1077,84 @@ class RegenerateRequest(BaseModel):
     message_id: str
 
 
+DEFAULT_HELPER_SETTINGS = {
+    "titler": {"paused": False},
+    "contextual_memory": {"mode": "auto", "manual_query": ""},
+}
+
+
+def _normalize_helper_settings(value: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Return the persisted per-chat helper settings shape."""
+    raw = value if isinstance(value, dict) else {}
+    raw_titler = raw.get("titler") if isinstance(raw.get("titler"), dict) else {}
+    raw_memory = raw.get("contextual_memory")
+    if not isinstance(raw_memory, dict):
+        raw_memory = raw.get("contextualMemory") if isinstance(raw.get("contextualMemory"), dict) else {}
+
+    mode = raw_memory.get("mode", "auto")
+    if mode not in {"auto", "off", "manual"}:
+        mode = "auto"
+
+    manual_query = raw_memory.get("manual_query")
+    if manual_query is None:
+        manual_query = raw_memory.get("manualQuery", "")
+
+    return {
+        "titler": {
+            "paused": bool(raw_titler.get("paused", raw.get("titler_paused", False))),
+        },
+        "contextual_memory": {
+            "mode": mode,
+            "manual_query": str(manual_query or ""),
+        },
+    }
+
+
+def _merge_helper_settings(
+    base: Optional[Dict[str, Any]],
+    updates: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Merge a partial helper-settings payload onto an existing chat value."""
+    merged = _normalize_helper_settings(base)
+    if not isinstance(updates, dict):
+        return merged
+
+    titler = updates.get("titler")
+    if isinstance(titler, dict) and "paused" in titler:
+        merged["titler"]["paused"] = bool(titler.get("paused"))
+    elif "titler_paused" in updates:
+        merged["titler"]["paused"] = bool(updates.get("titler_paused"))
+
+    memory = updates.get("contextual_memory")
+    if not isinstance(memory, dict):
+        memory = updates.get("contextualMemory") if isinstance(updates.get("contextualMemory"), dict) else None
+    if isinstance(memory, dict):
+        if "mode" in memory and memory.get("mode") in {"auto", "off", "manual"}:
+            merged["contextual_memory"]["mode"] = memory["mode"]
+        if "manual_query" in memory or "manualQuery" in memory:
+            manual_query = memory.get("manual_query", memory.get("manualQuery", ""))
+            merged["contextual_memory"]["manual_query"] = str(manual_query or "")
+
+    return _normalize_helper_settings(merged)
+
+
+def _extract_helper_settings_payload(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    if not isinstance(data, dict):
+        return None
+    payload = data.get("helper_settings")
+    if payload is None:
+        payload = data.get("helperSettings")
+    return payload if isinstance(payload, dict) else None
+
+
+def _chat_titler_paused(helper_settings: Optional[Dict[str, Any]]) -> bool:
+    return _normalize_helper_settings(helper_settings)["titler"]["paused"]
+
+
 class ChatUpdateRequest(BaseModel):
     title: Optional[str] = None
     messages: Optional[List[Dict[str, Any]]] = None
+    helper_settings: Optional[Dict[str, Any]] = None
 
 
 class UIConfigUpdateRequest(BaseModel):
@@ -1158,86 +1292,14 @@ def update_ui_config(req: UIConfigUpdateRequest):
 
 @app.post("/api/restart")
 def restart_server_endpoint(rebuild: bool = False, reason: str = None):
-    """Restart the Second Brain server via the restart script.
-
-    Args:
-        rebuild: If true, rebuild frontend before restart. Default: quick restart.
-        reason: Why the restart was triggered. Defaults to "Restart via Settings UI".
-    """
-    import subprocess as sp
-
-    if rebuild:
-        script = os.path.join(ROOT_DIR, "interface", "restart-server-full.sh")
-    else:
-        script = os.path.join(ROOT_DIR, "interface", "restart-server.sh")
-
-    if not os.path.exists(script):
-        raise HTTPException(status_code=500, detail=f"Restart script not found: {script}")
-
-    log_file = os.path.join(ROOT_DIR, ".claude", "server_restart.log")
-    restart_reason = reason or "Restart via Settings UI"
-
-    # Save server state for restart continuity
-    save_server_state()
-
-    # Save multi-session continuation marker so ALL active sessions resume after restart
-    # Source is "settings_ui" since this endpoint is called from the Settings modal
-    try:
-        SCRIPTS_DIR_LOCAL = os.path.join(ROOT_DIR, ".claude", "scripts")
-        if SCRIPTS_DIR_LOCAL not in sys.path:
-            sys.path.insert(0, SCRIPTS_DIR_LOCAL)
-        import restart_tool as rt
-
-        try:
-            running_invocations = running_agents.snapshot_all_sync()
-        except Exception:
-            running_invocations = []
-
-        # Build map of actively processing sessions -> agent names
-        all_active = {}
-        for sid in active_processing_sessions:
-            agent = "character"
-            try:
-                stored = chat_manager.load_chat(sid)
-                if stored and stored.get("agent"):
-                    agent = stored["agent"]
-            except Exception:
-                pass
-            all_active[sid] = agent
-
-        resumable_running = rt.filter_resumable_agent_invocations(running_invocations)
-        if all_active or resumable_running:
-            # Pick the first active session as the "trigger" session. Settings UI
-            # and agent-only restarts may have no chat trigger.
-            first_session = next(iter(all_active), None)
-            rt.save_continuation_state(
-                session_id=first_session,
-                reason=restart_reason,
-                source="settings_ui",
-                all_active_sessions=all_active,
-                running_invocations=resumable_running,
-            )
-            logger.info(
-                f"Saved continuation state for {len(all_active)} active session(s) "
-                f"and {len(resumable_running)} resumable agent invocation(s) before UI restart"
-            )
-    except Exception as e:
-        logger.warning(f"Could not save continuation state for UI restart: {e}")
-
-    # Launch the restart script in a detached subprocess (same pattern as MCP tool).
-    # sleep 1 gives the HTTP response time to flush before the server dies.
-    sp.Popen(
-        f"sleep 1 && bash {script} > {log_file} 2>&1",
-        shell=True,
-        start_new_session=True,
-        stdout=sp.DEVNULL,
-        stderr=sp.DEVNULL,
+    """Fail closed: direct UI/API restarts are disabled by restart canon."""
+    raise HTTPException(
+        status_code=410,
+        detail=(
+            "Direct UI/API restarts are disabled. Backend restarts are managed "
+            "through Patch's safe MCP restart path."
+        ),
     )
-
-    mode = "full (with frontend rebuild)" if rebuild else "quick (server only)"
-    logger.info(f"Server restart initiated via API — mode: {mode}, reason: {restart_reason}")
-
-    return {"status": "restarting", "mode": mode, "reason": restart_reason}
 
 
 # --- File API ---
@@ -1761,6 +1823,53 @@ class InternalAgentInvokeRequest(BaseModel):
     project: Optional[Any] = None
     conversation_id: Optional[str] = None
     caller_agent: Optional[str] = None
+
+
+
+@app.get("/api/agent-activity")
+async def get_agent_activity(upcoming_limit: int = 20):
+    """Public read-only agent activity surface for the Settings UI."""
+    running_entries = None
+    running_error = None
+    scheduled_entries = None
+    scheduled_error = None
+
+    try:
+        # This public endpoint runs in the backend process, so list_all() is the
+        # same backend-owned registry exposed internally to restart guards.
+        running_entries = await running_agents.list_all()
+    except Exception as e:
+        logger.warning(f"Failed to read running_agents for UI activity: {e}")
+        running_error = str(e)
+
+    try:
+        if not scheduler_tool or not hasattr(scheduler_tool, "list_upcoming_runs"):
+            scheduled_error = "Scheduled task reader unavailable"
+        else:
+            limit = max(1, min(int(upcoming_limit), 50))
+            scheduled_entries = await asyncio.to_thread(
+                scheduler_tool.list_upcoming_runs,
+                limit=limit,
+                include_inactive=False,
+            )
+    except Exception as e:
+        logger.warning(f"Failed to read upcoming scheduled runs for UI activity: {e}")
+        scheduled_error = str(e)
+
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "running_agents": {
+            "entries": running_entries,
+            "error": running_error,
+            "source": "backend",
+            "backend_pid": os.getpid(),
+        },
+        "upcoming_scheduled_runs": {
+            "entries": scheduled_entries,
+            "error": scheduled_error,
+            "source": "scheduler_tool",
+        },
+    }
 
 
 @app.get("/api/internal/running-agents")
@@ -2436,6 +2545,7 @@ def get_chat_history(session_id: str):
     # flat messages during fallback loads or restart continuation recovery.
     response_data = dict(data)
     response_data["display_messages"] = _messages_for_display(data, session_id)
+    response_data["helper_settings"] = _normalize_helper_settings(data.get("helper_settings"))
     return response_data
 
 
@@ -2463,6 +2573,8 @@ def update_chat(session_id: str, req: ChatUpdateRequest):
         existing["title"] = req.title
     if req.messages is not None:
         existing["messages"] = req.messages
+    if req.helper_settings is not None:
+        existing["helper_settings"] = _merge_helper_settings(existing.get("helper_settings"), req.helper_settings)
 
     chat_manager.save_chat(session_id, existing)
     return {"status": "ok"}
@@ -3497,6 +3609,24 @@ _PENDING_RESTART_FILE = os.path.join(ROOT_DIR, ".claude", "pending_restart.json"
 _PENDING_RESTART_WAIT_SECONDS = 30.0
 _PENDING_RESTART_POLL_SECONDS = 0.25
 _PENDING_RESTART_MTIME_GRACE_SECONDS = 2.0
+_RESTART_FAIL_CLOSED_TEXT = "restart_server cannot safely restart from this invocation context"
+_RESTART_NO_MARKER_TEXT = "No pending restart or continuation marker was written"
+
+
+def _restart_tool_result_allows_finalizer(tool_output: Any, is_error: bool) -> bool:
+    """Return True only when restart_server produced a restart marker contract.
+
+    The stdio MCP bridge can surface a tool's error-shaped text as a normal
+    Codex tool_end event. Do not let the streaming finalizer infer a valid
+    restart from the known fail-closed restart_server response.
+    """
+    if is_error:
+        return False
+    text = str(tool_output or "")
+    return not (
+        _RESTART_FAIL_CLOSED_TEXT in text
+        or _RESTART_NO_MARKER_TEXT in text
+    )
 
 
 async def _load_fresh_pending_restart_config(trigger_time: float) -> Dict[str, Any]:
@@ -4493,6 +4623,7 @@ async def handle_subscribe(websocket: WebSocket, data: dict):
             "isProcessing": False,
             "status": "idle",
             "agent": None,
+            "helper_settings": _normalize_helper_settings(None),
             "pending_form": None,
             "todos": None,
         })
@@ -4575,6 +4706,9 @@ async def handle_subscribe(websocket: WebSocket, data: dict):
             if chat_data:
                 cumulative_usage = chat_data.get("cumulative_usage", cumulative_usage)
                 chat_agent = chat_data.get("agent")
+                state_response["helper_settings"] = _normalize_helper_settings(chat_data.get("helper_settings"))
+            else:
+                state_response["helper_settings"] = _normalize_helper_settings(None)
             state_response["cumulative_usage"] = cumulative_usage
             state_response["agent"] = chat_agent
             logger.info(f"SUBSCRIBE: Using block model snapshot for {effective_session_id} - {len(state_response['messages'])} messages, status={state_response['status']}")
@@ -4619,6 +4753,7 @@ async def handle_subscribe(websocket: WebSocket, data: dict):
                 "isProcessing": False,
                 "status": "idle",
                 "agent": chat_agent,
+                "helper_settings": _normalize_helper_settings(chat_data.get("helper_settings") if chat_data else None),
                 "cumulative_usage": cumulative_usage,
                 "pending_form": None,
                 "todos": None,
@@ -4632,6 +4767,7 @@ async def handle_subscribe(websocket: WebSocket, data: dict):
             "isProcessing": False,
             "status": "idle",
             "agent": None,
+            "helper_settings": _normalize_helper_settings(None),
             "cumulative_usage": cumulative_usage,
             "pending_form": None,
             "todos": None,
@@ -4722,6 +4858,14 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
     # This ensures consistency between the state registered before task start and the task itself
     early_chat_id = data.get("_early_chat_id")
 
+    incoming_helper_settings = _extract_helper_settings_payload(data)
+    settings_chat_id = early_chat_id or preserve_chat_id or (session_id if session_id != "new" else None)
+    settings_source = chat_manager.load_chat(settings_chat_id) if settings_chat_id else None
+    helper_settings = _merge_helper_settings(
+        settings_source.get("helper_settings") if settings_source else None,
+        incoming_helper_settings,
+    )
+
     # Track which session is currently being processed
     # Priority: early_chat_id (pre-generated) > preserve_chat_id > session_id
     streaming_state_key = early_chat_id or preserve_chat_id or session_id
@@ -4808,6 +4952,11 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
                 if agent_name:
                     logger.info(f"AGENT: Loaded agent '{agent_name}' from stored chat {stored_chat_id_for_agent}")
 
+    user_agent_content = data.get("message", "")
+    user_display_content = data.get("displayMessage") or user_agent_content
+    user_display_segments = data.get("displaySegments") if isinstance(data.get("displaySegments"), list) else None
+    user_reply_references = data.get("replyReferences") if isinstance(data.get("replyReferences"), list) else None
+
     # Add user message - use frontend's ID if provided, otherwise generate one
     # Skip for system continuations (restart) - those shouldn't appear in chat history
     if not is_system_continuation:
@@ -4844,19 +4993,29 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
             # Only add message if it's not a duplicate
             if not skip_message_add:
                 msg_images = data.get("images")
-                conv.add_message("user", data.get("message", ""), user_msg_id, images=msg_images)  # Store original, not context-wrapped
+                conv.add_message("user", user_agent_content, user_msg_id, images=msg_images)  # Store agent-facing context
 
-                # Also add user message to streaming state for display_messages persistence
-                # This ensures display_messages has the complete conversation (user + assistant w/ blocks)
+                display_user_msg = dict(conv.messages[-1])
+                display_user_msg["content"] = user_display_content
+                if user_display_content != user_agent_content:
+                    display_user_msg["agentContent"] = user_agent_content
+                    display_user_msg["displayContent"] = user_display_content
+                if user_display_segments is not None:
+                    display_user_msg["displaySegments"] = user_display_segments
+                if user_reply_references is not None:
+                    display_user_msg["replyReferences"] = user_reply_references
+
+                # Also add clean user message to streaming state for display_messages persistence.
+                # The flat messages array remains agent-facing; display_messages remains UI-facing.
                 _ss_for_user_msg = session_streaming_states.get(streaming_state_key)
                 if _ss_for_user_msg:
-                    if _display_message_already_present(_ss_for_user_msg.messages, conv.messages[-1]):
+                    if _display_message_already_present(_ss_for_user_msg.messages, display_user_msg):
                         logger.warning(
                             f"DISPLAY_MSGS: Skipped duplicate user message {user_msg_id} "
                             f"in streaming state for {streaming_state_key}"
                         )
                     else:
-                        _ss_for_user_msg.messages.append(conv.messages[-1])
+                        _ss_for_user_msg.messages.append(display_user_msg)
 
             # If this is a form submission, mark the corresponding form message as submitted
             user_msg_text = data.get("message", "")
@@ -4879,19 +5038,24 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
                                 logger.info(f"Marked form {submitted_form_id} as submitted in SS messages")
                                 break
 
-            title = existing.get("title") if existing else chat_manager.generate_title(data.get("message", ""))
+            title = existing.get("title") if existing else chat_manager.generate_title(user_display_content)
             early_save_data = {
                 "title": title,
                 "sessionId": early_save_id,
                 "messages": conv.messages,
-                "cumulative_usage": conv.cumulative_usage
+                "cumulative_usage": conv.cumulative_usage,
+                "helper_settings": helper_settings
             }
             if agent_name:
                 early_save_data["agent"] = agent_name
-            # Preserve display_messages from existing chat if present (early save
-            # only updates flat messages; wiping display_messages would lose block
-            # rendering data for prior turns)
-            if existing and existing.get("display_messages"):
+            # Preserve display_messages from existing chat and append the clean
+            # user message immediately so recovery never falls back to raw agent context.
+            if not skip_message_add:
+                existing_display_messages = list(existing.get("display_messages") or []) if existing else []
+                if not _display_message_already_present(existing_display_messages, display_user_msg):
+                    existing_display_messages.append(display_user_msg)
+                early_save_data["display_messages"] = existing_display_messages
+            elif existing and existing.get("display_messages"):
                 early_save_data["display_messages"] = existing["display_messages"]
             chat_manager.save_chat(early_save_id, early_save_data)
             logger.info(f"EARLY_SAVE: Saved user message to {early_save_id}, agent={agent_name}")
@@ -4920,10 +5084,17 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
             accepted_msg = {
                 "id": user_msg_id,
                 "role": "user",
-                "content": data.get("message", ""),
+                "content": user_display_content,
                 "timestamp": time.time(),
                 "status": "confirmed"
             }
+            if user_display_content != user_agent_content:
+                accepted_msg["displayContent"] = user_display_content
+                accepted_msg["agentContent"] = user_agent_content
+            if user_display_segments is not None:
+                accepted_msg["displaySegments"] = user_display_segments
+            if user_reply_references is not None:
+                accepted_msg["replyReferences"] = user_reply_references
             if data.get("images"):
                 accepted_msg["images"] = data["images"]
             await broadcast_to_session(early_save_id, {
@@ -4943,7 +5114,7 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
                 logger.info(f"BROADCAST: chat_created for new chat {early_save_id}")
 
             # ========== @MENTION DISPATCH: Scan user message for @agent mentions ==========
-            user_msg_text = data.get("message", "")
+            user_msg_text = user_display_content
             valid_agents = _get_valid_agent_names()
             # Don't let users @mention the primary agent of this chat (they're already responding)
             if agent_name and agent_name in valid_agents:
@@ -4969,36 +5140,37 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
             # so it updates the UI independently of the main turn lifecycle.
             if not skip_message_add:
                 try:
-                    from chat_titler import should_retitle
-
-                    # Increment exchange count (previously done at end-of-turn; moving up
-                    # is semantically safe — bg_processing at end-of-turn sees the same value,
-                    # and the only case that differs is failed/errored turns, where counting
-                    # the exchange is still correct since the user message was sent).
+                    # Increment exchange count even when the titler is paused so unpausing
+                    # resumes the normal cadence without a catch-up title run.
                     conv.exchange_count += 1
                     exchange_count = conv.exchange_count
 
-                    # Get current title (existing is already loaded above)
-                    current_title = existing.get("title") if existing else None
+                    if _chat_titler_paused(helper_settings):
+                        logger.info(f"Titler: paused for chat {early_save_id}; skipping title trigger")
+                    else:
+                        from chat_titler import should_retitle
 
-                    # First exchange: always generate title based on user intent.
-                    # Every N exchanges: check if title should update.
-                    if exchange_count == 1:
-                        logger.info(f"Titler: First exchange, generating initial title (early-fire)")
-                        asyncio.create_task(_run_titler_background(
-                            early_save_id,
-                            list(conv.messages),
-                            None,
-                            is_retitle=False
-                        ))
-                    elif should_retitle(exchange_count, current_title):
-                        logger.info(f"Titler: Exchange {exchange_count}, checking for title update (early-fire)")
-                        asyncio.create_task(_run_titler_background(
-                            early_save_id,
-                            list(conv.messages),
-                            current_title,
-                            is_retitle=True
-                        ))
+                        # Get current title (existing is already loaded above)
+                        current_title = existing.get("title") if existing else None
+
+                        # First exchange: always generate title based on user intent.
+                        # Every N exchanges: check if title should update.
+                        if exchange_count == 1:
+                            logger.info(f"Titler: First exchange, generating initial title (early-fire)")
+                            asyncio.create_task(_run_titler_background(
+                                early_save_id,
+                                list(conv.messages),
+                                None,
+                                is_retitle=False
+                            ))
+                        elif should_retitle(exchange_count, current_title):
+                            logger.info(f"Titler: Exchange {exchange_count}, checking for title update (early-fire)")
+                            asyncio.create_task(_run_titler_background(
+                                early_save_id,
+                                list(conv.messages),
+                                current_title,
+                                is_retitle=True
+                            ))
                 except Exception as e:
                     logger.debug(f"Titler trigger failed: {e}")
 
@@ -5053,7 +5225,13 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
 
     # Create wrapper and run
     chat_id_for_wrapper = early_chat_id or preserve_chat_id or (session_id if session_id != "new" else None)
-    claude = ClaudeWrapper(session_id=effective_session_id, cwd=ROOT_DIR, chat_id=chat_id_for_wrapper, chat_messages=conv.messages)
+    claude = ClaudeWrapper(
+        session_id=effective_session_id,
+        cwd=ROOT_DIR,
+        chat_id=chat_id_for_wrapper,
+        chat_messages=conv.messages,
+        restart_consumer="main_streaming_finalizer",
+    )
 
     # Track the active wrapper for interrupt capability
     wrapper_key = streaming_state_key or effective_session_id
@@ -5162,7 +5340,13 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
                 pass
 
         if agent_config:
-            prompt_gen = claude.run_chat(prompt_for_sdk, agent_config=agent_config, conversation_history=conv.messages, session_id=chat_id_for_wrapper)
+            prompt_gen = claude.run_chat(
+                prompt_for_sdk,
+                agent_config=agent_config,
+                conversation_history=conv.messages,
+                session_id=chat_id_for_wrapper,
+                helper_settings=helper_settings,
+            )
         else:
             raise RuntimeError("No agent config available and no default agent found")
 
@@ -5699,11 +5883,17 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
                 _restart_tool_name = tool_name or ""
                 if _restart_tool_name.startswith("mcp__brain__"):
                     _restart_tool_name = _restart_tool_name[len("mcp__brain__"):]
-                if _restart_tool_name == "restart_server" and not is_error:
-                    logger.info("RESTART: restart_server tool completed — halting stream for clean save")
-                    restart_after_save = True
-                    restart_trigger_time = time.time()
-                    break
+                if _restart_tool_name == "restart_server":
+                    if _restart_tool_result_allows_finalizer(tool_end_output, is_error):
+                        logger.info("RESTART: restart_server tool completed — halting stream for clean save")
+                        restart_after_save = True
+                        restart_trigger_time = time.time()
+                        break
+                    logger.warning(
+                        "RESTART: restart_server tool_end did not establish a restart "
+                        "marker contract; continuing stream (is_error=%s)",
+                        is_error,
+                    )
 
             elif event_type == "error":
                 had_error = True
@@ -5853,7 +6043,8 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
         "title": title,
         "sessionId": chat_id_for_storage,
         "messages": conv.messages,
-        "cumulative_usage": conv.cumulative_usage
+        "cumulative_usage": conv.cumulative_usage,
+        "helper_settings": helper_settings
     }
     if agent_name:
         final_save_data["agent"] = agent_name
@@ -6529,6 +6720,9 @@ async def handle_inject(websocket: WebSocket, data: dict):
     """
     session_id = data.get("sessionId")
     content = data.get("message", "")
+    display_content = data.get("displayMessage") or content
+    display_segments = data.get("displaySegments") if isinstance(data.get("displaySegments"), list) else None
+    reply_references = data.get("replyReferences") if isinstance(data.get("replyReferences"), list) else None
     msg_id = data.get("msgId") or str(uuid.uuid4())
 
     if not content:
@@ -6596,10 +6790,17 @@ async def handle_inject(websocket: WebSocket, data: dict):
             injected_msg = {
                 "id": msg_id,
                 "role": "user",
-                "content": content,
+                "content": display_content,
                 "injected": True,
                 "timestamp": time.time()
             }
+            if display_content != content:
+                injected_msg["displayContent"] = display_content
+                injected_msg["agentContent"] = content
+            if display_segments is not None:
+                injected_msg["displaySegments"] = display_segments
+            if reply_references is not None:
+                injected_msg["replyReferences"] = reply_references
             # Insert AFTER the last assistant message (the one currently streaming),
             # not at the end of the array. This ensures display_messages on disk
             # has the correct conversation order when saved at turn completion.
@@ -6615,13 +6816,7 @@ async def handle_inject(websocket: WebSocket, data: dict):
         await broadcast_to_session(effective_session_id, {
             "type": "message_injected",
             "sessionId": effective_session_id,
-            "message": {
-                "id": msg_id,
-                "role": "user",
-                "content": content,
-                "injected": True,
-                "timestamp": time.time()
-            }
+            "message": injected_msg
         })
 
         # Also send direct acknowledgment to the sending client

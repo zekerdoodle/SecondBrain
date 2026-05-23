@@ -1,10 +1,11 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { X, Sun, Moon, Check, Palette, FolderX, Plus, Settings, FileEdit, Type, RefreshCw, Monitor, Pencil } from 'lucide-react';
+import { X, Sun, Moon, Check, Palette, FolderX, Plus, Settings, FileEdit, Type, Monitor, Pencil, Activity } from 'lucide-react';
 import { clsx } from 'clsx';
 import { API_URL } from '../config';
 import ColorPicker from './ColorPicker';
 import { CustomThemeEditor } from './CustomThemeEditor';
+import { AgentActivityPanel } from './AgentActivityPanel';
 
 // Font options for each category
 const UI_FONTS = [
@@ -223,7 +224,7 @@ export const THEME_PRESETS: ThemePreset[] = [
 export type { ThemePreset, ThemePresetColors };
 
 export type ThemeMode = 'light' | 'dark' | 'system';
-export type SettingsTab = 'appearance' | 'typography' | 'exclusions' | 'editor' | 'system';
+export type SettingsTab = 'appearance' | 'typography' | 'exclusions' | 'editor' | 'activity' | 'system';
 
 export interface ThemePreferences {
   mode: ThemeMode;
@@ -506,11 +507,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
   const [newFile, setNewFile] = useState('');
   const [newPattern, setNewPattern] = useState('');
 
-  // Restart state
-  const [restartConfirm, setRestartConfirm] = useState(false);
-  const [restartLoading, setRestartLoading] = useState(false);
-  const [restartStatus, setRestartStatus] = useState<'idle' | 'restarting' | 'error'>('idle');
-  const [restartError, setRestartError] = useState<string | null>(null);
 
   // Custom theme editor state
   const [editorOpen, setEditorOpen] = useState(false);
@@ -687,25 +683,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
     }
   }, [uiConfig, onExclusionsChanged, onDefaultEditorFileChanged, originalDefaultFile]);
 
-  const handleRestart = useCallback(async (rebuild: boolean = false) => {
-    setRestartLoading(true);
-    setRestartError(null);
-    setRestartStatus('idle');
-    try {
-      const res = await fetch(`${API_URL}/restart?rebuild=${rebuild}`, { method: 'POST' });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({ detail: 'Unknown error' }));
-        throw new Error(data.detail || 'Failed to restart server');
-      }
-      setRestartStatus('restarting');
-      setRestartConfirm(false);
-    } catch (e) {
-      setRestartError(e instanceof Error ? e.message : 'Failed to restart server');
-      setRestartStatus('error');
-    } finally {
-      setRestartLoading(false);
-    }
-  }, []);
 
   const setMode = (mode: ThemeMode) => {
     setPreferences(prev => ({ ...prev, mode }));
@@ -790,7 +767,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
       />
 
       {/* Modal - full screen on mobile, centered card on desktop */}
-      <div className="relative bg-[var(--bg-secondary)] shadow-xl w-full animate-modal-content border border-[var(--border-color)] flex flex-col md:rounded-xl md:max-w-xl md:mx-4 md:max-h-[85vh] max-h-[100dvh] h-full md:h-auto">
+      <div className="relative bg-[var(--bg-secondary)] shadow-xl w-full animate-modal-content border border-[var(--border-color)] flex flex-col md:rounded-xl md:max-w-3xl md:mx-4 md:max-h-[85vh] max-h-[100dvh] h-full md:h-auto">
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--border-color)] shrink-0">
           <div className="flex items-center gap-2">
@@ -812,13 +789,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
             { id: 'typography' as const, icon: Type, label: 'Typography' },
             { id: 'exclusions' as const, icon: FolderX, label: 'Exclusions' },
             { id: 'editor' as const, icon: FileEdit, label: 'Editor' },
+            { id: 'activity' as const, icon: Activity, label: 'Activity' },
             { id: 'system' as const, icon: Monitor, label: 'System' },
           ]).map(({ id, icon: Icon, label }) => (
             <button
               key={id}
               onClick={() => setActiveTab(id)}
               className={clsx(
-                "flex-1 min-w-0 py-3.5 md:py-3 px-3 md:px-4 text-sm font-medium transition-colors relative touch-manipulation",
+                "flex-1 min-w-[3.5rem] md:min-w-max whitespace-nowrap py-3.5 md:py-3 px-3 md:px-4 text-sm font-medium transition-colors relative touch-manipulation",
                 activeTab === id
                   ? "text-[var(--text-primary)]"
                   : "text-[var(--text-secondary)] hover:text-[var(--text-primary)] active:text-[var(--text-primary)]"
@@ -1392,84 +1370,23 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
             </>
           )}
 
+          {activeTab === 'activity' && (
+            <AgentActivityPanel accentColor={preferences.accentColor} />
+          )}
+
           {activeTab === 'system' && (
             <>
               <p className="text-sm text-[var(--text-secondary)]">
-                Server management and system controls.
+                Backend restart controls are managed outside Settings.
               </p>
 
-              {/* Server Restart */}
               <div>
                 <label className="block text-sm font-medium text-[var(--text-primary)] mb-2">
-                  Server Restart
+                  Managed Restart Policy
                 </label>
-                <p className="text-xs text-[var(--text-muted)] mb-4">
-                  Restart the backend server to apply configuration changes, reload MCP tools, or recover from errors. The page will automatically reconnect.
+                <p className="text-xs text-[var(--text-muted)]">
+                  Patch handles backend restarts through the safe MCP restart path. Restarts may wait for active agents to finish before the server is reloaded.
                 </p>
-
-                {restartStatus === 'restarting' && (
-                  <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-600 dark:text-amber-400 text-sm mb-4 flex items-center gap-2">
-                    <RefreshCw size={16} className="animate-spin" />
-                    Server is restarting... The page will reconnect automatically.
-                  </div>
-                )}
-
-                {restartError && (
-                  <div className="p-3 rounded-lg bg-red-500/10 border border-red-500/20 text-red-500 text-sm mb-4">
-                    {restartError}
-                  </div>
-                )}
-
-                {!restartConfirm ? (
-                  <div className="flex gap-3">
-                    <button
-                      onClick={() => setRestartConfirm(true)}
-                      disabled={restartLoading || restartStatus === 'restarting'}
-                      className="flex items-center gap-2 px-4 py-2.5 text-sm font-medium rounded-lg border border-[var(--border-color)] bg-[var(--bg-tertiary)] text-[var(--text-primary)] hover:bg-[var(--border-color)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed touch-manipulation active:scale-95"
-                    >
-                      <RefreshCw size={16} />
-                      Restart Server
-                    </button>
-                  </div>
-                ) : (
-                  <div className="p-4 rounded-xl border border-amber-500/30 bg-amber-500/5 space-y-3">
-                    <p className="text-sm text-[var(--text-primary)] font-medium">
-                      Are you sure? This will briefly disconnect all clients.
-                    </p>
-                    <div className="flex gap-2">
-                      <button
-                        onClick={() => handleRestart(false)}
-                        disabled={restartLoading}
-                        className="flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed touch-manipulation active:scale-95"
-                        style={{ backgroundColor: preferences.accentColor }}
-                      >
-                        {restartLoading ? (
-                          <RefreshCw size={14} className="animate-spin" />
-                        ) : (
-                          <RefreshCw size={14} />
-                        )}
-                        Quick Restart
-                      </button>
-                      <button
-                        onClick={() => handleRestart(true)}
-                        disabled={restartLoading}
-                        className="flex items-center gap-2 px-4 py-2.5 text-sm font-medium rounded-lg border border-[var(--border-color)] bg-[var(--bg-tertiary)] text-[var(--text-primary)] hover:bg-[var(--border-color)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed touch-manipulation active:scale-95"
-                      >
-                        Full Rebuild
-                      </button>
-                      <button
-                        onClick={() => setRestartConfirm(false)}
-                        disabled={restartLoading}
-                        className="px-4 py-2.5 text-sm font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors touch-manipulation"
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                    <p className="text-xs text-[var(--text-muted)]">
-                      <strong>Quick Restart</strong> restarts the Python server only (~5s). <strong>Full Rebuild</strong> also rebuilds the frontend (~30s).
-                    </p>
-                  </div>
-                )}
               </div>
             </>
           )}
@@ -1512,7 +1429,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
                 Done
               </button>
             </>
-          ) : activeTab === 'system' ? (
+          ) : activeTab === 'system' || activeTab === 'activity' ? (
             <>
               <div />
               <button

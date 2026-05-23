@@ -202,9 +202,6 @@ html, body, #root {
 
 /* Chat-specific prose - use chat font, not editor font */
 .chat-markdown.prose {
-  max-width: 100%;
-  min-width: 0;
-  overflow-wrap: anywhere;
   font-family: var(--font-chat);
   font-size: var(--font-size-base);
 }
@@ -665,9 +662,6 @@ html, body, #root {
 
 /* Chat markdown - theme-aware overrides for MDEditor.Markdown in chat messages */
 .chat-markdown .wmde-markdown {
-  max-width: 100%;
-  min-width: 0;
-  overflow-wrap: anywhere;
   background-color: transparent !important;
   color: var(--text-primary) !important;
 }
@@ -898,118 +892,25 @@ html, body, #root {
 }
 
 
-.chat-helper-popover {
-  position: absolute;
-  left: 0;
-  bottom: calc(100% + 10px);
-  z-index: 60;
-  width: min(320px, calc(100vw - 32px));
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 12px;
-  border: 1px solid var(--border-color);
-  border-radius: 8px;
-  background: var(--bg-secondary);
-  color: var(--text-primary);
-  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.24);
-}
-
-.chat-helper-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  min-width: 0;
-  font-size: 12px;
-  color: var(--text-secondary);
-}
-
-.chat-helper-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--text-primary);
-  cursor: pointer;
-  user-select: none;
-}
-
-.chat-helper-toggle input {
-  accent-color: var(--accent-primary);
-}
-
-.chat-helper-segments {
-  display: inline-grid;
-  grid-template-columns: repeat(3, minmax(54px, 1fr));
-  overflow: hidden;
-  border: 1px solid var(--border-color);
-  border-radius: 8px;
-  background: var(--bg-tertiary);
-}
-
-.chat-helper-segment {
-  min-height: 28px;
-  padding: 0 8px;
-  border: 0;
-  border-left: 1px solid var(--border-color);
-  background: transparent;
-  color: var(--text-muted);
-  font-size: 12px;
-  text-transform: capitalize;
-  cursor: pointer;
-}
-
-.chat-helper-segment:first-child {
-  border-left: 0;
-}
-
-.chat-helper-segment.active {
-  background: color-mix(in srgb, var(--accent-primary) 16%, var(--bg-secondary));
-  color: var(--text-primary);
-}
-
-.chat-helper-query {
-  width: 100%;
-  min-height: 34px;
-  box-sizing: border-box;
-  border: 1px solid var(--border-color);
-  border-radius: 8px;
-  background: var(--bg-tertiary);
-  color: var(--text-primary);
-  padding: 7px 9px;
-  font-size: 13px;
-  outline: none;
-}
-
-.chat-helper-query:focus {
-  border-color: var(--accent-primary);
-}
-
-
-.reply-composer-shell {
+.reply-composer {
   position: relative;
-}
-
-.reply-composer-editor {
-  width: 100%;
-  min-height: 24px;
+  min-height: 28px;
   max-height: 150px;
-  box-sizing: border-box;
+  width: 100%;
   border: 0;
   background: transparent;
   color: var(--text-primary);
-  caret-color: var(--text-primary);
-  padding: 6px 4px;
-  line-height: 1.5;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  font: inherit;
   outline: none;
   overflow-y: auto;
   overflow-x: hidden;
+  padding: 2px 0;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  caret-color: var(--text-primary);
 }
 
-.reply-composer-editor[data-empty="true"]::before {
+.reply-composer[data-empty="true"]::before {
   content: attr(data-placeholder);
   color: var(--text-muted);
   pointer-events: none;
@@ -1018,8 +919,6 @@ html, body, #root {
 .reply-composer-pill,
 .user-reply-pill {
   display: inline-flex;
-  min-width: 0;
-  overflow: hidden;
   align-items: center;
   gap: 4px;
   max-width: min(420px, 100%);
@@ -1030,7 +929,7 @@ html, body, #root {
   font-size: 12px;
   line-height: 1.2;
   padding: 2px 6px;
-  vertical-align: 0.08em;
+  vertical-align: -0.12em;
 }
 
 .reply-composer-pill {
@@ -1038,28 +937,13 @@ html, body, #root {
   user-select: all;
 }
 
-.reply-composer-filler {
-  color: transparent;
-  display: inline-block;
-  overflow: hidden;
-  width: 0;
-}
-
 .reply-composer-pill svg,
 .user-reply-pill svg {
   flex-shrink: 0;
 }
 
-.reply-composer-pill-icon {
-  flex-shrink: 0;
-  font-size: 11px;
-  line-height: 1;
-}
-
 .reply-composer-pill-preview,
 .user-reply-pill-preview {
-  min-width: 0;
-  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1074,8 +958,6 @@ html, body, #root {
 
 .user-reply-segments {
   display: block;
-  max-width: 100%;
-  min-width: 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   line-height: 1.7;
@@ -1083,6 +965,4 @@ html, body, #root {
 
 .user-reply-text {
   white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  word-break: break-word;
 }

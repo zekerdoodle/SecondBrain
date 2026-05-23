@@ -13,6 +13,42 @@ from claude_agent_sdk import tool
 
 from ..registry import register_tool
 
+_ALLOWED_RESTART_CONSUMER = "main_streaming_finalizer"
+
+
+def _legacy_visible_chat_bootstrap_allowed(
+    *,
+    restart_consumer: str,
+    session_id: str | None,
+    source_chat_id: str | None,
+    source_agent: str,
+    running_invocations: list[dict[str, Any]],
+) -> bool:
+    """Allow the first visible-chat restart after this gate is deployed.
+
+    The live backend may still be running the old main.py/ClaudeWrapper code and
+    therefore cannot pass ``--restart-consumer main_streaming_finalizer`` into
+    the Codex MCP bridge yet. The old backend finalizer can still consume the
+    marker and spawn the restart, but only for the visible WebSocket chat path.
+
+    Keep this bootstrap deliberately tiny: one active running_agents entry, it
+    is a chat entry, and it is the same chat/agent that invoked restart_server.
+    Scheduled/invoked agents may carry the same source_chat_id, so any extra
+    entry or non-chat kind fails closed before marker writes.
+    """
+    if restart_consumer != "none":
+        return False
+    trigger_chat_id = source_chat_id or session_id
+    if not trigger_chat_id or len(running_invocations) != 1:
+        return False
+    entry = running_invocations[0]
+    return (
+        entry.get("kind") == "chat"
+        and entry.get("source_chat_id") == trigger_chat_id
+        and entry.get("agent") == source_agent
+    )
+
+
 # Add scripts directory to path
 SCRIPTS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../.claude/scripts"))
 if SCRIPTS_DIR not in sys.path:
@@ -119,18 +155,35 @@ async def restart_server(args: Dict[str, Any]) -> Dict[str, Any]:
         except Exception:
             pass
 
+        restart_consumer = args.get("_restart_consumer") or "none"
+
         import running_agents
 
         running_agents_bootstrap_note = ""
         try:
             running_invocations = await running_agents.list_source_of_truth()
         except running_agents.RunningAgentsEndpointMissingError as e:
+            if restart_consumer != _ALLOWED_RESTART_CONSUMER:
+                return {
+                    "content": [{
+                        "type": "text",
+                        "text": (
+                            "Error: restart_server cannot safely restart from this invocation context. "
+                            "This MCP call was not launched with the main.py streaming finalizer "
+                            "that performs the clean save and detached restart subprocess spawn, "
+                            "and the authoritative running_agents endpoint is not available to "
+                            "prove a legacy visible-chat bootstrap context. "
+                            "No pending restart or continuation marker was written."
+                        ),
+                    }],
+                    "is_error": True,
+                }
             # First-load/deployment bootstrap only: this code can be live in the
             # MCP subprocess before the backend has restarted into the new
-            # /api/internal/running-agents route. Let that specific restart
-            # proceed, visibly degraded, so the endpoint can be loaded. Once the
-            # endpoint exists, every other authoritative-read failure still
-            # fails closed below.
+            # /api/internal/running-agents route. Let that specific explicit
+            # finalizer restart proceed, visibly degraded, so the endpoint can
+            # be loaded. Once the endpoint exists, every other authoritative-read
+            # failure still fails closed below.
             running_invocations = []
             running_agents_bootstrap_note = (
                 "\nWarning: authoritative running_agents endpoint is not loaded yet "
@@ -151,6 +204,38 @@ async def restart_server(args: Dict[str, Any]) -> Dict[str, Any]:
                 }],
                 "is_error": True,
             }
+
+        legacy_visible_chat_bootstrap = _legacy_visible_chat_bootstrap_allowed(
+            restart_consumer=restart_consumer,
+            session_id=session_id,
+            source_chat_id=source_chat_id,
+            source_agent=source_agent,
+            running_invocations=running_invocations,
+        )
+        if restart_consumer != _ALLOWED_RESTART_CONSUMER and not legacy_visible_chat_bootstrap:
+            return {
+                "content": [{
+                    "type": "text",
+                    "text": (
+                        "Error: restart_server cannot safely restart from this invocation context. "
+                        "This MCP call was not launched with the main.py streaming finalizer "
+                        "that performs the clean save and detached restart subprocess spawn, "
+                        "and it did not match the single-active-visible-chat bootstrap guard. "
+                        "No pending restart or continuation marker was written."
+                    ),
+                }],
+                "is_error": True,
+            }
+        if legacy_visible_chat_bootstrap:
+            running_agents_bootstrap_note = (
+                "\nWarning: accepted through the legacy visible-chat restart bootstrap path. "
+                "The live backend has not loaded restart_consumer forwarding yet, but "
+                "authoritative running_agents shows this caller is the sole active "
+                "visible chat, whose main.py finalizer can consume pending_restart.json "
+                "and spawn the detached restart subprocess. After this restart loads "
+                "the saved code, visible-chat restarts must use the explicit "
+                "main_streaming_finalizer consumer."
+            )
 
         # Build a map of ALL actively processing sessions -> their agent names.
         # If the MCP tool is process-isolated from main.py, preserve at least the
@@ -182,18 +267,6 @@ async def restart_server(args: Dict[str, Any]) -> Dict[str, Any]:
         # display_messages including block model), and THEN spawns the restart.
         # This prevents duplicate content from WAL recovery.
 
-        # Save the multi-session continuation marker
-        continuation = rt.save_continuation_state(
-            session_id=session_id,
-            reason=reason,
-            source=source_agent,
-            all_active_sessions=all_active,
-            running_invocations=running_invocations,
-        )
-
-        agent_invocation_count = len(continuation.get("agent_invocations", []))
-        bystander_count = len(all_active) - 1  # Exclude the triggering session
-
         # Choose restart script based on rebuild flag
         if rebuild:
             restart_script = rt.SECOND_BRAIN_ROOT / "interface" / "restart-server-full.sh"
@@ -206,19 +279,44 @@ async def restart_server(args: Dict[str, Any]) -> Dict[str, Any]:
 
         log_file = rt.CLAUDE_DIR / "server_restart.log"
 
-        # Write restart config to a file — the streaming loop reads this
-        # after doing a clean save, then spawns the restart subprocess.
-        # Using a file avoids any module-reference issues between the MCP
-        # tool execution context and the streaming loop.
+        # Save the continuation marker and pending restart config as one
+        # logical operation. If the second write fails, remove the marker this
+        # attempt just created so a failed-to-spawn restart cannot leave stale
+        # continuation state behind.
         import json
         pending_restart_file = rt.CLAUDE_DIR / "pending_restart.json"
-        pending_restart_file.write_text(json.dumps({
-            "rebuild": rebuild,
-            "restart_script": str(restart_script),
-            "log_file": str(log_file),
-            "restart_type": restart_type,
-            "wait_time": wait_time,
-        }))
+        continuation = None
+        wrote_continuation = False
+        try:
+            continuation = rt.save_continuation_state(
+                session_id=session_id,
+                reason=reason,
+                source=source_agent,
+                all_active_sessions=all_active,
+                running_invocations=running_invocations,
+            )
+            wrote_continuation = True
+            pending_restart_file.write_text(json.dumps({
+                "rebuild": rebuild,
+                "restart_script": str(restart_script),
+                "log_file": str(log_file),
+                "restart_type": restart_type,
+                "wait_time": wait_time,
+            }))
+        except Exception:
+            try:
+                pending_restart_file.unlink()
+            except FileNotFoundError:
+                pass
+            if wrote_continuation:
+                try:
+                    rt.RESTART_MARKER.unlink()
+                except FileNotFoundError:
+                    pass
+            raise
+
+        agent_invocation_count = len(continuation.get("agent_invocations", []))
+        bystander_count = len(all_active) - 1  # Exclude the triggering session
 
         bystander_note = ""
         if bystander_count > 0:

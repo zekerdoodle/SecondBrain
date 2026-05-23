@@ -27,6 +27,7 @@ from typing import Optional, AsyncIterator, Dict, Any, List, Callable
 from filelock import FileLock
 
 from codex_backend import CodexRunOptions, run_codex
+from codex_app_server_backend import CodexAppServerSteeringBridge, run_codex_app_server
 
 os.environ.setdefault("CLAUDE_CODE_STREAM_CLOSE_TIMEOUT", "14400000")
 
@@ -102,6 +103,35 @@ except Exception:
     ThinkingConfigAdaptive = ThinkingConfigEnabled = None
 
 logger = logging.getLogger(__name__)
+
+CODEX_APP_SERVER_ENV = "SECOND_BRAIN_CODEX_APP_SERVER"
+CODEX_APP_SERVER_AGENTS_ENV = "SECOND_BRAIN_CODEX_APP_SERVER_AGENTS"
+_CODEX_APP_SERVER_TRUTHY = {"1", "true", "yes", "on"}
+_CODEX_APP_SERVER_VISIBLE_EVENT_TYPES = {
+    "content_delta",
+    "thinking_delta",
+    "tool_output_delta",
+    "tool_start",
+    "tool_use",
+    "tool_end",
+}
+_CODEX_APP_SERVER_TOOL_EVENT_TYPES = {"tool_output_delta", "tool_start", "tool_use", "tool_end"}
+
+
+def _codex_app_server_flag_enabled() -> bool:
+    return os.environ.get(CODEX_APP_SERVER_ENV, "").strip().lower() in _CODEX_APP_SERVER_TRUTHY
+
+
+def _codex_app_server_allowed_agents() -> set[str]:
+    raw = os.environ.get(CODEX_APP_SERVER_AGENTS_ENV, "")
+    return {part.strip().lower() for part in raw.split(",") if part.strip()}
+
+
+def _should_use_codex_app_server(agent_config: Any) -> bool:
+    if not _codex_app_server_flag_enabled():
+        return False
+    agent_name = str(getattr(agent_config, "name", "") or "").strip().lower()
+    return bool(agent_name and agent_name in _codex_app_server_allowed_agents())
 
 
 async def _auto_approve_tool(tool_name: str, input_data: dict, context):
@@ -268,11 +298,19 @@ class ClaudeWrapper:
     # We cap at 125KB to leave headroom for CLI arg encoding overhead.
     _MAX_SYSTEM_PROMPT_BYTES = 125_000
 
-    def __init__(self, session_id: str, cwd: str, chat_id: Optional[str] = None, chat_messages: Optional[List[Dict[str, Any]]] = None):
+    def __init__(
+        self,
+        session_id: str,
+        cwd: str,
+        chat_id: Optional[str] = None,
+        chat_messages: Optional[List[Dict[str, Any]]] = None,
+        restart_consumer: str = "none",
+    ):
         self.session_id = session_id
         self.cwd = cwd
         self.chat_id = chat_id  # Storage chat ID for MCP server context
         self.chat_messages = chat_messages or []
+        self.restart_consumer = restart_consumer
         self.client: Optional[Any] = None
         self._current_session_id: Optional[str] = None
         self._conversation_history: List[Dict[str, Any]] = []
@@ -696,6 +734,7 @@ class ClaudeWrapper:
         conversation_history: Optional[List[Dict[str, Any]]] = None,
         use_streaming_input: bool = True,
         session_id: Optional[str] = None,
+        helper_settings: Optional[Dict[str, Any]] = None,
     ) -> AsyncIterator[Dict[str, Any]]:
         """Dispatch chat turns to the runtime selected by agent_config.type."""
         runtime_type = getattr(getattr(agent_config, "type", None), "value", getattr(agent_config, "type", "codex"))
@@ -706,6 +745,7 @@ class ClaudeWrapper:
                 conversation_history=conversation_history,
                 use_streaming_input=use_streaming_input,
                 session_id=session_id,
+                helper_settings=helper_settings,
             ):
                 yield event
         else:
@@ -715,8 +755,97 @@ class ClaudeWrapper:
                 conversation_history=conversation_history,
                 use_streaming_input=use_streaming_input,
                 session_id=session_id,
+                helper_settings=helper_settings,
             ):
                 yield event
+
+    async def _append_contextual_memory(
+        self,
+        context_parts: List[str],
+        prompt,
+        agent_config,
+        session_id: Optional[str],
+        helper_settings: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Append contextual memory according to this chat's helper settings."""
+        memory_settings = (helper_settings or {}).get("contextual_memory") or {}
+        mode = memory_settings.get("mode", "auto")
+        if mode not in {"auto", "off", "manual"}:
+            mode = "auto"
+
+        if mode == "off":
+            logger.info(f"Agent '{agent_config.name}': contextual memory disabled for this chat")
+            return
+
+        # Extract raw user text for retrieval query. No truncation — chat history is
+        # naturally bounded by model context.
+        if isinstance(prompt, list):
+            raw_query = " ".join(
+                block.get("text", "") for block in prompt if block.get("type") == "text"
+            )
+        else:
+            raw_query = str(prompt)
+
+        try:
+            scripts_dir = str(Path(self.cwd) / ".claude" / "scripts")
+            if scripts_dir not in sys.path:
+                sys.path.insert(0, scripts_dir)
+            from contextual_memory import auto_retrieve_context, rewrite_query_for_retrieval
+
+            if mode == "manual":
+                manual_query = str(memory_settings.get("manual_query") or "")
+                if not manual_query.strip():
+                    logger.info(f"Agent '{agent_config.name}': manual contextual memory query blank; skipping retrieval")
+                    return
+                retrieval_queries = [(manual_query, 1.0)]
+                logger.info(f"Agent '{agent_config.name}': using manual contextual memory query")
+            else:
+                # 20s timeout — Sonnet rewriter success is 3-5s, but the SDK
+                # subprocess can hang indefinitely (~10-20x/day). Without this
+                # wrapper, a hung subprocess freezes the user's message for
+                # 30-76s before crashing. On timeout, fall back to raw prompt.
+                try:
+                    retrieval_queries = await asyncio.wait_for(
+                        rewrite_query_for_retrieval(
+                            raw_query,
+                            self._conversation_history,
+                            session_id=session_id,
+                            agent_name=agent_config.name,
+                        ),
+                        timeout=20.0,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        f"Query rewriter timed out after 20s for agent "
+                        f"'{agent_config.name}' — falling back to raw prompt."
+                    )
+                    retrieval_queries = [(raw_query, 1.0)]
+
+            # Run CPU-bound retrieval (embedding model inference) in a thread
+            # to avoid blocking the event loop / freezing WebSocket heartbeats.
+            loop = asyncio.get_event_loop()
+            ctx_block = await asyncio.wait_for(
+                loop.run_in_executor(
+                    None,
+                    functools.partial(
+                        auto_retrieve_context,
+                        query=retrieval_queries,
+                        agent_name=agent_config.name,
+                    ),
+                ),
+                timeout=15.0,
+            )
+            if ctx_block:
+                context_parts.append(ctx_block)
+                logger.info(f"Agent '{agent_config.name}': appended contextual memory to user-prefix context block")
+        except asyncio.CancelledError:
+            # User pressed stop during rewriter / retrieval — bail out cleanly
+            # before we create the SDK client and start a real agent turn.
+            logger.info(f"Agent '{agent_config.name}': pre-SDK phase cancelled by user interrupt")
+            self._current_task = None
+            raise
+        except Exception as e:
+            logger.warning(f"Agent '{agent_config.name}': contextual memory auto-retrieve failed: {e}")
 
     async def _run_chat_sdk(
         self,
@@ -725,6 +854,7 @@ class ClaudeWrapper:
         conversation_history: Optional[List[Dict[str, Any]]] = None,
         use_streaming_input: bool = True,
         session_id: Optional[str] = None,
+        helper_settings: Optional[Dict[str, Any]] = None,
     ) -> AsyncIterator[Dict[str, Any]]:
         """
         Execute a prompt through an agent and stream results.
@@ -746,67 +876,17 @@ class ClaudeWrapper:
         # rather than argv (sidesteps Linux MAX_ARG_STRLEN cliff on system_prompt).
         context_parts = self._build_context_parts(agent_config)
 
-        # Auto-retrieve contextual memories relevant to the user's message
+        # Auto-retrieve contextual memories relevant to the user's message.
         try:
-            scripts_dir = str(Path(self.cwd) / ".claude" / "scripts")
-            if scripts_dir not in sys.path:
-                sys.path.insert(0, scripts_dir)
-            from contextual_memory import auto_retrieve_context, rewrite_query_for_retrieval
-
-            # Extract raw user text for retrieval query
-            if isinstance(prompt, list):
-                raw_query = " ".join(
-                    block.get("text", "") for block in prompt if block.get("type") == "text"
-                )
-            else:
-                raw_query = str(prompt)
-            # No truncation — chat history is naturally bounded by model context
-
-            # 20s timeout — Sonnet rewriter success is 3-5s, but the SDK
-            # subprocess can hang indefinitely (~10-20×/day). Without this
-            # wrapper, a hung subprocess freezes the user's message for
-            # 30-76s before crashing. On timeout, fall back to raw prompt.
-            try:
-                retrieval_queries = await asyncio.wait_for(
-                    rewrite_query_for_retrieval(
-                        raw_query,
-                        self._conversation_history,
-                        session_id=session_id,
-                        agent_name=agent_config.name,
-                    ),
-                    timeout=20.0,
-                )
-            except asyncio.TimeoutError:
-                logger.warning(
-                    f"Query rewriter timed out after 20s for agent "
-                    f"'{agent_config.name}' — falling back to raw prompt."
-                )
-                retrieval_queries = [(raw_query, 1.0)]
-            # Run CPU-bound retrieval (embedding model inference) in a thread
-            # to avoid blocking the event loop / freezing WebSocket heartbeats
-            loop = asyncio.get_event_loop()
-            ctx_block = await asyncio.wait_for(
-                loop.run_in_executor(
-                    None,
-                    functools.partial(
-                        auto_retrieve_context,
-                        query=retrieval_queries,
-                        agent_name=agent_config.name,
-                    ),
-                ),
-                timeout=15.0,  # 15s max — don't let retrieval stall the agent
+            await self._append_contextual_memory(
+                context_parts,
+                prompt,
+                agent_config,
+                session_id,
+                helper_settings=helper_settings,
             )
-            if ctx_block:
-                context_parts.append(ctx_block)
-                logger.info(f"Agent '{agent_config.name}': appended contextual memory to user-prefix context block")
         except asyncio.CancelledError:
-            # User pressed stop during rewriter / retrieval — bail out cleanly
-            # before we create the SDK client and start a real agent turn.
-            logger.info(f"Agent '{agent_config.name}': pre-SDK phase cancelled by user interrupt")
-            self._current_task = None
             return
-        except Exception as e:
-            logger.warning(f"Agent '{agent_config.name}': contextual memory auto-retrieve failed: {e}")
 
         # Checkpoint: if interrupt() was called during the pre-SDK phase but
         # cancellation didn't propagate (e.g. it hit a non-cancellable await,
@@ -980,6 +1060,7 @@ class ClaudeWrapper:
         conversation_history: Optional[List[Dict[str, Any]]] = None,
         use_streaming_input: bool = True,
         session_id: Optional[str] = None,
+        helper_settings: Optional[Dict[str, Any]] = None,
     ) -> AsyncIterator[Dict[str, Any]]:
         """Execute a prompt through the Codex backend and stream results."""
         self._conversation_history = conversation_history or []
@@ -1002,67 +1083,17 @@ class ClaudeWrapper:
         # rather than argv (sidesteps Linux MAX_ARG_STRLEN cliff on system_prompt).
         context_parts.extend(self._build_context_parts(agent_config))
 
-        # Auto-retrieve contextual memories relevant to the user's message
+        # Auto-retrieve contextual memories relevant to the user's message.
         try:
-            scripts_dir = str(Path(self.cwd) / ".claude" / "scripts")
-            if scripts_dir not in sys.path:
-                sys.path.insert(0, scripts_dir)
-            from contextual_memory import auto_retrieve_context, rewrite_query_for_retrieval
-
-            # Extract raw user text for retrieval query
-            if isinstance(prompt, list):
-                raw_query = " ".join(
-                    block.get("text", "") for block in prompt if block.get("type") == "text"
-                )
-            else:
-                raw_query = str(prompt)
-            # No truncation — chat history is naturally bounded by model context
-
-            # 20s timeout — Sonnet rewriter success is 3-5s, but the SDK
-            # subprocess can hang indefinitely (~10-20×/day). Without this
-            # wrapper, a hung subprocess freezes the user's message for
-            # 30-76s before crashing. On timeout, fall back to raw prompt.
-            try:
-                retrieval_queries = await asyncio.wait_for(
-                    rewrite_query_for_retrieval(
-                        raw_query,
-                        self._conversation_history,
-                        session_id=session_id,
-                        agent_name=agent_config.name,
-                    ),
-                    timeout=20.0,
-                )
-            except asyncio.TimeoutError:
-                logger.warning(
-                    f"Query rewriter timed out after 20s for agent "
-                    f"'{agent_config.name}' — falling back to raw prompt."
-                )
-                retrieval_queries = [(raw_query, 1.0)]
-            # Run CPU-bound retrieval (embedding model inference) in a thread
-            # to avoid blocking the event loop / freezing WebSocket heartbeats
-            loop = asyncio.get_event_loop()
-            ctx_block = await asyncio.wait_for(
-                loop.run_in_executor(
-                    None,
-                    functools.partial(
-                        auto_retrieve_context,
-                        query=retrieval_queries,
-                        agent_name=agent_config.name,
-                    ),
-                ),
-                timeout=15.0,  # 15s max — don't let retrieval stall the agent
+            await self._append_contextual_memory(
+                context_parts,
+                prompt,
+                agent_config,
+                session_id,
+                helper_settings=helper_settings,
             )
-            if ctx_block:
-                context_parts.append(ctx_block)
-                logger.info(f"Agent '{agent_config.name}': appended contextual memory to user-prefix context block")
         except asyncio.CancelledError:
-            # User pressed stop during rewriter / retrieval — bail out cleanly
-            # before we create the SDK client and start a real agent turn.
-            logger.info(f"Agent '{agent_config.name}': pre-SDK phase cancelled by user interrupt")
-            self._current_task = None
             return
-        except Exception as e:
-            logger.warning(f"Agent '{agent_config.name}': contextual memory auto-retrieve failed: {e}")
 
         # Checkpoint: if interrupt() was called during the pre-SDK phase but
         # cancellation didn't propagate (e.g. it hit a non-cancellable await,
@@ -1128,80 +1159,161 @@ class ClaudeWrapper:
 
             event_queue: asyncio.Queue[Optional[Dict[str, Any]]] = asyncio.Queue()
 
+            async def _emit_result_meta(result, *, is_error: Optional[bool] = None) -> None:
+                usage = result.usage or {}
+                input_tokens = usage.get("input_tokens", 0)
+                output_tokens = usage.get("output_tokens", 0)
+                cached = usage.get("cache_read_input_tokens", usage.get("cached_input_tokens", 0))
+                total_tokens = usage.get("total_tokens", input_tokens + output_tokens)
+                await event_queue.put({
+                    "type": "result_meta",
+                    # Second Brain owns chat/session ids. Codex thread ids are
+                    # backend metadata, not durable app session identifiers.
+                    "session_id": session_id,
+                    "cost_usd": 0,
+                    "duration_ms": int((time.time() - started) * 1000),
+                    "num_turns": 0,
+                    "is_error": result.returncode != 0 if is_error is None else is_error,
+                    "usage": {
+                        "input_tokens": input_tokens,
+                        "output_tokens": output_tokens,
+                        "cache_read_input_tokens": cached,
+                        "cache_creation_input_tokens": usage.get("cache_creation_input_tokens", 0),
+                        "total_tokens": total_tokens,
+                    },
+                })
+
+            def _make_run_options(current_prompt) -> CodexRunOptions:
+                return CodexRunOptions(
+                    model=agent_config.model,
+                    cwd=self.cwd,
+                    identity_instructions=identity_instructions,
+                    prompt=current_prompt,
+                    tools=effective_tools,
+                    timeout_seconds=getattr(agent_config, "timeout_seconds", 14400),
+                    max_turns=getattr(agent_config, "max_turns", 200),
+                    effort=getattr(agent_config, "effort", None),
+                    use_native_coding_instructions=use_native_coding,
+                    chat_id=self.chat_id,
+                    agent_name=agent_config.name,
+                    allowed_skills=allowed_skills,
+                    restart_consumer=self.restart_consumer,
+                    external_mcp_servers=_load_external_mcp_servers(Path(self.cwd)),
+                )
+
+            async def _run_exec_path(run_options: CodexRunOptions) -> None:
+                result = await run_codex(run_options, stream_callback=_stream_blocks)
+                if (
+                    result.returncode == 0
+                    and not result.blocks
+                    and not (result.response or "").strip()
+                    and run_options.effort != "low"
+                ):
+                    logger.warning(
+                        "Agent chat '%s' returned empty Codex content; retrying once with effort=low",
+                        agent_config.name,
+                    )
+                    retry_prompt = (
+                        "IMPORTANT: Produce a visible assistant reply. "
+                        "If the request involves images, answer briefly in text before deciding whether to use tools.\n\n"
+                        f"{run_options.prompt}"
+                    )
+                    retry_options = CodexRunOptions(
+                        **{
+                            **run_options.__dict__,
+                            "effort": "low",
+                            "prompt": retry_prompt,
+                        }
+                    )
+                    result = await run_codex(retry_options, stream_callback=_stream_blocks)
+                await _stream_blocks(result.blocks)
+                if result.returncode == 0 and not result.blocks and not (result.response or "").strip():
+                    logger.warning(
+                        "Agent chat '%s' returned no Codex content blocks and no response text",
+                        agent_config.name,
+                    )
+                    await event_queue.put({
+                        "type": "error",
+                        "text": "Codex completed this turn without returning any assistant text or tool calls.",
+                    })
+                await _emit_result_meta(result)
+                if result.returncode != 0:
+                    await event_queue.put({"type": "error", "text": result.stderr or f"Codex exited with {result.returncode}"})
+
+            async def _run_app_server_path(run_options: CodexRunOptions) -> None:
+                app_visible_work = False
+                app_tool_started = False
+                steering_bridge = CodexAppServerSteeringBridge()
+                self._injection_queue = steering_bridge
+
+                async def _app_event(event: Dict[str, Any]) -> None:
+                    nonlocal app_visible_work, app_tool_started
+                    event_type = event.get("type")
+                    if event_type in _CODEX_APP_SERVER_VISIBLE_EVENT_TYPES:
+                        app_visible_work = True
+                    if event_type in _CODEX_APP_SERVER_TOOL_EVENT_TYPES:
+                        app_tool_started = True
+                    if event_type == "tool_output_delta":
+                        # Main does not consume live tool-output deltas yet. Slice 4 owns
+                        # long-output UI/persistence; tool_end remains the compatibility event.
+                        return
+                    if event_type == "result_meta":
+                        # App Server sends live token-usage updates before turn completion.
+                        # Keep them in the backend result and emit one final result_meta
+                        # below so main.py does not treat a live update as final turn metadata.
+                        return
+                    await event_queue.put(event)
+
+                try:
+                    result = await run_codex_app_server(
+                        run_options,
+                        event_callback=_app_event,
+                        steering_bridge=steering_bridge,
+                    )
+                finally:
+                    steering_bridge.close()
+                    if self._injection_queue is steering_bridge:
+                        self._injection_queue = None
+
+                result_has_visible_work = bool(result.blocks) or bool((result.response or "").strip())
+                should_fallback = result.returncode != 0 and not app_visible_work and not app_tool_started and not result_has_visible_work
+                if should_fallback:
+                    logger.warning(
+                        "Agent chat '%s': Codex App Server failed before visible work; falling back to codex exec",
+                        agent_config.name,
+                    )
+                    await _run_exec_path(run_options)
+                    return
+
+                if result_has_visible_work and not app_visible_work:
+                    await _stream_blocks(result.blocks)
+                    app_visible_work = True
+                if result.returncode == 0 and not app_visible_work and not (result.response or "").strip():
+                    logger.warning(
+                        "Agent chat '%s' returned no App Server content blocks and no response text",
+                        agent_config.name,
+                    )
+                    await event_queue.put({
+                        "type": "error",
+                        "text": "Codex App Server completed this turn without returning any assistant text or tool calls.",
+                    })
+                await _emit_result_meta(result)
+                if result.returncode != 0:
+                    error_text = result.stderr or f"Codex App Server exited with {result.returncode}"
+                    if app_visible_work or app_tool_started:
+                        error_text = (
+                            "Codex App Server failed after visible work; not falling back to codex exec "
+                            f"to avoid duplicate tool side effects: {error_text}"
+                        )
+                    await event_queue.put({"type": "error", "text": error_text})
+
             async def _run() -> None:
                 try:
-                    run_options = CodexRunOptions(
-                        model=agent_config.model,
-                        cwd=self.cwd,
-                        identity_instructions=identity_instructions,
-                        prompt=prompt,
-                        tools=effective_tools,
-                        timeout_seconds=getattr(agent_config, "timeout_seconds", 14400),
-                        max_turns=getattr(agent_config, "max_turns", 200),
-                        effort=getattr(agent_config, "effort", None),
-                        use_native_coding_instructions=use_native_coding,
-                        chat_id=self.chat_id,
-                        agent_name=agent_config.name,
-                        allowed_skills=allowed_skills,
-                        external_mcp_servers=_load_external_mcp_servers(Path(self.cwd)),
-                    )
-                    result = await run_codex(run_options, stream_callback=_stream_blocks)
-                    if (
-                        result.returncode == 0
-                        and not result.blocks
-                        and not (result.response or "").strip()
-                        and run_options.effort != "low"
-                    ):
-                        logger.warning(
-                            "Agent chat '%s' returned empty Codex content; retrying once with effort=low",
-                            agent_config.name,
-                        )
-                        retry_prompt = (
-                            "IMPORTANT: Produce a visible assistant reply. "
-                            "If the request involves images, answer briefly in text before deciding whether to use tools.\n\n"
-                            f"{run_options.prompt}"
-                        )
-                        retry_options = CodexRunOptions(
-                            **{
-                                **run_options.__dict__,
-                                "effort": "low",
-                                "prompt": retry_prompt,
-                            }
-                        )
-                        result = await run_codex(retry_options, stream_callback=_stream_blocks)
-                    await _stream_blocks(result.blocks)
-                    if result.returncode == 0 and not result.blocks and not (result.response or "").strip():
-                        logger.warning(
-                            "Agent chat '%s' returned no Codex content blocks and no response text",
-                            agent_config.name,
-                        )
-                        await event_queue.put({
-                            "type": "error",
-                            "text": "Codex completed this turn without returning any assistant text or tool calls.",
-                        })
-                    usage = result.usage or {}
-                    input_tokens = usage.get("input_tokens", 0)
-                    output_tokens = usage.get("output_tokens", 0)
-                    cached = usage.get("cached_input_tokens", 0)
-                    await event_queue.put({
-                        "type": "result_meta",
-                        # Second Brain owns chat/session ids. Codex thread ids are
-                        # backend metadata, not durable app session identifiers.
-                        "session_id": session_id,
-                        "cost_usd": 0,
-                        "duration_ms": int((time.time() - started) * 1000),
-                        "num_turns": 0,
-                        "is_error": result.returncode != 0,
-                        "usage": {
-                            "input_tokens": input_tokens,
-                            "output_tokens": output_tokens,
-                            "cache_read_input_tokens": cached,
-                            "cache_creation_input_tokens": 0,
-                            "total_tokens": input_tokens + output_tokens,
-                        },
-                    })
-                    if result.returncode != 0:
-                        await event_queue.put({"type": "error", "text": result.stderr or f"Codex exited with {result.returncode}"})
+                    run_options = _make_run_options(prompt)
+                    if _should_use_codex_app_server(agent_config):
+                        await _run_app_server_path(run_options)
+                    else:
+                        await _run_exec_path(run_options)
                 except Exception as exc:
                     logger.error(f"Agent chat Codex error: {exc}", exc_info=True)
                     await event_queue.put({"type": "error", "text": str(exc)})

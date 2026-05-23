@@ -215,6 +215,173 @@ def list_tasks(include_inactive=False):
 
     return "\n".join(output)
 
+
+
+def _parse_iso_datetime(value):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except Exception:
+        return None
+
+
+def _summarize_prompt(prompt, limit=160):
+    text = str(prompt or '').replace('\n', ' ').strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit - 1] + '…'
+
+
+def _cron_field_matches(field, current_val):
+    if field == '*':
+        return True
+    if field.startswith('*/'):
+        step = int(field[2:])
+        return current_val % step == 0
+    for part in field.split(','):
+        part = part.strip()
+        if '/' in part:
+            range_part, step = part.split('/', 1)
+            step = int(step)
+            if '-' in range_part:
+                lo, hi = range_part.split('-', 1)
+                lo, hi = int(lo), int(hi)
+                if lo <= current_val <= hi and (current_val - lo) % step == 0:
+                    return True
+        elif '-' in part:
+            lo, hi = part.split('-', 1)
+            lo, hi = int(lo), int(hi)
+            if lo <= current_val <= hi:
+                return True
+        else:
+            if int(part) == current_val:
+                return True
+    return False
+
+
+def _next_daily_target(now, hour, minute, last_run=None, allowed_dow=None):
+    for offset in range(0, 8):
+        candidate_day = now + timedelta(days=offset)
+        candidate = candidate_day.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        python_dow = (candidate.weekday() + 1) % 7
+        if allowed_dow and not _cron_field_matches(allowed_dow, python_dow):
+            continue
+        if candidate <= now:
+            if last_run is None or last_run < candidate:
+                return candidate
+            continue
+        return candidate
+    return None
+
+
+def _next_run_for_task(task, now):
+    schedule_text = str(task.get('schedule', '')).strip()
+    schedule = schedule_text.lower()
+    last_run = _parse_iso_datetime(task.get('last_run'))
+
+    match_every = re.match(r"every\s+(\d+)?\s*(minute|hour|day)s?", schedule)
+    match_daily = re.search(r"daily at\s+(\d{1,2}):(\d{2})\s*(am|pm)?", schedule)
+    match_once = re.search(r"once at\s+(.+)", schedule)
+
+    if match_every:
+        val = int(match_every.group(1)) if match_every.group(1) else 1
+        unit = match_every.group(2)
+        if 'minute' in unit:
+            delta = timedelta(minutes=val)
+        elif 'hour' in unit:
+            delta = timedelta(hours=val)
+        elif 'day' in unit:
+            delta = timedelta(days=val)
+        else:
+            return None
+        if last_run is None:
+            return now
+        return last_run + delta
+
+    if match_daily:
+        hour = int(match_daily.group(1))
+        minute = int(match_daily.group(2))
+        meridiem = match_daily.group(3)
+        if meridiem:
+            if meridiem == 'pm' and hour != 12:
+                hour += 12
+            elif meridiem == 'am' and hour == 12:
+                hour = 0
+        return _next_daily_target(now, hour, minute, last_run=last_run)
+
+    if match_once:
+        target = _parse_iso_datetime(match_once.group(1).strip())
+        return target
+
+    cron_match = re.match(r'^([\d,\-\*/]+)\s+([\d,\-\*/]+)\s+([\d,\-\*/]+)\s+([\d,\-\*/]+)\s+([\d,\-\*/]+)$', schedule_text)
+    if cron_match:
+        cron_min, cron_hour, cron_dom, cron_month, cron_dow = cron_match.groups()
+        # Cheap exact daily/weekly cron support. Other cron forms still display
+        # their schedule text, but do not pretend to have a precise next time.
+        if cron_min.isdigit() and cron_hour.isdigit() and cron_dom == '*' and cron_month == '*':
+            return _next_daily_target(
+                now,
+                int(cron_hour),
+                int(cron_min),
+                last_run=last_run,
+                allowed_dow=cron_dow,
+            )
+    return None
+
+
+def list_upcoming_runs(limit=20, include_inactive=False):
+    """Return read-only scheduled task summaries for UI visibility.
+
+    This does not mutate last_run or active flags; scheduler_loop remains the
+    only runtime path that claims due work. Unsupported schedule forms keep
+    their schedule text with next_run=None rather than presenting a false time.
+    """
+    tasks = _load_tasks()
+    now = datetime.now()
+    entries = []
+
+    for task in tasks:
+        active = task.get('active', True)
+        if not include_inactive and not active:
+            continue
+
+        next_run = None
+        parse_error = task.get('last_error')
+        try:
+            next_run = _next_run_for_task(task, now)
+        except Exception as e:
+            parse_error = f"Could not calculate next run: {e}"
+
+        task_type = task.get('type', 'prompt')
+        agent = task.get('agent') if task_type == 'agent' else None
+        entries.append({
+            'id': task.get('id'),
+            'task_id': task.get('id'),
+            'type': task_type,
+            'agent': agent,
+            'name': agent or task_type,
+            'silent': task.get('silent', False),
+            'active': active,
+            'schedule': task.get('schedule'),
+            'next_run': next_run.isoformat() if next_run else None,
+            'due_now': bool(next_run and next_run <= now),
+            'last_run': task.get('last_run'),
+            'prompt_summary': _summarize_prompt(task.get('prompt')),
+            'project': task.get('project'),
+            'room_id': task.get('room_id'),
+            'error': parse_error,
+        })
+
+    def sort_key(entry):
+        parsed = _parse_iso_datetime(entry.get('next_run'))
+        return (parsed is None, parsed or datetime.max, entry.get('id') or '')
+
+    entries.sort(key=sort_key)
+    if limit is not None:
+        entries = entries[:int(limit)]
+    return entries
+
 def remove_task(task_id):
     with _transact_tasks() as tasks:
         initial_count = len(tasks)

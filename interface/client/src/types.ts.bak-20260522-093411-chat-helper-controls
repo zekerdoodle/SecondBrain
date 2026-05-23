@@ -79,18 +79,6 @@ export interface ChatTab {
   lastActivity: number;
 }
 
-export type ContextualMemoryMode = 'auto' | 'off' | 'manual';
-
-export interface ChatHelperSettings {
-  titler: {
-    paused: boolean;
-  };
-  contextual_memory: {
-    mode: ContextualMemoryMode;
-    manual_query: string;
-  };
-}
-
 export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant' | 'system' | 'notice';

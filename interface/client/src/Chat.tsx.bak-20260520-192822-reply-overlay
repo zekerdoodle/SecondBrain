@@ -3,7 +3,7 @@ import {
   Send, Loader2, Plus, History, ChevronLeft, Pencil, RotateCcw, X,
   File as FileIcon, Trash2, MessageCircle, Clock, Square, Search,
   Check, CheckCheck, AlertCircle, Crown, ImagePlus, Circle, Copy,
-  SmilePlus, Sparkles, Users, SlidersHorizontal
+  SmilePlus, Sparkles, Users
 } from 'lucide-react';
 import { promoteChatToSalon } from './salonApi';
 import { ChatSearch } from './ChatSearch';
@@ -12,7 +12,7 @@ import { useToast } from './Toast';
 import { useTabFlash } from './hooks/useTabFlash';
 import { useCodeBlockWrap } from './hooks/useCodeBlockWrap';
 import { useAgents } from './hooks/useAgents';
-import type { ChatMessage, ChatImageRef, ContentBlock, FormField, ToolCallMessage, ChatDisplaySegment, ChatReplyReference, ChatDisplayPayload, ChatHelperSettings } from './types';
+import type { ChatMessage, ChatImageRef, ContentBlock, FormField, ToolCallMessage, ChatDisplaySegment, ChatReplyReference, ChatDisplayPayload } from './types';
 import { clsx } from 'clsx';
 import MDEditor from '@uiw/react-md-editor';
 import { escapeNonHtmlTags } from './utils/escapeNonHtmlTags';
@@ -383,286 +383,6 @@ const displayReplyTokens = (value: string, tokens: ReplyTokenMap): string => {
   });
 };
 
-const replyTokenDisplaySegments = (value: string, tokens: ReplyTokenMap): ChatDisplaySegment[] => {
-  REPLY_TOKEN_MARKER_RE.lastIndex = 0;
-  const segments: ChatDisplaySegment[] = [];
-  let lastIndex = 0;
-
-  for (const match of value.matchAll(REPLY_TOKEN_MARKER_RE)) {
-    const marker = match[0];
-    const id = match[1];
-    const start = match.index ?? 0;
-    const token = tokens[id];
-
-    if (start > lastIndex) {
-      segments.push({ type: 'text', text: value.slice(lastIndex, start) });
-    }
-
-    if (token && token.marker === marker) {
-      segments.push({
-        type: 'reply',
-        reference: {
-          id: token.id,
-          quote: token.quote,
-          preview: token.preview,
-          wordCount: token.wordCount,
-        },
-      });
-    } else {
-      segments.push({ type: 'text', text: marker });
-    }
-
-    lastIndex = start + marker.length;
-  }
-
-  if (lastIndex < value.length) {
-    segments.push({ type: 'text', text: value.slice(lastIndex) });
-  }
-
-  return segments.filter(segment => segment.type === 'reply' || segment.text.length > 0);
-};
-
-const REPLY_TOKEN_CLIPBOARD_TYPE = 'application/x-second-brain-reply-tokens';
-
-const isComposerReplyElement = (node: Node | null): node is HTMLElement => (
-  node instanceof HTMLElement && node.dataset.replyToken === 'true'
-);
-
-const isComposerFillerElement = (node: Node | null): node is HTMLElement => (
-  node instanceof HTMLElement && node.dataset.composerFiller === 'true'
-);
-
-const isInsideComposerFiller = (node: Node | null): boolean => {
-  const parent = node?.nodeType === Node.ELEMENT_NODE
-    ? node as Element
-    : node?.parentElement;
-  return Boolean(parent?.closest('[data-composer-filler="true"]'));
-};
-
-const createReplyTokenElement = (token: ReplyToken): HTMLElement => {
-  const pill = document.createElement('span');
-  pill.className = 'reply-composer-pill';
-  pill.contentEditable = 'false';
-  pill.dataset.replyToken = 'true';
-  pill.dataset.replyId = token.id;
-  pill.title = token.quote;
-
-  const icon = document.createElement('span');
-  icon.className = 'reply-composer-pill-icon';
-  icon.textContent = '↩';
-
-  const preview = document.createElement('span');
-  preview.className = 'reply-composer-pill-preview';
-  preview.textContent = token.preview;
-
-  const count = document.createElement('span');
-  count.className = 'reply-composer-pill-count';
-  count.textContent = `${token.wordCount}w`;
-
-  pill.append(icon, preview, count);
-  return pill;
-};
-
-const appendComposerText = (root: HTMLElement, text: string, addTrailingFiller = false): void => {
-  const parts = text.split('\n');
-  parts.forEach((part, index) => {
-    if (index > 0) root.append(document.createElement('br'));
-    if (part) root.append(document.createTextNode(part));
-  });
-  if (addTrailingFiller && text.endsWith('\n')) {
-    const filler = document.createElement('span');
-    filler.className = 'reply-composer-filler';
-    filler.dataset.composerFiller = 'true';
-    filler.textContent = '\u200B';
-    root.append(filler);
-  }
-};
-
-const setComposerDomFromValue = (root: HTMLElement, value: string, tokens: ReplyTokenMap): void => {
-  root.replaceChildren();
-  REPLY_TOKEN_MARKER_RE.lastIndex = 0;
-  let lastIndex = 0;
-
-  for (const match of value.matchAll(REPLY_TOKEN_MARKER_RE)) {
-    const marker = match[0];
-    const id = match[1];
-    const start = match.index ?? 0;
-    const token = tokens[id];
-
-    if (start > lastIndex) {
-      appendComposerText(root, value.slice(lastIndex, start));
-    }
-
-    if (token && token.marker === marker) {
-      root.append(createReplyTokenElement(token));
-    } else {
-      root.append(document.createTextNode(marker));
-    }
-
-    lastIndex = start + marker.length;
-  }
-
-  if (lastIndex < value.length) {
-    appendComposerText(root, value.slice(lastIndex), true);
-  }
-};
-
-const composerNodeLength = (node: Node, tokens: ReplyTokenMap): number => {
-  if (isComposerFillerElement(node)) return 0;
-  if (node.nodeType === Node.TEXT_NODE) return node.textContent?.length || 0;
-  if (isComposerReplyElement(node)) {
-    const token = node.dataset.replyId ? tokens[node.dataset.replyId] : undefined;
-    return token?.marker.length || 1;
-  }
-  if (node.nodeName === 'BR') return 1;
-  return Array.from(node.childNodes).reduce((sum, child) => sum + composerNodeLength(child, tokens), 0);
-};
-
-const composerOffsetForDomPosition = (
-  root: HTMLElement,
-  tokens: ReplyTokenMap,
-  targetNode: Node,
-  targetOffset: number,
-): number => {
-  let offset = 0;
-  let found = false;
-
-  const walk = (node: Node): void => {
-    if (found) return;
-
-    if (node === targetNode) {
-      if (isInsideComposerFiller(node)) {
-        found = true;
-        return;
-      }
-      if (node.nodeType === Node.TEXT_NODE) {
-        offset += Math.max(0, Math.min(targetOffset, node.textContent?.length || 0));
-      } else {
-        const children = Array.from(node.childNodes);
-        for (let index = 0; index < Math.min(targetOffset, children.length); index += 1) {
-          offset += composerNodeLength(children[index], tokens);
-        }
-      }
-      found = true;
-      return;
-    }
-
-    if (isComposerFillerElement(node)) return;
-
-    if (node.nodeType === Node.TEXT_NODE || isComposerReplyElement(node) || node.nodeName === 'BR') {
-      offset += composerNodeLength(node, tokens);
-      return;
-    }
-
-    Array.from(node.childNodes).forEach(walk);
-  };
-
-  walk(root);
-  return offset;
-};
-
-const getComposerSelectionRange = (root: HTMLElement, tokens: ReplyTokenMap): { start: number; end: number } | null => {
-  const selection = window.getSelection();
-  if (!selection || selection.rangeCount === 0) return null;
-  const range = selection.getRangeAt(0);
-  if (!root.contains(range.startContainer) || !root.contains(range.endContainer)) return null;
-
-  const start = composerOffsetForDomPosition(root, tokens, range.startContainer, range.startOffset);
-  const end = composerOffsetForDomPosition(root, tokens, range.endContainer, range.endOffset);
-  return start <= end ? { start, end } : { start: end, end: start };
-};
-
-const setComposerSelectionRange = (root: HTMLElement, tokens: ReplyTokenMap, start: number, end = start): void => {
-  const selection = window.getSelection();
-  if (!selection) return;
-
-  const valueLength = composerNodeLength(root, tokens);
-  const targetStart = Math.max(0, Math.min(start, valueLength));
-  const targetEnd = Math.max(0, Math.min(end, valueLength));
-
-  const locate = (target: number): { node: Node; offset: number } => {
-    let traversed = 0;
-    let fallback: { node: Node; offset: number } = { node: root, offset: root.childNodes.length };
-
-    const walk = (node: Node): { node: Node; offset: number } | null => {
-      if (isComposerFillerElement(node)) {
-        const parent = node.parentNode || root;
-        const childIndex = Array.from(parent.childNodes).indexOf(node as ChildNode);
-        if (target <= traversed) return { node: parent, offset: childIndex + 1 };
-        fallback = { node: parent, offset: childIndex + 1 };
-        return null;
-      }
-
-      if (node.nodeType === Node.TEXT_NODE) {
-        const length = node.textContent?.length || 0;
-        if (target <= traversed + length) return { node, offset: target - traversed };
-        traversed += length;
-        return null;
-      }
-
-      if (isComposerReplyElement(node) || node.nodeName === 'BR') {
-        const parent = node.parentNode || root;
-        const childIndex = Array.from(parent.childNodes).indexOf(node as ChildNode);
-        const length = composerNodeLength(node, tokens);
-        if (target <= traversed) return { node: parent, offset: childIndex };
-        if (target <= traversed + length) {
-          if (node.nodeName === 'BR' && target === traversed + length && isComposerFillerElement(node.nextSibling)) {
-            return { node: parent, offset: childIndex + 2 };
-          }
-          return { node: parent, offset: childIndex + 1 };
-        }
-        traversed += length;
-        fallback = { node: parent, offset: childIndex + 1 };
-        return null;
-      }
-
-      const children = Array.from(node.childNodes);
-      if (children.length === 0 && target <= traversed) return { node, offset: 0 };
-      for (const child of children) {
-        const result = walk(child);
-        if (result) return result;
-      }
-      fallback = { node, offset: children.length };
-      return null;
-    };
-
-    return walk(root) || fallback;
-  };
-
-  const startPosition = locate(targetStart);
-  const endPosition = locate(targetEnd);
-  const range = document.createRange();
-  range.setStart(startPosition.node, startPosition.offset);
-  range.setEnd(endPosition.node, endPosition.offset);
-  selection.removeAllRanges();
-  selection.addRange(range);
-};
-
-const readComposerDomValue = (root: HTMLElement, tokens: ReplyTokenMap): string => {
-  let value = '';
-
-  const walk = (node: Node): void => {
-    if (isComposerFillerElement(node) || isInsideComposerFiller(node)) return;
-    if (node.nodeType === Node.TEXT_NODE) {
-      value += node.textContent || '';
-      return;
-    }
-    if (isComposerReplyElement(node)) {
-      const token = node.dataset.replyId ? tokens[node.dataset.replyId] : undefined;
-      if (token) value += token.marker;
-      return;
-    }
-    if (node.nodeName === 'BR') {
-      value += '\n';
-      return;
-    }
-    Array.from(node.childNodes).forEach(walk);
-  };
-
-  Array.from(root.childNodes).forEach(walk);
-  return value;
-};
-
 // Small copy button used in the action row beside reactions
 const CopyButton = ({ msg, isUser }: { msg: ChatMessage; isUser: boolean }) => {
   const [copied, setCopied] = useState(false);
@@ -770,8 +490,8 @@ const ChatMessageItem = React.memo<ChatMessageProps>(({
   onStartEdit, onCancelEdit, onSaveEdit, onFormSubmit, onOpenFile
 }) => {
   return (
-    <div className={clsx("flex flex-col w-full min-w-0 group", isContinuation && 'mt-2')}>
-      <div className={clsx("flex flex-col min-w-0", isUser ? "items-end w-full" : "items-start w-full")}>
+    <div className={clsx("flex flex-col w-full group", isContinuation && 'mt-2')}>
+      <div className={clsx("flex flex-col", isUser ? "items-end" : "items-start w-full")}>
         {!isContinuation && (
           <div className={clsx(
             "flex items-center gap-2 mb-2 group/header",
@@ -820,13 +540,13 @@ const ChatMessageItem = React.memo<ChatMessageProps>(({
             </div>
           </div>
         ) : (
-          <div className={clsx("flex flex-col min-w-0", isUser ? "items-end w-fit max-w-[75%]" : "w-full max-w-full")}>
+          <div className={clsx("flex flex-col", isUser ? "items-end max-w-[75%]" : "w-full")}>
             <div
               className={clsx(
-                "min-w-0 max-w-full overflow-hidden rounded-2xl px-4 py-3 text-[15px] leading-relaxed",
+                "rounded-2xl px-4 py-3 text-[15px] leading-relaxed",
                 !msg.isStreaming && "animate-in",
                 isUser
-                  ? "w-fit bg-[var(--user-bg)] text-[var(--user-text)] rounded-br-md"
+                  ? "bg-[var(--user-bg)] text-[var(--user-text)] rounded-br-md"
                   : "w-full bg-[var(--bg-secondary)] border border-[var(--border-color)] text-[var(--text-primary)] rounded-bl-md shadow-warm",
                 msg.isError && "border-red-200 bg-red-50 text-red-800 dark:border-red-800 dark:bg-red-900/30 dark:text-red-300",
                 msg.isStreaming && "border-[var(--accent-primary)]/30",
@@ -848,7 +568,7 @@ const ChatMessageItem = React.memo<ChatMessageProps>(({
                   return { name, path };
                 });
                 return (
-                  <div className="min-w-0 max-w-full">
+                  <div>
                     {msg.images && msg.images.length > 0 && (
                       <div className={clsx("flex flex-wrap gap-2", (displayText || fileAttachments.length > 0) && "mb-2")}>
                         {msg.images.map(img => (
@@ -864,7 +584,7 @@ const ChatMessageItem = React.memo<ChatMessageProps>(({
                       </div>
                     )}
                     {userSegments && userSegments.length > 0 ? (
-                      <div className="user-reply-segments min-w-0 max-w-full font-chat" style={{ fontFamily: 'var(--font-chat)', fontSize: 'var(--font-size-base)' }}>
+                      <div className="user-reply-segments font-chat" style={{ fontFamily: 'var(--font-chat)', fontSize: 'var(--font-size-base)' }}>
                         {userSegments.map((segment, index) => segment.type === 'reply' ? (
                           <span key={`${segment.reference.id}-${index}`} className="user-reply-pill" title={segment.reference.quote}>
                             <MessageCircle size={13} />
@@ -876,7 +596,7 @@ const ChatMessageItem = React.memo<ChatMessageProps>(({
                         ) : null)}
                       </div>
                     ) : displayText && (
-                      <div className="prose min-w-0 max-w-full chat-markdown chat-markdown-user font-chat" style={{ fontFamily: 'var(--font-chat)', fontSize: 'var(--font-size-base)' }}>
+                      <div className="prose max-w-none chat-markdown chat-markdown-user font-chat" style={{ fontFamily: 'var(--font-chat)', fontSize: 'var(--font-size-base)' }}>
                         <MDEditor.Markdown
                           source={escapeNonHtmlTags(displayText)}
                           style={{
@@ -1134,7 +854,6 @@ export const Chat: React.FC<ChatProps> = ({
   }, [replyTokensBySession, replyTokensKey]);
 
   const [replySelection, setReplySelection] = useState<{ text: string; top: number; left: number } | null>(null);
-  const replySelectionTimersRef = useRef<number[]>([]);
   const lastComposerSelectionRef = useRef<{ sessionId: string; start: number; end: number } | null>(null);
 
   const [view, setView] = useState<'chat' | 'history'>('chat');
@@ -1149,7 +868,6 @@ export const Chat: React.FC<ChatProps> = ({
   const [attachments, setAttachments] = useState<{ name: string, path: string }[]>([]);
   const [imageAttachments, setImageAttachments] = useState<(ChatImageRef & { previewUrl?: string })[]>([]);
   const [showSearch, setShowSearch] = useState(false);
-  const [helperPanelOpen, setHelperPanelOpen] = useState(false);
   const [showPromoteModal, setShowPromoteModal] = useState(false);
   const [promoting, setPromoting] = useState(false);
   const { showToast } = useToast();
@@ -1367,8 +1085,6 @@ export const Chat: React.FC<ChatProps> = ({
     streamPhase,
     toggleReaction,
     sendSlashCommand,
-    helperSettings,
-    updateHelperSettings,
   } = claude;
 
   // Keep ref updated
@@ -1408,6 +1124,15 @@ export const Chat: React.FC<ChatProps> = ({
       return { ...prev, [sessionId]: nextTokens };
     });
   }, [sessionId]);
+
+  const pruneReplyTokensForInput = useCallback((value: string) => {
+    setReplyTokensForSession(prev => {
+      const next = Object.fromEntries(
+        Object.entries(prev).filter(([, token]) => value.includes(token.marker))
+      );
+      return Object.keys(next).length === Object.keys(prev).length ? prev : next;
+    });
+  }, [setReplyTokensForSession]);
 
   // Agent selection state
   const { agents, getAgent } = useAgents();
@@ -1461,37 +1186,6 @@ export const Chat: React.FC<ChatProps> = ({
   const effectiveAgentName: string | null = currentAgent || selectedAgentName || null;
   const selectedAgentObj = effectiveAgentName ? getAgent(effectiveAgentName) : undefined;
   const agentDisplayName = selectedAgentObj?.display_name || 'Select agent';
-
-  const saveHelperSettings = useCallback((next: ChatHelperSettings) => {
-    void updateHelperSettings(next);
-  }, [updateHelperSettings]);
-
-  const setTitlerPaused = useCallback((paused: boolean) => {
-    saveHelperSettings({
-      ...helperSettings,
-      titler: { paused },
-    });
-  }, [helperSettings, saveHelperSettings]);
-
-  const setMemoryMode = useCallback((mode: ChatHelperSettings['contextual_memory']['mode']) => {
-    saveHelperSettings({
-      ...helperSettings,
-      contextual_memory: {
-        ...helperSettings.contextual_memory,
-        mode,
-      },
-    });
-  }, [helperSettings, saveHelperSettings]);
-
-  const setManualMemoryQuery = useCallback((manualQuery: string) => {
-    saveHelperSettings({
-      ...helperSettings,
-      contextual_memory: {
-        ...helperSettings.contextual_memory,
-        manual_query: manualQuery,
-      },
-    });
-  }, [helperSettings, saveHelperSettings]);
 
   // Reset chess game when session changes (new chat or loading different chat)
   useEffect(() => {
@@ -1833,66 +1527,19 @@ export const Chat: React.FC<ChatProps> = ({
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const historyListRef = useRef<HTMLDivElement>(null);
-  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
-  const composerEditableRef = useRef<HTMLDivElement | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const isUserNearBottom = useRef(true);
   useCodeBlockWrap(scrollRef);
 
-  const syncComposerShim = useCallback((composer: HTMLDivElement) => {
-    const selection = getComposerSelectionRange(composer, replyTokens);
-    const start = selection?.start ?? input.length;
-    const end = selection?.end ?? start;
-    const shim = composer as HTMLDivElement & { selectionStart?: number; selectionEnd?: number; value?: string };
-    shim.selectionStart = start;
-    shim.selectionEnd = end;
-    shim.value = input;
-    textareaRef.current = composer as unknown as HTMLTextAreaElement;
-    return { start, end };
-  }, [input, replyTokens]);
-
-  const recordComposerSelection = useCallback((composer: HTMLDivElement) => {
-    const { start, end } = syncComposerShim(composer);
+  const recordComposerSelection = useCallback((textarea: HTMLTextAreaElement) => {
     lastComposerSelectionRef.current = {
       sessionId,
-      start,
-      end,
+      start: textarea.selectionStart,
+      end: textarea.selectionEnd,
     };
-  }, [sessionId, syncComposerShim]);
-
-  const applyComposerValue = useCallback((value: string, tokens: ReplyTokenMap, cursor?: number, end = cursor) => {
-    const composer = composerEditableRef.current;
-    if (composer) {
-      setComposerDomFromValue(composer, value, tokens);
-      if (typeof cursor === 'number') {
-        composer.focus();
-        setComposerSelectionRange(composer, tokens, cursor, end);
-      }
-      const selection = getComposerSelectionRange(composer, tokens);
-      const start = selection?.start ?? value.length;
-      const selectionEnd = selection?.end ?? start;
-      const shim = composer as HTMLDivElement & { selectionStart?: number; selectionEnd?: number; value?: string };
-      shim.selectionStart = start;
-      shim.selectionEnd = selectionEnd;
-      shim.value = value;
-      lastComposerSelectionRef.current = { sessionId, start, end: selectionEnd };
-    }
-    setInput(value);
-    setReplyTokensForSession(tokens);
-  }, [sessionId, setInput, setReplyTokensForSession]);
-
-  useLayoutEffect(() => {
-    const composer = composerEditableRef.current;
-    if (!composer) return;
-    setComposerDomFromValue(composer, input, replyTokens);
-    syncComposerShim(composer);
-  // Composer DOM is intentionally hydrated on conversation/view changes only.
-  // Normal typing is browser-owned and mirrored into state from onInput.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, view]);
+  }, [sessionId]);
 
   const hideReplySelection = useCallback(() => {
-    replySelectionTimersRef.current.forEach(window.clearTimeout);
-    replySelectionTimersRef.current = [];
     setReplySelection(null);
   }, []);
 
@@ -1904,15 +1551,12 @@ export const Chat: React.FC<ChatProps> = ({
     }
 
     const range = selection.getRangeAt(0);
-    const startElement = range.startContainer.nodeType === Node.ELEMENT_NODE
-      ? range.startContainer as Element
-      : range.startContainer.parentElement;
-    const endElement = range.endContainer.nodeType === Node.ELEMENT_NODE
-      ? range.endContainer as Element
-      : range.endContainer.parentElement;
-    const source = startElement?.closest('[data-reply-source="assistant"]');
-    const endSource = endElement?.closest('[data-reply-source="assistant"]');
-    if (!source || source !== endSource || !source.contains(range.startContainer) || !source.contains(range.endContainer)) {
+    const commonNode = range.commonAncestorContainer;
+    const commonElement = commonNode.nodeType === Node.ELEMENT_NODE
+      ? commonNode as Element
+      : commonNode.parentElement;
+    const source = commonElement?.closest('[data-reply-source="assistant"]');
+    if (!source || !source.contains(range.startContainer) || !source.contains(range.endContainer)) {
       setReplySelection(null);
       return;
     }
@@ -1923,63 +1567,32 @@ export const Chat: React.FC<ChatProps> = ({
       return;
     }
 
-    const rects = Array.from(range.getClientRects()).filter(r => r.width > 0 && r.height > 0);
-    const rect = rects[0] || range.getBoundingClientRect();
+    const rect = Array.from(range.getClientRects()).find(r => r.width > 0 && r.height > 0) || range.getBoundingClientRect();
     if (!rect || (rect.width === 0 && rect.height === 0)) {
       setReplySelection(null);
       return;
     }
 
-    const bubbleTop = isMobile
-      ? Math.min(window.innerHeight - 56, rect.bottom + 12)
-      : Math.max(8, rect.top - 42);
     setReplySelection({
       text: selectedText,
-      top: bubbleTop,
-      left: Math.min(window.innerWidth - 72, Math.max(72, rect.left + rect.width / 2)),
+      top: Math.max(8, rect.top - 42),
+      left: Math.min(window.innerWidth - 48, Math.max(48, rect.left + rect.width / 2)),
     });
-
-  }, [isMobile]);
-
-  const scheduleReplySelectionUpdate = useCallback((delays: number[] = [0]) => {
-    replySelectionTimersRef.current.forEach(window.clearTimeout);
-    replySelectionTimersRef.current = delays.map(delay => (
-      window.setTimeout(updateReplySelectionFromDocument, delay)
-    ));
-  }, [updateReplySelectionFromDocument]);
-
-  const copyReplySelection = useCallback(async () => {
-    if (!replySelection?.text) return;
-    try {
-      await navigator.clipboard.writeText(replySelection.text);
-    } catch {
-      const textarea = document.createElement('textarea');
-      textarea.value = replySelection.text;
-      textarea.style.position = 'fixed';
-      textarea.style.left = '-9999px';
-      document.body.appendChild(textarea);
-      textarea.focus();
-      textarea.select();
-      document.execCommand('copy');
-      document.body.removeChild(textarea);
-    }
-    hideReplySelection();
-    window.getSelection()?.removeAllRanges();
-  }, [hideReplySelection, replySelection?.text]);
+  }, []);
 
   const insertReplyToken = useCallback((quote: string) => {
     const token = buildReplyToken(quote);
-    const composer = composerEditableRef.current;
-    const liveSelection = composer ? getComposerSelectionRange(composer, replyTokens) : null;
     const rememberedSelection = lastComposerSelectionRef.current;
     const canUseRememberedSelection = rememberedSelection?.sessionId === sessionId;
-    const rawStart = liveSelection
-      ? liveSelection.start
+    const textarea = textareaRef.current;
+    const activeInComposer = textarea && document.activeElement === textarea;
+    const rawStart = activeInComposer
+      ? textarea.selectionStart
       : canUseRememberedSelection
         ? rememberedSelection.start
         : input.length;
-    const rawEnd = liveSelection
-      ? liveSelection.end
+    const rawEnd = activeInComposer
+      ? textarea.selectionEnd
       : canUseRememberedSelection
         ? rememberedSelection.end
         : input.length;
@@ -1987,18 +1600,24 @@ export const Chat: React.FC<ChatProps> = ({
     const end = Math.max(start, Math.min(rawEnd, input.length));
     const nextInput = `${input.slice(0, start)}${token.marker}${input.slice(end)}`;
     const nextCursor = start + token.marker.length;
-    const nextTokens = { ...replyTokens, [token.id]: token };
 
-    applyComposerValue(nextInput, nextTokens, nextCursor);
+    setReplyTokensForSession(prev => ({ ...prev, [token.id]: token }));
+    setInput(nextInput);
     setReplySelection(null);
     window.getSelection()?.removeAllRanges();
-  }, [applyComposerValue, input, replyTokens, sessionId]);
 
-  const deleteReplyTokenAtCursor = useCallback((direction: 'backward' | 'forward'): boolean => {
-    const composer = composerEditableRef.current;
-    const selection = composer ? getComposerSelectionRange(composer, replyTokens) : null;
-    if (!selection) return false;
-    const { start, end } = selection;
+    requestAnimationFrame(() => {
+      const ta = textareaRef.current;
+      if (!ta) return;
+      ta.focus();
+      ta.setSelectionRange(nextCursor, nextCursor);
+      lastComposerSelectionRef.current = { sessionId, start: nextCursor, end: nextCursor };
+    });
+  }, [input, sessionId, setInput, setReplyTokensForSession]);
+
+  const deleteReplyTokenAtCursor = useCallback((textarea: HTMLTextAreaElement, direction: 'backward' | 'forward'): boolean => {
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
     const ranges = getReplyTokenRanges(input, replyTokens);
     const touched = ranges.filter(range => {
       if (start !== end) return range.start < end && range.end > start;
@@ -2011,47 +1630,43 @@ export const Chat: React.FC<ChatProps> = ({
     const deleteStart = Math.min(...touched.map(range => range.start), start);
     const deleteEnd = Math.max(...touched.map(range => range.end), end);
     const nextInput = `${input.slice(0, deleteStart)}${input.slice(deleteEnd)}`;
-    const nextTokens = Object.fromEntries(
-      Object.entries(replyTokens).filter(([, token]) => nextInput.includes(token.marker))
-    );
-    applyComposerValue(nextInput, nextTokens, deleteStart);
+    setInput(nextInput);
+    pruneReplyTokensForInput(nextInput);
+    requestAnimationFrame(() => {
+      textarea.focus();
+      textarea.setSelectionRange(deleteStart, deleteStart);
+      lastComposerSelectionRef.current = { sessionId, start: deleteStart, end: deleteStart };
+    });
     return true;
-  }, [applyComposerValue, input, replyTokens]);
+  }, [input, pruneReplyTokensForInput, replyTokens, sessionId, setInput]);
 
   useEffect(() => {
     const handleSelectionChange = () => {
       const active = document.activeElement;
       if (active === textareaRef.current) {
-        hideReplySelection();
+        setReplySelection(null);
         return;
       }
 
       const selection = window.getSelection();
       if (!selection || selection.isCollapsed) {
-        hideReplySelection();
-        return;
+        setReplySelection(null);
       }
-
-      scheduleReplySelectionUpdate(isMobile ? [80, 250, 600] : [0]);
     };
 
     document.addEventListener('selectionchange', handleSelectionChange);
-    return () => {
-      document.removeEventListener('selectionchange', handleSelectionChange);
-      replySelectionTimersRef.current.forEach(window.clearTimeout);
-      replySelectionTimersRef.current = [];
-    };
-  }, [hideReplySelection, isMobile, scheduleReplySelectionUpdate]);
+    return () => document.removeEventListener('selectionchange', handleSelectionChange);
+  }, []);
 
-  // Auto-resize composer — preserve chat scroll position during reflow
+  // Auto-resize textarea — preserve chat scroll position during reflow
   useEffect(() => {
-    const composer = composerEditableRef.current;
+    const textarea = textareaRef.current;
     const scrollEl = scrollRef.current;
-    if (composer) {
+    if (textarea) {
       const prevScrollTop = scrollEl?.scrollTop ?? 0;
-      composer.style.height = 'auto';
+      textarea.style.height = 'auto';
       const maxHeight = window.innerHeight * 0.5;
-      composer.style.height = Math.min(composer.scrollHeight, maxHeight) + 'px';
+      textarea.style.height = Math.min(textarea.scrollHeight, maxHeight) + 'px';
       if (scrollEl) scrollEl.scrollTop = prevScrollTop;
     }
   }, [input]);
@@ -2301,61 +1916,40 @@ export const Chat: React.FC<ChatProps> = ({
     return false;
   }, [agents]);
 
-  const syncComposerStateFromDom = useCallback((composer: HTMLDivElement, tokenSource: ReplyTokenMap = replyTokens) => {
-    const value = readComposerDomValue(composer, tokenSource);
-    const nextTokens = Object.fromEntries(
-      Object.entries(tokenSource).filter(([, token]) => value.includes(token.marker))
-    );
-    setInput(value);
-    setReplyTokensForSession(nextTokens);
-    const selection = getComposerSelectionRange(composer, nextTokens);
-    const start = selection?.start ?? value.length;
-    const end = selection?.end ?? start;
-    const shim = composer as HTMLDivElement & { selectionStart?: number; selectionEnd?: number; value?: string };
-    shim.selectionStart = start;
-    shim.selectionEnd = end;
-    shim.value = value;
-    lastComposerSelectionRef.current = { sessionId, start, end };
-    return { value, tokens: nextTokens, start, end };
-  }, [replyTokens, sessionId, setInput, setReplyTokensForSession]);
-
   // Handle input changes.
   // On a fresh new chat with no agent selected, typing an agent name followed by
   // a space will auto-select that agent and clear the input (the typed name is
   // consumed as the selection, not part of the message).
-  const handleComposerInput = useCallback((e: React.FormEvent<HTMLDivElement>) => {
-    const composer = e.currentTarget;
-    const value = readComposerDomValue(composer, replyTokens);
+  const handleInputChange = useCallback((value: string) => {
     if (!effectiveAgentName && messages.length === 0 && value.endsWith(' ')) {
       const prefix = value.slice(0, -1);
       if (tryAutoSelectAgent(prefix)) {
-        applyComposerValue('', {}, 0);
+        setInput('');
+        setReplyTokensForSession({});
         return;
       }
     }
-    syncComposerStateFromDom(composer);
-  }, [applyComposerValue, effectiveAgentName, messages.length, replyTokens, syncComposerStateFromDom, tryAutoSelectAgent]);
-
-  const replaceComposerRangeWithText = useCallback((start: number, end: number, text: string) => {
-    const value = composerEditableRef.current
-      ? readComposerDomValue(composerEditableRef.current, replyTokens)
-      : input;
-    const safeStart = Math.max(0, Math.min(start, value.length));
-    const safeEnd = Math.max(safeStart, Math.min(end, value.length));
-    const nextValue = `${value.slice(0, safeStart)}${text}${value.slice(safeEnd)}`;
-    const nextTokens = Object.fromEntries(
-      Object.entries(replyTokens).filter(([, token]) => nextValue.includes(token.marker))
-    );
-    applyComposerValue(nextValue, nextTokens, safeStart + text.length);
-  }, [applyComposerValue, input, replyTokens]);
+    setInput(value);
+    pruneReplyTokensForInput(value);
+  }, [setInput, setReplyTokensForSession, effectiveAgentName, messages.length, tryAutoSelectAgent, pruneReplyTokensForInput]);
 
   // Handle @mention autocomplete selection.
   const handleMentionSelect = useCallback((agentName: string, replaceFrom: number) => {
-    const composer = composerEditableRef.current;
-    const selection = composer ? getComposerSelectionRange(composer, replyTokens) : null;
-    const cursorPos = selection?.end ?? lastComposerSelectionRef.current?.end ?? input.length;
-    replaceComposerRangeWithText(replaceFrom, cursorPos, `@${agentName} `);
-  }, [input.length, replaceComposerRangeWithText, replyTokens]);
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    const cursorPos = textarea.selectionStart;
+    const before = input.slice(0, replaceFrom);
+    const after = input.slice(cursorPos);
+    const newValue = `${before}@${agentName} ${after}`;
+    setInput(newValue);
+    requestAnimationFrame(() => {
+      const newPos = replaceFrom + agentName.length + 2; // @name + space
+      textarea.selectionStart = newPos;
+      textarea.selectionEnd = newPos;
+      textarea.focus();
+      lastComposerSelectionRef.current = { sessionId, start: newPos, end: newPos };
+    });
+  }, [input, setInput, sessionId]);
 
   // Upload image files to the server and return image refs
   const uploadImages = useCallback(async (files: File[]): Promise<ChatImageRef[]> => {
@@ -2400,39 +1994,8 @@ export const Chat: React.FC<ChatProps> = ({
     setImageAttachments(prev => [...prev, ...withPreviews]);
   }, [uploadImages]);
 
-  const handleComposerCopy = useCallback((e: React.ClipboardEvent<HTMLDivElement>) => {
-    const composer = composerEditableRef.current;
-    const selection = composer ? getComposerSelectionRange(composer, replyTokens) : null;
-    if (!selection || selection.start === selection.end) return;
-
-    const selectedValue = input.slice(selection.start, selection.end);
-    const selectedTokens = Object.fromEntries(
-      Object.entries(replyTokens).filter(([, token]) => selectedValue.includes(token.marker))
-    );
-
-    e.preventDefault();
-    e.clipboardData.setData('text/plain', displayReplyTokens(selectedValue, replyTokens));
-    e.clipboardData.setData(REPLY_TOKEN_CLIPBOARD_TYPE, JSON.stringify({
-      value: selectedValue,
-      tokens: selectedTokens,
-    }));
-  }, [input, replyTokens]);
-
-  const handleComposerCut = useCallback((e: React.ClipboardEvent<HTMLDivElement>) => {
-    const composer = composerEditableRef.current;
-    const selection = composer ? getComposerSelectionRange(composer, replyTokens) : null;
-    if (!selection || selection.start === selection.end) return;
-
-    handleComposerCopy(e);
-    const nextValue = `${input.slice(0, selection.start)}${input.slice(selection.end)}`;
-    const nextTokens = Object.fromEntries(
-      Object.entries(replyTokens).filter(([, token]) => nextValue.includes(token.marker))
-    );
-    applyComposerValue(nextValue, nextTokens, selection.start);
-  }, [applyComposerValue, handleComposerCopy, input, replyTokens]);
-
-  // Handle image paste and force text paste to stay plain.
-  const handlePaste = useCallback((e: React.ClipboardEvent<HTMLDivElement>) => {
+  // Handle image paste (Ctrl+V)
+  const handlePaste = useCallback((e: React.ClipboardEvent) => {
     const items = e.clipboardData?.items;
     if (!items) return;
 
@@ -2447,38 +2010,8 @@ export const Chat: React.FC<ChatProps> = ({
     if (imageFiles.length > 0) {
       e.preventDefault(); // Don't paste image as text
       stageImages(imageFiles);
-      return;
     }
-
-    const composer = composerEditableRef.current;
-    const selection = composer ? getComposerSelectionRange(composer, replyTokens) : null;
-    const start = selection?.start ?? input.length;
-    const end = selection?.end ?? start;
-    const tokenPayload = e.clipboardData.getData(REPLY_TOKEN_CLIPBOARD_TYPE);
-    if (tokenPayload) {
-      try {
-        const parsed = JSON.parse(tokenPayload) as { value?: string; tokens?: ReplyTokenMap };
-        if (typeof parsed.value === 'string' && parsed.tokens && isRecord(parsed.tokens)) {
-          e.preventDefault();
-          const nextValue = `${input.slice(0, start)}${parsed.value}${input.slice(end)}`;
-          const nextTokens = {
-            ...replyTokens,
-            ...parsed.tokens,
-          };
-          applyComposerValue(nextValue, nextTokens, start + parsed.value.length);
-          return;
-        }
-      } catch {
-        // Fall through to plain text paste.
-      }
-    }
-
-    const pastedText = e.clipboardData.getData('text/plain');
-    if (pastedText) {
-      e.preventDefault();
-      replaceComposerRangeWithText(start, end, pastedText);
-    }
-  }, [applyComposerValue, input, replaceComposerRangeWithText, replyTokens, stageImages]);
+  }, [stageImages]);
 
   // Handle image file input change
   const handleImageSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
@@ -2511,7 +2044,8 @@ export const Chat: React.FC<ChatProps> = ({
     }
     const ok = sendSlashCommand(command, args);
     if (ok) {
-      applyComposerValue('', {}, 0);
+      setInput('');
+      setReplyTokensForSession({});
     } else {
       showToast({
         type: 'warning',
@@ -2519,13 +2053,21 @@ export const Chat: React.FC<ChatProps> = ({
         message: 'Could not send command. Connection may be down.',
       });
     }
-  }, [applyComposerValue, sessionId, sendSlashCommand, showToast]);
+  }, [sessionId, sendSlashCommand, setInput, setReplyTokensForSession, showToast]);
 
   // Insert just the command name (with trailing space) so the user can keep typing args
   const handleInsertSlashName = useCallback((name: string) => {
-    const text = `/${name} `;
-    applyComposerValue(text, {}, text.length);
-  }, [applyComposerValue]);
+    setInput(`/${name} `);
+    setReplyTokensForSession({});
+    requestAnimationFrame(() => {
+      const ta = textareaRef.current;
+      if (ta) {
+        ta.focus();
+        const pos = name.length + 2;
+        ta.setSelectionRange(pos, pos);
+      }
+    });
+  }, [setInput, setReplyTokensForSession]);
 
   // Handle send
   const handleSend = useCallback(() => {
@@ -2570,7 +2112,8 @@ export const Chat: React.FC<ChatProps> = ({
     // Enter press as a selection (not a send).
     if (!effectiveAgentName && !attachments.length && !imageAttachments.length) {
       if (tryAutoSelectAgent(input)) {
-        applyComposerValue('', {}, 0);
+        setInput('');
+        setReplyTokensForSession({});
         return;
       }
       showToast({
@@ -2598,19 +2141,9 @@ export const Chat: React.FC<ChatProps> = ({
       displayPrefix = `${contextStr}\n`;
     }
 
-    const displaySegments = replyTokenDisplaySegments(input, replyTokens);
-    const replyReferences = displaySegments
-      .filter((segment): segment is Extract<ChatDisplaySegment, { type: 'reply' }> => segment.type === 'reply')
-      .map(segment => segment.reference);
-    const displayPayload: ChatDisplayPayload | undefined = replyReferences.length > 0
-      ? {
-          displayContent: `${displayPrefix}${displayReplyTokens(input, replyTokens)}`,
-          displaySegments: displayPrefix
-            ? [{ type: 'text', text: displayPrefix }, ...displaySegments]
-            : displaySegments,
-          replyReferences,
-        }
-      : undefined;
+    const displayPayload: ChatDisplayPayload = {
+      displayContent: `${displayPrefix}${displayReplyTokens(input, replyTokens)}`,
+    };
 
     // Strip preview URLs before sending (server doesn't need blob URLs)
     const imageRefs: ChatImageRef[] | undefined = imageAttachments.length > 0
@@ -2620,11 +2153,12 @@ export const Chat: React.FC<ChatProps> = ({
     // If sending only images with no text, add a placeholder so the server doesn't skip it
     if (!fullMessage.trim() && imageRefs && imageRefs.length > 0) {
       fullMessage = `[Sent ${imageRefs.length} image${imageRefs.length > 1 ? 's' : ''}]`;
-      if (displayPayload) displayPayload.displayContent = fullMessage;
+      displayPayload.displayContent = fullMessage;
     }
 
     if (sendMessageWithAgent(fullMessage, effectiveAgentName, imageRefs, displayPayload)) {
-      applyComposerValue('', {}, 0);
+      setInput('');
+      setReplyTokensForSession({});
       setAttachments([]);
       // Clean up preview URLs
       imageAttachments.forEach(img => {
@@ -2632,83 +2166,19 @@ export const Chat: React.FC<ChatProps> = ({
       });
       setImageAttachments([]);
     }
-  }, [applyComposerValue, attachments, dispatchSlash, effectiveAgentName, imageAttachments, input, replyTokens, sendMessageWithAgent, showToast, slashCommands, tryAutoSelectAgent]);
+  }, [attachments, dispatchSlash, effectiveAgentName, imageAttachments, input, replyTokens, sendMessageWithAgent, setInput, setReplyTokensForSession, showToast, slashCommands, tryAutoSelectAgent]);
 
-  const insertComposerLineBreak = useCallback((composer: HTMLDivElement) => {
-    const value = readComposerDomValue(composer, replyTokens);
-    const selection = getComposerSelectionRange(composer, replyTokens) || { start: value.length, end: value.length };
-
-    if (selection.start !== selection.end) {
-      replaceComposerRangeWithText(selection.start, selection.end, '\n');
-      return;
-    }
-
-    composer.focus();
-    let inserted = false;
-    try {
-      inserted = document.execCommand('insertLineBreak');
-    } catch {
-      inserted = false;
-    }
-
-    if (inserted) {
-      const nextValue = `${value.slice(0, selection.start)}\n${value.slice(selection.end)}`;
-      const nextTokens = Object.fromEntries(
-        Object.entries(replyTokens).filter(([, token]) => nextValue.includes(token.marker))
-      );
-      const cursor = selection.start + 1;
-      setInput(nextValue);
-      setReplyTokensForSession(nextTokens);
-      const shim = composer as HTMLDivElement & { selectionStart?: number; selectionEnd?: number; value?: string };
-      shim.selectionStart = cursor;
-      shim.selectionEnd = cursor;
-      shim.value = nextValue;
-      lastComposerSelectionRef.current = { sessionId, start: cursor, end: cursor };
-    } else {
-      replaceComposerRangeWithText(selection.start, selection.end, '\n');
-    }
-  }, [replyTokens, replaceComposerRangeWithText, sessionId, setInput, setReplyTokensForSession]);
-
-  const handleComposerBeforeInput = useCallback((e: React.FormEvent<HTMLDivElement>) => {
-    const nativeEvent = e.nativeEvent as InputEvent;
-    if (e.defaultPrevented) return;
-    if (isMobile && (nativeEvent.inputType === 'insertLineBreak' || nativeEvent.inputType === 'insertParagraph')) {
-      e.preventDefault();
-      insertComposerLineBreak(e.currentTarget);
-    }
-  }, [insertComposerLineBreak, isMobile]);
-
-  useEffect(() => {
-    if (!isMobile) return;
-    const composer = composerEditableRef.current;
-    if (!composer) return;
-
-    const handleBeforeInput = (event: InputEvent) => {
-      if (event.defaultPrevented) return;
-      if (event.inputType !== 'insertLineBreak' && event.inputType !== 'insertParagraph') return;
-      event.preventDefault();
-      insertComposerLineBreak(composer);
-    };
-
-    composer.addEventListener('beforeinput', handleBeforeInput);
-    return () => composer.removeEventListener('beforeinput', handleBeforeInput);
-  }, [insertComposerLineBreak, isMobile, sessionId, view]);
-
-  const handleComposerKeyDown = useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
+  const handleComposerKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     recordComposerSelection(e.currentTarget);
 
-    if ((e.key === 'Backspace' || e.key === 'Delete') && deleteReplyTokenAtCursor(e.key === 'Backspace' ? 'backward' : 'forward')) {
+    if ((e.key === 'Backspace' || e.key === 'Delete') && deleteReplyTokenAtCursor(e.currentTarget, e.key === 'Backspace' ? 'backward' : 'forward')) {
       e.preventDefault();
       return;
     }
 
-    if (e.key === 'Enter') {
+    if (e.key === 'Enter' && !isMobile && !e.shiftKey) {
       e.preventDefault();
-      if (!isMobile && !e.shiftKey) {
-        handleSend();
-      } else {
-        insertComposerLineBreak(e.currentTarget);
-      }
+      handleSend();
       return;
     }
 
@@ -2716,10 +2186,17 @@ export const Chat: React.FC<ChatProps> = ({
       // Tab inserts an indent instead of shifting focus.
       // Shift+Tab is left alone so it still escapes the textarea (accessibility).
       e.preventDefault();
-      const selection = getComposerSelectionRange(e.currentTarget, replyTokens) || { start: input.length, end: input.length };
-      replaceComposerRangeWithText(selection.start, selection.end, '\t');
+      const textarea = e.currentTarget;
+      const start = textarea.selectionStart;
+      const end = textarea.selectionEnd;
+      const newValue = input.substring(0, start) + '\t' + input.substring(end);
+      handleInputChange(newValue);
+      requestAnimationFrame(() => {
+        textarea.selectionStart = textarea.selectionEnd = start + 1;
+        lastComposerSelectionRef.current = { sessionId, start: start + 1, end: start + 1 };
+      });
     }
-  }, [deleteReplyTokenAtCursor, handleSend, input.length, insertComposerLineBreak, isMobile, recordComposerSelection, replaceComposerRangeWithText, replyTokens]);
+  }, [deleteReplyTokenAtCursor, handleInputChange, handleSend, input, isMobile, recordComposerSelection, sessionId]);
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
@@ -3068,8 +2545,8 @@ export const Chat: React.FC<ChatProps> = ({
       <div
         ref={scrollRef}
         className="flex-1 overflow-y-auto"
-        onMouseUp={() => scheduleReplySelectionUpdate([0])}
-        onTouchEnd={() => scheduleReplySelectionUpdate([80, 250, 600])}
+        onMouseUp={() => window.setTimeout(updateReplySelectionFromDocument, 0)}
+        onTouchEnd={() => window.setTimeout(updateReplySelectionFromDocument, 0)}
         onScroll={hideReplySelection}
         onClick={(e) => {
           // Dismiss mobile reaction picker when tapping the scroll background (not a message)
@@ -3119,7 +2596,7 @@ export const Chat: React.FC<ChatProps> = ({
                 >
                   <div
                     className={clsx(
-                      "rounded-full border px-2.5 py-0.5 text-[10.5px] flex items-center gap-1.5 max-w-[80%] min-w-0",
+                      "rounded-full border px-2.5 py-0.5 text-[10.5px] flex items-center gap-1.5 max-w-[80%]",
                       msg.ok === false
                         ? "border-red-300/50 bg-red-50/60 text-red-700 dark:border-red-700/40 dark:bg-red-900/10 dark:text-red-300"
                         : noticeKind === "noop"
@@ -3198,7 +2675,7 @@ export const Chat: React.FC<ChatProps> = ({
                       <div
                         data-reply-source={!isUser ? 'assistant' : undefined}
                         className={clsx(
-                          "group flex flex-col gap-1 w-full min-w-0",
+                          "group flex flex-col gap-1",
                           isUser ? "items-end" : "items-start w-full",
                           mentionAgent && "pl-3 border-l-2 border-[var(--accent-primary)]/40"
                         )}
@@ -3268,7 +2745,7 @@ export const Chat: React.FC<ChatProps> = ({
                     return (
                   <div
                     data-reply-source={!isUser ? 'assistant' : undefined}
-                    className={clsx("group min-w-0", isUser && "flex flex-col items-end w-full", legacyMentionAgent && "pl-3 border-l-2 border-[var(--accent-primary)]/40")}
+                    className={clsx("group", isUser && "flex flex-col items-end", legacyMentionAgent && "pl-3 border-l-2 border-[var(--accent-primary)]/40")}
                     onClick={() => { if (isMobile && !isUser) setReactionMsgId(prev => prev === msg.id ? null : msg.id); }}
                   >
                     {/* Agent header for @mentioned agents in legacy mode */}
@@ -3347,28 +2824,16 @@ export const Chat: React.FC<ChatProps> = ({
       </div>
 
       {replySelection && (
-        <div
-          className="fixed z-50 inline-flex items-center gap-1 rounded-full border border-[var(--border-color)] bg-[var(--bg-secondary)] p-1 text-xs font-medium text-[var(--text-primary)] shadow-lg"
+        <button
+          type="button"
+          className="fixed z-50 inline-flex items-center gap-1.5 rounded-full border border-[var(--border-color)] bg-[var(--bg-secondary)] px-3 py-1.5 text-xs font-medium text-[var(--text-primary)] shadow-lg transition-colors hover:bg-[var(--bg-tertiary)]"
           style={{ top: replySelection.top, left: replySelection.left, transform: 'translateX(-50%)' }}
           onMouseDown={(e) => e.preventDefault()}
+          onClick={() => insertReplyToken(replySelection.text)}
         >
-          <button
-            type="button"
-            className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 transition-colors hover:bg-[var(--bg-tertiary)]"
-            onClick={copyReplySelection}
-          >
-            <Copy size={13} />
-            Copy
-          </button>
-          <button
-            type="button"
-            className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 transition-colors hover:bg-[var(--bg-tertiary)]"
-            onClick={() => insertReplyToken(replySelection.text)}
-          >
-            <MessageCircle size={13} />
-            Reply
-          </button>
-        </div>
+          <MessageCircle size={13} />
+          Reply
+        </button>
       )}
 
       {/* Todo Strip - shown when any agent uses TodoWrite */}
@@ -3570,66 +3035,8 @@ export const Chat: React.FC<ChatProps> = ({
               onDragOver={handleDragOver}
               onDrop={handleDrop}
             >
-              {/* Chat helper settings */}
-              <div className="chat-helper-control relative flex-shrink-0">
-                <button
-                  type="button"
-                  onClick={() => setHelperPanelOpen(open => !open)}
-                  className={clsx(
-                    "p-2 rounded-lg hover:bg-[var(--border-color)] text-[var(--text-muted)] hover:text-[var(--text-secondary)] transition-colors",
-                    helperPanelOpen && "text-[var(--accent-primary)] bg-[var(--bg-secondary)]"
-                  )}
-                  title="Chat helpers"
-                  aria-expanded={helperPanelOpen}
-                >
-                  <SlidersHorizontal size={18} />
-                </button>
-
-                {helperPanelOpen && (
-                  <div className="chat-helper-popover">
-                    <div className="chat-helper-row">
-                      <span>Titler</span>
-                      <label className="chat-helper-toggle">
-                        <input
-                          type="checkbox"
-                          checked={helperSettings.titler.paused}
-                          onChange={(e) => setTitlerPaused(e.target.checked)}
-                        />
-                        <span>{helperSettings.titler.paused ? 'Paused' : 'On'}</span>
-                      </label>
-                    </div>
-
-                    <div className="chat-helper-row items-start">
-                      <span>Contextual Memory</span>
-                      <div className="chat-helper-segments" role="group" aria-label="Contextual memory mode">
-                        {(['auto', 'off', 'manual'] as const).map(mode => (
-                          <button
-                            key={mode}
-                            type="button"
-                            className={clsx("chat-helper-segment", helperSettings.contextual_memory.mode === mode && "active")}
-                            onClick={() => setMemoryMode(mode)}
-                          >
-                            {mode}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-
-                    {helperSettings.contextual_memory.mode === 'manual' && (
-                      <input
-                        className="chat-helper-query"
-                        value={helperSettings.contextual_memory.manual_query}
-                        onChange={(e) => setManualMemoryQuery(e.target.value)}
-                        placeholder="Manual contextual memory query"
-                      />
-                    )}
-                  </div>
-                )}
-              </div>
-
               {/* Image upload button */}
               <button
-                type="button"
                 onClick={() => imageInputRef.current?.click()}
                 className="p-2 rounded-lg hover:bg-[var(--border-color)] text-[var(--text-muted)] hover:text-[var(--text-secondary)] transition-colors flex-shrink-0"
                 title="Attach image (or paste with Ctrl+V)"
@@ -3637,52 +3044,31 @@ export const Chat: React.FC<ChatProps> = ({
                 <ImagePlus size={18} />
               </button>
 
-              <div
-                className="reply-composer-shell flex-1 min-w-0"
+              <textarea
+                ref={textareaRef}
+                value={input}
+                onChange={(e) => handleInputChange(e.target.value)}
+                onPaste={handlePaste}
+                placeholder={status !== 'idle'
+                  ? `Type a follow-up... (will queue until ${agentDisplayName} finishes)`
+                  : effectiveAgentName
+                    ? `Message ${agentDisplayName}...`
+                    : `Type an agent name + space to select, or pick one above...`
+                }
+                rows={1}
+                onSelect={(e) => recordComposerSelection(e.currentTarget)}
+                onClick={(e) => recordComposerSelection(e.currentTarget)}
+                onKeyUp={(e) => recordComposerSelection(e.currentTarget)}
+                onFocus={(e) => recordComposerSelection(e.currentTarget)}
+                onKeyDown={handleComposerKeyDown}
+                className="flex-1 bg-transparent border-none text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:ring-0 focus:outline-none resize-none py-1.5 px-1 font-chat"
                 style={{
+                  minHeight: '24px',
+                  maxHeight: '150px',
                   fontFamily: 'var(--font-chat)',
                   fontSize: 'var(--font-size-base)',
                 }}
-              >
-                <div
-                  ref={(node) => {
-                    composerEditableRef.current = node;
-                    textareaRef.current = node as unknown as HTMLTextAreaElement | null;
-                    if (node && node.childNodes.length === 0 && input) {
-                      setComposerDomFromValue(node, input, replyTokens);
-                      syncComposerShim(node);
-                    }
-                  }}
-                  className="reply-composer-editor font-chat"
-                  contentEditable
-                  suppressContentEditableWarning
-                  role="textbox"
-                  aria-multiline="true"
-                  data-placeholder={status !== 'idle'
-                    ? `Type a follow-up... (will queue until ${agentDisplayName} finishes)`
-                    : effectiveAgentName
-                      ? `Message ${agentDisplayName}...`
-                      : `Type an agent name + space to select, or pick one above...`
-                  }
-                  data-empty={!input ? 'true' : undefined}
-                  onBeforeInput={handleComposerBeforeInput}
-                  onInput={handleComposerInput}
-                  onPaste={handlePaste}
-                  onCopy={handleComposerCopy}
-                  onCut={handleComposerCut}
-                  onSelect={(e) => recordComposerSelection(e.currentTarget)}
-                  onClick={(e) => recordComposerSelection(e.currentTarget)}
-                  onKeyUp={(e) => recordComposerSelection(e.currentTarget)}
-                  onFocus={(e) => recordComposerSelection(e.currentTarget)}
-                  onKeyDown={handleComposerKeyDown}
-                  style={{
-                    minHeight: '24px',
-                    maxHeight: '150px',
-                    fontFamily: 'inherit',
-                    fontSize: 'inherit',
-                  }}
-                />
-              </div>
+              />
 
               {/* Stop button - always visible when Claude is working */}
               {status !== 'idle' && (

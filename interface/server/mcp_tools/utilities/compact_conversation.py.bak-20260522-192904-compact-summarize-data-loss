@@ -27,12 +27,10 @@ Salon mode (group chats):
   own ones) is preserved verbatim.
 """
 
-import json
 import os
 import sys
 import uuid
 import logging
-from pathlib import Path
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -63,102 +61,6 @@ Write in narrative past tense. Use sections if the conversation spanned multiple
 
 Begin the summary with: === Compacted History ===
 End with: === End Compacted History ==="""
-
-
-COMPACTION_OUTPUT_SCHEMA = {
-    "type": "object",
-    "additionalProperties": False,
-    "properties": {
-        "summary": {
-            "type": "string",
-            "description": (
-                "The complete compacted conversation history. It must begin with "
-                "=== Compacted History === and end with === End Compacted History ===."
-            ),
-        },
-    },
-    "required": ["summary"],
-}
-
-MIN_SUMMARY_CHARS = 80
-SUMMARY_LENGTH_RATIO_FLOOR = 0.03
-SUMMARY_LENGTH_FLOOR_CAP = 4000
-
-
-class SummaryValidationError(ValueError):
-    """Raised when summarize mode would otherwise write an unsafe summary."""
-
-
-def _minimum_summary_chars(source_chars: int) -> int:
-    if source_chars <= 0:
-        return MIN_SUMMARY_CHARS
-    return max(
-        MIN_SUMMARY_CHARS,
-        min(SUMMARY_LENGTH_FLOOR_CAP, int(source_chars * SUMMARY_LENGTH_RATIO_FLOOR)),
-    )
-
-
-def _validate_summary_text(summary: Any, source_text: str) -> str:
-    if not isinstance(summary, str):
-        raise SummaryValidationError("summary is not a string")
-
-    text = summary.strip()
-    if not text:
-        raise SummaryValidationError("summary is empty")
-
-    lowered = text.lower()
-    if lowered in {"null", "none", "{}", "[]"}:
-        raise SummaryValidationError("summary is placeholder output")
-
-    if not text.startswith("=== Compacted History ==="):
-        raise SummaryValidationError("summary missing start marker")
-    if not text.endswith("=== End Compacted History ==="):
-        raise SummaryValidationError("summary missing end marker")
-
-    minimum = _minimum_summary_chars(len(source_text))
-    if len(text) < minimum:
-        raise SummaryValidationError(
-            f"summary too short ({len(text)} chars, expected at least {minimum})"
-        )
-
-    return text
-
-
-def _write_compaction_restore_backup(
-    chat_manager: Any,
-    session_id: str,
-    backup_chat: Dict[str, Any],
-) -> Optional[str]:
-    """Write a restorable snapshot before destructive summarize compaction."""
-    if not chat_manager or not hasattr(chat_manager, "get_chat_path"):
-        return None
-
-    source_path = Path(chat_manager.get_chat_path(session_id))
-    backup_dir = source_path.parent / ".compact_backups"
-    backup_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
-    backup_path = backup_dir / f"{session_id}.{stamp}.summarize-restore.json"
-
-    backup_path.write_text(
-        json.dumps(backup_chat, indent=2, default=str),
-        encoding="utf-8",
-    )
-
-    # Cheap restore validation: the backup must parse and preserve the exact
-    # pre-compaction in-memory messages array before we permit the destructive
-    # write to proceed.
-    with backup_path.open("r", encoding="utf-8") as f:
-        restored = json.load(f)
-    original_messages = backup_chat.get("messages") or []
-    restored_messages = restored.get("messages") or []
-    if restored_messages != original_messages:
-        try:
-            backup_path.unlink()
-        except OSError:
-            pass
-        raise RuntimeError("compaction restore backup validation failed")
-
-    return str(backup_path)
 
 
 def _count_exchanges(messages: List[Dict]) -> int:
@@ -259,17 +161,19 @@ async def _summarize_messages(messages: List[Dict]) -> str:
                 tools=[],
                 timeout_seconds=240,
                 max_turns=1,
-                output_schema=COMPACTION_OUTPUT_SCHEMA,
                 ephemeral=True,
             )
         )
-        structured = result.structured_output
-        if not isinstance(structured, dict):
-            raise SummaryValidationError("summarizer returned no structured output")
+        result_text = result.response
 
-        result_text = _validate_summary_text(structured.get("summary"), conversation_text)
-        logger.info(f"Compaction subagent produced {len(result_text)} char validated summary")
-        return result_text
+        if result_text:
+            logger.info(
+                f"Compaction subagent produced {len(result_text)} char summary"
+            )
+            return result_text
+
+        logger.warning("Compaction subagent returned no result")
+        return None
 
     except Exception as e:
         logger.error(f"Compaction subagent failed: {e}")
@@ -454,7 +358,6 @@ async def run_compaction(
     original_messages = conv.messages.copy()
     num_shrunk = None
     bytes_saved = None
-    restore_backup_path = None
 
     try:
         if mode in ("truncate_tools", "strip_tools"):
@@ -486,20 +389,13 @@ async def run_compaction(
 
         else:  # mode == "summarize"
             summary = await _summarize_messages(older)
-            # Validate again at the write boundary so tests or future alternate
-            # summarizers cannot bypass the fail-closed guard.
-            summary = _validate_summary_text(summary, _format_messages_for_summary(older))
-
-            if chat_manager:
-                existing_for_backup = chat_manager.load_chat(session_id) or {}
-                backup_data = dict(existing_for_backup)
-                backup_data["sessionId"] = session_id
-                backup_data["messages"] = original_messages
-                if hasattr(conv, "cumulative_usage") and conv.cumulative_usage:
-                    backup_data["cumulative_usage"] = conv.cumulative_usage
-                restore_backup_path = _write_compaction_restore_backup(
-                    chat_manager, session_id, backup_data
-                )
+            if not summary:
+                return {
+                    "ok": False,
+                    "text": "Compaction failed: subagent produced no summary. Conversation unchanged.",
+                    "error": "summarize_empty",
+                    "session_id": session_id,
+                }
 
             compacted_msg = {
                 "id": str(uuid.uuid4()),
@@ -508,16 +404,12 @@ async def run_compaction(
                 "compacted_at": datetime.now().isoformat(),
                 "original_count": len(older),
                 "original_exchanges": older_exchanges,
-                "restore_backup_path": restore_backup_path,
             }
             conv.messages = [compacted_msg] + recent
             action_summary = (
                 f"Summarized {len(older)} older messages ({older_exchanges} exchanges) "
-                f"into 1 validated narrative summary. {len(recent)} recent messages "
-                f"preserved verbatim."
+                f"into 1 narrative summary. {len(recent)} recent messages preserved verbatim."
             )
-            if restore_backup_path:
-                action_summary += f" Restore backup: {restore_backup_path}."
 
         # Save to disk — preserve all existing fields (display_messages, agent,
         # reactions, etc.) and only overwrite `messages`.
@@ -533,12 +425,11 @@ async def run_compaction(
 
     except Exception as e:
         conv.messages = original_messages
-        error_code = "summarize_invalid" if isinstance(e, SummaryValidationError) else "exception"
         logger.error(f"Compaction failed, rolled back: {e}", exc_info=True)
         return {
             "ok": False,
             "text": f"Compaction failed, rolled back: {e}",
-            "error": error_code,
+            "error": "exception",
             "session_id": session_id,
         }
 
@@ -557,7 +448,6 @@ async def run_compaction(
         "older_exchanges": older_exchanges,
         "total_messages_after": len(conv.messages),
         "session_id": session_id,
-        "restore_backup_path": restore_backup_path,
         "error": None,
     }
 
