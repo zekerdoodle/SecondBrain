@@ -122,6 +122,12 @@ class AgentInvocation:
     conversation_id: Optional[str] = None  # Resolved thread id (for hyperlink in the registry view)
     is_join: bool = False  # True iff the caller passed an existing conversation_id (vs. a fresh thread)
     caller_agent: Optional[str] = None  # Who invoked this agent (other agent name, or "user")
+    # Phase 1A coder-worktree request metadata. These fields are inert until
+    # runner cwd routing is deliberately added in a later slice.
+    worktree_branch: Optional[str] = None
+    worktree_slug: Optional[str] = None
+    worktree_base_ref: Optional[str] = None
+    worktree_path: Optional[str] = None
     scheduled_task_id: Optional[str] = None  # Set when launched via a scheduled-task firing
     is_background_processing: bool = False  # Set when launched by the bg-processing idle hook
 
@@ -137,6 +143,15 @@ class AgentInvocation:
         }
         if self.project:
             d["project"] = self.project
+        for key in (
+            "worktree_branch",
+            "worktree_slug",
+            "worktree_base_ref",
+            "worktree_path",
+        ):
+            value = getattr(self, key)
+            if value is not None:
+                d[key] = value
         return d
 
 

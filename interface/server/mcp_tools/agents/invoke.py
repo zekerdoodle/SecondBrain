@@ -23,10 +23,12 @@ from ..registry import register_tool
 
 # Add agents directory to path
 ROOT_DIR = Path(__file__).resolve().parents[4]
+SERVER_DIR = str(ROOT_DIR / "interface" / "server")
 AGENTS_DIR = str(ROOT_DIR / ".claude" / "agents")
 INTERNAL_AGENT_INVOKE_TOKEN_FILE = ROOT_DIR / ".claude" / ".secrets" / "internal_agent_invoke_token"
-if AGENTS_DIR not in sys.path:
-    sys.path.insert(0, AGENTS_DIR)
+for _path in (SERVER_DIR, AGENTS_DIR):
+    if _path not in sys.path:
+        sys.path.insert(0, _path)
 
 
 def _build_invoke_tool_schema():
@@ -114,8 +116,21 @@ Use case examples:
             },
             "conversation_id": {
                 "type": "string",
-                "description": "Optional. Continue a prior agent-to-agent thread. The invoked agent will see the full prior history of that thread before responding. If the thread is currently being processed, the call is rejected — retry once it completes. Any agent with the ID may invoke on an idle thread. Omit to start a new thread; its ID is returned in the response footer."
+                "description": "Optional. Continue a prior agent-to-agent thread. The invoked agent will see the full prior history of the thread before responding. If the thread is currently being processed, the call is rejected — retry once it completes. Any agent with the ID may invoke on an idle thread. Omit to start a new thread; its ID is returned in the response footer."
+            },
+            "worktree_branch": {
+                "type": "string",
+                "description": "Optional Patch-only Phase 1A coder-worktree request branch. Requires SECOND_BRAIN_CODER_WORKTREES and does not change cwd yet."
+            },
+            "worktree_slug": {
+                "type": "string",
+                "description": "Optional Patch-only Phase 1A coder-worktree request slug used to derive the worktree path. Requires worktree_branch."
+            },
+            "worktree_base_ref": {
+                "type": "string",
+                "description": "Optional Patch-only Phase 1A base ref for coder worktree metadata. Defaults to main when omitted."
             }
+
         },
         "required": ["agent", "prompt"]
     }
@@ -125,6 +140,51 @@ Use case examples:
 
 _INVOKE_DESCRIPTION, _INVOKE_SCHEMA = _build_invoke_tool_schema()
 
+
+WORKTREE_REQUEST_FIELDS = ("worktree_branch", "worktree_slug", "worktree_base_ref")
+
+
+def _coder_worktrees_enabled() -> bool:
+    value = os.environ.get("SECOND_BRAIN_CODER_WORKTREES", "")
+    return value.strip().lower() in {"1", "true", "yes", "on", "enabled"}
+
+
+def _extract_worktree_request(args: Dict[str, Any]) -> Dict[str, Optional[str]]:
+    return {
+        field: args.get(field)
+        for field in WORKTREE_REQUEST_FIELDS
+        if field in args and args.get(field) is not None
+    }
+
+
+def _validate_worktree_request_for_mcp(
+    *,
+    caller_agent: str,
+    agent_name: str,
+    request: Dict[str, Optional[str]],
+) -> Dict[str, str]:
+    if not request:
+        return {}
+    if (caller_agent or "").strip().lower() != "patch":
+        raise ValueError("coder worktree requests are Patch-only")
+    if not _coder_worktrees_enabled():
+        raise ValueError(
+            "coder worktree requests are disabled; set "
+            "SECOND_BRAIN_CODER_WORKTREES=1 to enable Phase 1A plumbing"
+        )
+    branch = request.get("worktree_branch")
+    slug = request.get("worktree_slug")
+    if not branch or not slug:
+        raise ValueError("worktree_branch and worktree_slug are required together")
+
+    from worktree_manager import metadata_for_request
+
+    return metadata_for_request(
+        agent_name,
+        branch,
+        slug,
+        base_ref=request.get("worktree_base_ref") or "main",
+    )
 
 def _append_conversation_footer(text: str, conversation_id: Optional[str]) -> str:
     """Append the machine-readable conversation footer so callers can resume.
@@ -237,6 +297,18 @@ async def invoke_agent(args: Dict[str, Any]) -> Dict[str, Any]:
         # has no agent_name injected).
         caller_agent = args.pop("_agent_name", None) or "user"
 
+        try:
+            worktree_metadata = _validate_worktree_request_for_mcp(
+                caller_agent=caller_agent,
+                agent_name=agent_name,
+                request=_extract_worktree_request(args),
+            )
+        except Exception as e:
+            return {
+                "content": [{"type": "text", "text": f"Error: {e}"}],
+                "is_error": True,
+            }
+
         if mode == "ping" and _should_relay_ping_to_backend():
             # Detached ping tasks created in caller-owned Codex/MCP processes can
             # be cancelled when the caller exits after receiving the ack. Hand
@@ -251,6 +323,7 @@ async def invoke_agent(args: Dict[str, Any]) -> Dict[str, Any]:
                 "project": project,
                 "conversation_id": conversation_id,
                 "caller_agent": caller_agent,
+                **worktree_metadata,
             })
         else:
             from runner import invoke_agent as _invoke_agent
@@ -263,6 +336,7 @@ async def invoke_agent(args: Dict[str, Any]) -> Dict[str, Any]:
                 project=project,
                 conversation_id=conversation_id,
                 caller_agent=caller_agent,
+                **worktree_metadata,
             )
 
         # Handle different result types based on mode

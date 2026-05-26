@@ -28,6 +28,12 @@ from filelock import FileLock
 
 from codex_backend import CodexRunOptions, run_codex
 from codex_app_server_backend import CodexAppServerSteeringBridge, run_codex_app_server
+from codex_app_server_canary import (
+    CODEX_APP_SERVER_AGENTS_ENV,
+    CODEX_APP_SERVER_ENV,
+    CodexAppServerSelection,
+    select_codex_app_server_runtime,
+)
 
 os.environ.setdefault("CLAUDE_CODE_STREAM_CLOSE_TIMEOUT", "14400000")
 
@@ -104,9 +110,6 @@ except Exception:
 
 logger = logging.getLogger(__name__)
 
-CODEX_APP_SERVER_ENV = "SECOND_BRAIN_CODEX_APP_SERVER"
-CODEX_APP_SERVER_AGENTS_ENV = "SECOND_BRAIN_CODEX_APP_SERVER_AGENTS"
-_CODEX_APP_SERVER_TRUTHY = {"1", "true", "yes", "on"}
 _CODEX_APP_SERVER_VISIBLE_EVENT_TYPES = {
     "content_delta",
     "thinking_delta",
@@ -118,20 +121,12 @@ _CODEX_APP_SERVER_VISIBLE_EVENT_TYPES = {
 _CODEX_APP_SERVER_TOOL_EVENT_TYPES = {"tool_output_delta", "tool_start", "tool_use", "tool_end"}
 
 
-def _codex_app_server_flag_enabled() -> bool:
-    return os.environ.get(CODEX_APP_SERVER_ENV, "").strip().lower() in _CODEX_APP_SERVER_TRUTHY
+def _codex_app_server_selection(agent_config: Any, cwd: Path | str) -> CodexAppServerSelection:
+    return select_codex_app_server_runtime(agent_config, cwd)
 
 
-def _codex_app_server_allowed_agents() -> set[str]:
-    raw = os.environ.get(CODEX_APP_SERVER_AGENTS_ENV, "")
-    return {part.strip().lower() for part in raw.split(",") if part.strip()}
-
-
-def _should_use_codex_app_server(agent_config: Any) -> bool:
-    if not _codex_app_server_flag_enabled():
-        return False
-    agent_name = str(getattr(agent_config, "name", "") or "").strip().lower()
-    return bool(agent_name and agent_name in _codex_app_server_allowed_agents())
+def _should_use_codex_app_server(agent_config: Any, cwd: Optional[Path | str] = None) -> bool:
+    return _codex_app_server_selection(agent_config, cwd or Path.cwd()).enabled
 
 
 async def _auto_approve_tool(tool_name: str, input_data: dict, context):
@@ -1153,7 +1148,9 @@ class ClaudeWrapper:
                             "type": "tool_end",
                             "name": block.get("name", "tool"),
                             "id": block.get("tool_call_id") or block.get("id"),
-                            "output": str(block.get("content", ""))[:2000],
+                            # Keep the raw receipt through the wrapper seam; main.py
+                            # owns display/history compaction and sidecar persistence.
+                            "output": str(block.get("content", "")),
                             "is_error": bool(block.get("is_error")),
                         })
 
@@ -1310,7 +1307,17 @@ class ClaudeWrapper:
             async def _run() -> None:
                 try:
                     run_options = _make_run_options(prompt)
-                    if _should_use_codex_app_server(agent_config):
+                    app_server_selection = _codex_app_server_selection(agent_config, self.cwd)
+                    logger.info(
+                        "Agent chat '%s': Codex App Server selection enabled=%s source=%s reason=%s config=%s expires_at=%s",
+                        agent_config.name,
+                        app_server_selection.enabled,
+                        app_server_selection.source,
+                        app_server_selection.reason,
+                        app_server_selection.config_path or "",
+                        app_server_selection.expires_at or "",
+                    )
+                    if app_server_selection.enabled:
                         await _run_app_server_path(run_options)
                     else:
                         await _run_exec_path(run_options)

@@ -10,6 +10,8 @@ from typing import Any, Callable, Dict, Optional
 import json
 import logging
 
+from tool_output_artifacts import format_raw_output_pointer
+
 logger = logging.getLogger(__name__)
 
 # MCP prefix used by Second Brain tools
@@ -450,6 +452,7 @@ def serialize_tool_call(
     output: str,
     is_error: bool,
     tool_id: Optional[str] = None,
+    raw_output: Optional[Dict[str, Any]] = None,
 ) -> dict:
     """
     Serialize a tool call for chat history storage.
@@ -470,7 +473,7 @@ def serialize_tool_call(
         logger.warning(f"Serializer error for {tool_name}: {e}")
         result = _default_serializer(args, output or "", is_error)
 
-    return {
+    message = {
         "role": "tool_call",
         "hidden": True,
         "tool_name": tool_name,
@@ -479,6 +482,11 @@ def serialize_tool_call(
         "output_summary": result.get("output_summary", ""),
         "is_error": is_error,
     }
+    if raw_output:
+        raw_output_metadata = dict(raw_output)
+        raw_output_metadata["history_truncated"] = result.get("output_summary", "") != (output or "")
+        message["raw_output"] = raw_output_metadata
+    return message
 
 
 def format_tool_for_history(tool_msg: dict) -> str:
@@ -497,6 +505,7 @@ def format_tool_for_history(tool_msg: dict) -> str:
     args = tool_msg.get("args", {})
     output = tool_msg.get("output_summary", "")
     is_error = tool_msg.get("is_error", False)
+    raw_output_pointer = format_raw_output_pointer(tool_msg.get("raw_output"))
 
     # Agent invocation tools — preserve prompts verbatim in history
     agent_tools = {"invoke_agent", "invoke_agent_chain", "invoke_agent_parallel"}
@@ -518,6 +527,8 @@ def format_tool_for_history(tool_msg: dict) -> str:
     if output:
         prefix = "Error" if is_error else "Output"
         output_str = f" | {prefix}: {output}"
+    if raw_output_pointer:
+        output_str += f" | Raw output: {raw_output_pointer}"
 
     if params_str:
         return f"[Tool: {display_name} | {params_str}{output_str}]"

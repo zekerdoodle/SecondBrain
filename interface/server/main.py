@@ -71,6 +71,12 @@ from claude_wrapper import ClaudeWrapper, ChatManager, ConversationState
 from notifications import should_notify, send_notification, NotificationDecision
 from message_wal import init_wal, get_wal, MessageWAL
 from tool_serializers import serialize_tool_call, format_tool_for_history
+from tool_output_artifacts import (
+    DEFAULT_DISPLAY_LIMIT_CHARS,
+    compact_tool_output_for_display,
+    maybe_write_raw_tool_output_artifact,
+    with_truncation_flags,
+)
 from process_registry import register_process, deregister_by_pid, clear_registry
 import running_agents
 from mention_parser import parse_mentions
@@ -1823,6 +1829,10 @@ class InternalAgentInvokeRequest(BaseModel):
     project: Optional[Any] = None
     conversation_id: Optional[str] = None
     caller_agent: Optional[str] = None
+    worktree_branch: Optional[str] = None
+    worktree_slug: Optional[str] = None
+    worktree_base_ref: Optional[str] = None
+    worktree_path: Optional[str] = None
 
 
 
@@ -1912,6 +1922,10 @@ async def internal_agent_invoke(req: InternalAgentInvokeRequest, request: Reques
             project=req.project,
             conversation_id=req.conversation_id,
             caller_agent=req.caller_agent,
+            worktree_branch=req.worktree_branch,
+            worktree_slug=req.worktree_slug,
+            worktree_base_ref=req.worktree_base_ref,
+            worktree_path=req.worktree_path,
         )
         if hasattr(result, "__dict__"):
             return result.__dict__
@@ -3698,6 +3712,7 @@ class ContentBlock:
     tool_call_id: Optional[str] = None
     tool_input: Optional[Dict[str, Any]] = None
     is_error: bool = False
+    raw_output: Optional[Dict[str, Any]] = None
     # Thinking fields
     started_at: Optional[float] = None
     duration_ms: Optional[int] = None
@@ -3712,6 +3727,8 @@ class ContentBlock:
         elif self.type == "tool_result":
             d["tool_call_id"] = self.tool_call_id
             d["is_error"] = self.is_error
+            if self.raw_output:
+                d["raw_output"] = self.raw_output
         elif self.type == "thinking":
             if self.started_at is not None:
                 d["started_at"] = self.started_at
@@ -5720,7 +5737,26 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
                 tool_end_id = event.get("id")
                 tool_name = event.get("name", "")
                 tool_end_output = event.get("output", "")
+                tool_output_raw = str(tool_end_output or "")
                 is_error = event.get("is_error", False)
+                raw_output_artifact = None
+                try:
+                    raw_output_artifact = maybe_write_raw_tool_output_artifact(
+                        chat_id=state_key or effective_session_id or new_session_id or "unknown-chat",
+                        tool_call_id=tool_end_id or f"tool-{int(time.time() * 1000)}",
+                        tool_name=tool_name or "tool",
+                        output=tool_output_raw,
+                        is_error=bool(is_error),
+                    )
+                    if raw_output_artifact:
+                        raw_output_artifact = with_truncation_flags(
+                            raw_output_artifact,
+                            display_truncated=len(tool_output_raw) > DEFAULT_DISPLAY_LIMIT_CHARS,
+                            history_truncated=len(tool_output_raw) > 500,
+                        )
+                except Exception as artifact_err:
+                    logger.warning(f"Tool output artifact write failed: {artifact_err}")
+                    raw_output_artifact = None
 
                 # ========== Block model: complete tool_use block, add tool_result ==========
                 ss = session_streaming_states.get(state_key)
@@ -5745,8 +5781,9 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
                     result_block = ContentBlock(
                         type="tool_result",
                         tool_call_id=tool_end_id,
-                        content=str(tool_end_output)[:2000] if tool_end_output else "",
+                        content=compact_tool_output_for_display(tool_output_raw, raw_output_artifact),
                         is_error=is_error,
+                        raw_output=raw_output_artifact,
                         status="complete"
                     )
                     ss._current_blocks.append(result_block)
@@ -5846,9 +5883,10 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
                         tc = serialize_tool_call(
                             tool_name=stashed["name"],
                             args_raw=stashed["args"],
-                            output=tool_end_output,
+                            output=tool_output_raw,
                             is_error=tool_end_error,
                             tool_id=tool_end_id,
+                            raw_output=raw_output_artifact,
                         )
                         tc["timestamp"] = int(time.time())
                         completed_tool_calls.append((len(all_segments), tc))
@@ -5859,9 +5897,10 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
                         tc = serialize_tool_call(
                             tool_name=tool_end_name,
                             args_raw={},
-                            output=tool_end_output,
+                            output=tool_output_raw,
                             is_error=tool_end_error,
                             tool_id=tool_end_id,
+                            raw_output=raw_output_artifact,
                         )
                         tc["timestamp"] = int(time.time())
                         completed_tool_calls.append((len(all_segments), tc))

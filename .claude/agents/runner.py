@@ -161,6 +161,89 @@ CHAIN_CHECKPOINTS_DIR = Path(__file__).parent / "chain_checkpoints"
 # Default working directory for agents
 WORKING_DIR = "/home/debian/second_brain"
 
+WORKTREE_REQUEST_FIELDS = (
+    "worktree_branch",
+    "worktree_slug",
+    "worktree_base_ref",
+    "worktree_path",
+)
+
+
+def _coder_worktrees_enabled() -> bool:
+    value = os.environ.get("SECOND_BRAIN_CODER_WORKTREES", "")
+    return value.strip().lower() in {"1", "true", "yes", "on", "enabled"}
+
+
+def _has_worktree_request(
+    worktree_branch: Optional[str],
+    worktree_slug: Optional[str],
+    worktree_base_ref: Optional[str],
+    worktree_path: Optional[str],
+) -> bool:
+    return any(
+        value is not None
+        for value in (worktree_branch, worktree_slug, worktree_base_ref, worktree_path)
+    )
+
+
+def _worktree_request_error_result(
+    name: str,
+    mode: InvocationMode,
+    error: str,
+) -> Union[AgentResult, Dict[str, str]]:
+    if mode == InvocationMode.FOREGROUND:
+        return AgentResult(
+            agent=name,
+            status="error",
+            response="",
+            started_at=datetime.utcnow(),
+            completed_at=datetime.utcnow(),
+            error=error,
+        )
+    return {"error": error}
+
+
+def _validate_worktree_invocation_metadata(
+    *,
+    name: str,
+    caller_agent: Optional[str],
+    worktree_branch: Optional[str],
+    worktree_slug: Optional[str],
+    worktree_base_ref: Optional[str],
+    worktree_path: Optional[str],
+) -> Dict[str, str]:
+    if not _has_worktree_request(
+        worktree_branch, worktree_slug, worktree_base_ref, worktree_path
+    ):
+        return {}
+
+    if (caller_agent or "").strip().lower() != "patch":
+        raise ValueError("coder worktree requests are Patch-only")
+    if not _coder_worktrees_enabled():
+        raise ValueError(
+            "coder worktree requests are disabled; set "
+            "SECOND_BRAIN_CODER_WORKTREES=1 to enable Phase 1A plumbing"
+        )
+    if not worktree_branch or not worktree_slug:
+        raise ValueError("worktree_branch and worktree_slug are required together")
+
+    from worktree_manager import metadata_for_request
+
+    metadata = metadata_for_request(
+        name,
+        worktree_branch,
+        worktree_slug,
+        base_ref=worktree_base_ref or "main",
+    )
+    if worktree_path is not None:
+        requested = Path(worktree_path).expanduser().resolve(strict=False)
+        derived = Path(metadata["worktree_path"]).expanduser().resolve(strict=False)
+        if requested != derived:
+            raise ValueError(
+                f"worktree_path does not match derived path for request: {requested}"
+            )
+    return metadata
+
 # External MCP servers config file (alongside this file)
 EXTERNAL_MCP_CONFIG = Path(__file__).parent / "external_mcp_servers.json"
 
@@ -279,6 +362,10 @@ async def invoke_agent(
     is_visible: bool = False,
     conversation_id: Optional[str] = None,
     caller_agent: Optional[str] = None,
+    worktree_branch: Optional[str] = None,
+    worktree_slug: Optional[str] = None,
+    worktree_base_ref: Optional[str] = None,
+    worktree_path: Optional[str] = None,
     salon_id: Optional[str] = None,
     scheduled_task_id: Optional[str] = None,
     is_background_processing: bool = False,
@@ -303,6 +390,9 @@ async def invoke_agent(
         caller_agent: Name of the agent (or caller identity) that initiated
             this invocation. Recorded as the author of the prompt message in
             the thread. Defaults to "caller" for legacy/unsourced callers.
+        worktree_branch/worktree_slug/worktree_base_ref/worktree_path: Optional
+            Phase 1A coder-worktree metadata. Validated and carried through, but
+            not used for cwd routing until a later slice.
         salon_id: If set, this invocation is part of a salon dispatch. The
             agent_conversations thread machinery is bypassed entirely — the
             ``prompt`` is used as-is (caller is responsible for rendering salon
@@ -325,6 +415,18 @@ async def invoke_agent(
     # Normalize mode
     if isinstance(mode, str):
         mode = InvocationMode(mode)
+
+    try:
+        worktree_metadata = _validate_worktree_invocation_metadata(
+            name=name,
+            caller_agent=caller_agent,
+            worktree_branch=worktree_branch,
+            worktree_slug=worktree_slug,
+            worktree_base_ref=worktree_base_ref,
+            worktree_path=worktree_path,
+        )
+    except Exception as e:
+        return _worktree_request_error_result(name, mode, str(e))
 
     # Get agent config
     registry = get_registry()
@@ -387,6 +489,7 @@ async def invoke_agent(
             is_visible=is_visible,
             salon_id=salon_id,
             caller_agent=caller_agent,
+            **worktree_metadata,
             scheduled_task_id=scheduled_task_id,
             is_background_processing=is_background_processing,
         )
@@ -445,6 +548,7 @@ async def invoke_agent(
         conversation_id=conv_id,
         is_join=conversation_id is not None,
         caller_agent=caller_agent,
+        **worktree_metadata,
         scheduled_task_id=scheduled_task_id,
         is_background_processing=is_background_processing,
     )
@@ -1900,6 +2004,8 @@ async def _run_codex_agent(
         async with asyncio.timeout(config.timeout_seconds):
             run_options = CodexRunOptions(
                 model=config.model,
+                # Phase 1A only carries worktree metadata. Cwd routing must
+                # remain canonical until Phase 1B changes this deliberately.
                 cwd=WORKING_DIR,
                 identity_instructions=identity_content,
                 prompt=effective_prompt,
