@@ -7,7 +7,7 @@ Preserves the old wrapper API with:
 - Per-agent system prompts and memory (prompt.md + memory.md)
 - Native Codex tools plus Second Brain MCP tools
 - JSONL event streaming from codex exec
-- run_chat() dispatches by agent_config.type: Codex by default, SDK when configured
+- run_chat() dispatches by the agent_config chattable runtime: Codex by default, SDK when configured
 """
 
 from __future__ import annotations
@@ -110,6 +110,28 @@ except Exception:
 
 logger = logging.getLogger(__name__)
 
+RILEY_ANTHROPIC_PROXY_BASE_PATH = "/internal/anthropic-proxy"
+SECOND_BRAIN_ROOT = Path(__file__).resolve().parents[2]
+CLAUDE_CODE_CLI_PATH = SECOND_BRAIN_ROOT / "node_modules" / ".bin" / "claude"
+
+
+def _current_claude_code_cli_path() -> Path:
+    if not CLAUDE_CODE_CLI_PATH.exists():
+        raise FileNotFoundError(
+            f"Repo-managed Claude Code CLI not found at {CLAUDE_CODE_CLI_PATH}. "
+            "Run `npm install` from the Second Brain root."
+        )
+    return CLAUDE_CODE_CLI_PATH
+
+
+def _riley_anthropic_proxy_base_url() -> str:
+    base_url = os.environ.get("SECOND_BRAIN_RILEY_ANTHROPIC_PROXY_BASE_URL")
+    if base_url:
+        return base_url.rstrip("/")
+    internal_base = os.environ.get("SECOND_BRAIN_INTERNAL_BASE_URL", "http://127.0.0.1:8000")
+    return f"{internal_base.rstrip('/')}{RILEY_ANTHROPIC_PROXY_BASE_PATH}"
+
+
 _CODEX_APP_SERVER_VISIBLE_EVENT_TYPES = {
     "content_delta",
     "thinking_delta",
@@ -119,6 +141,13 @@ _CODEX_APP_SERVER_VISIBLE_EVENT_TYPES = {
     "tool_end",
 }
 _CODEX_APP_SERVER_TOOL_EVENT_TYPES = {"tool_output_delta", "tool_start", "tool_use", "tool_end"}
+
+
+def _resolve_chat_runtime_config(agent_config: Any) -> Any:
+    resolver = getattr(agent_config, "resolve_runtime", None)
+    if callable(resolver):
+        return resolver("chattable")
+    return agent_config
 
 
 def _codex_app_server_selection(agent_config: Any, cwd: Path | str) -> CodexAppServerSelection:
@@ -488,26 +517,26 @@ class ClaudeWrapper:
             preset["append"] = append_content
         return preset
 
-    def _build_context_parts(self, agent_config) -> List[str]:
-        """Collect the dynamic context layer for an agent.
+    def _build_context_layers(self, agent_config) -> tuple[List[str], List[str]]:
+        """Collect stable and dynamic context layers for an agent.
 
-        Returns a list of formatted blocks (always_load memories + working
-        memory). These are wrapped into a single <system-injected> envelope
-        by `prompt_assembly.build_context_block` and prepended to the user
-        message in `run_chat`. Contextual-retrieval results are appended to
-        this list by the retrieval step.
+        Always-load memories are stable enough for Character's SDK prompt cache
+        prefix; working memory remains dynamic per turn. Contextual-retrieval
+        results are appended later to the dynamic list.
         """
         import prompt_assembly
         agent_dir = Path(self.cwd) / ".claude" / "agents" / agent_config.name
         scripts_dir = Path(self.cwd) / ".claude" / "scripts"
-        parts: List[str] = []
-        mem_block = prompt_assembly.load_always_load_memories_block(agent_dir)
-        if mem_block:
-            parts.append(mem_block)
-        wm_block = prompt_assembly.load_working_memory_block(agent_config.name, scripts_dir)
-        if wm_block:
-            parts.append(wm_block)
-        return parts
+        return prompt_assembly.load_context_layers(
+            agent_config.name,
+            agent_dir,
+            scripts_dir,
+        )
+
+    def _build_context_parts(self, agent_config) -> List[str]:
+        """Collect the legacy combined context layer for non-SDK callers/tests."""
+        stable_parts, dynamic_parts = self._build_context_layers(agent_config)
+        return stable_parts + dynamic_parts
 
     def _build_codex_identity_and_tools(self, agent_config) -> tuple[str, List[str], Any, bool]:
         """Build Codex identity instructions and the effective legacy tool list."""
@@ -560,7 +589,11 @@ class ClaudeWrapper:
         allowed_skills = agent_skills if agent_has_skills else "NO_SKILLS"
         return identity, effective_tools, allowed_skills, bool(agent_config.system_prompt_preset)
 
-    def _build_sdk_options(self, agent_config) -> ClaudeAgentOptions:
+    def _build_sdk_options(
+        self,
+        agent_config,
+        stable_context_block: str = "",
+    ) -> tuple[ClaudeAgentOptions, Optional[Path]]:
         """Build SDK options for any chattable agent (including Character)."""
         # Separate native tools from MCP tools (needed before building system prompt
         # so we can compute the agent list block for injection above memory).
@@ -603,6 +636,25 @@ class ClaudeWrapper:
             system_prompt = self._build_system_prompt_preset(agent_config, agent_list_block)
         else:
             system_prompt = self._build_system_prompt(agent_config, agent_list_block)
+
+        system_prompt_file: Optional[Path] = None
+        if (
+            stable_context_block
+            and agent_config.name == "character"
+            and isinstance(system_prompt, str)
+        ):
+            import prompt_assembly
+            system_prompt_file = prompt_assembly.write_cacheable_system_prompt_file(
+                agent_config.name,
+                system_prompt,
+                stable_context_block,
+            )
+            system_prompt = {"type": "file", "path": str(system_prompt_file)}
+            logger.info(
+                "Agent '%s': moved %s chars of stable context into SDK system_prompt_file",
+                agent_config.name,
+                len(stable_context_block),
+            )
 
         # Determine if this agent uses the Claude Code preset
         use_preset = bool(agent_config.system_prompt_preset)
@@ -649,6 +701,7 @@ class ClaudeWrapper:
 
         options_kwargs = {
             "model": agent_config.model,
+            "cli_path": str(_current_claude_code_cli_path()),
             "system_prompt": system_prompt,
             "setting_sources": [],  # Skills handled by fetch_skill MCP tool, no project settings needed
             "mcp_servers": mcp_servers if mcp_servers else None,
@@ -660,6 +713,14 @@ class ClaudeWrapper:
             "include_partial_messages": True,
             "env": {
                 "ENABLE_TOOL_SEARCH": "false",  # Disable tool deferral (tengu_defer_all_bn4)
+                **(
+                    {
+                        "ENABLE_PROMPT_CACHING_1H": "1",
+                        "ANTHROPIC_BASE_URL": _riley_anthropic_proxy_base_url(),
+                    }
+                    if agent_config.name == "character"
+                    else {}
+                ),
                 # Short-circuits the CLI's XSY() attachment pipeline which auto-injects
                 # the native bundled-Skill listing ("The following skills are available
                 # for use with the Skill tool: update-config, init, review, ..."),
@@ -720,7 +781,7 @@ class ClaudeWrapper:
             else:
                 logger.info(f"Agent '{agent_config.name}': no thinking defaults for model '{model}'")
 
-        return ClaudeAgentOptions(**options_kwargs)
+        return ClaudeAgentOptions(**options_kwargs), system_prompt_file
 
     async def run_chat(
         self,
@@ -731,12 +792,13 @@ class ClaudeWrapper:
         session_id: Optional[str] = None,
         helper_settings: Optional[Dict[str, Any]] = None,
     ) -> AsyncIterator[Dict[str, Any]]:
-        """Dispatch chat turns to the runtime selected by agent_config.type."""
-        runtime_type = getattr(getattr(agent_config, "type", None), "value", getattr(agent_config, "type", "codex"))
+        """Dispatch chat turns to the configured chattable runtime."""
+        runtime_config = _resolve_chat_runtime_config(agent_config)
+        runtime_type = getattr(getattr(runtime_config, "type", None), "value", getattr(runtime_config, "type", "codex"))
         if runtime_type == "sdk":
             async for event in self._run_chat_sdk(
                 prompt,
-                agent_config,
+                runtime_config,
                 conversation_history=conversation_history,
                 use_streaming_input=use_streaming_input,
                 session_id=session_id,
@@ -746,7 +808,7 @@ class ClaudeWrapper:
         else:
             async for event in self._run_chat_codex(
                 prompt,
-                agent_config,
+                runtime_config,
                 conversation_history=conversation_history,
                 use_streaming_input=use_streaming_input,
                 session_id=session_id,
@@ -863,13 +925,23 @@ class ClaudeWrapper:
         # cancel us during the pre-SDK phases (rewriter, retrieval).
         self._interrupted = False
         self._current_task = asyncio.current_task()
-        options = self._build_sdk_options(agent_config)
+        import prompt_assembly
+        stable_context_parts, context_parts = self._build_context_layers(agent_config)
+        stable_context_block = ""
+        if agent_config.name == "character":
+            stable_context_block = prompt_assembly.build_context_block(stable_context_parts)
+        else:
+            context_parts = stable_context_parts + context_parts
+        options, system_prompt_file = self._build_sdk_options(
+            agent_config,
+            stable_context_block=stable_context_block,
+        )
+        if stable_context_block and system_prompt_file is None:
+            context_parts = stable_context_parts + context_parts
 
-        # Build the dynamic context layer (always_load memories + working memory).
-        # Contextual retrieval is appended below. The final block is prepended to
-        # the user message — not to system_prompt — so it travels over stdin
-        # rather than argv (sidesteps Linux MAX_ARG_STRLEN cliff on system_prompt).
-        context_parts = self._build_context_parts(agent_config)
+        # Build the dynamic context layer (working memory + contextual retrieval).
+        # Character's always_load memories are already in the cacheable system prompt
+        # file above. Dynamic context stays on stdin to preserve argv safety.
 
         # Auto-retrieve contextual memories relevant to the user's message.
         try:
@@ -881,6 +953,11 @@ class ClaudeWrapper:
                 helper_settings=helper_settings,
             )
         except asyncio.CancelledError:
+            if system_prompt_file:
+                try:
+                    system_prompt_file.unlink(missing_ok=True)
+                except Exception as exc:
+                    logger.warning("Could not remove SDK system prompt file %s: %s", system_prompt_file, exc)
             return
 
         # Checkpoint: if interrupt() was called during the pre-SDK phase but
@@ -889,13 +966,17 @@ class ClaudeWrapper:
         # spinning up the real SDK client.
         if self._interrupted:
             logger.info(f"Agent '{agent_config.name}': interrupt flag set — aborting before SDK init")
+            if system_prompt_file:
+                try:
+                    system_prompt_file.unlink(missing_ok=True)
+                except Exception as exc:
+                    logger.warning("Could not remove SDK system prompt file %s: %s", system_prompt_file, exc)
             self._current_task = None
             return
 
         # Wrap the dynamic context in a <system-injected> envelope and prepend
         # to the user message. This is the stdin path — no MAX_ARG_STRLEN limit,
-        # even when always_load memories grow into the hundreds-of-KB range.
-        import prompt_assembly
+        # even when dynamic context grows into the hundreds-of-KB range.
         context_block = prompt_assembly.build_context_block(context_parts)
         if context_block:
             prompt = prompt_assembly.prepend_context_to_prompt(prompt, context_block)
@@ -1043,6 +1124,11 @@ class ClaudeWrapper:
                 except Exception:
                     pass
                 self.client = None
+            if system_prompt_file:
+                try:
+                    system_prompt_file.unlink(missing_ok=True)
+                except Exception as exc:
+                    logger.warning("Could not remove SDK system prompt file %s: %s", system_prompt_file, exc)
             self._current_task = None
 
         logger.info(f"Agent chat '{agent_config.name}' completed, session_id={self._current_session_id}")
@@ -1101,7 +1187,7 @@ class ClaudeWrapper:
 
         # Wrap the dynamic context in a <system-injected> envelope and prepend
         # to the user message. This is the stdin path — no MAX_ARG_STRLEN limit,
-        # even when always_load memories grow into the hundreds-of-KB range.
+        # even when dynamic context grows into the hundreds-of-KB range.
         import prompt_assembly
         context_block = prompt_assembly.build_context_block(context_parts)
         if context_block:

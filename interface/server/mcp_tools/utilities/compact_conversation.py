@@ -34,7 +34,7 @@ import uuid
 import logging
 from pathlib import Path
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from claude_agent_sdk import tool
 
@@ -196,6 +196,110 @@ def _split_at_exchange_boundary(
                 break
 
     return messages[:split_index], messages[split_index:]
+
+
+DISPLAY_VISIBLE_ROLES = {"user", "assistant", "notice", "compacted"}
+
+
+def _display_text_for_match(msg: Dict[str, Any]) -> str:
+    """Extract user-visible text without treating block-based turns as empty."""
+    content = msg.get("content")
+    if isinstance(content, str) and content:
+        return content
+
+    block_text = []
+    for block in msg.get("blocks") or []:
+        if isinstance(block, dict) and block.get("type") == "text":
+            text = block.get("content")
+            if isinstance(text, str) and text:
+                block_text.append(text)
+    return "".join(block_text)
+
+
+def _display_match_key(msg: Dict[str, Any]) -> Optional[Tuple[str, str]]:
+    role = msg.get("role")
+    if role not in DISPLAY_VISIBLE_ROLES and not msg.get("formData"):
+        return None
+    text = _display_text_for_match(msg).strip()
+    if not text and not msg.get("formData"):
+        return None
+    return (role or "", text)
+
+
+def _display_normalized_text(text: str) -> str:
+    return " ".join(text.split())
+
+
+def _display_block_represents_flat(display_msg: Dict[str, Any], flat_msg: Dict[str, Any]) -> bool:
+    if not display_msg.get("blocks") or flat_msg.get("blocks"):
+        return False
+    if display_msg.get("role") != flat_msg.get("role"):
+        return False
+    if display_msg.get("id") and display_msg.get("id") == flat_msg.get("id"):
+        return False
+
+    flat_text = _display_normalized_text(_display_text_for_match(flat_msg).strip())
+    display_text = _display_normalized_text(_display_text_for_match(display_msg).strip())
+    return bool(flat_text and display_text and flat_text in display_text)
+
+
+def _display_message_matches_flat(display_msg: Dict[str, Any], flat_msg: Dict[str, Any]) -> bool:
+    display_id = display_msg.get("id")
+    flat_id = flat_msg.get("id")
+    if display_id and flat_id and display_id == flat_id:
+        return True
+
+    display_key = _display_match_key(display_msg)
+    flat_key = _display_match_key(flat_msg)
+    if display_key is not None and flat_key is not None and display_key == flat_key:
+        return True
+
+    return _display_block_represents_flat(display_msg, flat_msg)
+
+
+def _build_summarized_display_messages(
+    compacted_msg: Dict[str, Any],
+    recent_messages: List[Dict[str, Any]],
+    existing_display_messages: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Build the UI projection for summarize mode from the new flat history.
+
+    Summarize replaces older flat messages with one compacted summary. Any older
+    display-only blocks are now semantically represented by that summary, so the
+    only safe display projection is summary + display entries matching the kept
+    recent flat messages.
+    """
+    display_messages: List[Dict[str, Any]] = [dict(compacted_msg)]
+    used_ids: Set[str] = set()
+    compacted_id = compacted_msg.get("id")
+    if compacted_id:
+        used_ids.add(compacted_id)
+
+    for flat_msg in recent_messages:
+        role = flat_msg.get("role")
+        if role in {"tool_call", "system"}:
+            continue
+        if role not in DISPLAY_VISIBLE_ROLES and not flat_msg.get("formData"):
+            continue
+
+        chosen = None
+        for display_msg in existing_display_messages:
+            display_id = display_msg.get("id")
+            if display_id and display_id in used_ids:
+                continue
+            if _display_message_matches_flat(display_msg, flat_msg):
+                chosen = dict(display_msg)
+                break
+
+        if chosen is None:
+            chosen = dict(flat_msg)
+
+        chosen_id = chosen.get("id")
+        if chosen_id:
+            used_ids.add(chosen_id)
+        display_messages.append(chosen)
+
+    return display_messages
 
 
 def _format_messages_for_summary(messages: List[Dict]) -> str:
@@ -455,6 +559,7 @@ async def run_compaction(
     num_shrunk = None
     bytes_saved = None
     restore_backup_path = None
+    summarized_display_messages = None
 
     try:
         if mode in ("truncate_tools", "strip_tools"):
@@ -511,6 +616,13 @@ async def run_compaction(
                 "restore_backup_path": restore_backup_path,
             }
             conv.messages = [compacted_msg] + recent
+            if chat_manager:
+                existing_for_display = chat_manager.load_chat(session_id) or {}
+                summarized_display_messages = _build_summarized_display_messages(
+                    compacted_msg,
+                    recent,
+                    list(existing_for_display.get("display_messages") or []),
+                )
             action_summary = (
                 f"Summarized {len(older)} older messages ({older_exchanges} exchanges) "
                 f"into 1 validated narrative summary. {len(recent)} recent messages "
@@ -519,13 +631,16 @@ async def run_compaction(
             if restore_backup_path:
                 action_summary += f" Restore backup: {restore_backup_path}."
 
-        # Save to disk — preserve all existing fields (display_messages, agent,
-        # reactions, etc.) and only overwrite `messages`.
+        # Save to disk — preserve all existing fields (agent, reactions, etc.)
+        # while keeping UI-facing display_messages aligned with destructive
+        # summarize rewrites. Truncate/strip still only overwrite `messages`.
         if chat_manager:
             existing = chat_manager.load_chat(session_id) or {}
             save_data = dict(existing)
             save_data["sessionId"] = session_id
             save_data["messages"] = conv.messages
+            if summarized_display_messages is not None:
+                save_data["display_messages"] = summarized_display_messages
             if hasattr(conv, "cumulative_usage") and conv.cumulative_usage:
                 save_data["cumulative_usage"] = conv.cumulative_usage
             chat_manager.save_chat(session_id, save_data)

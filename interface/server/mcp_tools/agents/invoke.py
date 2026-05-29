@@ -46,7 +46,7 @@ def _build_invoke_tool_schema():
 IMPORTANT: This tool is for PARALLEL/INDEPENDENT agent invocations. If you need to run
 multiple agents where each depends on the previous result, use invoke_agent_chain instead.
 
-Invocation modes (all are non-silent — visible to the user in his UI):
+Invocation modes for agent-to-agent work; these do not directly deliver raw agent output to the user:
 - foreground: Wait for result (blocking). Use for quick tasks or when you need the response now.
 - ping: Run async. YOU — the agent calling this tool — get pinged back when the invoked
   agent finishes, so you can continue the thread. ("Ping me" means ping YOU, the caller,

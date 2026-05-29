@@ -80,6 +80,7 @@ from tool_output_artifacts import (
 from process_registry import register_process, deregister_by_pid, clear_registry
 import running_agents
 from mention_parser import parse_mentions
+from anthropic_cache_proxy import router as anthropic_cache_proxy_router
 from slash_commands import (
     SLASH_COMMANDS,
     dispatch_slash_command,
@@ -201,6 +202,8 @@ else:
     logger.info("No startup env file found at %s", STARTUP_ENV_FILE)
 
 app = FastAPI(title="Second Brain API")
+
+app.include_router(anthropic_cache_proxy_router)
 
 # Static files - serve built React app
 CLIENT_BUILD_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../client/dist"))
@@ -7165,7 +7168,8 @@ You are running as a scheduled task. Your output will be delivered directly to r
                                 prompt=augmented_prompt,
                                 mode="foreground",
                                 source_chat_id=agent_room_id,
-                                project=task_project
+                                project=task_project,
+                                is_visible=False,
                             )
 
                             new_msgs = _build_agent_display_messages(prompt, result, agent_name)
@@ -7220,7 +7224,8 @@ You are running as a scheduled task, not a live invocation. Your output will be 
                             prompt=augmented_prompt,
                             mode="scheduled",
                             source_chat_id=None,
-                            project=task_project
+                            project=task_project,
+                            is_visible=False,
                         )
 
                     logger.info(f"Silent agent task completed: {agent_name}")
@@ -7261,7 +7266,8 @@ You are running as a scheduled task. Your output will be shown to the user.
                                 prompt=augmented_prompt,
                                 mode="foreground",
                                 source_chat_id=agent_room_id,
-                                project=task_project
+                                project=task_project,
+                                is_visible=True,
                             )
 
                             new_msgs = _build_agent_display_messages(prompt, result, agent_name)
@@ -7301,7 +7307,8 @@ You are running as a scheduled task. Your output will be shown to the user in a 
                             prompt=augmented_prompt,
                             mode="foreground",
                             source_chat_id=None,
-                            project=task_project
+                            project=task_project,
+                            is_visible=True,
                         )
 
                         display_msgs = _build_agent_display_messages(prompt, result, agent_name)

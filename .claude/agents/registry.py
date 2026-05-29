@@ -18,9 +18,9 @@ logger = logging.getLogger("agents.registry")
 # Note: "background" is NOT in this set - it's handled specially in load_all()
 SKIP_DIRS = {"notifications", "__pycache__", ".git"}
 
-# Valid model aliases. Full OpenAI model ids are accepted too.
+# Valid model aliases. Full OpenAI and explicit Anthropic Claude model ids are accepted too.
 VALID_MODEL_ALIASES = {"sonnet", "opus", "haiku"}
-VALID_OPENAI_MODEL_PREFIXES = ("gpt-", "o")
+VALID_MODEL_PREFIXES = ("gpt-", "o", "claude-")
 VALID_MODELS = VALID_MODEL_ALIASES
 
 # Native Codex tools that agents can use.
@@ -185,10 +185,8 @@ class AgentRegistry:
 
             # Validate model. Legacy aliases are still accepted and mapped by
             # codex_backend at invocation time.
-            model = config_data.get("model", "sonnet")
-            if model not in VALID_MODEL_ALIASES and not str(model).startswith(VALID_OPENAI_MODEL_PREFIXES):
-                logger.warning(f"Agent {config_data['name']}: invalid model '{model}', using 'sonnet'")
-                config_data["model"] = "sonnet"
+            self._validate_model(config_data, config_data["name"], "model")
+            self._validate_runtime(config_data, config_data["name"])
 
             # Validate tools
             if "tools" in config_data:
@@ -202,6 +200,34 @@ class AgentRegistry:
         except Exception as e:
             logger.error(f"Failed to load agent {agent_dir.name}: {e}")
             return None
+
+    def _validate_model(
+        self,
+        data: Dict,
+        agent_name: str,
+        field_name: str = "model",
+        label: Optional[str] = None,
+    ) -> None:
+        model = data.get(field_name, "sonnet")
+        if model not in VALID_MODEL_ALIASES and not str(model).startswith(VALID_MODEL_PREFIXES):
+            logger.warning(f"Agent {agent_name}: invalid model '{model}' in {label or field_name}, using 'sonnet'")
+            data[field_name] = "sonnet"
+
+    def _validate_runtime(self, config_data: Dict, agent_name: str) -> None:
+        runtime = config_data.get("runtime")
+        if not isinstance(runtime, dict):
+            return
+        for path, path_config in list(runtime.items()):
+            if not isinstance(path_config, dict):
+                logger.warning(f"Agent {agent_name}: invalid runtime.{path}, ignoring")
+                runtime.pop(path, None)
+                continue
+            runtime_type = path_config.get("type")
+            if runtime_type and runtime_type not in {"codex", "sdk"}:
+                logger.warning(f"Agent {agent_name}: invalid runtime.{path}.type '{runtime_type}', ignoring type override")
+                path_config.pop("type", None)
+            if "model" in path_config:
+                self._validate_model(path_config, agent_name, "model", f"runtime.{path}.model")
 
     def _add_subagent_header(self, prompt: str) -> str:
         """Add context header to prevent CLAUDE.md contamination."""

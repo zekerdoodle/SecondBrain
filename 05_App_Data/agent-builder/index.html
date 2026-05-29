@@ -183,6 +183,27 @@ select {
   margin-top: 3px;
 }
 
+.runtime-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sp-lg);
+}
+
+.runtime-column {
+  min-width: 0;
+}
+
+.runtime-title {
+  font-size: var(--font-size-sm);
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: var(--sp-sm);
+}
+
+@media (max-width: 620px) {
+  .runtime-grid { grid-template-columns: 1fr; }
+}
+
 
 /* ================================================================
    BUTTONS
@@ -588,14 +609,8 @@ select {
       </div>
       <div class="field">
         <label>Model</label>
-        <select id="f-model" onchange="updateThinkingInfo()">
-          <option value="gpt-5.4-mini" selected>GPT-5.4 Mini (balanced)</option>
-          <option value="gpt-5.5">GPT-5.5 (most capable)</option>
-          <option value="gpt-5.4-nano">GPT-5.4 Nano (fastest)</option>
-          <option value="sonnet">Legacy Sonnet alias -> GPT-5.4 Mini</option>
-          <option value="opus">Legacy Opus alias -> GPT-5.5</option>
-          <option value="haiku">Legacy Haiku alias -> GPT-5.4 Mini</option>
-        </select>
+        <input type="text" id="f-model" value="gpt-5.4-mini" placeholder="gpt-5.5" oninput="updateThinkingInfo()" />
+        <div class="hint">Top-level fallback model. Legacy aliases like opus, sonnet, and haiku are still accepted.</div>
       </div>
       <div class="field">
         <label>Timeout (seconds)</label>
@@ -624,6 +639,66 @@ select {
           <div class="toggle-sub">Show in chat dropdown for direct conversation</div>
         </div>
         <button class="toggle on" id="f-chattable" onclick="toggleChattable()"></button>
+      </div>
+    </div>
+
+    <!-- Runtime Split -->
+    <div class="card">
+      <div class="card-header">Runtime Split</div>
+      <div class="banner banner-info" style="margin-bottom:14px; font-size: var(--font-size-xs); line-height: 1.5">
+        Chattable controls direct chat. Non-chattable controls invokes, scheduled runs, and background processing. Blank fields fall back to the top-level config.
+      </div>
+      <div class="runtime-grid">
+        <div class="runtime-column">
+          <div class="runtime-title">Chattable</div>
+          <div class="field">
+            <label>Runtime Type</label>
+            <select id="f-runtime-chat-type">
+              <option value="">Fallback</option>
+              <option value="codex">Codex</option>
+              <option value="sdk">SDK</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Model</label>
+            <input type="text" id="f-runtime-chat-model" placeholder="fallback" />
+          </div>
+          <div class="field">
+            <label>Reasoning Effort</label>
+            <select id="f-runtime-chat-effort">
+              <option value="">Fallback</option>
+              <option value="low">Low</option>
+              <option value="medium">Medium</option>
+              <option value="high">High</option>
+              <option value="max">Max</option>
+            </select>
+          </div>
+        </div>
+        <div class="runtime-column">
+          <div class="runtime-title">Non-Chattable</div>
+          <div class="field">
+            <label>Runtime Type</label>
+            <select id="f-runtime-nonchat-type">
+              <option value="">Fallback</option>
+              <option value="codex">Codex</option>
+              <option value="sdk">SDK</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Model</label>
+            <input type="text" id="f-runtime-nonchat-model" placeholder="fallback" />
+          </div>
+          <div class="field">
+            <label>Reasoning Effort</label>
+            <select id="f-runtime-nonchat-effort">
+              <option value="">Fallback</option>
+              <option value="low">Low</option>
+              <option value="medium">Medium</option>
+              <option value="high">High</option>
+              <option value="max">Max</option>
+            </select>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -688,7 +763,7 @@ select {
     <div class="card">
       <div class="card-header">Background Processing</div>
       <div class="banner banner-info" style="margin-bottom:14px; font-size: var(--font-size-xs); line-height: 1.5">
-        When enabled, the agent is silently invoked after every N exchanges to review the conversation and maintain its memories. Same agent, same model, all configured tools.
+        When enabled, the agent is silently invoked after every N exchanges to review the conversation and maintain its memories. Uses the non-chattable runtime when configured.
       </div>
       <div class="toggle-row">
         <div>
@@ -857,6 +932,7 @@ let restrictSkills = false;
 let isChattable = true;
 let bgEnabled = true;
 let editOriginalType = null;
+let loadedConfig = {};
 let activeIconCategory = 'all';
 let iconSearchQuery = '';
 
@@ -1073,7 +1149,51 @@ function setMode(m) {
 
   if (m === 'create') {
     editOriginalType = null;
+    loadedConfig = {};
     resetForm();
+  }
+}
+
+function cloneConfig(config) {
+  return JSON.parse(JSON.stringify(config || {}));
+}
+
+function setRuntimeFields(prefix, cfg) {
+  const runtime = cfg || {};
+  document.getElementById(`f-runtime-${prefix}-type`).value = runtime.type || '';
+  document.getElementById(`f-runtime-${prefix}-model`).value = runtime.model || '';
+  document.getElementById(`f-runtime-${prefix}-effort`).value = runtime.effort || '';
+}
+
+function applyRuntimePath(runtime, path, prefix) {
+  const existing = runtime[path] && typeof runtime[path] === 'object' && !Array.isArray(runtime[path])
+    ? { ...runtime[path] }
+    : {};
+  const type = document.getElementById(`f-runtime-${prefix}-type`).value.trim();
+  const model = document.getElementById(`f-runtime-${prefix}-model`).value.trim();
+  const effort = document.getElementById(`f-runtime-${prefix}-effort`).value.trim();
+
+  if (type) existing.type = type; else delete existing.type;
+  if (model) existing.model = model; else delete existing.model;
+  if (effort) existing.effort = effort; else delete existing.effort;
+
+  if (Object.keys(existing).length > 0) {
+    runtime[path] = existing;
+  } else {
+    delete runtime[path];
+  }
+}
+
+function applyRuntimeConfig(config) {
+  const runtime = config.runtime && typeof config.runtime === 'object' && !Array.isArray(config.runtime)
+    ? { ...config.runtime }
+    : {};
+  applyRuntimePath(runtime, 'chattable', 'chat');
+  applyRuntimePath(runtime, 'non_chattable', 'nonchat');
+  if (Object.keys(runtime).length > 0) {
+    config.runtime = runtime;
+  } else {
+    delete config.runtime;
   }
 }
 
@@ -1088,6 +1208,8 @@ function resetForm() {
   document.getElementById('f-thinking-mode').value = 'default';
   document.getElementById('f-effort').value = '';
   document.getElementById('f-thinking-budget').value = '';
+  setRuntimeFields('chat', {});
+  setRuntimeFields('nonchat', {});
   document.getElementById('icon-search').value = '';
   iconSearchQuery = '';
   activeIconCategory = 'all';
@@ -1144,6 +1266,7 @@ async function loadAgentForEdit() {
     if (!res.ok) throw new Error('Agent not found');
     const data = await res.json();
     const config = data.config || {};
+    loadedConfig = cloneConfig(config);
     editOriginalType = config.type || 'codex';
 
     document.getElementById('f-name').value = name;
@@ -1155,6 +1278,9 @@ async function loadAgentForEdit() {
     document.getElementById('f-prompt').value = data.prompt || '';
     document.getElementById('f-effort').value = config.effort || '';
     document.getElementById('f-thinking-budget').value = config.thinking_budget || '';
+    const runtime = config.runtime || {};
+    setRuntimeFields('chat', runtime.chattable || {});
+    setRuntimeFields('nonchat', runtime.non_chattable || {});
 
     // Determine thinking mode from config
     if (config.thinking_budget) {
@@ -1534,18 +1660,22 @@ async function saveAgent() {
   const mcpToolsList = [...selectedMcpTools];
   const isPrimary = mode === 'edit' && editOriginalType === 'primary';
 
-  const config = {
-    name,
-    description: desc,
-    model,
-    type: mode === 'edit' && editOriginalType ? editOriginalType : 'codex',
-    timeout_seconds: timeout,
-    max_turns: maxTurns,
-    chattable: isChattable,
-    icon: selectedIcon,
-  };
+  const config = mode === 'edit' ? cloneConfig(loadedConfig) : {};
+  config.name = name;
+  config.description = desc;
+  config.model = model.trim() || 'gpt-5.4-mini';
+  config.type = mode === 'edit' && editOriginalType ? editOriginalType : (config.type || 'codex');
+  config.timeout_seconds = timeout;
+  config.max_turns = maxTurns;
+  config.chattable = isChattable;
+  config.icon = selectedIcon;
 
   if (displayName) config.display_name = displayName;
+  else delete config.display_name;
+
+  delete config.effort;
+  delete config.thinking_budget;
+  applyRuntimeConfig(config);
 
   // Set thinking config based on mode
   if (thinkingMode === 'adaptive' && effort) {
@@ -1565,13 +1695,18 @@ async function saveAgent() {
 
   if (restrictSkills) {
     config.skills = [...selectedSkills].sort();
+  } else {
+    delete config.skills;
   }
 
   if (isPrimary) {
     config.native_tools = nativeToolsList;
     config.mcp_tools = mcpToolsList;
+    delete config.tools;
   } else {
     config.tools = [...nativeToolsList, ...mcpToolsList];
+    delete config.native_tools;
+    delete config.mcp_tools;
   }
 
   const bgPrompt = document.getElementById('f-bg-prompt').value;

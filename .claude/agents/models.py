@@ -9,7 +9,7 @@ Defines:
 - PendingNotification: For ping mode queue
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Literal, Optional, Union
@@ -27,6 +27,30 @@ class AgentType(str, Enum):
     """Type of agent implementation."""
     CODEX = "codex"    # Uses Codex CLI headless
     SDK = "sdk"        # Legacy alias accepted for existing configs
+
+
+@dataclass
+class AgentRuntimeConfig:
+    """Optional per-path runtime overrides for an agent."""
+
+    type: Optional[AgentType] = None
+    model: Optional[str] = None
+    effort: Optional[str] = None
+    thinking_budget: Optional[int] = None
+    system_prompt_preset: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: Optional[Dict[str, Any]]) -> "AgentRuntimeConfig":
+        if not isinstance(data, dict):
+            return cls()
+        runtime_type = data.get("type")
+        return cls(
+            type=AgentType(runtime_type) if runtime_type else None,
+            model=data.get("model"),
+            effort=data.get("effort"),
+            thinking_budget=data.get("thinking_budget"),
+            system_prompt_preset=data.get("system_prompt_preset"),
+        )
 
 
 @dataclass
@@ -65,6 +89,33 @@ class AgentConfig:
     thinking_budget: Optional[int] = None  # Override: explicit budget_tokens for ThinkingConfigEnabled
     background_processing: Optional[Dict[str, Any]] = None  # Background processing config (enabled, trigger_exchanges, idle_timeout_minutes)
     background_prompt: Optional[str] = None  # Content of background_processing.md
+    runtime: Dict[str, AgentRuntimeConfig] = field(default_factory=dict)  # Optional chattable/non_chattable runtime overrides
+
+    def resolve_runtime(self, path: str) -> "AgentConfig":
+        """Return an effective config for a runtime path with top-level fallback."""
+        override = self.runtime.get(path) if self.runtime else None
+        if override is None:
+            return self
+        return replace(
+            self,
+            type=override.type or self.type,
+            model=override.model or self.model,
+            effort=override.effort if override.effort is not None else self.effort,
+            thinking_budget=(
+                override.thinking_budget
+                if override.thinking_budget is not None
+                else self.thinking_budget
+            ),
+            system_prompt_preset=(
+                override.system_prompt_preset
+                if override.system_prompt_preset is not None
+                else self.system_prompt_preset
+            ),
+        )
+
+    def with_model_override(self, model: str) -> "AgentConfig":
+        """Return a copy with only the effective model overridden."""
+        return replace(self, model=model)
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any], prompt: Optional[str] = None,
@@ -92,6 +143,11 @@ class AgentConfig:
             thinking_budget=data.get("thinking_budget"),
             background_processing=data.get("background_processing"),
             background_prompt=background_prompt,
+            runtime={
+                key: AgentRuntimeConfig.from_dict(value)
+                for key, value in (data.get("runtime") or {}).items()
+                if isinstance(value, dict)
+            },
         )
 
 
@@ -122,8 +178,8 @@ class AgentInvocation:
     conversation_id: Optional[str] = None  # Resolved thread id (for hyperlink in the registry view)
     is_join: bool = False  # True iff the caller passed an existing conversation_id (vs. a fresh thread)
     caller_agent: Optional[str] = None  # Who invoked this agent (other agent name, or "user")
-    # Phase 1A coder-worktree request metadata. These fields are inert until
-    # runner cwd routing is deliberately added in a later slice.
+    # Coder-worktree routing metadata. These fields are Patch-only/default-gated;
+    # when valid, the runner prepares the worktree and launches Codex from it.
     worktree_branch: Optional[str] = None
     worktree_slug: Optional[str] = None
     worktree_base_ref: Optional[str] = None

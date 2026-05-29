@@ -122,6 +122,51 @@ _BACKGROUND_INVOCATION_TASKS: Set[asyncio.Task] = set()
 AGENT_THREAD_NOTIFICATION_PREFIX = "agent-thread:"
 
 
+RILEY_ANTHROPIC_PROXY_BASE_PATH = "/internal/anthropic-proxy"
+SECOND_BRAIN_ROOT = Path(__file__).resolve().parents[2]
+CLAUDE_CODE_CLI_PATH = SECOND_BRAIN_ROOT / "node_modules" / ".bin" / "claude"
+
+
+def _current_claude_code_cli_path() -> Path:
+    if not CLAUDE_CODE_CLI_PATH.exists():
+        raise FileNotFoundError(
+            f"Repo-managed Claude Code CLI not found at {CLAUDE_CODE_CLI_PATH}. "
+            "Run `npm install` from the Second Brain root."
+        )
+    return CLAUDE_CODE_CLI_PATH
+
+
+def _riley_anthropic_proxy_base_url() -> str:
+    base_url = os.environ.get("SECOND_BRAIN_RILEY_ANTHROPIC_PROXY_BASE_URL")
+    if base_url:
+        return base_url.rstrip("/")
+    internal_base = os.environ.get("SECOND_BRAIN_INTERNAL_BASE_URL", "http://127.0.0.1:8000")
+    return f"{internal_base.rstrip('/')}{RILEY_ANTHROPIC_PROXY_BASE_PATH}"
+
+
+def _sdk_agent_env(agent_name: str) -> Dict[str, str]:
+    env = {
+        "ENABLE_TOOL_SEARCH": "false",  # Disable tool deferral (tengu_defer_all_bn4)
+        # Short-circuits the CLI's XSY() attachment pipeline which auto-injects
+        # bundled Skill listings ("The following skills are available for use
+        # with the Skill tool:..."), dynamic_skill triggers, native TodoWrite
+        # reminders, plan_mode/delegate_mode reminders, nested CLAUDE.md loading,
+        # and relevant-memory injection. We have our own Skills system
+        # (mcp__brain__fetch_skill), our own memory system, and our own prompts —
+        # none of the native auto-injection is wanted. See cli.js function XSY at
+        # the `CLAUDE_CODE_DISABLE_ATTACHMENTS` check.
+        "CLAUDE_CODE_DISABLE_ATTACHMENTS": "1",
+    }
+    if agent_name == "character":
+        env.update(
+            {
+                "ENABLE_PROMPT_CACHING_1H": "1",
+                "ANTHROPIC_BASE_URL": _riley_anthropic_proxy_base_url(),
+            }
+        )
+    return env
+
+
 def _agent_thread_notification_source(caller_agent: str, conversation_id: str) -> str:
     return f"{AGENT_THREAD_NOTIFICATION_PREFIX}{caller_agent}:{conversation_id}"
 
@@ -222,7 +267,7 @@ def _validate_worktree_invocation_metadata(
     if not _coder_worktrees_enabled():
         raise ValueError(
             "coder worktree requests are disabled; set "
-            "SECOND_BRAIN_CODER_WORKTREES=1 to enable Phase 1A plumbing"
+            "SECOND_BRAIN_CODER_WORKTREES=1 to enable coder worktree routing"
         )
     if not worktree_branch or not worktree_slug:
         raise ValueError("worktree_branch and worktree_slug are required together")
@@ -243,6 +288,61 @@ def _validate_worktree_invocation_metadata(
                 f"worktree_path does not match derived path for request: {requested}"
             )
     return metadata
+
+
+def _prepare_worktree_for_invocation(invocation: AgentInvocation) -> None:
+    """Create/register the requested coder worktree before process launch."""
+    if not _has_worktree_request(
+        invocation.worktree_branch,
+        invocation.worktree_slug,
+        invocation.worktree_base_ref,
+        invocation.worktree_path,
+    ):
+        return
+    if not invocation.worktree_branch or not invocation.worktree_slug:
+        raise ValueError("worktree_branch and worktree_slug are required together")
+
+    from worktree_manager import WorktreeManager
+
+    manager = WorktreeManager()
+    record = manager.prepare_worktree(
+        invocation.agent,
+        invocation.worktree_branch,
+        invocation.worktree_slug,
+        base_ref=invocation.worktree_base_ref or "main",
+        source_repo=manager.canonical_state_root(),
+    )
+    prepared_path = Path(record.worktree_path).expanduser().resolve(strict=False)
+    if invocation.worktree_path is not None:
+        requested_path = Path(invocation.worktree_path).expanduser().resolve(strict=False)
+        if requested_path != prepared_path:
+            raise ValueError(
+                f"prepared worktree path does not match request metadata: {prepared_path}"
+            )
+    invocation.worktree_path = record.worktree_path
+    invocation.worktree_base_ref = record.base_ref
+
+
+def _worktree_preparation_error_result(
+    name: str,
+    mode: InvocationMode,
+    error: str,
+    conversation_id: Optional[str],
+) -> Union[AgentResult, Dict[str, str]]:
+    if mode == InvocationMode.FOREGROUND:
+        return AgentResult(
+            agent=name,
+            status="error",
+            response="",
+            started_at=datetime.utcnow(),
+            completed_at=datetime.utcnow(),
+            error=error,
+            conversation_id=conversation_id,
+        )
+    result = {"error": error}
+    if conversation_id:
+        result["conversation_id"] = conversation_id
+    return result
 
 # External MCP servers config file (alongside this file)
 EXTERNAL_MCP_CONFIG = Path(__file__).parent / "external_mcp_servers.json"
@@ -352,6 +452,27 @@ Use this output filename pattern: 00_Inbox/agent_outputs/{today}_{agent_name}_{p
 """
 
 
+def _effective_runner_config(
+    config: AgentConfig,
+    model_override: Optional[str] = None,
+    *,
+    is_visible: bool = False,
+    is_background_processing: bool = False,
+) -> AgentConfig:
+    """Resolve the runtime used by runner-mediated invocations."""
+    resolver = getattr(config, "resolve_runtime", None)
+    runtime_path = (
+        "chattable"
+        if is_visible and not is_background_processing
+        else "non_chattable"
+    )
+    effective = resolver(runtime_path) if callable(resolver) else config
+    if model_override:
+        override = getattr(effective, "with_model_override", None)
+        effective = override(model_override) if callable(override) else effective
+    return effective
+
+
 async def invoke_agent(
     name: str,
     prompt: str,
@@ -391,8 +512,8 @@ async def invoke_agent(
             this invocation. Recorded as the author of the prompt message in
             the thread. Defaults to "caller" for legacy/unsourced callers.
         worktree_branch/worktree_slug/worktree_base_ref/worktree_path: Optional
-            Phase 1A coder-worktree metadata. Validated and carried through, but
-            not used for cwd routing until a later slice.
+            coder-worktree request metadata. Validated up front and, when
+            enabled, prepared before Codex process launch.
         salon_id: If set, this invocation is part of a salon dispatch. The
             agent_conversations thread machinery is bypassed entirely — the
             ``prompt`` is used as-is (caller is responsible for rendering salon
@@ -445,21 +566,12 @@ async def invoke_agent(
             return error_result
         return {"error": f"Unknown agent: {name}"}
 
-    # Apply model override
-    if model_override:
-        config = AgentConfig(
-            name=config.name,
-            type=config.type,
-            model=model_override,
-            description=config.description,
-            tools=config.tools,
-            timeout_seconds=config.timeout_seconds,
-            max_turns=config.max_turns,
-            output_format=config.output_format,
-            prompt=config.prompt,
-            system_prompt_preset=config.system_prompt_preset,
-            skills=config.skills,
-        )
+    config = _effective_runner_config(
+        config,
+        model_override=model_override,
+        is_visible=is_visible,
+        is_background_processing=is_background_processing,
+    )
 
     # Inject project metadata into prompt if project is specified
     if project:
@@ -472,6 +584,12 @@ async def invoke_agent(
     # is supported — the salon dispatch loop in main.py runs us synchronously
     # and persists the result into the salon.
     if salon_id is not None:
+        if worktree_metadata:
+            return _worktree_request_error_result(
+                name,
+                mode,
+                "coder worktree routing is not supported for salon dispatches",
+            )
         if mode != InvocationMode.FOREGROUND:
             return {
                 "error": (
@@ -553,10 +671,27 @@ async def invoke_agent(
         is_background_processing=is_background_processing,
     )
 
+    try:
+        _prepare_worktree_for_invocation(invocation)
+    except Exception as e:
+        error = str(e)
+        failure = AgentResult(
+            agent=name,
+            status="error",
+            response="",
+            started_at=invocation.invoked_at,
+            completed_at=datetime.utcnow(),
+            error=error,
+            conversation_id=conv_id,
+        )
+        await _finalize_thread_turn(conv_id, lock_id, name, failure)
+        return _worktree_preparation_error_result(name, mode, error, conv_id)
+
     logger.info(
         f"Invoking agent '{name}' in {mode.value} mode"
         + (f" [project: {project}]" if project else "")
         + f" [thread: {conv_id}]"
+        + (f" [worktree: {invocation.worktree_path}]" if invocation.worktree_path else "")
     )
 
     # Handle different modes
@@ -1119,6 +1254,9 @@ async def _register_running_agent_entry(config: AgentConfig, invocation: AgentIn
         salon_id=invocation.salon_id,
         scheduled_task_id=invocation.scheduled_task_id,
         caller_agent=invocation.caller_agent,
+        worktree_branch=invocation.worktree_branch,
+        worktree_slug=invocation.worktree_slug,
+        worktree_path=invocation.worktree_path,
     )
 
 
@@ -2002,11 +2140,13 @@ async def _run_codex_agent(
 
     try:
         async with asyncio.timeout(config.timeout_seconds):
+            launch_cwd = invocation.worktree_path or WORKING_DIR
             run_options = CodexRunOptions(
                 model=config.model,
-                # Phase 1A only carries worktree metadata. Cwd routing must
-                # remain canonical until Phase 1B changes this deliberately.
-                cwd=WORKING_DIR,
+                # Only the process cwd moves. Identity, memory, scheduler, MCP,
+                # and conversation state above are resolved from this main-rooted
+                # runner module and remain canonical.
+                cwd=launch_cwd,
                 identity_instructions=identity_content,
                 prompt=effective_prompt,
                 tools=effective_tools,
@@ -2179,19 +2319,37 @@ async def _run_anthropic_sdk_agent(
     else:
         system_prompt = identity_content
 
-    # Dynamic context layer: always_load memories + working memory. Contextual
-    # retrieval results are appended below. The final block is wrapped in
-    # <system-injected> and prepended to the user message — never the system
-    # prompt — so it travels via stdin instead of argv.
+    # Dynamic context layer: working memory + contextual retrieval. For Character's
+    # SDK/API path, always_load memories are stable prompt-prefix material, so
+    # they move into a temporary system_prompt_file below instead of riding in
+    # the per-turn user message.
     _agent_dir = Path(__file__).parent / config.name
     _scripts_dir = Path(__file__).parent.parent / "scripts"
-    context_parts: List[str] = []
-    _mem_block = prompt_assembly.load_always_load_memories_block(_agent_dir)
-    if _mem_block:
-        context_parts.append(_mem_block)
-    _wm_block = prompt_assembly.load_working_memory_block(config.name, _scripts_dir)
-    if _wm_block:
-        context_parts.append(_wm_block)
+    stable_context_parts, context_parts = prompt_assembly.load_context_layers(
+        config.name,
+        _agent_dir,
+        _scripts_dir,
+    )
+    system_prompt_file: Optional[Path] = None
+    stable_context_block = ""
+    if config.name == "character":
+        stable_context_block = prompt_assembly.build_context_block(stable_context_parts)
+        if stable_context_block and isinstance(system_prompt, str):
+            system_prompt_file = prompt_assembly.write_cacheable_system_prompt_file(
+                config.name,
+                system_prompt,
+                stable_context_block,
+            )
+            system_prompt = {"type": "file", "path": str(system_prompt_file)}
+            logger.info(
+                "Agent '%s': moved %s chars of stable context into SDK system_prompt_file",
+                config.name,
+                len(stable_context_block),
+            )
+        elif stable_context_parts:
+            context_parts = stable_context_parts + context_parts
+    else:
+        context_parts = stable_context_parts + context_parts
 
     # Build MCP servers for the agent.
     # Internal "brain" server provides Second Brain tools (memory, scheduler, etc.).
@@ -2261,6 +2419,7 @@ async def _run_anthropic_sdk_agent(
 
     options_kwargs = {
         "model": config.model,
+        "cli_path": str(_current_claude_code_cli_path()),
         "system_prompt": system_prompt,
         "allowed_tools": effective_tools if effective_tools else None,
         "permission_mode": "bypassPermissions",
@@ -2269,18 +2428,7 @@ async def _run_anthropic_sdk_agent(
         "setting_sources": [],  # Never load project settings for subagents
         "max_turns": config.max_turns,
         "mcp_servers": mcp_servers if mcp_servers else None,
-        "env": {
-            "ENABLE_TOOL_SEARCH": "false",  # Disable tool deferral (tengu_defer_all_bn4)
-            # Short-circuits the CLI's XSY() attachment pipeline which auto-injects
-            # bundled Skill listings ("The following skills are available for use
-            # with the Skill tool:..."), dynamic_skill triggers, native TodoWrite
-            # reminders, plan_mode/delegate_mode reminders, nested CLAUDE.md loading,
-            # and relevant-memory injection. We have our own Skills system
-            # (mcp__brain__fetch_skill), our own memory system, and our own prompts —
-            # none of the native auto-injection is wanted. See cli.js function XSY at
-            # the `CLAUDE_CODE_DISABLE_ATTACHMENTS` check.
-            "CLAUDE_CODE_DISABLE_ATTACHMENTS": "1",
-        },
+        "env": _sdk_agent_env(config.name),
         # Restore visible thinking on Opus 4.7+ — the model silently changed its
         # default from display="summarized" to display="omitted" (see Anthropic's
         # "What's new in Claude Opus 4.7" docs). Without this, thinking blocks
@@ -2438,6 +2586,11 @@ async def _run_anthropic_sdk_agent(
         raise
 
     finally:
+        if system_prompt_file:
+            try:
+                system_prompt_file.unlink(missing_ok=True)
+            except Exception as exc:
+                logger.warning("Could not remove SDK system prompt file %s: %s", system_prompt_file, exc)
         if reg_id:
             try:
                 deregister_process(reg_id)

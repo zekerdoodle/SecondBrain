@@ -48,7 +48,7 @@ Returns one entry per live invocation. Filter by agent or kind. Kinds:
 - background_processing: an agent's idle-time background-processing hook fired.
 - agent_conversation_join: an invocation that joined an existing agent-to-agent thread.
 
-Each entry has: id, agent, kind, started_at (UNIX seconds), elapsed_seconds, task_summary, source_chat_id, conversation_id, salon_id, scheduled_task_id, caller_agent. Fields that don't apply are null.
+Each entry has: id, agent, kind, started_at (UNIX seconds), elapsed_seconds, task_summary, source_chat_id, conversation_id, salon_id, scheduled_task_id, caller_agent. Worktree-routed coder invocations also include worktree_branch, worktree_slug, and worktree_path. Fields that don't apply are null or omitted.
 
 Note (Phase 1): chat sessions are not yet registered — Phase 2 of the running-agents-visibility project adds the WebSocket hook. Until then, calling this tool from a chat will not see your own chat session in the results.
 """
@@ -94,10 +94,19 @@ def _render_markdown(entries):
             parts.append(f"[salon `{e['salon_id'][:8]}`]")
         if e.get("scheduled_task_id"):
             parts.append(f"[task `{e['scheduled_task_id'][:8]}`]")
+        if e.get("worktree_slug") or e.get("worktree_branch"):
+            worktree_bits = []
+            if e.get("worktree_slug"):
+                worktree_bits.append(f"slug `{e['worktree_slug']}`")
+            if e.get("worktree_branch"):
+                worktree_bits.append(f"branch `{e['worktree_branch']}`")
+            parts.append("[worktree " + ", ".join(worktree_bits) + "]")
         line = " ".join(parts)
         summary = e.get("task_summary") or ""
         if summary:
             line += f"\n  _{summary}_"
+        if e.get("worktree_path"):
+            line += f"\n  worktree: `{e['worktree_path']}`"
         lines.append(line)
     return "\n".join(lines)
 
