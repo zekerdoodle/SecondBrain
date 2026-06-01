@@ -130,6 +130,8 @@ UTILITY_TOOLS = [
     "process_list",
     "compact_conversation",
     "set_theme",
+    "coder_worktree_inspect",
+    "coder_worktree_cleanup",
 ]
 
 AGENT_TOOLS = [

@@ -11,6 +11,7 @@ from . import compact_conversation as compact_module
 from . import set_theme as set_theme_module
 from . import leave_on_desk as leave_on_desk_module
 from . import running_agents as running_agents_module
+from . import coder_worktrees as coder_worktrees_module
 
 # Re-export for direct access
 from .page_parser import page_parser
@@ -23,6 +24,7 @@ from .compact_conversation import compact_conversation
 from .set_theme import set_theme
 from .leave_on_desk import leave_on_desk
 from .running_agents import running_agents_tool
+from .coder_worktrees import coder_worktree_cleanup, coder_worktree_inspect
 
 __all__ = [
     "page_parser",
@@ -35,4 +37,6 @@ __all__ = [
     "set_theme",
     "leave_on_desk",
     "running_agents_tool",
+    "coder_worktree_inspect",
+    "coder_worktree_cleanup",
 ]

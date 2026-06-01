@@ -121,6 +121,9 @@ def _inject_agent_context(tools, agent_name: str, salon_id: Optional[str] = None
         # patch-only caller restriction (defense in depth on top of the
         # consent prompt).
         "apply_patch_deploy",
+        # Coder-worktree operator tools are Patch-only and enforce the
+        # caller restriction in-tool using this injected name.
+        "coder_worktree_inspect", "coder_worktree_cleanup",
     }
 
     # Tools that also receive _salon_id (when this MCP server is bound to a salon).

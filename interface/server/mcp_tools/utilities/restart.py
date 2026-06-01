@@ -7,6 +7,7 @@ Restarts the Second Brain server with conversation continuity.
 import os
 import sys
 import asyncio
+import subprocess
 from typing import Any, Dict
 
 from claude_agent_sdk import tool
@@ -14,6 +15,99 @@ from claude_agent_sdk import tool
 from ..registry import register_tool
 
 _ALLOWED_RESTART_CONSUMER = "main_streaming_finalizer"
+_AGENT_MANAGED_RESTART_CONSUMER = "agent_managed_restart"
+_AGENT_MANAGED_RESTART_KINDS = frozenset({
+    "invoke_foreground",
+    "invoke_ping",
+    "invoke_trust",
+    "background_processing",
+    "agent_conversation_join",
+})
+
+
+def _summarize_running_entry(entry: dict[str, Any]) -> str:
+    agent = entry.get("agent") or "unknown"
+    kind = entry.get("kind") or "unknown"
+    conversation_id = entry.get("conversation_id") or "no-thread"
+    return f"{agent}/{kind}/{conversation_id}"
+
+
+def _parse_agent_managed_restart_consumer(restart_consumer: str) -> tuple[str | None, str | None]:
+    parts = (restart_consumer or "").split(":", 2)
+    if len(parts) != 3 or parts[0] != _AGENT_MANAGED_RESTART_CONSUMER:
+        return None, None
+    mode, conversation_id = parts[1], parts[2]
+    if not mode or not conversation_id:
+        return None, None
+    return mode, conversation_id
+
+
+def _agent_managed_restart_error(
+    *,
+    restart_consumer: str,
+    source_agent: str,
+    running_invocations: list[dict[str, Any]],
+) -> str | None:
+    """Return None only for Patch's current runner invocation.
+
+    Scheduled Patch wakes have two authoritative entries: the outer scheduler
+    wrapper plus the inner durable agent-thread invocation. The inner
+    conversation_id is carried in the restart consumer so extra active work still
+    fails closed before marker writes.
+    """
+    mode, conversation_id = _parse_agent_managed_restart_consumer(restart_consumer)
+    if not conversation_id:
+        return "agent-managed restart consumer is missing the current conversation id"
+    if source_agent != "patch":
+        return "agent-managed restarts are Patch-only"
+
+    current_entries = []
+    scheduled_wrappers = []
+    unexpected_entries = []
+    for entry in running_invocations:
+        if (
+            entry.get("agent") == source_agent
+            and entry.get("conversation_id") == conversation_id
+            and entry.get("kind") in _AGENT_MANAGED_RESTART_KINDS
+        ):
+            current_entries.append(entry)
+        elif (
+            mode == "scheduled"
+            and entry.get("agent") == source_agent
+            and entry.get("kind") == "scheduled"
+            and not entry.get("conversation_id")
+        ):
+            scheduled_wrappers.append(entry)
+        else:
+            unexpected_entries.append(entry)
+
+    if len(current_entries) != 1:
+        return (
+            "authoritative running_agents did not show exactly one current "
+            f"Patch invocation for thread {conversation_id}"
+        )
+    if len(scheduled_wrappers) > 1:
+        return "authoritative running_agents showed multiple scheduled Patch wrappers"
+    if unexpected_entries:
+        details = ", ".join(_summarize_running_entry(entry) for entry in unexpected_entries[:3])
+        more = "" if len(unexpected_entries) <= 3 else f", +{len(unexpected_entries) - 3} more"
+        return f"authoritative running_agents showed other active invocation(s): {details}{more}"
+    return None
+
+
+def _is_agent_managed_restart_consumer(restart_consumer: str) -> bool:
+    mode, conversation_id = _parse_agent_managed_restart_consumer(restart_consumer)
+    return bool(mode and conversation_id)
+
+
+def _spawn_managed_restart_subprocess(restart_script: str, log_file: str) -> None:
+    subprocess.Popen(
+        f"sleep 1 && bash {restart_script} > {log_file} 2>&1",
+        shell=True,
+        start_new_session=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
 
 
 def _legacy_visible_chat_bootstrap_allowed(
@@ -90,6 +184,8 @@ async def restart_server(args: Dict[str, Any]) -> Dict[str, Any]:
         calling_agent_name = args.get("_agent_name")
         reason = args.get("reason", "Server restart requested")
         rebuild = args.get("rebuild", False)
+        restart_consumer = args.get("_restart_consumer") or "none"
+        agent_managed_consumer = _is_agent_managed_restart_consumer(restart_consumer)
 
         # Import tools
         import restart_tool as rt
@@ -118,7 +214,7 @@ async def restart_server(args: Dict[str, Any]) -> Dict[str, Any]:
                     session_id = sid
                     break
 
-        if not session_id:
+        if not session_id and not agent_managed_consumer:
             try:
                 active_room_file = rt.CLAUDE_DIR / "active_room.json"
                 if active_room_file.exists():
@@ -129,7 +225,7 @@ async def restart_server(args: Dict[str, Any]) -> Dict[str, Any]:
             except Exception:
                 pass
 
-        if not session_id:
+        if not session_id and not agent_managed_consumer:
             return {
                 "content": [{"type": "text", "text": "Error: Could not determine session_id. No active conversations found."}],
                 "is_error": True
@@ -143,19 +239,17 @@ async def restart_server(args: Dict[str, Any]) -> Dict[str, Any]:
             stored_chat = None
             if chat_manager:
                 stored_chat = chat_manager.load_chat(session_id)
-            if stored_chat is None:
+            if stored_chat is None and session_id:
                 chat_file = rt.CHATS_DIR / f"{session_id}.json"
                 if chat_file.exists():
                     import json
                     stored_chat = json.loads(chat_file.read_text())
-            if stored_chat:
+            if stored_chat and not agent_managed_consumer:
                 stored_agent = stored_chat.get("agent")
                 if stored_agent:
                     source_agent = stored_agent
         except Exception:
             pass
-
-        restart_consumer = args.get("_restart_consumer") or "none"
 
         import running_agents
 
@@ -212,7 +306,26 @@ async def restart_server(args: Dict[str, Any]) -> Dict[str, Any]:
             source_agent=source_agent,
             running_invocations=running_invocations,
         )
-        if restart_consumer != _ALLOWED_RESTART_CONSUMER and not legacy_visible_chat_bootstrap:
+        agent_managed_restart = False
+        agent_managed_restart_error = ""
+        if _is_agent_managed_restart_consumer(restart_consumer):
+            agent_managed_restart_error = _agent_managed_restart_error(
+                restart_consumer=restart_consumer,
+                source_agent=source_agent,
+                running_invocations=running_invocations,
+            ) or ""
+            agent_managed_restart = not agent_managed_restart_error
+
+        if (
+            restart_consumer != _ALLOWED_RESTART_CONSUMER
+            and not legacy_visible_chat_bootstrap
+            and not agent_managed_restart
+        ):
+            guard_detail = (
+                f" Agent-managed guard detail: {agent_managed_restart_error}."
+                if agent_managed_restart_error
+                else ""
+            )
             return {
                 "content": [{
                     "type": "text",
@@ -220,7 +333,9 @@ async def restart_server(args: Dict[str, Any]) -> Dict[str, Any]:
                         "Error: restart_server cannot safely restart from this invocation context. "
                         "This MCP call was not launched with the main.py streaming finalizer "
                         "that performs the clean save and detached restart subprocess spawn, "
-                        "and it did not match the single-active-visible-chat bootstrap guard. "
+                        "did not match the single-active-visible-chat bootstrap guard, "
+                        "and did not satisfy the Patch-only agent-managed restart guard."
+                        f"{guard_detail} "
                         "No pending restart or continuation marker was written."
                     ),
                 }],
@@ -235,6 +350,13 @@ async def restart_server(args: Dict[str, Any]) -> Dict[str, Any]:
                 "and spawn the detached restart subprocess. After this restart loads "
                 "the saved code, visible-chat restarts must use the explicit "
                 "main_streaming_finalizer consumer."
+            )
+        if agent_managed_restart:
+            running_agents_bootstrap_note = (
+                "\nManaged restart accepted from a scheduled/invoked Patch context. "
+                "Authoritative running_agents shows no protected active work beyond "
+                "the current Patch invocation, so restart_server will spawn the "
+                "detached restart subprocess directly after writing continuation state."
             )
 
         # Build a map of ALL actively processing sessions -> their agent names.
@@ -258,14 +380,13 @@ async def restart_server(args: Dict[str, Any]) -> Dict[str, Any]:
             except Exception:
                 pass
             all_active[sid] = agent
-        if session_id not in all_active:
+        if session_id and session_id not in all_active:
             all_active[session_id] = source_agent
 
-        # NOTE: We do NOT save conv.messages here or spawn the restart subprocess.
-        # The streaming loop in main.py detects that restart_server completed,
-        # halts the model stream, does a clean finalization/save (with proper
-        # display_messages including block model), and THEN spawns the restart.
-        # This prevents duplicate content from WAL recovery.
+        # For visible chat restarts, main.py's streaming finalizer does the clean
+        # save and detached spawn after this tool returns. Agent-managed Patch
+        # restarts have no streaming finalizer, so this tool writes the same marker
+        # contract and spawns directly after the authoritative guard below passes.
 
         # Choose restart script based on rebuild flag
         if rebuild:
@@ -302,6 +423,7 @@ async def restart_server(args: Dict[str, Any]) -> Dict[str, Any]:
                 "log_file": str(log_file),
                 "restart_type": restart_type,
                 "wait_time": wait_time,
+                "restart_consumer": restart_consumer,
             }))
         except Exception:
             try:
@@ -314,6 +436,24 @@ async def restart_server(args: Dict[str, Any]) -> Dict[str, Any]:
                 except FileNotFoundError:
                     pass
             raise
+
+        if agent_managed_restart:
+            try:
+                pending_restart_file.unlink()
+            except FileNotFoundError:
+                pass
+            try:
+                _spawn_managed_restart_subprocess(str(restart_script), str(log_file))
+            except Exception:
+                try:
+                    pending_restart_file.unlink()
+                except FileNotFoundError:
+                    pass
+                try:
+                    rt.RESTART_MARKER.unlink()
+                except FileNotFoundError:
+                    pass
+                raise
 
         agent_invocation_count = len(continuation.get("agent_invocations", []))
         bystander_count = len(all_active) - 1  # Exclude the triggering session

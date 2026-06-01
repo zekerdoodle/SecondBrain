@@ -473,6 +473,20 @@ def _effective_runner_config(
     return effective
 
 
+def _restart_consumer_for_invocation(
+    config: AgentConfig,
+    invocation: AgentInvocation,
+    effective_tools: List[str],
+) -> str:
+    """Return the restart consumer contract for Codex MCP bridge launches."""
+    if "mcp__brain__restart_server" not in effective_tools and "restart_server" not in effective_tools:
+        return "none"
+    if config.name != "patch" or not invocation.conversation_id:
+        return "none"
+    mode = invocation.mode.value if isinstance(invocation.mode, InvocationMode) else str(invocation.mode)
+    return f"agent_managed_restart:{mode}:{invocation.conversation_id}"
+
+
 async def invoke_agent(
     name: str,
     prompt: str,
@@ -2161,6 +2175,9 @@ async def _run_codex_agent(
                 salon_id=invocation.salon_id,
                 history_messages=history_messages,
                 external_mcp_servers=_load_external_mcp_servers(),
+                restart_consumer=_restart_consumer_for_invocation(
+                    config, invocation, effective_tools
+                ),
             )
             codex_result = await run_codex(run_options, stream_callback=stream_callback)
             if (
