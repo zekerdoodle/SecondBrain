@@ -26,12 +26,31 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from dotenv import load_dotenv
 
-try:
-    from snaptrade_client import SnapTrade
-    from snaptrade_client.exceptions import ApiException
+SnapTrade = None
+ApiException = Exception
+SNAPTRADE_AVAILABLE = False
+
+
+def _ensure_snaptrade_sdk() -> None:
+    """Import the SnapTrade SDK lazily so installs can heal a live process."""
+    global SnapTrade, ApiException, SNAPTRADE_AVAILABLE
+
+    if SNAPTRADE_AVAILABLE and SnapTrade is not None:
+        return
+
+    try:
+        from snaptrade_client import SnapTrade as _SnapTrade
+        from snaptrade_client.exceptions import ApiException as _ApiException
+    except ImportError as exc:
+        SNAPTRADE_AVAILABLE = False
+        raise ImportError(
+            "snaptrade-python-sdk is not installed. Install with: "
+            "pip install snaptrade-python-sdk"
+        ) from exc
+
+    SnapTrade = _SnapTrade
+    ApiException = _ApiException
     SNAPTRADE_AVAILABLE = True
-except ImportError:
-    SNAPTRADE_AVAILABLE = False
 
 from .theo_logger import cli_logger
 from .vault_paths import get_vault_root
@@ -55,10 +74,7 @@ class SnapTradeClient:
     def __init__(self):
         """Initialize the SnapTrade client with credentials from .env"""
 
-        if not SNAPTRADE_AVAILABLE:
-            raise ImportError(
-                "snaptrade-python-sdk is not installed. Install with: pip install snaptrade-python-sdk"
-            )
+        _ensure_snaptrade_sdk()
 
         # Load credentials from environment
         self.client_id = os.getenv("SNAPTRADE_CLIENT_ID", "")

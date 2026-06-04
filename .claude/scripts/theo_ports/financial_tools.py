@@ -47,18 +47,24 @@ def _get_client():
     return _plaid_client, None
 
 
-def connect_bank_account(public_token: Optional[str] = None) -> Tuple[str, Dict[str, Any]]:
+def connect_bank_account(
+    public_token: Optional[str] = None,
+    item_id: Optional[str] = None,
+) -> Tuple[str, Dict[str, Any]]:
     """
     Connect a bank account using Plaid Link.
     
-    This tool has two modes:
-    1. If no public_token is provided: Creates a Link token that the user can use
-       to open Plaid Link and connect their bank.
-    2. If public_token is provided: Exchanges it for an access token and completes
-       the connection process.
+    This tool has three modes:
+    1. If no arguments are provided: Creates a Link token that the user can use
+       to open Plaid Link and connect a new bank.
+    2. If item_id is provided: Creates an update-mode Link token to repair an
+       existing Plaid Item. This does not exchange a public token afterward.
+    3. If public_token is provided: Exchanges it for an access token and completes
+       the new-connection process.
     
     Args:
         public_token: Optional public token from Plaid Link (after user connects bank)
+        item_id: Optional Plaid item_id to repair through Link update mode
     
     Returns:
         Tuple of (message, metadata_dict)
@@ -71,6 +77,10 @@ def connect_bank_account(public_token: Optional[str] = None) -> Tuple[str, Dict[
         # Step 2: Complete connection with public token
         connect_bank_account(public_token="public-sandbox-xxx")
         # Returns success confirmation
+
+        # Repair an existing item
+        connect_bank_account(item_id="item_abc123")
+        # Returns update-mode link_token for user reauth
     """
     client, error = _get_client()
     if error:
@@ -80,6 +90,11 @@ def connect_bank_account(public_token: Optional[str] = None) -> Tuple[str, Dict[
     try:
         vault_accounts_path = getattr(client, "accounts_file", None)
         vault_tokens_path = getattr(client, "access_tokens_file", None)
+
+        item_id = (item_id or "").strip() or None
+        if public_token and item_id:
+            error = "Provide either public_token for a new connection exchange or item_id for update mode, not both."
+            return f"ERROR: {error}", {"success": False, "error": error}
 
         if public_token:
             # Step 2: Exchange public token for access token
@@ -115,6 +130,48 @@ def connect_bank_account(public_token: Optional[str] = None) -> Tuple[str, Dict[
             else:
                 return f"ERROR: {message}", {"success": False, "error": message}
 
+        elif item_id:
+            # Update mode: repair an existing Item with its stored access token.
+            success, message, link_token = client.create_update_link_token(item_id=item_id)
+
+            if success:
+                issued_at = datetime.now().isoformat(timespec="seconds")
+                token_preview = f"{link_token[:12]}…" if isinstance(link_token, str) and len(link_token) > 12 else link_token
+                instructions = [
+                    "✅ Bank connection repair initiated successfully!",
+                    "",
+                    "📱 The user will be prompted to re-authenticate the existing bank connection via Plaid.",
+                    "",
+                    "⚠️ DO NOT exchange a public token after this flow.",
+                    "   Plaid update mode keeps the existing access token in place.",
+                    "",
+                    f"🔗 Link token: `{link_token}`",
+                    f"🧾 Item ID: `{item_id}`",
+                    f"⏱️ Generated at: {issued_at}",
+                    "",
+                    "Next steps:",
+                    "• Wait for user to complete the Plaid update flow",
+                    "• After repair, use get_financial_accounts() or get_transactions() to confirm fresh access",
+                ]
+
+                return (
+                    "\n".join(instructions),
+                    {
+                        "success": True,
+                        "action": "link_token_created",
+                        "link_mode": "update",
+                        "item_id": item_id,
+                        "link_token": link_token,
+                        "link_token_preview": token_preview,
+                        "exchange_required": False,
+                        "generated_at": issued_at,
+                        "user_prompt_at_end_of_turn": True,
+                        "instructions": "User will be prompted to repair an existing bank connection. Do not exchange a public token after update mode.",
+                    }
+                )
+            else:
+                return f"ERROR: {message}", {"success": False, "error": message, "item_id": item_id}
+
         else:
             # Step 1: Create link token
             success, message, link_token = client.create_link_token()
@@ -144,8 +201,10 @@ def connect_bank_account(public_token: Optional[str] = None) -> Tuple[str, Dict[
                     {
                         "success": True,
                         "action": "link_token_created",
+                        "link_mode": "new",
                         "link_token": link_token,
                         "link_token_preview": token_preview,
+                        "exchange_required": True,
                         "generated_at": issued_at,
                         "user_prompt_at_end_of_turn": True,
                         "instructions": "User will be prompted to login to their bank at the end of this turn. Do not call this tool again.",

@@ -183,7 +183,13 @@ async def finance_spending_analysis(args: Dict[str, Any]) -> Dict[str, Any]:
         return {"content": [{"type": "text", "text": f"Error: {str(e)}"}], "is_error": True}
 
 
-def _write_link_token_file(link_token: str, environment: str = "sandbox") -> None:
+def _write_link_token_file(
+    link_token: str,
+    environment: str = "sandbox",
+    mode: str = "new",
+    item_id: str | None = None,
+    exchange_required: bool = True,
+) -> None:
     """Write the Plaid link token to a file the HTML app can read."""
     os.makedirs(PLAID_LINK_DIR, exist_ok=True)
     token_file = os.path.join(PLAID_LINK_DIR, "link_token.json")
@@ -191,7 +197,11 @@ def _write_link_token_file(link_token: str, environment: str = "sandbox") -> Non
         "link_token": link_token,
         "generated_at": time.time(),
         "environment": environment,
+        "mode": mode,
+        "exchange_required": exchange_required,
     }
+    if item_id:
+        data["item_id"] = item_id
     with open(token_file, "w") as f:
         json.dump(data, f, indent=2)
 
@@ -199,18 +209,19 @@ def _write_link_token_file(link_token: str, environment: str = "sandbox") -> Non
 @register_tool("finance")
 @tool(
     name="finance_connect",
-    description="""Connect a bank account via Plaid Link.
+    description="""Connect or repair a bank account via Plaid Link.
 
-Generates a Plaid Link token and writes it to the Plaid Link app.
+With no args, generates a new-link token and writes it to the Plaid Link app.
+With item_id, generates an update-mode token for that existing Plaid Item.
 Tell the user to open the "Link Bank Account" app from the app drawer (or open the
-file 05_App_Data/plaid-link/index.html). The app handles the full bank login flow
-and automatically completes the connection.
+file 05_App_Data/plaid-link/index.html). The app handles the Plaid Link flow.
 
 If called with a public_token, exchanges it for an access token (manual fallback).""",
     input_schema={
         "type": "object",
         "properties": {
-            "public_token": {"type": "string", "description": "Public token from Plaid Link (manual fallback only, normally not needed)"}
+            "public_token": {"type": "string", "description": "Public token from Plaid Link (manual fallback only, normally not needed)"},
+            "item_id": {"type": "string", "description": "Existing Plaid item_id to repair with Link update mode"}
         }
     }
 )
@@ -219,7 +230,8 @@ async def finance_connect(args: Dict[str, Any]) -> Dict[str, Any]:
     try:
         tools = _import_financial_tools()
         message, metadata = tools["connect"](
-            public_token=args.get("public_token")
+            public_token=args.get("public_token"),
+            item_id=args.get("item_id"),
         )
 
         # When a link token is generated (step 1), write it for the HTML app
@@ -231,17 +243,38 @@ async def finance_connect(args: Dict[str, Any]) -> Dict[str, Any]:
                     env = os.getenv("PLAID_ENV", "sandbox")
                 except Exception:
                     pass
-                _write_link_token_file(link_token, env)
+                mode = metadata.get("link_mode", "new")
+                item_id = metadata.get("item_id")
+                exchange_required = bool(metadata.get("exchange_required", mode != "update"))
+                _write_link_token_file(
+                    link_token,
+                    env,
+                    mode=mode,
+                    item_id=item_id,
+                    exchange_required=exchange_required,
+                )
 
-                return {
-                    "content": [{"type": "text", "text": (
+                if mode == "update":
+                    text = (
+                        "Plaid update-mode token generated and written to the app.\n\n"
+                        "Tell the user to open the **Link Bank Account** app from the app drawer "
+                        "(or open `05_App_Data/plaid-link/index.html`).\n\n"
+                        f"The app will repair the existing connection for item `{item_id}` and will not "
+                        "exchange a public token after success.\n\n"
+                        "If the app is already open, it will auto-detect the new token."
+                    )
+                else:
+                    text = (
                         "Plaid Link token generated and written to the app.\n\n"
                         "Tell the user to open the **Link Bank Account** app from the app drawer "
                         "(or open `05_App_Data/plaid-link/index.html`).\n\n"
                         "The app will handle the bank login flow and automatically "
                         "exchange the token when the user completes it.\n\n"
                         "If the app is already open, it will auto-detect the new token."
-                    )}]
+                    )
+
+                return {
+                    "content": [{"type": "text", "text": text}]
                 }
 
         return _result_to_mcp(message, metadata)

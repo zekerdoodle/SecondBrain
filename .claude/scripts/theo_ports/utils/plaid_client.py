@@ -194,6 +194,61 @@ class PlaidClient:
             error_msg = f"Unexpected error creating link token: {e}"
             logger.error(f"L4.financial [tool:connect_bank] - {error_msg}")
             return False, error_msg, None
+
+    def create_update_link_token(
+        self, item_id: str, user_id: str = "theo_user"
+    ) -> Tuple[bool, str, Optional[str]]:
+        """Create a Plaid Link update-mode token for an existing Item."""
+        item_id = (item_id or "").strip()
+        if not item_id:
+            return False, "item_id is required to create a Plaid update-mode link token.", None
+
+        try:
+            tokens = self._load_access_tokens()
+            token_data = tokens.get(item_id)
+            if not token_data:
+                known_items = ", ".join(sorted(tokens.keys())) or "none"
+                return False, f"Unknown Plaid item_id: {item_id}. Known item_id values: {known_items}", None
+
+            access_token = token_data.get("access_token") if isinstance(token_data, dict) else None
+            if not access_token:
+                return False, f"No access token is stored for Plaid item_id: {item_id}", None
+
+            logger.info(
+                "L4.financial [tool:connect_bank] - Creating update-mode link token for item: %s",
+                item_id,
+            )
+
+            request = LinkTokenCreateRequest(
+                user=LinkTokenCreateRequestUser(client_user_id=user_id),
+                client_name="Theo AI Assistant",
+                access_token=access_token,
+                country_codes=[CountryCode("US")],
+                language="en",
+            )
+
+            response = self.client.link_token_create(request)
+            link_token = response['link_token']
+
+            logger.info(
+                "L4.financial [tool:connect_bank] - Update-mode link token created for item: %s",
+                item_id,
+            )
+
+            return (
+                True,
+                "Update-mode link token created. Use this token to repair the existing bank connection.",
+                link_token,
+            )
+
+        except ApiException as e:
+            error_msg = f"Failed to create update-mode link token for item {item_id}: {e}"
+            logger.error(f"L4.financial [tool:connect_bank] - {error_msg}")
+            return False, error_msg, None
+        except Exception as e:
+            error_msg = f"Unexpected error creating update-mode link token for item {item_id}: {e}"
+            logger.error(f"L4.financial [tool:connect_bank] - {error_msg}")
+            return False, error_msg, None
     
     def exchange_public_token(
         self, public_token: str

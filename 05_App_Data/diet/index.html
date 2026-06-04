@@ -233,6 +233,29 @@ textarea { resize: vertical; min-height: 60px; }
 }
 .build-item-remove:hover { color: var(--danger); }
 
+.coach-combo-box {
+  background: var(--bg-deep); border: 1px solid var(--border); border-radius: var(--radius-lg);
+  padding: var(--sp-md); margin-bottom: var(--sp-md);
+}
+.coach-combo-title { font-size: var(--font-size-sm); font-weight: 700; margin-bottom: 4px; color: var(--text); }
+.coach-combo-sub { font-size: var(--font-size-xs); color: var(--text-muted); margin-bottom: var(--sp-sm); line-height: 1.35; }
+.coach-combo-box textarea { min-height: 72px; font-size: var(--font-size-sm); margin-bottom: var(--sp-sm); }
+.coach-combo-actions { display: flex; gap: var(--sp-sm); flex-wrap: wrap; }
+.coach-combo-actions .btn { flex: 1; min-width: 120px; }
+.combo-preview { margin-top: var(--sp-md); border-top: 1px solid var(--border); padding-top: var(--sp-md); }
+.combo-preview-title { font-size: var(--font-size-sm); font-weight: 700; margin-bottom: var(--sp-sm); }
+.combo-totals-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--sp-sm); margin-bottom: var(--sp-sm); }
+.combo-total-cell { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-md); padding: var(--sp-sm); text-align: center; }
+.combo-total-label { font-size: var(--font-size-xs); color: var(--text-muted); margin-bottom: 2px; }
+.combo-total-value { font-size: var(--font-size-sm); font-weight: 700; }
+.combo-estimated-items { font-size: var(--font-size-sm); color: var(--text-secondary); margin: var(--sp-sm) 0; }
+.combo-estimated-items div { display: flex; justify-content: space-between; gap: var(--sp-sm); padding: 2px 0; }
+.combo-note { font-size: var(--font-size-xs); color: var(--text-muted); font-style: italic; margin: var(--sp-sm) 0; line-height: 1.35; }
+.combo-logged-label { color: var(--accent); font-size: var(--font-size-xs); font-weight: 700; margin: 4px 0 2px; }
+@media (max-width: 480px) {
+  .combo-totals-grid { grid-template-columns: 1fr; }
+}
+
 /* Ingredient picker (collapsible sections) */
 .ing-section { margin-bottom: var(--sp-sm); }
 .ing-section-header {
@@ -257,6 +280,11 @@ textarea { resize: vertical; min-height: 60px; }
 .ing-item-name { flex: 1; font-size: var(--font-size-sm); }
 .ing-item-meta { font-size: var(--font-size-xs); color: var(--text-muted); }
 .ing-item-add { color: var(--accent); font-weight: 700; font-size: 18px; margin-left: var(--sp-sm); }
+.food-search-row { display: flex; gap: var(--sp-sm); margin-bottom: var(--sp-sm); align-items: center; }
+.food-search-row input { flex: 1; min-width: 0; font-size: var(--font-size-sm); padding: 10px var(--sp-md); }
+.food-search-clear { flex: 0 0 auto; padding: 10px 12px; }
+.food-picker-actions { margin-bottom: var(--sp-md); }
+.food-search-empty { color: var(--text-muted); font-size: var(--font-size-sm); padding: var(--sp-md); background: var(--bg-deep); border-radius: var(--radius-md); border: 1px solid var(--border); }
 
 /* === DESCRIBE MODE === */
 .describe-area { margin-top: var(--sp-sm); }
@@ -344,12 +372,14 @@ textarea { resize: vertical; min-height: 60px; }
   color: var(--text); text-transform: capitalize;
 }
 .db-item {
-  display: flex; justify-content: space-between; align-items: center;
+  display: flex; justify-content: space-between; align-items: center; gap: var(--sp-sm);
   padding: 8px var(--sp-md); background: var(--bg-surface); border-radius: var(--radius-md);
   margin-bottom: 4px; border: 1px solid var(--border); font-size: var(--font-size-sm);
 }
+.db-item-main { flex: 1; min-width: 0; }
 .db-item-name { font-weight: 500; }
-.db-item-macros { color: var(--text-muted); white-space: nowrap; }
+.db-item-macros { color: var(--text-muted); }
+.db-item-action { flex: 0 0 auto; }
 
 /* Premade browse */
 .browse-slot { margin-bottom: var(--sp-lg); }
@@ -386,6 +416,8 @@ textarea { resize: vertical; min-height: 60px; }
   max-width: 400px; border: 1px solid var(--border); max-height: 80vh; overflow-y: auto;
 }
 .modal-title { font-size: var(--font-size-lg); font-weight: 700; margin-bottom: var(--sp-md); }
+.ingredient-modal-note { font-size: var(--font-size-sm); color: var(--text-muted); margin: -4px 0 var(--sp-md); line-height: 1.35; }
+.food-key-preview { font-size: var(--font-size-xs); color: var(--text-muted); margin-top: 4px; }
 .modal-actions { display: flex; gap: var(--sp-sm); margin-top: var(--sp-md); }
 .modal-actions .btn { flex: 1; }
 
@@ -427,10 +459,12 @@ textarea { resize: vertical; min-height: 60px; }
 <!-- Add Ingredient Modal -->
 <div id="add-ingredient-modal" class="modal-overlay">
   <div class="modal">
-    <div class="modal-title">Add Ingredient</div>
+    <div class="modal-title" id="ingredient-modal-title">Add Ingredient</div>
+    <div class="ingredient-modal-note" id="ingredient-modal-note">New ingredient keys are generated from the name. Duplicate keys are blocked.</div>
     <div style="margin-bottom:12px;">
       <label style="font-size:var(--font-size-sm);color:var(--text-muted);display:block;margin-bottom:4px;">Name</label>
       <input type="text" id="new-ing-name" placeholder="e.g., Turkey Breast">
+      <div class="food-key-preview" id="ingredient-key-preview"></div>
     </div>
     <div style="margin-bottom:12px;">
       <label style="font-size:var(--font-size-sm);color:var(--text-muted);display:block;margin-bottom:4px;">Category</label>
@@ -464,7 +498,7 @@ textarea { resize: vertical; min-height: 60px; }
     </div>
     <div class="modal-actions">
       <button class="btn btn-secondary" onclick="closeAddIngredientModal()">Cancel</button>
-      <button class="btn btn-primary" onclick="saveNewIngredient()">Save</button>
+      <button class="btn btn-primary" id="ingredient-save-btn" onclick="saveIngredientForm()">Save</button>
     </div>
   </div>
 </div>
@@ -487,6 +521,15 @@ let buildItems = [];     // current build-mode items [{food: key, amount: N}]
 let describingSlot = null; // slot currently waiting for AI estimate
 let selectedFeel = 0;
 let legacyLibrary = {};  // flat map: id → {label, total_cal, total_protein, items}
+let buildFoodSearchQuery = '';
+let databaseFoodSearchQuery = '';
+let ingredientModalBuildSlot = null;
+let editingFoodKey = null;
+let comboMissingText = '';
+let comboCandidate = null;
+let comboCandidateSlot = null;
+let comboCandidateLoadingSlot = null;
+let comboCandidateRequestId = null;
 
 const OLD_OPTIONS = {
   "m1a": { label: "2x Oikos + Monster", total_cal: 410, total_protein: 30 },
@@ -636,6 +679,15 @@ function calcItemsTotals(items) {
     cal += m.cal; protein += m.protein; fat += m.fat; carb += m.carb;
   }
   return { cal: Math.round(cal), protein: Math.round(protein), fat: Math.round(fat), carb: Math.round(carb) };
+}
+
+function addMacroTotals(a, b) {
+  return {
+    cal: Math.round((a?.cal || 0) + (b?.cal || 0)),
+    protein: Math.round((a?.protein || 0) + (b?.protein || 0)),
+    fat: Math.round((a?.fat || 0) + (b?.fat || 0)),
+    carb: Math.round((a?.carb || 0) + (b?.carb || 0))
+  };
 }
 
 function getSlotInfo(slotNum) {
@@ -1053,11 +1105,23 @@ function renderLoggedMeal(meal, slotNum) {
       const name = f ? f.name : it.food;
       const unit = f ? f.unit : '';
       const m = calcItemMacros(it);
-      html += `<div><span>${name} x${it.amount} ${unit}</span><span>${m.cal} cal</span></div>`;
+      html += `<div><span>${escapeHtml(name)} x${escapeHtml(it.amount)} ${escapeHtml(unit)}</span><span>${m.cal} cal</span></div>`;
+    }
+  }
+  if (meal.estimated_items && meal.estimated_items.length) {
+    html += `<div class="combo-logged-label">Coach-estimated additions</div>`;
+    for (const item of meal.estimated_items) {
+      const name = item.name || 'Estimated item';
+      const amount = item.amount ? ` x${item.amount}` : '';
+      const cal = Number.isFinite(Number(item.cal)) ? Math.round(Number(item.cal)) : 0;
+      html += `<div><span>${escapeHtml(name)}${escapeHtml(amount)}</span><span>~${cal} cal</span></div>`;
     }
   }
   if (meal.description) {
-    html += `<div style="font-style:italic;color:var(--text-muted);">${meal.description}</div>`;
+    html += `<div style="font-style:italic;color:var(--text-muted);">${escapeHtml(meal.description)}</div>`;
+  }
+  if (meal.coach_note) {
+    html += `<div style="font-style:italic;color:var(--text-muted);">${escapeHtml(meal.coach_note)}</div>`;
   }
   html += `</div>`; // end items
 
@@ -1073,19 +1137,22 @@ function renderLoggedMeal(meal, slotNum) {
   const rDown = meal.rating === 'down' ? ' active-down' : '';
   const mealIdx = (getTodayData()?.meals || []).indexOf(meal);
 
+  const pinButton = meal.type === 'coach_combo' ? '' :
+    `<button class="pin-btn${isPinnedMeal(slotNum, meal) ? ' pinned' : ''}" onclick="event.stopPropagation();togglePin(${slotNum},${mealIdx})" title="${isPinnedMeal(slotNum, meal) ? 'Unpin' : 'Pin for tomorrow'}">&#128204;</button>`;
+
   html += `<div class="meal-actions">
     <div class="rating-row">
       <button class="rating-btn${rUp}" onclick="event.stopPropagation();setMealRating(${mealIdx},'up')" title="Good meal">&#128077;</button>
       <button class="rating-btn${rDown}" onclick="event.stopPropagation();setMealRating(${mealIdx},'down')" title="Not great">&#128078;</button>
     </div>
-    <button class="pin-btn${isPinnedMeal(slotNum, meal) ? ' pinned' : ''}" onclick="event.stopPropagation();togglePin(${slotNum},${mealIdx})" title="${isPinnedMeal(slotNum, meal) ? 'Unpin' : 'Pin for tomorrow'}">&#128204;</button>
+    ${pinButton}
     <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();removeMeal(${mealIdx})" style="color:var(--text-muted);">Remove</button>
   </div>`;
 
   // Show rating note input if thumbs down
   if (meal.rating === 'down') {
     html += `<input class="rating-note-input" placeholder="What was wrong? (optional)"
-              value="${meal.rating_note || ''}"
+              value="${escapeHtml(meal.rating_note || '')}"
               onchange="setMealRatingNote(${mealIdx}, this.value)"
               onclick="event.stopPropagation()">`;
   }
@@ -1206,39 +1273,195 @@ function renderBuildMode(slotNum) {
               onclick="event.stopPropagation();logBuiltMeal(${slotNum})">Log Meal (${totals.cal} cal)</button>`;
   }
 
+  // Coach-assisted combo preview
+  html += renderCoachComboBox(slotNum);
+
   // Ingredient picker
   html += renderIngredientPicker(slotNum);
 
   return html;
 }
 
+function renderMacroLine(totals) {
+  return `${totals.cal} cal &middot; ${totals.protein}g P &middot; ${totals.fat}g F &middot; ${totals.carb}g C`;
+}
+
+function renderCoachComboBox(slotNum) {
+  const knownTotals = calcItemsTotals(buildItems);
+  const hasMissingText = comboMissingText.trim().length > 0;
+  const isLoading = comboCandidateLoadingSlot === slotNum;
+  const disabled = !buildItems.length || !hasMissingText || isLoading ? 'disabled' : '';
+  let html = `<div class="coach-combo-box" id="coach-combo-${slotNum}">
+    <div class="coach-combo-title">Coach-estimated additions</div>
+    <div class="coach-combo-sub">Build from known foods, then describe only the missing pieces for this meal.</div>
+    <textarea id="combo-missing-${slotNum}" placeholder="Missing items not in the list"
+              oninput="setComboMissingText(this.value)" onclick="event.stopPropagation()">${escapeHtml(comboMissingText)}</textarea>
+    <div class="coach-combo-actions">
+      <button id="combo-ask-${slotNum}" class="btn btn-secondary btn-sm" ${disabled}
+              onclick="event.stopPropagation();requestCoachComboCandidate(${slotNum})">${isLoading ? 'Asking Coach...' : 'Ask Coach'}</button>
+    </div>`;
+
+  if (isLoading) {
+    html += `<div class="describe-loading" style="margin-top:var(--sp-md);"><span class="pulse-dot"></span><span>Coach is estimating missing items...</span></div>`;
+  }
+
+  if (comboCandidate && comboCandidateSlot === slotNum) {
+    const estimatedTotals = comboCandidate.estimated_totals;
+    const combinedTotals = addMacroTotals(knownTotals, estimatedTotals);
+    html += `<div class="combo-preview">
+      <div class="combo-preview-title">Candidate preview</div>
+      <div class="combo-totals-grid">
+        <div class="combo-total-cell"><div class="combo-total-label">Known</div><div class="combo-total-value">${renderMacroLine(knownTotals)}</div></div>
+        <div class="combo-total-cell"><div class="combo-total-label">Estimated</div><div class="combo-total-value">${renderMacroLine(estimatedTotals)}</div></div>
+        <div class="combo-total-cell"><div class="combo-total-label">Combined</div><div class="combo-total-value">${renderMacroLine(combinedTotals)}</div></div>
+      </div>
+      <div class="combo-estimated-items">`;
+    for (const item of comboCandidate.estimated_items) {
+      const amount = item.amount ? ` x${item.amount}` : '';
+      html += `<div><span>${escapeHtml(item.name)}${escapeHtml(amount)}</span><span>~${item.cal} cal</span></div>`;
+    }
+    html += `</div>`;
+    if (comboCandidate.coach_note) {
+      html += `<div class="combo-note">${escapeHtml(comboCandidate.coach_note)}</div>`;
+    }
+    html += `<div class="coach-combo-actions">
+        <button class="btn btn-success btn-sm" onclick="event.stopPropagation();acceptCoachComboCandidate(${slotNum})">Accept Combo (${combinedTotals.cal} cal)</button>
+        <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();cancelCoachComboCandidate(${slotNum})">Cancel</button>
+      </div>
+    </div>`;
+  }
+
+  html += `</div>`;
+  return html;
+}
+
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, ch => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;'
+  }[ch]));
+}
+
+function jsString(value) {
+  return JSON.stringify(String(value ?? ''));
+}
+
+function htmlAttrJsString(value) {
+  return escapeHtml(jsString(value));
+}
+
+function normalizeFoodSearchQuery(query) {
+  return String(query || '').trim().toLowerCase();
+}
+
+function foodMatchesSearch(key, food, query) {
+  const q = normalizeFoodSearchQuery(query);
+  if (!q) return true;
+  return [food.name, key, food.category].some(value => String(value || '').toLowerCase().includes(q));
+}
+
+function getFoodEntries(query, category = null) {
+  return Object.entries(foods.foods || {}).filter(([key, food]) => {
+    return (!category || food.category === category) && foodMatchesSearch(key, food, query);
+  });
+}
+
 function renderIngredientPicker(slotNum) {
   if (!foods.foods) return '';
+  const query = buildFoodSearchQuery;
+  const clearStyle = normalizeFoodSearchQuery(query) ? '' : 'display:none;';
+
+  return `<div class="food-search-row">
+    <input type="search" value="${escapeHtml(query)}" placeholder="Search foods" autocomplete="off"
+           oninput="setBuildFoodSearchQuery(${slotNum}, this.value)" onclick="event.stopPropagation()">
+    <button id="build-food-search-clear-${slotNum}" class="btn btn-secondary btn-sm food-search-clear" style="${clearStyle}"
+            onclick="event.stopPropagation();clearBuildFoodSearchQuery(${slotNum})">Clear</button>
+  </div>
+  <div class="food-picker-actions">
+    <button class="btn btn-primary btn-sm" style="width:100%;" onclick="event.stopPropagation();openAddIngredientModal(${slotNum})">+ Add Ingredient</button>
+  </div>
+  <div id="ingredient-results-${slotNum}">${renderIngredientResults(slotNum)}</div>`;
+}
+
+function renderIngredientResults(slotNum) {
   const categories = ['protein', 'carb', 'fat'];
   const labels = { protein: 'Protein', carb: 'Carb', fat: 'Fat' };
+  const query = normalizeFoodSearchQuery(buildFoodSearchQuery);
   let html = '';
+  let resultCount = 0;
 
   for (const cat of categories) {
-    const items = Object.entries(foods.foods).filter(([k, v]) => v.category === cat);
+    const items = getFoodEntries(query, cat);
     if (items.length === 0) continue;
+    resultCount += items.length;
 
-    html += `<div class="ing-section" id="ing-${cat}-${slotNum}">`;
-    html += `<div class="ing-section-header" onclick="event.stopPropagation();toggleIngSection('ing-${cat}-${slotNum}')">
+    const sectionId = `ing-${cat}-${slotNum}`;
+    const openClass = query ? ' open' : '';
+    html += `<div class="ing-section${openClass}" id="${sectionId}">`;
+    html += `<div class="ing-section-header" onclick="event.stopPropagation();toggleIngSection('${sectionId}')">
       <span class="arrow">&#9654;</span>
       <span>${labels[cat]} (${items.length})</span>
     </div>`;
     html += `<div class="ing-section-body">`;
     for (const [key, f] of items) {
-      html += `<div class="ing-item" onclick="event.stopPropagation();addToBuild('${key}', ${slotNum})">
-        <span class="ing-item-name">${f.name}</span>
-        <span class="ing-item-meta">${f.cal} cal/${f.unit} &middot; ${f.protein}g P</span>
+      html += `<div class="ing-item" onclick="event.stopPropagation();addToBuild(${htmlAttrJsString(key)}, ${slotNum})">
+        <span class="ing-item-name">${escapeHtml(f.name)}</span>
+        <span class="ing-item-meta">${f.cal} cal/${escapeHtml(f.unit)} &middot; ${f.protein}g P</span>
         <span class="ing-item-add">+</span>
       </div>`;
     }
     html += `</div></div>`;
   }
 
+  if (query && resultCount === 0) {
+    html = '<div class="food-search-empty">No matching foods.</div>';
+  }
+
   return html;
+}
+
+function setBuildFoodSearchQuery(slotNum, value) {
+  buildFoodSearchQuery = value;
+  const results = document.getElementById('ingredient-results-' + slotNum);
+  if (results) results.innerHTML = renderIngredientResults(slotNum);
+  const clear = document.getElementById('build-food-search-clear-' + slotNum);
+  if (clear) clear.style.display = normalizeFoodSearchQuery(value) ? '' : 'none';
+}
+
+function clearBuildFoodSearchQuery(slotNum) {
+  buildFoodSearchQuery = '';
+  refreshBuildUI(slotNum);
+}
+
+function setComboMissingText(value) {
+  if (comboMissingText !== value) {
+    const hadCandidate = Boolean(comboCandidate || comboCandidateLoadingSlot);
+    comboMissingText = value;
+    clearComboCandidate({ keepMissingText: true });
+    if (hadCandidate && expandedSlot) {
+      refreshBuildUI(expandedSlot);
+    } else if (expandedSlot) {
+      const btn = document.getElementById('combo-ask-' + expandedSlot);
+      if (btn) btn.disabled = !buildItems.length || !comboMissingText.trim() || comboCandidateLoadingSlot === expandedSlot;
+    }
+  }
+}
+
+function clearComboCandidate(options = {}) {
+  comboCandidate = null;
+  comboCandidateSlot = null;
+  comboCandidateLoadingSlot = null;
+  comboCandidateRequestId = null;
+  if (!options.keepMissingText) comboMissingText = '';
+}
+
+function invalidateComboCandidate() {
+  if (comboCandidate || comboCandidateLoadingSlot) {
+    clearComboCandidate({ keepMissingText: true });
+  }
 }
 
 // ============================================================
@@ -1249,10 +1472,14 @@ function toggleSlot(slotNum) {
     expandedSlot = null;
     addingToSlot = null;
     buildItems = [];
+    buildFoodSearchQuery = '';
+    clearComboCandidate();
   } else {
     expandedSlot = slotNum;
     addingToSlot = null;
     buildItems = []; // Reset build items when opening a new slot
+    buildFoodSearchQuery = '';
+    clearComboCandidate();
   }
   renderToday();
 }
@@ -1261,6 +1488,8 @@ function openLoggingForSlot(slotNum) {
   expandedSlot = slotNum;
   addingToSlot = slotNum;
   buildItems = [];
+  buildFoodSearchQuery = '';
+  clearComboCandidate();
   renderToday();
 }
 
@@ -1277,10 +1506,13 @@ function switchMode(slotNum, mode, btn) {
   const target = parent.querySelector('#mode-' + mode + '-' + slotNum);
   if (target) target.classList.add('active');
 
-  // If switching to build, reset items
   if (mode === 'build') {
     buildItems = [];
+    buildFoodSearchQuery = '';
+    clearComboCandidate();
     refreshBuildUI(slotNum);
+  } else {
+    clearComboCandidate();
   }
 }
 
@@ -1299,6 +1531,7 @@ function addToBuild(foodKey, slotNum) {
   } else {
     buildItems.push({ food: foodKey, amount: 1 });
   }
+  invalidateComboCandidate();
   refreshBuildUI(slotNum);
 }
 
@@ -1306,6 +1539,7 @@ function updateBuildAmount(idx, val) {
   const num = parseFloat(val);
   if (!num || num <= 0) return;
   buildItems[idx].amount = num;
+  invalidateComboCandidate();
   // Update total display without full re-render
   const slotNum = expandedSlot;
   if (slotNum) refreshBuildUI(slotNum);
@@ -1313,6 +1547,7 @@ function updateBuildAmount(idx, val) {
 
 function removeBuildItem(idx) {
   buildItems.splice(idx, 1);
+  invalidateComboCandidate();
   const slotNum = expandedSlot;
   if (slotNum) refreshBuildUI(slotNum);
 }
@@ -1342,11 +1577,182 @@ async function logBuiltMeal(slotNum) {
 
   today.meals.push(entry);
   buildItems = [];
+  buildFoodSearchQuery = '';
+  clearComboCandidate();
   expandedSlot = null;
   addingToSlot = null;
 
   await saveLog();
   BrainKit.toast(`Logged: ${totals.cal} cal / ${totals.protein}g P`, 'success');
+  renderToday();
+}
+
+function buildKnownComboItems() {
+  return buildItems.map(it => {
+    const f = getFood(it.food) || {};
+    const macros = calcItemMacros(it);
+    return {
+      food: it.food,
+      name: f.name || it.food,
+      amount: it.amount,
+      unit: f.unit || '',
+      macros
+    };
+  });
+}
+
+function normalizeMacroNumber(value) {
+  const num = Number(value);
+  return Number.isFinite(num) && num >= 0 ? Math.round(num) : 0;
+}
+
+function normalizeComboCandidate(raw, requestId, slotNum) {
+  if (!raw || typeof raw !== 'object') throw new Error('Candidate JSON was not an object');
+  if (raw.request_id !== requestId) throw new Error('Candidate request id did not match');
+  if (raw.date !== todayKey) throw new Error('Candidate date did not match today');
+  if (Number(raw.slot) !== Number(slotNum)) throw new Error('Candidate slot did not match');
+
+  const estimatedItems = Array.isArray(raw.estimated_items) ? raw.estimated_items : Array.isArray(raw.items) ? raw.items : [];
+  if (estimatedItems.length === 0) throw new Error('Candidate did not include estimated items');
+
+  const normalizedItems = estimatedItems.map(item => ({
+    name: String(item?.name || 'Estimated item').trim() || 'Estimated item',
+    amount: String(item?.amount || '').trim(),
+    cal: normalizeMacroNumber(item?.cal),
+    protein: normalizeMacroNumber(item?.protein),
+    fat: normalizeMacroNumber(item?.fat),
+    carb: normalizeMacroNumber(item?.carb),
+    confidence: item?.confidence ? String(item.confidence) : undefined,
+    source_note: item?.source_note ? String(item.source_note) : undefined
+  }));
+
+  const fromItems = normalizedItems.reduce((acc, item) => addMacroTotals(acc, item), { cal: 0, protein: 0, fat: 0, carb: 0 });
+  const rawTotals = raw.estimated_totals || {};
+  const estimatedTotals = {
+    cal: normalizeMacroNumber(rawTotals.cal ?? fromItems.cal),
+    protein: normalizeMacroNumber(rawTotals.protein ?? fromItems.protein),
+    fat: normalizeMacroNumber(rawTotals.fat ?? fromItems.fat),
+    carb: normalizeMacroNumber(rawTotals.carb ?? fromItems.carb)
+  };
+
+  return {
+    version: raw.version || 1,
+    request_id: requestId,
+    date: todayKey,
+    slot: Number(slotNum),
+    missing_description: String(raw.missing_description || comboMissingText).trim(),
+    estimated_items: normalizedItems,
+    estimated_totals: estimatedTotals,
+    coach_note: raw.coach_note ? String(raw.coach_note) : ''
+  };
+}
+
+async function requestCoachComboCandidate(slotNum) {
+  const missingText = comboMissingText.trim();
+  if (buildItems.length === 0) { BrainKit.toast('Add known foods first', 'warning'); return; }
+  if (!missingText) { BrainKit.toast('Describe the missing items', 'warning'); return; }
+
+  const slotInfo = getSlotInfo(slotNum);
+  const requestId = 'diet_combo_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+  const knownItems = buildKnownComboItems();
+  const knownTotals = calcItemsTotals(buildItems);
+  const requestPayload = {
+    request_id: requestId,
+    date: todayKey,
+    slot: slotNum,
+    slot_name: slotInfo?.name || 'Meal ' + slotNum,
+    known_items: knownItems,
+    known_totals: knownTotals,
+    missing_description: missingText
+  };
+
+  clearComboCandidate({ keepMissingText: true });
+  comboCandidateLoadingSlot = slotNum;
+  comboCandidateRequestId = requestId;
+  refreshBuildUI(slotNum);
+
+  try {
+    await BrainKit.askAgent('nutrition_coach',
+      `This message is from the user, sent from the diet tracker app. He is building ${requestPayload.slot_name} on ${todayKey}.
+
+The app already knows these foods and has already computed their macros. Do not re-estimate these known foods.
+
+Request JSON:
+${JSON.stringify(requestPayload, null, 2)}
+
+Estimate ONLY the missing/unlisted items described in missing_description. Use your memory, logs, and meal plan knowledge for the user-specific phrases like "the usual" before falling back to generic estimates.
+
+Write one JSON object to 05_App_Data/diet/_combo_candidate.json with this shape:
+{
+  "version": 1,
+  "request_id": "${requestId}",
+  "date": "${todayKey}",
+  "slot": ${slotNum},
+  "missing_description": ${JSON.stringify(missingText)},
+  "estimated_items": [{"name": "Item name", "amount": "portion", "cal": 0, "protein": 0, "fat": 0, "carb": 0, "confidence": "medium", "source_note": "why this estimate fits"}],
+  "estimated_totals": {"cal": 0, "protein": 0, "fat": 0, "carb": 0},
+  "coach_note": "short note"
+}
+
+Do not edit foods.json, meal_plan.json, pinned_meals.json, daily_log.json, or any reusable food/meal library. Write only 05_App_Data/diet/_combo_candidate.json. No prose, no markdown, no code fences.`
+    );
+
+    const resultStr = await BrainKit.readFile('diet/_combo_candidate.json');
+    const raw = typeof resultStr === 'string' ? JSON.parse(resultStr) : resultStr;
+    if (comboCandidateRequestId !== requestId) return;
+    comboCandidate = normalizeComboCandidate(raw, requestId, slotNum);
+    comboCandidateSlot = slotNum;
+    comboCandidateLoadingSlot = null;
+    BrainKit.toast('Coach estimate ready', 'success');
+  } catch (e) {
+    console.error('Coach combo candidate failed:', e);
+    BrainKit.toast('Failed to estimate missing items', 'error');
+    clearComboCandidate({ keepMissingText: true });
+  } finally {
+    if (comboCandidateRequestId === requestId) comboCandidateLoadingSlot = null;
+    refreshBuildUI(slotNum);
+  }
+}
+
+function cancelCoachComboCandidate(slotNum) {
+  clearComboCandidate({ keepMissingText: true });
+  refreshBuildUI(slotNum);
+}
+
+async function acceptCoachComboCandidate(slotNum) {
+  if (!comboCandidate || comboCandidateSlot !== slotNum) return;
+  if (buildItems.length === 0) { BrainKit.toast('Add known foods first', 'warning'); return; }
+
+  const knownItems = JSON.parse(JSON.stringify(buildItems));
+  const knownTotals = calcItemsTotals(buildItems);
+  const estimatedTotals = comboCandidate.estimated_totals;
+  const combinedTotals = addMacroTotals(knownTotals, estimatedTotals);
+  const today = ensureTodayExists();
+
+  const entry = {
+    slot: slotNum,
+    type: 'coach_combo',
+    items: knownItems,
+    estimated_items: JSON.parse(JSON.stringify(comboCandidate.estimated_items)),
+    known_totals: knownTotals,
+    estimated_totals: estimatedTotals,
+    totals: combinedTotals,
+    description: comboCandidate.missing_description || comboMissingText.trim(),
+    coach_note: comboCandidate.coach_note || null,
+    time: nowTime(),
+    rating: null,
+    rating_note: null
+  };
+
+  today.meals.push(entry);
+  buildItems = [];
+  buildFoodSearchQuery = '';
+  clearComboCandidate();
+  expandedSlot = null;
+  addingToSlot = null;
+
+  await saveLog();
+  BrainKit.toast(`Logged combo: ${combinedTotals.cal} cal / ${combinedTotals.protein}g P`, 'success');
   renderToday();
 }
 
@@ -1360,6 +1766,8 @@ function loadPremadeIntoBuild(slotNum, premadeId) {
 
   // Load items into build mode
   buildItems = pm.items.map(it => ({ food: it.food, amount: it.amount }));
+  buildFoodSearchQuery = '';
+  clearComboCandidate();
 
   // Switch to build mode
   const slotBody = document.querySelector(`#slot-${slotNum} .slot-body`);
@@ -1392,6 +1800,7 @@ async function togglePin(slotNum, mealIdx) {
   const today = getTodayData();
   if (!today || !today.meals[mealIdx]) return;
   const meal = today.meals[mealIdx];
+  if (meal.type === 'coach_combo') return;
   if (!meal.items || meal.items.length === 0) return;
 
   if (isPinnedMeal(slotNum, meal)) {
@@ -1439,6 +1848,8 @@ function editPinnedMeal(slotNum) {
 
   // Load pinned items into build mode
   buildItems = pinned.map(it => ({ food: it.food, amount: it.amount }));
+  buildFoodSearchQuery = '';
+  clearComboCandidate();
 
   // Switch to build mode
   const slotBody = document.querySelector(`#slot-${slotNum} .slot-body`);
@@ -1859,24 +2270,15 @@ function renderMeals() {
   </div>`;
 
   // Ingredient Database
-  html += `<div style="font-size:var(--font-size-lg);font-weight:700;margin-bottom:var(--sp-md);">Ingredient Database</div>`;
-  const categories = ['protein', 'carb', 'fat'];
-  const catLabels = { protein: 'Protein', carb: 'Carb', fat: 'Fat' };
-
-  for (const cat of categories) {
-    const items = Object.entries(foods.foods || {}).filter(([k, v]) => v.category === cat);
-    if (items.length === 0) continue;
-
-    html += `<div class="db-section">
-      <div class="db-section-header">${catLabels[cat]} (${items.length})</div>`;
-    for (const [key, f] of items) {
-      html += `<div class="db-item">
-        <span class="db-item-name">${f.name}</span>
-        <span class="db-item-macros">${f.cal} cal / ${f.protein}g P / ${f.fat}g F / ${f.carb}g C per ${f.unit}</span>
-      </div>`;
-    }
-    html += `</div>`;
-  }
+  const dbClearStyle = normalizeFoodSearchQuery(databaseFoodSearchQuery) ? '' : 'display:none;';
+  html += `<div style="font-size:var(--font-size-lg);font-weight:700;margin-bottom:var(--sp-md);">Ingredient Database</div>
+    <div class="food-search-row">
+      <input type="search" value="${escapeHtml(databaseFoodSearchQuery)}" placeholder="Search foods" autocomplete="off"
+             oninput="setDatabaseFoodSearch(this.value)">
+      <button id="food-database-search-clear" class="btn btn-secondary btn-sm food-search-clear" style="${dbClearStyle}"
+              onclick="clearDatabaseFoodSearch()">Clear</button>
+    </div>
+    <div id="food-database-results">${renderFoodDatabaseResults()}</div>`;
 
   // Pre-made meals by slot
   if (mealPlan && mealPlan.premade_meals) {
@@ -1894,7 +2296,7 @@ function renderMeals() {
         const totals = calcItemsTotals(pm.items);
         html += `<div class="browse-meal" onclick="this.querySelector('.browse-meal-items').classList.toggle('open')">
           <div class="browse-meal-header">
-            <span class="browse-meal-name">${pm.name}</span>
+            <span class="browse-meal-name">${escapeHtml(pm.name)}</span>
             <span class="browse-meal-macros">${totals.cal} cal / ${totals.protein}g P</span>
           </div>
           <div class="browse-meal-items">
@@ -1902,7 +2304,7 @@ function renderMeals() {
               const f = getFood(it.food);
               const m = calcItemMacros(it);
               return `<div style="display:flex;justify-content:space-between;padding:3px 0;">
-                <span>${f ? f.name : it.food} x${it.amount} ${f ? f.unit : ''}</span>
+                <span>${escapeHtml(f ? f.name : it.food)} x${it.amount} ${escapeHtml(f ? f.unit : '')}</span>
                 <span style="color:var(--text-muted);">${m.cal} cal &middot; ${m.protein}g P</span>
               </div>`;
             }).join('')}
@@ -1916,47 +2318,200 @@ function renderMeals() {
   container.innerHTML = html;
 }
 
+function renderFoodDatabaseResults() {
+  const categories = ['protein', 'carb', 'fat'];
+  const catLabels = { protein: 'Protein', carb: 'Carb', fat: 'Fat' };
+  const query = normalizeFoodSearchQuery(databaseFoodSearchQuery);
+  let html = '';
+  let resultCount = 0;
+
+  for (const cat of categories) {
+    const items = getFoodEntries(query, cat);
+    if (items.length === 0) continue;
+    resultCount += items.length;
+
+    html += `<div class="db-section">
+      <div class="db-section-header">${catLabels[cat]} (${items.length})</div>`;
+    for (const [key, f] of items) {
+      html += `<div class="db-item">
+        <div class="db-item-main">
+          <div class="db-item-name">${escapeHtml(f.name)}</div>
+          <div class="db-item-macros">${f.cal} cal / ${f.protein}g P / ${f.fat}g F / ${f.carb}g C per ${escapeHtml(f.unit)}</div>
+        </div>
+        <button class="btn btn-secondary btn-sm db-item-action" onclick="openEditIngredientModal(${htmlAttrJsString(key)})">Edit</button>
+      </div>`;
+    }
+    html += `</div>`;
+  }
+
+  if (query && resultCount === 0) {
+    return '<div class="food-search-empty">No matching foods.</div>';
+  }
+  return html;
+}
+
+function setDatabaseFoodSearch(value) {
+  databaseFoodSearchQuery = value;
+  const results = document.getElementById('food-database-results');
+  if (results) results.innerHTML = renderFoodDatabaseResults();
+  const clear = document.getElementById('food-database-search-clear');
+  if (clear) clear.style.display = normalizeFoodSearchQuery(value) ? '' : 'none';
+}
+
+function clearDatabaseFoodSearch() {
+  databaseFoodSearchQuery = '';
+  renderMeals();
+}
+
 // Add Ingredient Modal
-function openAddIngredientModal() {
-  document.getElementById('add-ingredient-modal').classList.add('open');
-  // Clear form
+function generateFoodKey(name) {
+  return String(name || '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+}
+
+function setIngredientModalMode(mode, key = null) {
+  editingFoodKey = mode === 'edit' ? key : null;
+  document.getElementById('ingredient-modal-title').textContent = mode === 'edit' ? 'Edit Ingredient' : 'Add Ingredient';
+  document.getElementById('ingredient-save-btn').textContent = mode === 'edit' ? 'Save Changes' : 'Save';
+  document.getElementById('ingredient-modal-note').textContent = mode === 'edit'
+    ? 'Food key stays the same. Existing logs and meal history are not migrated.'
+    : 'New ingredient keys are generated from the name. Duplicate keys are blocked.';
+}
+
+function updateIngredientKeyPreview() {
+  const preview = document.getElementById('ingredient-key-preview');
+  if (!preview) return;
+  if (editingFoodKey) {
+    preview.textContent = `Key: ${editingFoodKey}`;
+    return;
+  }
+  const name = document.getElementById('new-ing-name').value.trim();
+  const key = generateFoodKey(name);
+  preview.textContent = key ? `Key: ${key}` : '';
+}
+
+function clearIngredientForm() {
   ['new-ing-name','new-ing-unit','new-ing-cal','new-ing-protein','new-ing-fat','new-ing-carb'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.value = '';
   });
   document.getElementById('new-ing-category').value = 'protein';
+  document.getElementById('new-ing-name').oninput = updateIngredientKeyPreview;
+  updateIngredientKeyPreview();
+}
+
+function fillIngredientForm(food) {
+  document.getElementById('new-ing-name').value = food.name || '';
+  document.getElementById('new-ing-category').value = food.category || 'protein';
+  document.getElementById('new-ing-unit').value = food.unit || '';
+  document.getElementById('new-ing-cal').value = food.cal ?? 0;
+  document.getElementById('new-ing-protein').value = food.protein ?? 0;
+  document.getElementById('new-ing-fat').value = food.fat ?? 0;
+  document.getElementById('new-ing-carb').value = food.carb ?? 0;
+  document.getElementById('new-ing-name').oninput = updateIngredientKeyPreview;
+  updateIngredientKeyPreview();
+}
+
+function openAddIngredientModal(buildSlot = null) {
+  ingredientModalBuildSlot = buildSlot === null || buildSlot === undefined ? null : Number(buildSlot);
+  setIngredientModalMode('add');
+  clearIngredientForm();
+  document.getElementById('add-ingredient-modal').classList.add('open');
+}
+
+function openEditIngredientModal(foodKey) {
+  const food = getFood(foodKey);
+  if (!food) {
+    BrainKit.toast('Ingredient not found', 'warning');
+    return;
+  }
+  ingredientModalBuildSlot = null;
+  setIngredientModalMode('edit', foodKey);
+  fillIngredientForm(food);
+  document.getElementById('add-ingredient-modal').classList.add('open');
 }
 
 function closeAddIngredientModal() {
   document.getElementById('add-ingredient-modal').classList.remove('open');
+  ingredientModalBuildSlot = null;
+  editingFoodKey = null;
 }
 
-async function saveNewIngredient() {
-  const name = document.getElementById('new-ing-name').value.trim();
-  const category = document.getElementById('new-ing-category').value;
-  const unit = document.getElementById('new-ing-unit').value.trim();
-  const cal = parseFloat(document.getElementById('new-ing-cal').value) || 0;
-  const protein = parseFloat(document.getElementById('new-ing-protein').value) || 0;
-  const fat = parseFloat(document.getElementById('new-ing-fat').value) || 0;
-  const carb = parseFloat(document.getElementById('new-ing-carb').value) || 0;
+function readIngredientForm() {
+  return {
+    name: document.getElementById('new-ing-name').value.trim(),
+    category: document.getElementById('new-ing-category').value,
+    unit: document.getElementById('new-ing-unit').value.trim(),
+    cal: parseFloat(document.getElementById('new-ing-cal').value) || 0,
+    protein: parseFloat(document.getElementById('new-ing-protein').value) || 0,
+    fat: parseFloat(document.getElementById('new-ing-fat').value) || 0,
+    carb: parseFloat(document.getElementById('new-ing-carb').value) || 0
+  };
+}
 
-  if (!name || !unit) {
+function validateIngredientForm(data) {
+  if (!data.name || !data.unit) {
     BrainKit.toast('Name and unit are required', 'warning');
+    return false;
+  }
+  if (!['protein', 'carb', 'fat'].includes(data.category)) {
+    BrainKit.toast('Choose a category', 'warning');
+    return false;
+  }
+  return true;
+}
+
+function addFoodToBuildState(foodKey) {
+  const existing = buildItems.find(it => it.food === foodKey);
+  if (existing) existing.amount += 1;
+  else buildItems.push({ food: foodKey, amount: 1 });
+  invalidateComboCandidate();
+}
+
+async function saveIngredientForm() {
+  const data = readIngredientForm();
+  if (!validateIngredientForm(data)) return;
+
+  if (editingFoodKey) {
+    if (!foods.foods[editingFoodKey]) {
+      BrainKit.toast('Ingredient not found', 'warning');
+      return;
+    }
+    foods.foods[editingFoodKey] = data;
+    await saveFoods();
+    closeAddIngredientModal();
+    BrainKit.toast(`Updated ${data.name}`, 'success');
+    renderMeals();
+    if (expandedSlot) refreshBuildUI(expandedSlot);
     return;
   }
 
-  // Generate key
-  const key = name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+  const key = generateFoodKey(data.name);
+  if (!key) {
+    BrainKit.toast('Name needs letters or numbers', 'warning');
+    return;
+  }
   if (foods.foods[key]) {
     BrainKit.toast('An ingredient with that key already exists', 'warning');
     return;
   }
 
-  foods.foods[key] = { name, category, unit, cal, protein, fat, carb };
+  foods.foods[key] = data;
   await saveFoods();
+  const buildSlot = ingredientModalBuildSlot;
   closeAddIngredientModal();
-  BrainKit.toast(`Added ${name}`, 'success');
-  renderMeals();
+
+  if (buildSlot !== null && Number.isFinite(buildSlot)) {
+    addFoodToBuildState(key);
+    refreshBuildUI(buildSlot);
+    BrainKit.toast(`Added ${data.name} to build`, 'success');
+  } else {
+    BrainKit.toast(`Added ${data.name}`, 'success');
+    renderMeals();
+  }
+}
+
+async function saveNewIngredient() {
+  await saveIngredientForm();
 }
 
 // ============================================================
@@ -1995,7 +2550,15 @@ function renderHistory() {
           const slotInfo = getSlotInfo(m.slot);
           const slotName = slotInfo ? slotInfo.name : 'Meal ' + m.slot;
           let label = '';
-          if (m.type === 'described' && m.description) {
+          if (m.type === 'coach_combo') {
+            const known = m.items && m.items.length
+              ? m.items.map(it => { const f = getFood(it.food); return (f ? f.name : it.food) + ' x' + it.amount; }).join(', ')
+              : 'Known foods';
+            const estimated = m.estimated_items && m.estimated_items.length
+              ? m.estimated_items.map(it => it.name || 'Estimated item').join(', ')
+              : (m.description || 'coach additions');
+            label = `${known} + coach: ${estimated}`;
+          } else if (m.type === 'described' && m.description) {
             label = m.description;
           } else if (m.items && m.items.length) {
             label = m.items.map(it => { const f = getFood(it.food); return (f ? f.name : it.food) + ' x' + it.amount; }).join(', ');
@@ -2004,11 +2567,11 @@ function renderHistory() {
           }
           const ratingEmoji = m.rating === 'up' ? ' &#128077;' : m.rating === 'down' ? ' &#128078;' : '';
           html += `<div class="history-meal-line">
-            <span>${slotName}: ${label}${ratingEmoji}</span>
+            <span>${escapeHtml(slotName)}: ${escapeHtml(label)}${ratingEmoji}</span>
             <span style="color:var(--text-muted);">${m.totals.cal} cal / ${m.totals.protein}g</span>
           </div>`;
           if (m.rating === 'down' && m.rating_note) {
-            html += `<div style="font-size:var(--font-size-xs);color:var(--text-muted);font-style:italic;padding-left:var(--sp-md);">"${m.rating_note}"</div>`;
+            html += `<div style="font-size:var(--font-size-xs);color:var(--text-muted);font-style:italic;padding-left:var(--sp-md);">"${escapeHtml(m.rating_note)}"</div>`;
           }
         } else if (m.option_id) {
           // Old format — resolve label and macros
