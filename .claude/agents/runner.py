@@ -40,6 +40,37 @@ if _server_dir not in sys.path:
 from process_registry import register_process, deregister_process
 import running_agents
 
+
+PROJECT_OUTPUT_CONTRACT_AGENT_OUTPUTS = "agent_outputs"
+PROJECT_OUTPUT_CONTRACT_NONE = "none"
+PROJECT_OUTPUT_CONTRACT_VALUES = {
+    PROJECT_OUTPUT_CONTRACT_AGENT_OUTPUTS,
+    PROJECT_OUTPUT_CONTRACT_NONE,
+}
+
+
+def _invalid_project_output_contract_result(
+    name: str,
+    mode: InvocationMode,
+    value: Any,
+) -> Union[AgentResult, Dict[str, str]]:
+    error = (
+        "Invalid project_output_contract: "
+        f"{value!r}. Expected one of: "
+        f"{', '.join(sorted(PROJECT_OUTPUT_CONTRACT_VALUES))}."
+    )
+    if mode == InvocationMode.FOREGROUND:
+        return AgentResult(
+            agent=name,
+            status="error",
+            response="",
+            started_at=datetime.utcnow(),
+            completed_at=datetime.utcnow(),
+            error=error,
+        )
+    return {"error": error}
+
+
 def _load_real_claude_agent_sdk():
     """Load the installed Anthropic SDK even when the local shim shadows its package name."""
     import importlib.metadata
@@ -494,6 +525,7 @@ async def invoke_agent(
     source_chat_id: Optional[str] = None,
     model_override: Optional[str] = None,
     project: Optional[Union[str, List[str]]] = None,
+    project_output_contract: str = PROJECT_OUTPUT_CONTRACT_AGENT_OUTPUTS,
     is_visible: bool = False,
     conversation_id: Optional[str] = None,
     caller_agent: Optional[str] = None,
@@ -517,8 +549,11 @@ async def invoke_agent(
         source_chat_id: Chat ID for ping mode notifications
         model_override: Override the agent's default model
         project: Optional project tag (string or list of strings) for output routing.
-                 When present, appends PROJECT METADATA to the prompt instructing the
-                 agent to include YAML frontmatter in output files.
+                 Kept as invocation/thread/running-agent metadata.
+        project_output_contract: Controls prompt-level output instructions for
+            project-tagged invocations. "agent_outputs" preserves the legacy
+            PROJECT METADATA / 00_Inbox/agent_outputs footer; "none" keeps
+            project metadata but suppresses that footer.
         conversation_id: Agent-to-agent thread ID. If omitted, a new thread is
             created. If provided, the thread must exist and not be currently
             locked by another live invocation.
@@ -550,6 +585,13 @@ async def invoke_agent(
     # Normalize mode
     if isinstance(mode, str):
         mode = InvocationMode(mode)
+
+    if project_output_contract not in PROJECT_OUTPUT_CONTRACT_VALUES:
+        return _invalid_project_output_contract_result(
+            name,
+            mode,
+            project_output_contract,
+        )
 
     try:
         worktree_metadata = _validate_worktree_invocation_metadata(
@@ -587,10 +629,18 @@ async def invoke_agent(
         is_background_processing=is_background_processing,
     )
 
-    # Inject project metadata into prompt if project is specified
-    if project:
+    # Inject project output instructions unless the caller explicitly supplies
+    # a different report contract in the prompt.
+    if project and project_output_contract == PROJECT_OUTPUT_CONTRACT_AGENT_OUTPUTS:
         prompt = prompt + _build_project_metadata_block(name, project)
         logger.info(f"Injected project metadata for '{project}' into agent '{name}' prompt")
+    elif project:
+        logger.info(
+            "Preserving project metadata for '%s' on agent '%s' while suppressing "
+            "project output contract",
+            project,
+            name,
+        )
 
     # ---- Salon fast path -----------------------------------------------------
     # When salon_id is set, the salon owns the conversation (its JSON file). We

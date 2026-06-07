@@ -1830,6 +1830,7 @@ class InternalAgentInvokeRequest(BaseModel):
     source_chat_id: Optional[str] = None
     model_override: Optional[str] = None
     project: Optional[Any] = None
+    project_output_contract: str = "agent_outputs"
     conversation_id: Optional[str] = None
     caller_agent: Optional[str] = None
     worktree_branch: Optional[str] = None
@@ -1923,6 +1924,7 @@ async def internal_agent_invoke(req: InternalAgentInvokeRequest, request: Reques
             source_chat_id=req.source_chat_id,
             model_override=req.model_override,
             project=req.project,
+            project_output_contract=req.project_output_contract,
             conversation_id=req.conversation_id,
             caller_agent=req.caller_agent,
             worktree_branch=req.worktree_branch,

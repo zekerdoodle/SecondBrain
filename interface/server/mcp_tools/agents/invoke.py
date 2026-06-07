@@ -31,6 +31,14 @@ for _path in (SERVER_DIR, AGENTS_DIR):
         sys.path.insert(0, _path)
 
 
+PROJECT_OUTPUT_CONTRACT_AGENT_OUTPUTS = "agent_outputs"
+PROJECT_OUTPUT_CONTRACT_NONE = "none"
+PROJECT_OUTPUT_CONTRACT_VALUES = {
+    PROJECT_OUTPUT_CONTRACT_AGENT_OUTPUTS,
+    PROJECT_OUTPUT_CONTRACT_NONE,
+}
+
+
 def _build_invoke_tool_schema():
     """Build tool schema dynamically from registry.
 
@@ -113,6 +121,15 @@ Use case examples:
                     {"type": "string"},
                     {"type": "array", "items": {"type": "string"}}
                 ]
+            },
+            "project_output_contract": {
+                "type": "string",
+                "enum": [
+                    PROJECT_OUTPUT_CONTRACT_AGENT_OUTPUTS,
+                    PROJECT_OUTPUT_CONTRACT_NONE,
+                ],
+                "default": PROJECT_OUTPUT_CONTRACT_AGENT_OUTPUTS,
+                "description": "Controls prompt-level project output instructions. 'agent_outputs' preserves the legacy [PROJECT METADATA] / 00_Inbox/agent_outputs footer when project is set. 'none' keeps project metadata for routing/thread/log purposes but suppresses that footer."
             },
             "conversation_id": {
                 "type": "string",
@@ -281,6 +298,10 @@ async def invoke_agent(args: Dict[str, Any]) -> Dict[str, Any]:
         mode = args.get("mode", "foreground")
         model_override = args.get("model_override")
         project = args.get("project")
+        project_output_contract = args.get(
+            "project_output_contract",
+            PROJECT_OUTPUT_CONTRACT_AGENT_OUTPUTS,
+        )
         conversation_id = args.get("conversation_id")
 
         if not agent_name:
@@ -288,6 +309,19 @@ async def invoke_agent(args: Dict[str, Any]) -> Dict[str, Any]:
 
         if not prompt:
             return {"content": [{"type": "text", "text": "Error: prompt is required"}], "is_error": True}
+
+        if project_output_contract not in PROJECT_OUTPUT_CONTRACT_VALUES:
+            valid_values = ", ".join(sorted(PROJECT_OUTPUT_CONTRACT_VALUES))
+            return {
+                "content": [{
+                    "type": "text",
+                    "text": (
+                        "Error: project_output_contract must be one of: "
+                        f"{valid_values}"
+                    ),
+                }],
+                "is_error": True,
+            }
 
         # Get source chat ID: injected by MCP wrapper (concurrent-safe) or env var (fallback)
         source_chat_id = args.pop("_source_chat_id", None) or os.environ.get("CURRENT_CHAT_ID")
@@ -321,6 +355,7 @@ async def invoke_agent(args: Dict[str, Any]) -> Dict[str, Any]:
                 "source_chat_id": source_chat_id,
                 "model_override": model_override,
                 "project": project,
+                "project_output_contract": project_output_contract,
                 "conversation_id": conversation_id,
                 "caller_agent": caller_agent,
                 **worktree_metadata,
@@ -334,6 +369,7 @@ async def invoke_agent(args: Dict[str, Any]) -> Dict[str, Any]:
                 source_chat_id=source_chat_id,
                 model_override=model_override,
                 project=project,
+                project_output_contract=project_output_contract,
                 conversation_id=conversation_id,
                 caller_agent=caller_agent,
                 **worktree_metadata,
