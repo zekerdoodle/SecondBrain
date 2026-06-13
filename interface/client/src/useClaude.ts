@@ -856,6 +856,12 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
 
         case 'block_update': {
           const { message_id, block_id, block: updatedBlock } = data;
+          const key = `${message_id}:${block_id}`;
+          pendingDeltas.current.delete(key);
+          if (pendingDeltas.current.size === 0 && rafId.current) {
+            cancelAnimationFrame(rafId.current);
+            rafId.current = null;
+          }
           setMessages(prev => prev.map(msg => {
             if (msg.id !== message_id || !msg.blocks) return msg;
             return {

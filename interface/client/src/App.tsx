@@ -12,7 +12,7 @@ import { useClaude } from './useClaude';
 import { useToast } from './Toast';
 import { useAgents } from './hooks/useAgents';
 import { Salons } from './Salons';
-import { Menu, FileText, MessageSquare, Sidebar, PanelRight, Settings, Layout, Columns, ArrowLeft, Users } from 'lucide-react';
+import { Menu, FileText, MessageSquare, Sidebar, PanelRight, Settings, Layout, Columns, ArrowLeft, Users, Bug, Send, X, CheckCircle, AlertTriangle, Loader2 } from 'lucide-react';
 import { clsx } from 'clsx';
 import { API_URL } from './config';
 
@@ -33,6 +33,8 @@ interface ConfirmModalState {
   confirmLabel: string;
   onConfirm: () => void;
 }
+
+type AppFeedbackStatus = 'idle' | 'submitting' | 'delivered' | 'saved_delivery_failed' | 'save_failed';
 
 const useIsMobile = () => {
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
@@ -106,9 +108,14 @@ function App() {
   // Full-screen app mode
   const [fullscreenApp, setFullscreenApp] = useState<{
     path: string;
+    entry: string;
     name: string;
     html: string;
   } | null>(null);
+  const [appFeedbackOpen, setAppFeedbackOpen] = useState(false);
+  const [appFeedbackText, setAppFeedbackText] = useState('');
+  const [appFeedbackError, setAppFeedbackError] = useState('');
+  const [appFeedbackStatus, setAppFeedbackStatus] = useState<AppFeedbackStatus>('idle');
 
   // Increments when exiting fullscreen to force editor iframes to remount with fresh data
   const [iframeRefreshKey, setIframeRefreshKey] = useState(0);
@@ -344,6 +351,7 @@ function App() {
       const app = appRegistry.find(a => a.entry === entryPath);
       setFullscreenApp({
         path: filePath,
+        entry: entryPath,
         name: app?.name || filePath.split('/').slice(-2, -1)[0] || 'App',
         html,
       });
@@ -352,17 +360,81 @@ function App() {
     }
   }, [appRegistry]);
 
+  useEffect(() => {
+    setAppFeedbackOpen(false);
+    setAppFeedbackText('');
+    setAppFeedbackError('');
+    setAppFeedbackStatus('idle');
+  }, [fullscreenApp?.path]);
+
+  const openAppFeedback = useCallback(() => {
+    setAppFeedbackOpen(true);
+    setAppFeedbackError('');
+    setAppFeedbackStatus('idle');
+  }, []);
+
+  const closeAppFeedback = useCallback(() => {
+    if (appFeedbackStatus === 'submitting') return;
+    setAppFeedbackOpen(false);
+    setAppFeedbackError('');
+    setAppFeedbackStatus('idle');
+  }, [appFeedbackStatus]);
+
+  const submitAppFeedback = useCallback(async () => {
+    if (!fullscreenApp || appFeedbackStatus === 'submitting') return;
+    const issue = appFeedbackText.trim();
+    if (!issue) {
+      setAppFeedbackError('Describe the bug or request before submitting.');
+      setAppFeedbackStatus('idle');
+      return;
+    }
+
+    setAppFeedbackStatus('submitting');
+    setAppFeedbackError('');
+    try {
+      const res = await fetch(`${API_URL}/app-feedback-reports`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          app_name: fullscreenApp.name,
+          app_path: fullscreenApp.path,
+          app_entry: fullscreenApp.entry,
+          issue,
+          route: {
+            href: window.location.href,
+            pathname: window.location.pathname,
+            search: window.location.search,
+            hash: window.location.hash,
+          },
+        }),
+      });
+      const data: { status?: string; detail?: string } | null = await res.json().catch(() => null);
+      if (!res.ok) {
+        throw new Error(data?.detail || `Report failed with status ${res.status}`);
+      }
+      setAppFeedbackText('');
+      setAppFeedbackStatus(data?.status === 'saved_but_delivery_failed' ? 'saved_delivery_failed' : 'delivered');
+    } catch (err) {
+      setAppFeedbackStatus('save_failed');
+      setAppFeedbackError(err instanceof Error ? err.message : 'Could not save the report.');
+    }
+  }, [appFeedbackStatus, appFeedbackText, fullscreenApp]);
+
   // Escape key exits fullscreen app mode
   useEffect(() => {
     if (!fullscreenApp) return;
     const handleKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        setFullscreenApp(null);
+        if (appFeedbackOpen) {
+          closeAppFeedback();
+        } else {
+          setFullscreenApp(null);
+        }
       }
     };
     window.addEventListener('keydown', handleKey);
     return () => window.removeEventListener('keydown', handleKey);
-  }, [fullscreenApp]);
+  }, [appFeedbackOpen, closeAppFeedback, fullscreenApp]);
 
   // Keyboard shortcut: Ctrl+\ to toggle chat split view
   useEffect(() => {
@@ -1255,17 +1327,95 @@ function App() {
               </button>
               <span className="text-sm font-semibold text-[var(--text-primary)] select-none">{fullscreenApp.name}</span>
             </div>
-            <button
-              onClick={() => {
-                setFullscreenApp(null);
-                setShowRightPanel(true);
-              }}
-              className="p-1.5 rounded-lg hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
-              title="Chat with Claude"
-            >
-              <MessageSquare size={18} />
-            </button>
+            <div className="flex items-center gap-1.5">
+              <button
+                onClick={openAppFeedback}
+                className={clsx(
+                  "p-1.5 rounded-lg text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors",
+                  appFeedbackOpen ? "bg-[var(--bg-tertiary)] text-[var(--text-primary)]" : "hover:bg-[var(--bg-tertiary)]"
+                )}
+                title="Report a bug or request"
+              >
+                <Bug size={18} />
+              </button>
+              <button
+                onClick={() => {
+                  setFullscreenApp(null);
+                  setShowRightPanel(true);
+                }}
+                className="p-1.5 rounded-lg hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
+                title="Chat with Claude"
+              >
+                <MessageSquare size={18} />
+              </button>
+            </div>
           </div>
+          {appFeedbackOpen && (
+            <div className="absolute right-3 top-12 z-10 w-[min(calc(100vw-1.5rem),22rem)] rounded-lg border border-[var(--border-color)] bg-[var(--bg-secondary)] shadow-xl">
+              <div className="flex items-start justify-between gap-3 border-b border-[var(--border-color)] px-3 py-2">
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-semibold text-[var(--text-primary)]">{fullscreenApp.name}</div>
+                  <div className="text-xs text-[var(--text-secondary)]">Bug or request</div>
+                </div>
+                <button
+                  onClick={closeAppFeedback}
+                  disabled={appFeedbackStatus === 'submitting'}
+                  className="shrink-0 p-1 rounded-md text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)] disabled:opacity-50"
+                  title="Dismiss"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+              <div className="space-y-2 p-3">
+                <textarea
+                  value={appFeedbackText}
+                  onChange={(e) => {
+                    setAppFeedbackText(e.target.value);
+                    if (appFeedbackError) setAppFeedbackError('');
+                    if (appFeedbackStatus !== 'idle') setAppFeedbackStatus('idle');
+                  }}
+                  disabled={appFeedbackStatus === 'submitting'}
+                  className="h-24 w-full resize-none rounded-md border border-[var(--border-color)] bg-[var(--bg-primary)] px-2.5 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent-primary)] disabled:opacity-60"
+                  placeholder="What broke, or what should this app do?"
+                />
+                {appFeedbackError && (
+                  <div className="flex items-start gap-1.5 text-xs text-red-400">
+                    <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                    <span>{appFeedbackError}</span>
+                  </div>
+                )}
+                {appFeedbackStatus === 'delivered' && (
+                  <div className="flex items-start gap-1.5 text-xs text-green-400">
+                    <CheckCircle size={14} className="mt-0.5 shrink-0" />
+                    <span>Saved and sent to Patch.</span>
+                  </div>
+                )}
+                {appFeedbackStatus === 'saved_delivery_failed' && (
+                  <div className="flex items-start gap-1.5 text-xs text-yellow-400">
+                    <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                    <span>Saved for Patch, but agent delivery failed.</span>
+                  </div>
+                )}
+                <div className="flex justify-end gap-2">
+                  <button
+                    onClick={closeAppFeedback}
+                    disabled={appFeedbackStatus === 'submitting'}
+                    className="rounded-md px-3 py-1.5 text-xs font-medium text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)] disabled:opacity-50"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={submitAppFeedback}
+                    disabled={appFeedbackStatus === 'submitting'}
+                    className="inline-flex items-center gap-1.5 rounded-md bg-[var(--accent-primary)] px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-60"
+                  >
+                    {appFeedbackStatus === 'submitting' ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
+                    Submit
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
           {/* App Content */}
           <div className="flex-1 overflow-hidden">
             <HtmlIframe html={fullscreenApp.html} />

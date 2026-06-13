@@ -1070,6 +1070,15 @@ class MoveRequest(BaseModel):
     source: str       # relative path of file/folder to move
     destination: str  # relative path of destination directory
 
+
+class AppFeedbackReportRequest(BaseModel):
+    app_name: str
+    app_path: str
+    issue: str
+    app_entry: Optional[str] = None
+    route: Optional[Dict[str, Any]] = None
+
+
 class AppBridgeWriteRequest(BaseModel):
     path: str
     data: str
@@ -1664,6 +1673,160 @@ def move_file(req: MoveRequest):
 
 APP_DATA_DIR = os.path.join(ROOT_DIR, "05_App_Data")
 os.makedirs(APP_DATA_DIR, exist_ok=True)
+
+APP_FEEDBACK_PATCH_INSTRUCTION = (
+    "Attend to the issue or request. You can hit up the app's owner agent, "
+    "or if the issue is well understood, work through Patch's workflow to get "
+    "it fixed. After completing the work, schedule a non-silent follow-up to "
+    "let the user know the work was done and that he can test it."
+)
+
+
+def _app_feedback_intake_dir() -> Path:
+    return Path(ROOT_DIR) / "codebase" / "inbox" / "app-feedback"
+
+
+def _app_feedback_slug(value: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", (value or "").strip().lower()).strip("-")
+    return (slug or "app")[:48].strip("-") or "app"
+
+
+def _app_feedback_iso_now() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _app_feedback_receipt_path(app_name: str, receipt_id: str, submitted_at: str) -> Path:
+    timestamp_base = submitted_at.split(".", 1)[0].replace("+00:00", "").replace("Z", "")
+    timestamp = re.sub(r"[^0-9T]", "", timestamp_base)
+    if re.fullmatch(r"\d{8}T\d{6}", timestamp):
+        timestamp = f"{timestamp}Z"
+    else:
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return _app_feedback_intake_dir() / f"{timestamp}-{_app_feedback_slug(app_name)}-{receipt_id[:8]}.json"
+
+
+def _app_feedback_prompt(app_name: str, issue: str, receipt_relpath: str) -> str:
+    return (
+        f"App: {app_name}\n"
+        f"Issue: {issue}\n"
+        f"What to do: {APP_FEEDBACK_PATCH_INSTRUCTION}\n\n"
+        f"Durable receipt: {receipt_relpath}"
+    )
+
+
+def _write_app_feedback_receipt(path: Path, receipt: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    tmp_path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(tmp_path, path)
+
+
+def _build_app_feedback_receipt(req: AppFeedbackReportRequest) -> Tuple[Dict[str, Any], Path]:
+    issue = (req.issue or "").strip()
+    if not issue:
+        raise HTTPException(status_code=400, detail="Describe the bug or request before submitting.")
+
+    app_name = (req.app_name or "").strip() or "Unknown app"
+    app_path = (req.app_path or "").strip()
+    app_entry = (req.app_entry or "").strip() or (
+        app_path[len("05_App_Data/"):] if app_path.startswith("05_App_Data/") else app_path
+    )
+    submitted_at = _app_feedback_iso_now()
+    receipt_id = uuid.uuid4().hex
+    receipt_path = _app_feedback_receipt_path(app_name, receipt_id, submitted_at)
+    receipt_relpath = os.path.relpath(receipt_path, ROOT_DIR)
+    prompt = _app_feedback_prompt(app_name, issue, receipt_relpath)
+
+    return {
+        "id": receipt_id,
+        "source": "fullscreen_app_shell",
+        "submitted_at": submitted_at,
+        "app": {
+            "name": app_name,
+            "path": app_path,
+            "entry": app_entry,
+        },
+        "route": req.route or {},
+        "issue": issue,
+        "patch_prompt": prompt,
+        "delivery": {
+            "state": "pending",
+            "attempted_at": None,
+            "agent": "patch",
+            "mode": "trust",
+            "conversation_id": None,
+            "error": None,
+        },
+    }, receipt_path
+
+
+async def _deliver_app_feedback_to_patch(receipt: Dict[str, Any]) -> Dict[str, Any]:
+    attempted_at = _app_feedback_iso_now()
+    try:
+        agents_dir = Path(ROOT_DIR) / ".claude" / "agents"
+        if str(agents_dir) not in sys.path:
+            sys.path.insert(0, str(agents_dir))
+        from runner import invoke_agent
+
+        result = await asyncio.wait_for(
+            invoke_agent(
+                name="patch",
+                prompt=receipt["patch_prompt"],
+                mode="trust",
+                caller_agent="app_feedback_reporter",
+                project="app-feedback-reporter",
+                project_output_contract="none",
+            ),
+            timeout=15,
+        )
+        if isinstance(result, dict) and result.get("error"):
+            return {
+                "state": "failed",
+                "attempted_at": attempted_at,
+                "agent": "patch",
+                "mode": "trust",
+                "conversation_id": result.get("conversation_id"),
+                "error": result.get("error"),
+            }
+        return {
+            "state": "queued",
+            "attempted_at": attempted_at,
+            "agent": "patch",
+            "mode": "trust",
+            "conversation_id": result.get("conversation_id") if isinstance(result, dict) else None,
+            "error": None,
+        }
+    except Exception as e:
+        logger.error(f"App feedback Patch delivery failed: {e}", exc_info=True)
+        return {
+            "state": "failed",
+            "attempted_at": attempted_at,
+            "agent": "patch",
+            "mode": "trust",
+            "conversation_id": None,
+            "error": str(e),
+        }
+
+
+@app.post("/api/app-feedback-reports")
+async def submit_app_feedback_report(req: AppFeedbackReportRequest):
+    """Persist an in-app feedback receipt, then best-effort queue Patch delivery."""
+    receipt, receipt_path = _build_app_feedback_receipt(req)
+    _write_app_feedback_receipt(receipt_path, receipt)
+
+    delivery = await _deliver_app_feedback_to_patch(receipt)
+    receipt["delivery"] = delivery
+    try:
+        _write_app_feedback_receipt(receipt_path, receipt)
+    except Exception as e:
+        logger.error(f"App feedback receipt delivery update failed: {receipt_path}: {e}", exc_info=True)
+
+    receipt_relpath = os.path.relpath(receipt_path, ROOT_DIR)
+    return {
+        "status": "delivered" if delivery["state"] == "queued" else "saved_but_delivery_failed",
+        "receipt_path": receipt_relpath,
+        "delivery": delivery,
+    }
 
 
 def validate_app_path(path: str) -> str:
@@ -3803,6 +3966,28 @@ class SessionStreamingState:
         self._current_blocks.append(block)
         return block, True
 
+    def find_tool_result_block(self, tool_call_id: Optional[str]) -> Optional[ContentBlock]:
+        """Find a streamed tool result block by tool call id."""
+        if not tool_call_id:
+            return None
+        for block in reversed(self._current_blocks):
+            if block.type == "tool_result" and block.tool_call_id == tool_call_id:
+                return block
+        return None
+
+    def get_or_create_tool_result_block(self, tool_call_id: str) -> Tuple[ContentBlock, bool]:
+        """Get the streamed result block for a tool, or create one in progress."""
+        existing = self.find_tool_result_block(tool_call_id)
+        if existing:
+            return existing, False
+        block = ContentBlock(
+            type="tool_result",
+            tool_call_id=tool_call_id,
+            status="in_progress",
+        )
+        self._current_blocks.append(block)
+        return block, True
+
     def complete_trailing_blocks(self) -> List[dict]:
         """Complete any in_progress text/thinking blocks. Returns events to broadcast."""
         events = []
@@ -3876,6 +4061,124 @@ class SessionStreamingState:
             "pending_form": None,  # Legacy compat (client uses form_request events)
             "todos": self.todos,
         }
+
+
+def _with_session_id(events: List[dict], session_id: str) -> List[dict]:
+    for event in events:
+        event["sessionId"] = session_id
+    return events
+
+
+def _ensure_assistant_message_events(ss: SessionStreamingState, state_key: str) -> Tuple[str, List[dict]]:
+    msg_id_blk, msg_is_new = ss.get_or_create_assistant_message()
+    events = []
+    if msg_is_new:
+        events.append({
+            "type": "message_start",
+            "seq": ss._next_seq(),
+            "sessionId": state_key,
+            "message_id": msg_id_blk,
+            "role": "assistant",
+        })
+    return msg_id_blk, events
+
+
+def _build_tool_output_delta_events(
+    ss: SessionStreamingState,
+    state_key: str,
+    tool_call_id: Optional[str],
+    text: str,
+) -> List[dict]:
+    if not tool_call_id or not text:
+        return []
+
+    existing = ss.find_tool_result_block(tool_call_id)
+    if existing and existing.status == "complete":
+        logger.warning("Ignoring tool_output_delta after complete tool_result for %s", tool_call_id)
+        return []
+
+    msg_id_blk, events = _ensure_assistant_message_events(ss, state_key)
+    events.extend(_with_session_id(ss.complete_trailing_blocks(), state_key))
+
+    result_block, block_is_new = ss.get_or_create_tool_result_block(tool_call_id)
+    if block_is_new:
+        events.append({
+            "type": "block_start",
+            "seq": ss._next_seq(),
+            "sessionId": state_key,
+            "message_id": msg_id_blk,
+            "block": result_block.to_dict(),
+        })
+
+    result_block.content += text
+    events.append({
+        "type": "block_delta",
+        "seq": ss._next_seq(),
+        "sessionId": state_key,
+        "message_id": msg_id_blk,
+        "block_id": result_block.id,
+        "delta": text,
+    })
+    return events
+
+
+def _build_tool_end_block_events(
+    ss: SessionStreamingState,
+    state_key: str,
+    tool_call_id: Optional[str],
+    final_content: str,
+    is_error: bool,
+    raw_output_artifact: Optional[Dict[str, Any]],
+) -> List[dict]:
+    msg_id_blk, events = _ensure_assistant_message_events(ss, state_key)
+
+    for block in ss._current_blocks:
+        if block.type == "tool_use" and block.tool_call_id == tool_call_id:
+            block.status = "complete"
+            if block.started_at:
+                block.duration_ms = int((time.time() - block.started_at) * 1000)
+            events.append({
+                "type": "block_end",
+                "seq": ss._next_seq(),
+                "sessionId": state_key,
+                "message_id": msg_id_blk,
+                "block_id": block.id,
+                "metadata": {"duration_ms": block.duration_ms} if block.duration_ms else None,
+            })
+            break
+
+    result_block = ss.find_tool_result_block(tool_call_id)
+    if result_block:
+        result_block.content = final_content
+        result_block.is_error = is_error
+        result_block.raw_output = raw_output_artifact
+        result_block.status = "complete"
+        events.append({
+            "type": "block_update",
+            "seq": ss._next_seq(),
+            "sessionId": state_key,
+            "message_id": msg_id_blk,
+            "block_id": result_block.id,
+            "block": result_block.to_dict(),
+        })
+    else:
+        result_block = ContentBlock(
+            type="tool_result",
+            tool_call_id=tool_call_id,
+            content=final_content,
+            is_error=is_error,
+            raw_output=raw_output_artifact,
+            status="complete",
+        )
+        ss._current_blocks.append(result_block)
+        events.append({
+            "type": "block_start",
+            "seq": ss._next_seq(),
+            "sessionId": state_key,
+            "message_id": msg_id_blk,
+            "block": result_block.to_dict(),
+        })
+    return events
 
 # Map of session_id -> streaming state
 session_streaming_states: Dict[str, SessionStreamingState] = {}
@@ -4166,8 +4469,24 @@ def _messages_for_display(chat_data: Dict[str, Any], session_id: Optional[str] =
         if key is not None:
             seen_keys.add(key)
 
-    recovered = 0
-    for msg in flat_messages:
+    def _display_flat_index(msg: Dict[str, Any]) -> Optional[int]:
+        msg_id = msg.get("id")
+        if msg_id and msg_id in flat_index_by_id:
+            return flat_index_by_id[msg_id]
+        key = _display_match_key(msg)
+        if key is not None and key in flat_index_by_key:
+            return flat_index_by_key[key]
+        if msg.get("blocks"):
+            represented_indices = [
+                idx for idx, flat_msg in visible_flat_messages
+                if _display_block_represents_message(msg, flat_msg)
+            ]
+            if represented_indices:
+                return min(represented_indices)
+        return None
+
+    recovered_messages: List[Tuple[int, Dict[str, Any]]] = []
+    for idx, msg in enumerate(flat_messages):
         role = msg.get("role")
         if role in {"tool_call", "system"}:
             continue
@@ -4182,37 +4501,46 @@ def _messages_for_display(chat_data: Dict[str, Any], session_id: Optional[str] =
         if _display_message_represented_by_blocks(msg, merged):
             continue
 
-        merged.append(msg)
-        recovered += 1
+        recovered_messages.append((idx, msg))
         if msg_id:
             seen_ids.add(msg_id)
         seen_keys.add(key)
 
-    def _display_order(msg: Dict[str, Any], original_idx: int) -> Tuple[int, float, int]:
-        msg_id = msg.get("id")
-        if msg_id and msg_id in flat_index_by_id:
-            return (0, float(flat_index_by_id[msg_id]), original_idx)
-        key = _display_match_key(msg)
-        if key is not None and key in flat_index_by_key:
-            return (0, float(flat_index_by_key[key]), original_idx)
-        if msg.get("blocks"):
-            represented_indices = [
-                idx for idx, flat_msg in visible_flat_messages
-                if _display_block_represents_message(msg, flat_msg)
-            ]
-            if represented_indices:
-                return (0, float(min(represented_indices)), original_idx)
-        msg_time = _display_sort_time(msg)
-        if msg_time != float("inf"):
-            return (1, msg_time, original_idx)
-        return (2, float(original_idx), original_idx)
+    for flat_idx, msg in recovered_messages:
+        insert_idx = len(merged)
+        for merged_idx, existing_msg in enumerate(merged):
+            existing_flat_idx = _display_flat_index(existing_msg)
+            if existing_flat_idx is not None and existing_flat_idx > flat_idx:
+                insert_idx = merged_idx
+                break
+        merged.insert(insert_idx, msg)
 
-    merged = [
-        msg for _, msg in sorted(
-            enumerate(merged),
-            key=lambda item: _display_order(item[1], item[0]),
-        )
-    ]
+    time_anchor_exists = any(
+        _display_sort_time(msg) != float("inf")
+        for msg in merged
+        if not msg.get("injected")
+    )
+    if time_anchor_exists:
+        timed_injected_messages: List[Tuple[float, int, Dict[str, Any]]] = []
+        anchored: List[Dict[str, Any]] = []
+        for original_idx, msg in enumerate(merged):
+            msg_time = _display_sort_time(msg)
+            if msg.get("injected") and _display_flat_index(msg) is None and msg_time != float("inf"):
+                timed_injected_messages.append((msg_time, original_idx, msg))
+            else:
+                anchored.append(msg)
+
+        for msg_time, _, msg in sorted(timed_injected_messages, key=lambda item: (item[0], item[1])):
+            insert_idx = 0
+            for anchored_idx, existing_msg in enumerate(anchored):
+                existing_time = _display_sort_time(existing_msg)
+                if existing_time != float("inf") and existing_time <= msg_time:
+                    insert_idx = anchored_idx + 1
+            anchored.insert(insert_idx, msg)
+
+        merged = anchored
+
+    recovered = len(recovered_messages)
 
     if recovered or deduped:
         label = f" for {session_id}" if session_id else ""
@@ -5736,6 +6064,16 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
                 # ========== START HEARTBEAT for long-running tools ==========
                 start_tool_heartbeat(state_key, current_tool_name)
 
+            elif event_type == "tool_output_delta":
+                text = event.get("text", "")
+                tool_id = event.get("id")
+                state_key = preserve_chat_id or new_session_id or streaming_state_key
+                ss = session_streaming_states.get(state_key)
+                if ss and text:
+                    events_to_broadcast = _build_tool_output_delta_events(ss, state_key, tool_id, str(text))
+                    for evt in events_to_broadcast:
+                        await broadcast_to_session(state_key, evt)
+
             elif event_type == "tool_end":
                 logger.info(f"TOOL_END event received: name={event.get('name')}, id={event.get('id')}, is_error={event.get('is_error')}")
                 state_key = preserve_chat_id or new_session_id or streaming_state_key
@@ -5763,42 +6101,17 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
                     logger.warning(f"Tool output artifact write failed: {artifact_err}")
                     raw_output_artifact = None
 
-                # ========== Block model: complete tool_use block, add tool_result ==========
+                # ========== Block model: complete tool_use block, finalize tool_result ==========
                 ss = session_streaming_states.get(state_key)
                 if ss:
-                    events_to_broadcast = []
-                    # Complete the tool_use block
-                    for block in ss._current_blocks:
-                        if block.type == "tool_use" and block.tool_call_id == tool_end_id:
-                            block.status = "complete"
-                            if block.started_at:
-                                block.duration_ms = int((time.time() - block.started_at) * 1000)
-                            events_to_broadcast.append({
-                                "type": "block_end",
-                                "seq": ss._next_seq(),
-                                "sessionId": state_key,
-                                "message_id": ss._current_msg_id,
-                                "block_id": block.id,
-                                "metadata": {"duration_ms": block.duration_ms} if block.duration_ms else None
-                            })
-                            break
-                    # Add tool_result block (created already complete)
-                    result_block = ContentBlock(
-                        type="tool_result",
-                        tool_call_id=tool_end_id,
-                        content=compact_tool_output_for_display(tool_output_raw, raw_output_artifact),
-                        is_error=is_error,
-                        raw_output=raw_output_artifact,
-                        status="complete"
+                    events_to_broadcast = _build_tool_end_block_events(
+                        ss,
+                        state_key,
+                        tool_end_id,
+                        compact_tool_output_for_display(tool_output_raw, raw_output_artifact),
+                        is_error,
+                        raw_output_artifact,
                     )
-                    ss._current_blocks.append(result_block)
-                    events_to_broadcast.append({
-                        "type": "block_start",
-                        "seq": ss._next_seq(),
-                        "sessionId": state_key,
-                        "message_id": ss._current_msg_id,
-                        "block": result_block.to_dict()
-                    })
                     for evt in events_to_broadcast:
                         await broadcast_to_session(state_key, evt)
                     # Check if all tool_use blocks are complete — stop heartbeat if so

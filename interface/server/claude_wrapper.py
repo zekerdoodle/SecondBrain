@@ -143,6 +143,10 @@ _CODEX_APP_SERVER_VISIBLE_EVENT_TYPES = {
 _CODEX_APP_SERVER_TOOL_EVENT_TYPES = {"tool_output_delta", "tool_start", "tool_use", "tool_end"}
 
 
+def _is_structured_prompt(prompt: Any) -> bool:
+    return isinstance(prompt, list)
+
+
 def _resolve_chat_runtime_config(agent_config: Any) -> Any:
     resolver = getattr(agent_config, "resolve_runtime", None)
     if callable(resolver):
@@ -1336,10 +1340,6 @@ class ClaudeWrapper:
                         app_visible_work = True
                     if event_type in _CODEX_APP_SERVER_TOOL_EVENT_TYPES:
                         app_tool_started = True
-                    if event_type == "tool_output_delta":
-                        # Main does not consume live tool-output deltas yet. Slice 4 owns
-                        # long-output UI/persistence; tool_end remains the compatibility event.
-                        return
                     if event_type == "result_meta":
                         # App Server sends live token-usage updates before turn completion.
                         # Keep them in the backend result and emit one final result_meta
@@ -1359,7 +1359,13 @@ class ClaudeWrapper:
                         self._injection_queue = None
 
                 result_has_visible_work = bool(result.blocks) or bool((result.response or "").strip())
-                should_fallback = result.returncode != 0 and not app_visible_work and not app_tool_started and not result_has_visible_work
+                should_fallback = (
+                    result.returncode != 0
+                    and not app_visible_work
+                    and not app_tool_started
+                    and not result_has_visible_work
+                    and not _is_structured_prompt(run_options.prompt)
+                )
                 if should_fallback:
                     logger.warning(
                         "Agent chat '%s': Codex App Server failed before visible work; falling back to codex exec",

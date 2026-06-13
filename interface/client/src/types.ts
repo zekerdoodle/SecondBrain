@@ -8,6 +8,7 @@ export interface ContentBlock {
   tool_call_id?: string;
   tool_input?: Record<string, unknown>;
   is_error?: boolean;
+  raw_output?: Record<string, unknown>;
   // Thinking/timing fields
   started_at?: number;
   duration_ms?: number;

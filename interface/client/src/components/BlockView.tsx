@@ -219,34 +219,38 @@ function ToolChipBlock({ toolUse, toolResult }: ToolChipBlockProps) {
         )}
       </button>
 
-      {expanded && toolUse.tool_input && (
+      {expanded && (toolUse.tool_input || toolResult?.content) && (
         <div className={clsx(
           "mt-1.5 ml-2 rounded-lg border p-2.5 text-xs animate-in",
           isError
             ? "bg-red-50/50 border-red-200 dark:bg-red-900/10 dark:border-red-800"
             : "bg-[var(--bg-secondary)] border-[var(--border-color)]"
         )}>
-          <div className="space-y-1">
-            {Object.entries(toolUse.tool_input).map(([key, value]) => (
-              <div key={key} className="flex gap-2">
-                <span className="font-mono text-[var(--text-muted)] flex-shrink-0">{key}:</span>
-                <span className={clsx(
-                  "font-mono break-all",
-                  isError ? "text-red-700 dark:text-red-400" : "text-[var(--text-primary)]"
-                )}>
-                  {String(value).length > 200 ? String(value).slice(0, 200) + '...' : String(value)}
-                </span>
-              </div>
-            ))}
-          </div>
+          {toolUse.tool_input && (
+            <div className="space-y-1">
+              {Object.entries(toolUse.tool_input).map(([key, value]) => (
+                <div key={key} className="flex gap-2">
+                  <span className="font-mono text-[var(--text-muted)] flex-shrink-0">{key}:</span>
+                  <span className={clsx(
+                    "font-mono break-all",
+                    isError ? "text-red-700 dark:text-red-400" : "text-[var(--text-primary)]"
+                  )}>
+                    {String(value).length > 200 ? String(value).slice(0, 200) + '...' : String(value)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
 
           {/* Tool result output */}
           {toolResult?.content && (
             <>
-              <div className={clsx(
-                "border-t my-2",
-                isError ? "border-red-200 dark:border-red-800" : "border-[var(--border-color)]"
-              )} />
+              {toolUse.tool_input && (
+                <div className={clsx(
+                  "border-t my-2",
+                  isError ? "border-red-200 dark:border-red-800" : "border-[var(--border-color)]"
+                )} />
+              )}
               <div className={clsx(
                 "font-mono whitespace-pre-wrap break-all",
                 isError ? "text-red-600 dark:text-red-400" : "text-[var(--text-secondary)]"

@@ -83,6 +83,7 @@ const normalizeContentBlock = (value: unknown, fallbackId: string): ContentBlock
     tool_call_id: typeof value.tool_call_id === 'string' ? value.tool_call_id : undefined,
     tool_input: isRecord(value.tool_input) ? value.tool_input : undefined,
     is_error: typeof value.is_error === 'boolean' ? value.is_error : undefined,
+    raw_output: isRecord(value.raw_output) ? value.raw_output : undefined,
     started_at: typeof value.started_at === 'number' ? value.started_at : undefined,
     duration_ms: typeof value.duration_ms === 'number' ? value.duration_ms : undefined,
   };

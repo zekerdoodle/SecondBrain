@@ -1,49 +1,55 @@
 [
   {
     "name": "Diet Tracker",
-    "icon": "diet/icon.png",
+    "icon": "diet/icon-20260611f.svg",
     "entry": "diet/index.html",
     "description": "Diet tracker & meal planner"
   },
   {
     "name": "Practice Tracker",
-    "icon": "practice-tracker/icon.png",
+    "icon": "practice-tracker/icon.svg",
     "entry": "practice-tracker/index.html",
     "description": "Guitar practice sessions, theory quizzes, and progress tracking"
   },
   {
     "name": "Agent Builder",
-    "icon": "agent-builder/icon.png",
+    "icon": "agent-builder/icon.svg",
     "entry": "agent-builder/index.html",
     "description": "Create and edit chat agents with custom prompts, tools, and personality"
   },
   {
     "name": "Agent Dashboard",
-    "icon": "agent-dashboard/icon.png",
+    "icon": "agent-dashboard/icon.svg",
     "entry": "agent-dashboard/index.html",
     "description": "View and manage all agent schedules, timelines, and task automation"
   },
   {
     "name": "Running",
-    "icon": "running/icon.png",
+    "icon": "running/icon-20260611e.svg",
     "entry": "running/index.html",
     "description": "MED running tracker with auto-progression, deload sync, and session logging"
   },
   {
     "name": "Link Bank Account",
-    "icon": "plaid-link/icon.png",
+    "icon": "plaid-link/icon.svg",
     "entry": "plaid-link/index.html",
     "description": "Connect your bank account securely through Plaid"
   },
   {
     "name": "Hypertrophy",
-    "icon": "hypertrophy/icon.png",
+    "icon": "hypertrophy/icon.svg",
     "entry": "hypertrophy/index.html",
     "description": "Strength & hypertrophy training tracker with auto-progression"
   },
   {
+    "name": "Move HQ",
+    "icon": "move-hq/icon.svg",
+    "entry": "move-hq/index.html",
+    "description": "Move timeline, listings, evidence, services, PTO, and exports"
+  },
+  {
     "name": "Sit",
-    "icon": "meditation/icon.svg",
+    "icon": "meditation/icon-20260611b.svg",
     "entry": "meditation/index.html",
     "description": "Daily meditation with guided focus progression"
   }
