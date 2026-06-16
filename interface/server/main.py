@@ -2002,6 +2002,8 @@ class InternalAgentInvokeRequest(BaseModel):
     worktree_path: Optional[str] = None
 
 
+INTERNAL_AGENT_INVOKE_MODES = {"foreground", "ping", "trust"}
+
 
 @app.get("/api/agent-activity")
 async def get_agent_activity(upcoming_limit: int = 20):
@@ -2061,18 +2063,21 @@ async def internal_running_agents(request: Request, agent: Optional[str] = None,
 
 @app.post("/api/internal/agent-invoke")
 async def internal_agent_invoke(req: InternalAgentInvokeRequest, request: Request):
-    """Launch ping invocations from the long-lived backend process.
+    """Launch direct MCP invocations from the long-lived backend process.
 
     Codex MCP bridge subprocesses are tied to the caller agent's Codex lifetime;
-    if they create detached ping tasks locally, those tasks can be stranded when
-    the caller exits. This endpoint lets the bridge hand the launch to the
-    backend event loop before returning the ping ack.
+    if they create agent work locally, the work can be invisible to the
+    backend-owned running_agents registry. This endpoint lets the bridge hand
+    launch to the backend event loop before returning or acknowledging.
     """
     token = request.headers.get("X-Second-Brain-Internal-Token")
     if not token or token != INTERNAL_AGENT_INVOKE_TOKEN:
         raise HTTPException(status_code=403, detail="Forbidden")
-    if req.mode != "ping":
-        raise HTTPException(status_code=400, detail="internal_agent_invoke only supports ping mode")
+    if req.mode not in INTERNAL_AGENT_INVOKE_MODES:
+        raise HTTPException(
+            status_code=400,
+            detail="internal_agent_invoke supports foreground, ping, and trust modes",
+        )
 
     agents_dir = Path(ROOT_DIR) / ".claude" / "agents"
     if str(agents_dir) not in sys.path:
@@ -2099,7 +2104,7 @@ async def internal_agent_invoke(req: InternalAgentInvokeRequest, request: Reques
             return result.__dict__
         return result
     except Exception as e:
-        logger.error("Internal ping launch failed for agent %s: %s", req.agent, e, exc_info=True)
+        logger.error("Internal agent launch failed for agent %s: %s", req.agent, e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 

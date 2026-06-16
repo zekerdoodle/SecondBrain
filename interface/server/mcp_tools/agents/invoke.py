@@ -37,6 +37,9 @@ PROJECT_OUTPUT_CONTRACT_VALUES = {
     PROJECT_OUTPUT_CONTRACT_AGENT_OUTPUTS,
     PROJECT_OUTPUT_CONTRACT_NONE,
 }
+BACKEND_RELAY_MODES = {"foreground", "ping", "trust"}
+DETACHED_RELAY_TIMEOUT_SECONDS = 60.0
+FOREGROUND_RELAY_TIMEOUT_SECONDS = 1900.0
 
 
 def _build_invoke_tool_schema():
@@ -233,8 +236,13 @@ def _running_in_backend_process() -> bool:
         return False
 
 
+def _should_relay_agent_invoke_to_backend(mode: str) -> bool:
+    """Caller-owned MCP processes must not create invisible live invocations."""
+    return mode in BACKEND_RELAY_MODES and _should_relay_ping_to_backend()
+
+
 def _should_relay_ping_to_backend() -> bool:
-    """Ping acks are trustworthy only when launch is owned by the backend loop."""
+    """Return True when direct agent launch must be handed to the backend."""
     return not _running_in_backend_process()
 
 
@@ -251,10 +259,16 @@ def _get_internal_agent_invoke_token() -> Optional[str]:
     return os.environ.get("SECOND_BRAIN_INTERNAL_AGENT_TOKEN") or None
 
 
+def _internal_agent_invoke_timeout(payload: Dict[str, Any]) -> float:
+    if payload.get("mode") == "foreground":
+        return FOREGROUND_RELAY_TIMEOUT_SECONDS
+    return DETACHED_RELAY_TIMEOUT_SECONDS
+
+
 def _post_internal_agent_invoke(payload: Dict[str, Any]) -> Dict[str, Any]:
     token = _get_internal_agent_invoke_token()
     if not token:
-        return {"error": "internal ping relay token unavailable"}
+        return {"error": "internal agent invocation relay token unavailable"}
 
     base_url = os.environ.get("SECOND_BRAIN_INTERNAL_BASE_URL", "http://127.0.0.1:8000")
     url = base_url.rstrip("/") + "/api/internal/agent-invoke"
@@ -269,7 +283,7 @@ def _post_internal_agent_invoke(payload: Dict[str, Any]) -> Dict[str, Any]:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=60) as response:
+        with urllib.request.urlopen(request, timeout=_internal_agent_invoke_timeout(payload)) as response:
             raw = response.read().decode("utf-8")
             return json.loads(raw) if raw else {}
     except urllib.error.HTTPError as e:
@@ -279,13 +293,17 @@ def _post_internal_agent_invoke(payload: Dict[str, Any]) -> Dict[str, Any]:
             detail = data.get("detail", detail)
         except Exception:
             pass
-        return {"error": f"internal ping relay failed ({e.code}): {detail}"}
+        return {"error": f"internal agent invocation relay failed ({e.code}): {detail}"}
     except Exception as e:
-        return {"error": f"internal ping relay failed: {e}"}
+        return {"error": f"internal agent invocation relay failed: {e}"}
+
+
+async def _relay_agent_invoke_to_backend(payload: Dict[str, Any]) -> Dict[str, Any]:
+    return await asyncio.to_thread(_post_internal_agent_invoke, payload)
 
 
 async def _relay_ping_to_backend(payload: Dict[str, Any]) -> Dict[str, Any]:
-    return await asyncio.to_thread(_post_internal_agent_invoke, payload)
+    return await _relay_agent_invoke_to_backend(payload)
 
 
 @register_tool("agents")
@@ -343,23 +361,27 @@ async def invoke_agent(args: Dict[str, Any]) -> Dict[str, Any]:
                 "is_error": True,
             }
 
-        if mode == "ping" and _should_relay_ping_to_backend():
-            # Detached ping tasks created in caller-owned Codex/MCP processes can
-            # be cancelled when the caller exits after receiving the ack. Hand
-            # launch to the long-lived backend instead; if relay is unavailable,
-            # fail visibly before any thread is created or locked locally.
-            result = await _relay_ping_to_backend({
-                "agent": agent_name,
-                "prompt": prompt,
-                "mode": mode,
-                "source_chat_id": source_chat_id,
-                "model_override": model_override,
-                "project": project,
-                "project_output_contract": project_output_contract,
-                "conversation_id": conversation_id,
-                "caller_agent": caller_agent,
-                **worktree_metadata,
-            })
+        relay_payload = {
+            "agent": agent_name,
+            "prompt": prompt,
+            "mode": mode,
+            "source_chat_id": source_chat_id,
+            "model_override": model_override,
+            "project": project,
+            "project_output_contract": project_output_contract,
+            "conversation_id": conversation_id,
+            "caller_agent": caller_agent,
+            **worktree_metadata,
+        }
+        if _should_relay_agent_invoke_to_backend(mode):
+            # Caller-owned Codex/MCP processes have a private running_agents
+            # module copy. Hand all launchable direct modes to the long-lived
+            # backend; if relay is unavailable, fail visibly before any local
+            # thread is created or locked.
+            if mode == "ping":
+                result = await _relay_ping_to_backend(relay_payload)
+            else:
+                result = await _relay_agent_invoke_to_backend(relay_payload)
         else:
             from runner import invoke_agent as _invoke_agent
             result = await _invoke_agent(
@@ -389,6 +411,16 @@ async def invoke_agent(args: Dict[str, Any]) -> Dict[str, Any]:
                         "content": [{"type": "text", "text": _append_conversation_footer(error_msg, conv_id)}],
                         "is_error": True,
                     }
+            elif isinstance(result, dict) and "status" in result:
+                conv_id = result.get("conversation_id")
+                if result.get("status") == "success":
+                    body = result.get("transcript") or result.get("response") or ""
+                    return {"content": [{"type": "text", "text": _append_conversation_footer(body, conv_id)}]}
+                error_msg = f"Agent {agent_name} failed: {result.get('error') or result.get('status')}"
+                return {
+                    "content": [{"type": "text", "text": _append_conversation_footer(error_msg, conv_id)}],
+                    "is_error": True,
+                }
             else:
                 # Dict result (error case)
                 if "error" in result:

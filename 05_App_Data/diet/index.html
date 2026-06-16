@@ -1273,11 +1273,11 @@ function renderBuildMode(slotNum) {
               onclick="event.stopPropagation();logBuiltMeal(${slotNum})">Log Meal (${totals.cal} cal)</button>`;
   }
 
-  // Coach-assisted combo preview
-  html += renderCoachComboBox(slotNum);
-
   // Ingredient picker
   html += renderIngredientPicker(slotNum);
+
+  // Coach-assisted combo preview
+  html += renderCoachComboBox(slotNum);
 
   return html;
 }

@@ -1280,6 +1280,7 @@ class ClaudeWrapper:
                     timeout_seconds=getattr(agent_config, "timeout_seconds", 14400),
                     max_turns=getattr(agent_config, "max_turns", 200),
                     effort=getattr(agent_config, "effort", None),
+                    verbosity=getattr(agent_config, "verbosity", None),
                     use_native_coding_instructions=use_native_coding,
                     chat_id=self.chat_id,
                     agent_name=agent_config.name,

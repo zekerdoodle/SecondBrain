@@ -41,16 +41,17 @@ _TOOL_DESCRIPTION = """Returns the list of currently-running agent invocations o
 Use this when you need to know whether anyone (or you yourself, or a specific agent) is currently in flight — for example, before requesting a server restart, before dispatching a coder that might conflict with another in-flight coder, or to answer "is anyone running right now?"
 
 Returns one entry per live invocation. Filter by agent or kind. Kinds:
-- chat: a WebSocket chat session (the user or Character talking to an agent) — wired in Phase 2; not visible in Phase 1.
+- chat: a WebSocket chat session (the user or Character talking to an agent).
 - invoke_foreground / invoke_ping / invoke_trust: another agent invoked this one via invoke_agent.
 - scheduled: a scheduled task is running (the outer wrapper around the actual agent call — the inner call also appears as an invoke_* entry).
+- salon_convener: reserved for salon convener decisions; not currently hooked as a live entry.
 - salon_agent: an agent is running inside a salon (group chat) dispatch.
 - background_processing: an agent's idle-time background-processing hook fired.
 - agent_conversation_join: an invocation that joined an existing agent-to-agent thread.
 
 Each entry has: id, agent, kind, started_at (UNIX seconds), elapsed_seconds, task_summary, source_chat_id, conversation_id, salon_id, scheduled_task_id, caller_agent. Worktree-routed coder invocations also include worktree_branch, worktree_slug, and worktree_path. Fields that don't apply are null or omitted.
 
-Note (Phase 1): chat sessions are not yet registered — Phase 2 of the running-agents-visibility project adds the WebSocket hook. Until then, calling this tool from a chat will not see your own chat session in the results.
+For restart decisions, treat this as an authoritative snapshot of the invocation paths currently wired into running_agents, not a universal proof that every possible process in the system is idle. If the source-of-truth read errors, fail closed.
 """
 
 

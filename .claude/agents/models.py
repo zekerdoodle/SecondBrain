@@ -12,7 +12,21 @@ Defines:
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Literal, Optional, Union
+from typing import Any, Dict, List, Literal, Optional, Union, cast
+
+
+Verbosity = Literal["low", "medium", "high"]
+
+
+def _parse_verbosity(value: Any) -> Optional[Verbosity]:
+    if value is None:
+        return None
+    normalized = str(value).strip().lower()
+    if not normalized or normalized == "default":
+        return None
+    if normalized not in {"low", "medium", "high"}:
+        raise ValueError(f"Invalid verbosity {value!r}; expected low, medium, or high")
+    return cast(Verbosity, normalized)
 
 
 class InvocationMode(str, Enum):
@@ -36,6 +50,7 @@ class AgentRuntimeConfig:
     type: Optional[AgentType] = None
     model: Optional[str] = None
     effort: Optional[str] = None
+    verbosity: Optional[Verbosity] = None
     thinking_budget: Optional[int] = None
     system_prompt_preset: Optional[str] = None
 
@@ -48,6 +63,7 @@ class AgentRuntimeConfig:
             type=AgentType(runtime_type) if runtime_type else None,
             model=data.get("model"),
             effort=data.get("effort"),
+            verbosity=_parse_verbosity(data.get("verbosity")),
             thinking_budget=data.get("thinking_budget"),
             system_prompt_preset=data.get("system_prompt_preset"),
         )
@@ -86,6 +102,7 @@ class AgentConfig:
     icon: Optional[str] = None
     default: bool = False  # The default agent for chat (replaces PRIMARY concept)
     effort: Optional[str] = None  # Override thinking effort: 'low', 'medium', 'high', 'max'
+    verbosity: Optional[Verbosity] = None  # Override response verbosity: 'low', 'medium', 'high'
     thinking_budget: Optional[int] = None  # Override: explicit budget_tokens for ThinkingConfigEnabled
     background_processing: Optional[Dict[str, Any]] = None  # Background processing config (enabled, trigger_exchanges, idle_timeout_minutes)
     background_prompt: Optional[str] = None  # Content of background_processing.md
@@ -101,6 +118,11 @@ class AgentConfig:
             type=override.type or self.type,
             model=override.model or self.model,
             effort=override.effort if override.effort is not None else self.effort,
+            verbosity=(
+                override.verbosity
+                if override.verbosity is not None
+                else self.verbosity
+            ),
             thinking_budget=(
                 override.thinking_budget
                 if override.thinking_budget is not None
@@ -140,6 +162,7 @@ class AgentConfig:
             icon=data.get("icon"),
             default=data.get("default", False),
             effort=data.get("effort"),
+            verbosity=_parse_verbosity(data.get("verbosity")),
             thinking_budget=data.get("thinking_budget"),
             background_processing=data.get("background_processing"),
             background_prompt=background_prompt,
