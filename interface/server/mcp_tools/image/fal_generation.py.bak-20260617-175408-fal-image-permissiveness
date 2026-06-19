@@ -250,39 +250,18 @@ def _get_reference_video_param_name(
     return _get_reference_video_config(model, image_param_name)["param"]
 
 
-_FAL_IMAGE_SAFETY_PARAM_KEYS = (
-    "enable_safety_checker",
-    "enable_safety_checks",
-    "safety_tolerance",
-)
-_FAL_IMAGE_SAFETY_TOLERANCE_BY_MODEL = {
-    "fal-ai/flux-2-pro": "5",
-    "fal-ai/flux-2-pro/edit": "5",
-    "fal-ai/flux-2-flex": "5",
-    "fal-ai/flux-2-flex/edit": "5",
-    "fal-ai/flux-pro/kontext": "6",
-    "fal-ai/flux-pro/kontext/max/multi": "6",
-}
-
-
-def _fal_image_safety_tolerance(model: Optional[str]) -> Optional[str]:
-    """Return the most permissive documented safety_tolerance for a model."""
-    if not model:
-        return None
-    return _FAL_IMAGE_SAFETY_TOLERANCE_BY_MODEL.get(model.rstrip("/"))
+_FAL_IMAGE_SAFETY_PARAM_KEYS = ("enable_safety_checker", "enable_safety_checks")
 
 
 def _build_fal_image_payload(
     base_params: Dict[str, Any],
     extra_params: Optional[Dict[str, Any]] = None,
-    model: Optional[str] = None,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    """Merge fal image payload params with permissive safety controls last.
+    """Merge fal image payload params with safety disabled last.
 
     Seedream documents enable_safety_checker, so keep using that supported key.
     The common alias enable_safety_checks is stripped when callers pass it, rather
     than added automatically, to avoid sending unsupported keys to stricter models.
-    safety_tolerance is only added for fal image models whose docs expose it.
     """
     clean_extra_params = dict(extra_params or {})
     ignored_keys = [
@@ -298,9 +277,6 @@ def _build_fal_image_payload(
         )
 
     payload = {**base_params, **clean_extra_params}
-    safety_tolerance = _fal_image_safety_tolerance(model)
-    if safety_tolerance is not None:
-        payload["safety_tolerance"] = safety_tolerance
     payload["enable_safety_checker"] = False
     return payload, clean_extra_params
 
@@ -886,7 +862,6 @@ async def fal_text_to_image(args: Dict[str, Any]) -> Dict[str, Any]:
             "num_images": num_images,
         },
         extra_params,
-        model,
     )
     if negative_prompt:
         payload["negative_prompt"] = negative_prompt
@@ -1009,7 +984,6 @@ async def fal_image_to_image(args: Dict[str, Any]) -> Dict[str, Any]:
                 param_name: cdn_url,
             },
             extra_params,
-            model,
         )
         if strength is not None:
             payload["strength"] = strength
@@ -1153,7 +1127,6 @@ async def fal_multi_ref_image(args: Dict[str, Any]) -> Dict[str, Any]:
         payload, effective_extra_params = _build_fal_image_payload(
             {"prompt": prompt},
             extra_params,
-            model,
         )
 
         # Set the reference image parameter using the correct name and mode

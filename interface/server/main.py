@@ -738,6 +738,8 @@ async def _run_background_processing(
             name=agent_name,
             prompt=combined_prompt,
             mode="trust",
+            source_chat_id=chat_id,
+            caller_agent="background_processing",
             is_background_processing=True,
         )
 
@@ -2084,7 +2086,20 @@ async def internal_agent_invoke(req: InternalAgentInvokeRequest, request: Reques
         sys.path.insert(0, str(agents_dir))
     from runner import invoke_agent
 
+    running_entry_id = None
     try:
+        if req.mode == "foreground":
+            running_entry_id = await running_agents.register(
+                agent=req.agent,
+                kind="agent_conversation_join" if req.conversation_id else "invoke_foreground",
+                task_summary=req.prompt,
+                source_chat_id=req.source_chat_id,
+                conversation_id=req.conversation_id,
+                caller_agent=req.caller_agent,
+                worktree_branch=req.worktree_branch,
+                worktree_slug=req.worktree_slug,
+                worktree_path=req.worktree_path,
+            )
         result = await invoke_agent(
             name=req.agent,
             prompt=req.prompt,
@@ -2099,6 +2114,7 @@ async def internal_agent_invoke(req: InternalAgentInvokeRequest, request: Reques
             worktree_slug=req.worktree_slug,
             worktree_base_ref=req.worktree_base_ref,
             worktree_path=req.worktree_path,
+            running_entry_id=running_entry_id,
         )
         if hasattr(result, "__dict__"):
             return result.__dict__
@@ -2106,6 +2122,9 @@ async def internal_agent_invoke(req: InternalAgentInvokeRequest, request: Reques
     except Exception as e:
         logger.error("Internal agent launch failed for agent %s: %s", req.agent, e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if running_entry_id is not None:
+            await running_agents.unregister(running_entry_id)
 
 
 class AppBridgeDeleteRequest(BaseModel):
@@ -8167,6 +8186,18 @@ async def restart_continuation_wakeup():
 
 
 AGENT_THREAD_NOTIFICATION_PREFIX = "agent-thread:"
+PSEUDO_AGENT_THREAD_CALLERS = frozenset({
+    "agent_notification_wakeup",
+    "restart_continuation",
+})
+
+
+def _format_agent_thread_notification_source(caller_agent: str, conversation_id: str) -> str:
+    return f"{AGENT_THREAD_NOTIFICATION_PREFIX}{caller_agent}:{conversation_id}"
+
+
+def _is_pseudo_agent_thread_caller(caller_agent: str) -> bool:
+    return (caller_agent or "").strip().lower() in PSEUDO_AGENT_THREAD_CALLERS
 
 
 def _parse_agent_thread_notification_source(source_chat_id: Optional[str]) -> Optional[Tuple[str, str]]:
@@ -8272,6 +8303,14 @@ async def agent_notification_wakeup_loop():
                 agent_target = _parse_agent_thread_notification_source(source_id)
                 if agent_target:
                     caller_agent, conversation_id = agent_target
+                    if _is_pseudo_agent_thread_caller(caller_agent):
+                        queue.mark_expired([notification.id])
+                        logger.error(
+                            f"Expired invalid agent-thread notification {notification.id}: "
+                            f"pseudo target '{caller_agent}' is a delivery mechanism, "
+                            f"not a resumable agent (thread {conversation_id})"
+                        )
+                        continue
                     if _agent_thread_notification_ready(caller_agent, conversation_id, notification):
                         by_agent_thread[agent_target].append(notification)
                 else:
@@ -8345,6 +8384,14 @@ async def _process_agent_thread_notification_batch(
     notifications = claimed
     claimed_ids = [n.id for n in claimed]
 
+    if _is_pseudo_agent_thread_caller(caller_agent):
+        queue.mark_expired(claimed_ids)
+        logger.error(
+            f"Expired invalid agent-thread notification batch for pseudo target "
+            f"'{caller_agent}' on thread {conversation_id}; not releasing to pending"
+        )
+        return
+
     try:
         agents_dir = Path(ROOT_DIR) / ".claude" / "agents"
         if str(agents_dir) not in sys.path:
@@ -8356,9 +8403,9 @@ async def _process_agent_thread_notification_batch(
         if not registry.get(caller_agent):
             logger.error(
                 f"Agent-thread ping target '{caller_agent}' is not a registered agent; "
-                f"cannot resume thread {conversation_id}"
+                f"cannot resume thread {conversation_id}; expiring notification(s)"
             )
-            queue.release_delivery(claimed_ids)
+            queue.mark_expired(claimed_ids)
             return
 
         notification_parts = []
@@ -8388,7 +8435,7 @@ You are being re-invoked because you requested ping mode from a silent or schedu
             name=caller_agent,
             prompt=notification_prompt,
             mode="foreground",
-            source_chat_id=None,
+            source_chat_id=_format_agent_thread_notification_source(caller_agent, conversation_id),
             conversation_id=conversation_id,
             caller_agent="agent_notification_wakeup",
         )

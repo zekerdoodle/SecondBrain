@@ -151,6 +151,10 @@ _BACKGROUND_INVOCATION_TASKS: Set[asyncio.Task] = set()
 # foreground chat to wake. main.py consumes these durable notifications and
 # resumes the caller on the same agent-conversation thread.
 AGENT_THREAD_NOTIFICATION_PREFIX = "agent-thread:"
+PSEUDO_AGENT_THREAD_CALLERS = frozenset({
+    "agent_notification_wakeup",
+    "restart_continuation",
+})
 
 
 RILEY_ANTHROPIC_PROXY_BASE_PATH = "/internal/anthropic-proxy"
@@ -200,6 +204,12 @@ def _sdk_agent_env(agent_name: str) -> Dict[str, str]:
 
 def _agent_thread_notification_source(caller_agent: str, conversation_id: str) -> str:
     return f"{AGENT_THREAD_NOTIFICATION_PREFIX}{caller_agent}:{conversation_id}"
+
+
+def _agent_thread_notification_caller(caller_agent: str, target_agent: str) -> str:
+    if (caller_agent or "").strip().lower() in PSEUDO_AGENT_THREAD_CALLERS:
+        return target_agent
+    return caller_agent
 
 
 async def _auto_approve_tool(tool_name: str, input_data: dict, context):
@@ -538,6 +548,7 @@ async def invoke_agent(
     is_background_processing: bool = False,
     stream_callback: Optional[Callable[[list], Awaitable[None]]] = None,
     history_messages: Optional[List[Dict[str, Any]]] = None,
+    running_entry_id: Optional[str] = None,
 ) -> Union[AgentResult, Dict[str, str]]:
     """
     Invoke an agent with the specified mode.
@@ -570,6 +581,8 @@ async def invoke_agent(
             own JSON file is the persistence layer. Only ``foreground`` mode is
             supported when salon_id is set; the salon dispatch loop in main.py
             owns the lifecycle.
+        running_entry_id: Internal handoff for backend-owned foreground relays.
+            External callers should leave this unset.
 
     Returns:
         For foreground: AgentResult (with ``conversation_id`` set)
@@ -761,7 +774,11 @@ async def invoke_agent(
     # Handle different modes
     if mode == InvocationMode.FOREGROUND:
         try:
-            result = await _run_agent(config, invocation)
+            result = await _run_agent(
+                config,
+                invocation,
+                running_entry_id=running_entry_id,
+            )
         except Exception:
             _release_thread_lock(conv_id, lock_id)
             raise
@@ -773,14 +790,26 @@ async def invoke_agent(
         notification_source_id = source_chat_id
         if not notification_source_id:
             if effective_caller and effective_caller not in {"user", "caller"}:
+                notification_caller = _agent_thread_notification_caller(
+                    effective_caller,
+                    config.name,
+                )
                 notification_source_id = _agent_thread_notification_source(
-                    effective_caller, conv_id
+                    notification_caller, conv_id
                 )
-                logger.info(
-                    f"Ping mode for agent '{name}' has no source chat; "
-                    f"routing completion to caller agent '{effective_caller}' "
-                    f"via thread {conv_id}"
-                )
+                if notification_caller != effective_caller:
+                    logger.warning(
+                        f"Ping mode for agent '{name}' had pseudo caller "
+                        f"'{effective_caller}'; routing completion to real "
+                        f"agent-thread target '{notification_caller}' via "
+                        f"thread {conv_id}"
+                    )
+                else:
+                    logger.info(
+                        f"Ping mode for agent '{name}' has no source chat; "
+                        f"routing completion to caller agent '{effective_caller}' "
+                        f"via thread {conv_id}"
+                    )
             else:
                 _release_thread_lock(conv_id, lock_id)
                 return {

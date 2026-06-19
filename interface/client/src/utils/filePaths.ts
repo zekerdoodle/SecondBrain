@@ -15,7 +15,7 @@ const KNOWN_DIRS =
 // Strict regex: matches paths that clearly belong to the project tree.
 // Handles absolute, ./, ~/, and bare relative prefixes.
 const FILE_PATH_REGEX = new RegExp(
-  `^(?:\\.?\\/|~\\/(?:second_brain\\/)?|\\/home\\/debian\\/second_brain\\/)?` + // optional prefix
+  `^(?:\\.?\\/|~\\/(?:second[-_]brain\\/)?|\\/home\\/debian\\/second[-_]brain\\/)?` + // optional prefix
   `(?:(?:${KNOWN_DIRS})\\/)` +                                                  // known directory
   `[\\w./@()_-]+(?:\\/[\\w./@()_-]+)*` +                                        // path segments
   `\\.\\w{1,10}$`                                                                // file extension
@@ -53,7 +53,9 @@ export function looksLikeFilePath(text: string): boolean {
  *   /api/raw/foo                   →  foo
  *   /file/foo                      →  foo
  *   /home/debian/second_brain/foo  →  foo
+ *   /home/debian/second-brain/foo  →  foo
  *   ~/second_brain/foo             →  foo
+ *   ~/second-brain/foo             →  foo
  *   ./foo                          →  foo
  *   /foo                           →  foo   (bare leading slash)
  *   foo//bar                       →  foo/bar
@@ -69,8 +71,9 @@ export function toRelativePath(path: string): string {
   }
 
   // 2. Absolute project prefix
-  const absPrefix = '/home/debian/second_brain/';
-  if (p.startsWith(absPrefix)) {
+  const absPrefixes = ['/home/debian/second_brain/', '/home/debian/second-brain/'];
+  const absPrefix = absPrefixes.find(prefix => p.startsWith(prefix));
+  if (absPrefix) {
     p = p.slice(absPrefix.length);
   }
 
@@ -78,6 +81,10 @@ export function toRelativePath(path: string): string {
   if (p.startsWith('~/second_brain/')) {
     p = p.slice('~/second_brain/'.length);
   } else if (p === '~/second_brain') {
+    p = '';
+  } else if (p.startsWith('~/second-brain/')) {
+    p = p.slice('~/second-brain/'.length);
+  } else if (p === '~/second-brain') {
     p = '';
   }
 
@@ -102,7 +109,13 @@ export function toRelativePath(path: string): string {
   return p;
 }
 
-const IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.svg'];
+const IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.svg', '.bmp', '.ico'];
+const VIDEO_EXTENSIONS = ['.mp4', '.webm', '.mov'];
+
+const hasKnownExtension = (text: string, extensions: string[]): boolean => {
+  const lower = text.toLowerCase();
+  return extensions.some(ext => lower.endsWith(ext));
+};
 
 /**
  * Whether a path string ends with a recognized image extension.
@@ -110,6 +123,21 @@ const IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.svg'];
  * onError handler is the fallback path.
  */
 export function isImagePath(text: string): boolean {
-  const lower = text.toLowerCase();
-  return IMAGE_EXTENSIONS.some(ext => lower.endsWith(ext));
+  return hasKnownExtension(text, IMAGE_EXTENSIONS);
+}
+
+/**
+ * Whether a path string ends with a recognized video extension.
+ * Case-insensitive. Does NOT verify the file exists.
+ */
+export function isVideoPath(text: string): boolean {
+  return hasKnownExtension(text, VIDEO_EXTENSIONS);
+}
+
+/**
+ * Whether the editor can preview the file through a binary-safe media URL
+ * without fetching editable text content first.
+ */
+export function isBinaryPreviewPath(text: string): boolean {
+  return isImagePath(text) || isVideoPath(text);
 }

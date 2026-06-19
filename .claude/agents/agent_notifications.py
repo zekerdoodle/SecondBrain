@@ -265,7 +265,7 @@ class NotificationQueue:
         def _do_mark(notifications):
             nonlocal marked
             for n in notifications:
-                if n.id in id_set and n.status == "pending":
+                if n.id in id_set and n.status in ("pending", "delivering"):
                     n.status = "expired"
                     marked += 1
             return notifications

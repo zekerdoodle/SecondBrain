@@ -8,19 +8,16 @@ Tools:
     fal_text_to_image   — Text prompt → image
     fal_image_to_image  — Source image + prompt → modified image
     fal_multi_ref_image — Multiple reference images + prompt → image (Character workflow)
-    fal_reference_to_video — Reference image(s) + prompt → video (Character/AI Character Generator workflow)
     fal_list_models     — Search available models
 """
 
 import asyncio
 import hashlib
-import json
 import logging
 import mimetypes
 import os
 import time
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import urlparse
 
 import httpx
 
@@ -43,23 +40,16 @@ FAL_QUEUE_BASE = "https://queue.fal.run"
 # Platform API (model search only) uses api.fal.ai
 FAL_API_BASE = "https://api.fal.ai"
 
-# CDN upload: current fal-js flow via fal-cdn-v3
-FAL_CDN_INITIATE_URL = (
-    "https://rest.fal.ai/storage/upload/initiate?storage_type=fal-cdn-v3"
-)
-# Legacy CDN token/direct fallback for non-auth initiate failures.
+# CDN upload: two-step flow via fal-cdn-v3
+# Step 1: POST to get token + base_url
 FAL_CDN_TOKEN_URL = "https://rest.alpha.fal.ai/storage/auth/token"
+# Step 2: POST {base_url}/files/upload with Bearer {token}
+# Fallback: direct upload to v3.fal.media
 FAL_CDN_DIRECT_URL = "https://v3.fal.media/files/upload"
-FAL_CDN_AUTH_DENIAL_STATUSES = {401, 403}
 
 DEFAULT_MODEL = "fal-ai/bytedance/seedream/v4/text-to-image"
 DEFAULT_MULTI_REF_MODEL = "fal-ai/bytedance/seedream/v4.5/edit"
-DEFAULT_REFERENCE_VIDEO_MODEL = "bytedance/seedance-2.0/fast/reference-to-video"
 DEFAULT_IMAGE_SIZE = "portrait_4_3"
-REFERENCE_VIDEO_OUTPUT_DIR = os.path.expanduser(
-    "~/second_brain/05_App_Data/ai-character/generations"
-)
-_VIDEO_EXTENSIONS = {".mp4", ".webm", ".mov", ".m4v"}
 
 # =============================================================================
 # Model-specific parameter mapping
@@ -162,127 +152,18 @@ def _get_multi_ref_config(model: str) -> dict:
     return {"param": "image_urls", "mode": "list", "use_image_size": True}
 
 
-def _get_reference_video_config(
-    model: str,
-    image_param_name: Optional[str] = None,
-) -> dict:
-    """Return reference/start-image parameter config for a fal video model."""
-    if image_param_name:
-        return {
-            "param": image_param_name,
-            "mode": _get_reference_video_override_mode(image_param_name),
-        }
-
-    if model == "xai/grok-imagine-video/reference-to-video":
-        return {"param": "reference_image_urls", "mode": "list"}
-
-    if _is_grok_image_to_video_model(model):
-        return {"param": "image_url", "mode": "single"}
-
-    if (
-        (
-            model.startswith("bytedance/seedance-2.0/")
-            or model.startswith("fal-ai/bytedance/seedance-2.0/")
-        )
-        and model.endswith("/reference-to-video")
-    ):
-        return {"param": "image_urls", "mode": "list"}
-
-    if _is_seedance_2_image_to_video_model(model):
-        return {"param": "image_url", "mode": "single"}
-
-    if (
-        model.startswith("fal-ai/kling-video/")
-        and model.endswith("/reference-to-video")
-    ):
-        return {"param": "image_urls", "mode": "list"}
-
-    if _is_kling_v3_image_to_video_model(model):
-        return {"param": "start_image_url", "mode": "single"}
-
-    return {"param": "image_urls", "mode": "list"}
-
-
-def _get_reference_video_override_mode(image_param_name: str) -> str:
-    """Infer whether an explicit image parameter override wants one URL or a list."""
-    if image_param_name.endswith("_urls") or image_param_name == "image_urls":
-        return "list"
-    if image_param_name.endswith("_url") or image_param_name == "image_url":
-        return "single"
-    return "list"
-
-
-def _is_grok_image_to_video_model(model: str) -> bool:
-    """Return whether a Grok video model uses single-image image-to-video shape."""
-    return (
-        model.startswith("xai/grok-imagine-video")
-        and model.endswith("/image-to-video")
-    )
-
-
-def _is_seedance_2_image_to_video_model(model: str) -> bool:
-    """Return whether a Seedance 2.0 model uses single-image image-to-video shape."""
-    return (
-        (
-            model.startswith("bytedance/seedance-2.0/")
-            or model.startswith("fal-ai/bytedance/seedance-2.0/")
-        )
-        and model.endswith("/image-to-video")
-    )
-
-
-def _is_kling_v3_image_to_video_model(model: str) -> bool:
-    """Return whether a model is Kling v3 image-to-video with element support."""
-    return (
-        model.startswith("fal-ai/kling-video/v3/")
-        and (
-            model.endswith("/image-to-video")
-            or "/image-to-video/" in model
-        )
-    )
-
-
-def _get_reference_video_param_name(
-    model: str,
-    image_param_name: Optional[str] = None,
-) -> str:
-    """Return the reference image URL parameter for a fal video model."""
-    return _get_reference_video_config(model, image_param_name)["param"]
-
-
-_FAL_IMAGE_SAFETY_PARAM_KEYS = (
-    "enable_safety_checker",
-    "enable_safety_checks",
-    "safety_tolerance",
-)
-_FAL_IMAGE_SAFETY_TOLERANCE_BY_MODEL = {
-    "fal-ai/flux-2-pro": "5",
-    "fal-ai/flux-2-pro/edit": "5",
-    "fal-ai/flux-2-flex": "5",
-    "fal-ai/flux-2-flex/edit": "5",
-    "fal-ai/flux-pro/kontext": "6",
-    "fal-ai/flux-pro/kontext/max/multi": "6",
-}
-
-
-def _fal_image_safety_tolerance(model: Optional[str]) -> Optional[str]:
-    """Return the most permissive documented safety_tolerance for a model."""
-    if not model:
-        return None
-    return _FAL_IMAGE_SAFETY_TOLERANCE_BY_MODEL.get(model.rstrip("/"))
+_FAL_IMAGE_SAFETY_PARAM_KEYS = ("enable_safety_checker", "enable_safety_checks")
 
 
 def _build_fal_image_payload(
     base_params: Dict[str, Any],
     extra_params: Optional[Dict[str, Any]] = None,
-    model: Optional[str] = None,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    """Merge fal image payload params with permissive safety controls last.
+    """Merge fal image payload params with safety disabled last.
 
     Seedream documents enable_safety_checker, so keep using that supported key.
     The common alias enable_safety_checks is stripped when callers pass it, rather
     than added automatically, to avoid sending unsupported keys to stricter models.
-    safety_tolerance is only added for fal image models whose docs expose it.
     """
     clean_extra_params = dict(extra_params or {})
     ignored_keys = [
@@ -298,9 +179,6 @@ def _build_fal_image_payload(
         )
 
     payload = {**base_params, **clean_extra_params}
-    safety_tolerance = _fal_image_safety_tolerance(model)
-    if safety_tolerance is not None:
-        payload["safety_tolerance"] = safety_tolerance
     payload["enable_safety_checker"] = False
     return payload, clean_extra_params
 
@@ -371,159 +249,15 @@ async def _download_image(url: str, output_path: str) -> str:
     return output_path
 
 
-async def _download_file(url: str, output_path: str) -> str:
-    """Download a binary file from a URL and save it to disk."""
-    async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
-        resp = await client.get(url)
-        resp.raise_for_status()
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        with open(output_path, "wb") as f:
-            f.write(resp.content)
-    return output_path
-
-
-def _video_extension_from_url(url: str) -> str:
-    """Return a video extension from a URL path, defaulting to .mp4."""
-    parsed = urlparse(url)
-    _, ext = os.path.splitext(parsed.path)
-    ext = ext.lower()
-    if ext in _VIDEO_EXTENSIONS:
-        return ext
-    return ".mp4"
-
-
-def _generate_video_filename(prefix: str = "fal_ref_video", extension: str = ".mp4") -> str:
-    """Generate a unique video filename."""
-    ts = time.strftime("%Y%m%d_%H%M%S")
-    short_hash = hashlib.md5(f"{time.time()}".encode()).hexdigest()[:8]
-    return f"{ts}_{short_hash}_{prefix}{extension}"
-
-
-def _resolve_video_output_path(output_path: Optional[str], video_url: str) -> str:
-    """Resolve a local video output path, keeping caller paths contained."""
-    extension = _video_extension_from_url(video_url)
-    if output_path:
-        path = output_path
-        if not os.path.splitext(path)[1]:
-            path = f"{path}{extension}"
-        return _resolve_path(path)
-
-    filename = _generate_video_filename(extension=extension)
-    return os.path.join(REFERENCE_VIDEO_OUTPUT_DIR, filename)
-
-
-def _extract_video_result(result: dict) -> Tuple[str, Dict[str, Any]]:
-    """Extract a video URL and metadata from common fal response shapes."""
-    candidates: List[Dict[str, Any]] = []
-
-    video = result.get("video")
-    if isinstance(video, dict):
-        candidates.append(video)
-    elif isinstance(video, str):
-        candidates.append({"url": video})
-
-    videos = result.get("videos")
-    if isinstance(videos, list):
-        for item in videos:
-            if isinstance(item, dict):
-                candidates.append(item)
-            elif isinstance(item, str):
-                candidates.append({"url": item})
-    elif isinstance(videos, dict):
-        candidates.append(videos)
-
-    top_level_url = result.get("video_url") or result.get("url")
-    if isinstance(top_level_url, str):
-        candidates.append({"url": top_level_url})
-
-    for candidate in candidates:
-        url = candidate.get("url") or candidate.get("video_url")
-        if isinstance(url, str) and url:
-            return url, candidate
-
-    raise ValueError(f"No video URL in response. Keys: {list(result.keys())}")
-
-
-def _file_size_or_error(path: str) -> int:
-    """Return file size after verifying the output exists and is non-empty."""
-    if not os.path.isfile(path):
-        raise RuntimeError(f"Video download did not create output file: {path}")
-    size = os.path.getsize(path)
-    if size <= 0:
-        raise RuntimeError(f"Video download produced an empty file: {path}")
-    return size
-
-
-def _collect_video_metadata(result: dict, video: Dict[str, Any]) -> Dict[str, Any]:
-    """Collect common video metadata fields from fal result shapes."""
-    metadata: Dict[str, Any] = {}
-    for key in ("duration", "fps", "resolution", "width", "height"):
-        if key in video:
-            metadata[key] = video[key]
-        elif key in result:
-            metadata[key] = result[key]
-    return metadata
-
-
-def _fal_response_excerpt(resp: Any, limit: int = 500) -> str:
-    """Return a compact, useful response body excerpt for upload errors."""
-    text = ""
-    try:
-        data = resp.json()
-    except Exception:
-        data = None
-
-    if isinstance(data, dict) and "detail" in data:
-        detail = data.get("detail")
-        if isinstance(detail, (dict, list)):
-            text = json.dumps(detail, ensure_ascii=True)
-        elif detail is not None:
-            text = str(detail)
-    elif data not in (None, ""):
-        if isinstance(data, (dict, list)):
-            text = json.dumps(data, ensure_ascii=True)
-        else:
-            text = str(data)
-
-    if not text:
-        text = getattr(resp, "text", "") or ""
-
-    text = " ".join(str(text).split())
-    if not text:
-        return "<empty response body>"
-    if len(text) > limit:
-        return f"{text[:limit]}..."
-    return text
-
-
-def _raise_fal_cdn_error(stage: str, resp: Any) -> None:
-    status = getattr(resp, "status_code", "unknown")
-    excerpt = _fal_response_excerpt(resp)
-    raise RuntimeError(f"fal CDN upload {stage} failed ({status}): {excerpt}")
-
-
-def _raise_fal_queue_error(stage: str, model: str, resp: Any) -> None:
-    status = getattr(resp, "status_code", "unknown")
-    excerpt = _fal_response_excerpt(resp)
-    raise RuntimeError(f"Queue {stage} failed ({status}) for {model}: {excerpt}")
-
-
-def _is_fal_auth_denial(resp: Any) -> bool:
-    return getattr(resp, "status_code", None) in FAL_CDN_AUTH_DENIAL_STATUSES
-
-
 async def _upload_to_fal_cdn(file_path: str) -> str:
     """Upload a local file to fal's CDN and return the access URL.
 
-    Flow:
-    1. POST to rest.fal.ai/storage/upload/initiate?storage_type=fal-cdn-v3
-       to get {file_url, upload_url}
+    Flow (current as of March 2026):
+    1. POST to rest.alpha.fal.ai/storage/upload/initiate to get {file_url, upload_url}
     2. PUT file bytes to upload_url (signed URL, no extra auth needed)
     Returns the file_url (e.g. https://v3b.fal.media/files/...)
 
-    Falls back to legacy CDN token/direct upload only for non-auth/account
-    initiate failures. 401/403 failures are surfaced immediately with the
-    upstream response body so billing/auth problems stay diagnosable.
+    Falls back to legacy CDN token flow if initiate endpoint fails.
     """
     resolved = _resolve_path(file_path)
     if not os.path.isfile(resolved):
@@ -539,7 +273,7 @@ async def _upload_to_fal_cdn(file_path: str) -> str:
     async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
         # Primary flow: initiate upload to get signed URL
         initiate_resp = await client.post(
-            FAL_CDN_INITIATE_URL,
+            "https://rest.alpha.fal.ai/storage/upload/initiate",
             headers={
                 "Authorization": f"Key {fal_key}",
                 "Content-Type": "application/json",
@@ -547,7 +281,7 @@ async def _upload_to_fal_cdn(file_path: str) -> str:
             json={"file_name": filename, "content_type": mime_type},
         )
 
-        if 200 <= initiate_resp.status_code < 300:
+        if initiate_resp.status_code == 200:
             initiate_data = initiate_resp.json()
             upload_url = initiate_data["upload_url"]
             file_url = initiate_data["file_url"]
@@ -558,82 +292,63 @@ async def _upload_to_fal_cdn(file_path: str) -> str:
                 headers={"Content-Type": mime_type},
                 content=file_bytes,
             )
-            if upload_resp.status_code >= 400:
-                _raise_fal_cdn_error("signed upload", upload_resp)
+            upload_resp.raise_for_status()
             logger.info(f"Uploaded {filename} to CDN: {file_url}")
             return file_url
-
-        if _is_fal_auth_denial(initiate_resp):
-            _raise_fal_cdn_error("initiate", initiate_resp)
-
-        # Fallback: legacy CDN token flow for non-auth initiate failures.
-        logger.warning(
-            "Initiate upload failed (%s: %s), falling back to legacy CDN token flow",
-            initiate_resp.status_code,
-            _fal_response_excerpt(initiate_resp),
-        )
-        token_resp = await client.post(
-            FAL_CDN_TOKEN_URL,
-            headers={
-                "Authorization": f"Key {fal_key}",
-                "Content-Type": "application/json",
-            },
-            json={"storage_type": "fal-cdn-v3"},
-        )
-
-        if _is_fal_auth_denial(token_resp):
-            _raise_fal_cdn_error("legacy token", token_resp)
-
-        if 200 <= token_resp.status_code < 300:
-            token_data = token_resp.json()
-            cdn_token = token_data["token"]
-            upload_url = FAL_CDN_DIRECT_URL
-            auth_header = f"Bearer {cdn_token}"
         else:
-            upload_url = FAL_CDN_DIRECT_URL
-            auth_header = f"Key {fal_key}"
-
-        upload_resp = await client.post(
-            upload_url,
-            headers={
-                "Authorization": auth_header,
-                "Content-Type": mime_type,
-                "X-Fal-File-Name": filename,
-            },
-            content=file_bytes,
-        )
-        if upload_resp.status_code >= 400:
-            _raise_fal_cdn_error("legacy direct upload", upload_resp)
-        upload_data = upload_resp.json()
-        access_url = upload_data.get("access_url") or upload_data.get("url")
-        if not access_url:
-            raise RuntimeError(
-                f"CDN upload response missing access_url. Keys: {list(upload_data.keys())}"
+            # Fallback: legacy CDN token flow
+            logger.warning(
+                f"Initiate upload failed ({initiate_resp.status_code}), "
+                "falling back to legacy CDN token flow"
             )
-        logger.info(f"Uploaded {filename} to CDN: {access_url}")
-        return access_url
+            token_resp = await client.post(
+                FAL_CDN_TOKEN_URL,
+                headers={
+                    "Authorization": f"Key {fal_key}",
+                    "Content-Type": "application/json",
+                },
+                json={"storage_type": "fal-cdn-v3"},
+            )
+
+            if token_resp.status_code == 200:
+                token_data = token_resp.json()
+                cdn_token = token_data["token"]
+                upload_url = FAL_CDN_DIRECT_URL
+                auth_header = f"Bearer {cdn_token}"
+            else:
+                upload_url = FAL_CDN_DIRECT_URL
+                auth_header = f"Key {fal_key}"
+
+            upload_resp = await client.post(
+                upload_url,
+                headers={
+                    "Authorization": auth_header,
+                    "Content-Type": mime_type,
+                    "X-Fal-File-Name": filename,
+                },
+                content=file_bytes,
+            )
+            upload_resp.raise_for_status()
+            upload_data = upload_resp.json()
+            access_url = upload_data.get("access_url") or upload_data.get("url")
+            if not access_url:
+                raise RuntimeError(
+                    f"CDN upload response missing access_url. Keys: {list(upload_data.keys())}"
+                )
+            logger.info(f"Uploaded {filename} to CDN: {access_url}")
+            return access_url
 
 
-async def _fal_run(
-    model: str,
-    payload: dict,
-    use_queue: bool = False,
-    max_wait_seconds: Optional[float] = None,
-) -> dict:
+async def _fal_run(model: str, payload: dict, use_queue: bool = False) -> dict:
     """Call a fal model endpoint and return the JSON response.
 
     Args:
         model: The model endpoint ID (e.g. 'fal-ai/flux/dev')
         payload: Request body dict
         use_queue: If True, use queue.fal.run with polling instead of sync fal.run
-        max_wait_seconds: Optional queue timeout override for long-running jobs.
     """
     if use_queue:
-        return await _fal_queue_run(
-            model,
-            payload,
-            max_wait_seconds=max_wait_seconds,
-        )
+        return await _fal_queue_run(model, payload)
 
     url = f"{FAL_RUN_BASE}/{model}"
     async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
@@ -651,22 +366,14 @@ async def _fal_run(
         # If sync times out (504), automatically retry via queue
         if resp.status_code == 504:
             logger.warning(f"Sync request timed out for {model}, retrying via queue...")
-            return await _fal_queue_run(
-                model,
-                payload,
-                max_wait_seconds=max_wait_seconds,
-            )
+            return await _fal_queue_run(model, payload)
 
         raise RuntimeError(
             f"fal.run returned {resp.status_code} for {model}: {error_detail}"
         )
 
 
-async def _fal_queue_run(
-    model: str,
-    payload: dict,
-    max_wait_seconds: Optional[float] = None,
-) -> dict:
+async def _fal_queue_run(model: str, payload: dict) -> dict:
     """Submit a job to the queue and poll for results.
 
     Uses queue.fal.run which is more reliable for long-running models.
@@ -674,42 +381,36 @@ async def _fal_queue_run(
     """
     submit_url = f"{FAL_QUEUE_BASE}/{model}"
     headers = _auth_headers()
-    max_wait = QUEUE_MAX_WAIT if max_wait_seconds is None else float(max_wait_seconds)
-    if max_wait <= 0:
-        raise ValueError("max_wait_seconds must be greater than 0")
 
     async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
         # Submit job
         submit_resp = await client.post(submit_url, headers=headers, json=payload)
         if submit_resp.status_code not in (200, 201):
-            _raise_fal_queue_error("submit", model, submit_resp)
+            error_detail = submit_resp.text
+            try:
+                error_detail = submit_resp.json().get("detail", error_detail)
+            except Exception:
+                pass
+            raise RuntimeError(
+                f"Queue submit failed ({submit_resp.status_code}) for {model}: {error_detail}"
+            )
 
         submit_data = submit_resp.json()
         request_id = submit_data.get("request_id")
         if not request_id:
             raise RuntimeError(f"Queue submit response missing request_id: {submit_data}")
 
-        # fal may canonicalize queue URLs differently than the submitted model path.
-        fallback_status_url = f"{FAL_QUEUE_BASE}/{model}/requests/{request_id}/status"
-        fallback_result_url = f"{FAL_QUEUE_BASE}/{model}/requests/{request_id}"
-        status_url = submit_data.get("status_url") or fallback_status_url
-        result_url = submit_data.get("response_url") or fallback_result_url
+        # Poll for completion
+        status_url = f"{FAL_QUEUE_BASE}/{model}/requests/{request_id}/status"
+        result_url = f"{FAL_QUEUE_BASE}/{model}/requests/{request_id}"
         elapsed = 0.0
 
-        while elapsed < max_wait:
+        while elapsed < QUEUE_MAX_WAIT:
             await asyncio.sleep(QUEUE_POLL_INTERVAL)
             elapsed += QUEUE_POLL_INTERVAL
 
             status_resp = await client.get(status_url, headers=headers)
             if status_resp.status_code != 200:
-                if 400 <= status_resp.status_code < 500:
-                    _raise_fal_queue_error("status", model, status_resp)
-                logger.warning(
-                    "Queue status transient failure (%s) for %s: %s",
-                    status_resp.status_code,
-                    model,
-                    _fal_response_excerpt(status_resp),
-                )
                 continue  # Transient error, keep polling
 
             status_data = status_resp.json()
@@ -717,8 +418,7 @@ async def _fal_queue_run(
 
             if status == "COMPLETED":
                 result_resp = await client.get(result_url, headers=headers)
-                if not 200 <= result_resp.status_code < 300:
-                    _raise_fal_queue_error("result", model, result_resp)
+                result_resp.raise_for_status()
                 return result_resp.json()
             elif status in ("IN_QUEUE", "IN_PROGRESS"):
                 pos = status_data.get("queue_position", "?")
@@ -729,7 +429,7 @@ async def _fal_queue_run(
                 raise RuntimeError(f"Queue job failed for {model}: {status_data}")
 
         raise RuntimeError(
-            f"Queue job timed out after {max_wait:g}s for {model}"
+            f"Queue job timed out after {QUEUE_MAX_WAIT}s for {model}"
         )
 
 
@@ -856,6 +556,11 @@ Images are saved to 05_App_Data/generated_images/ and file path(s) are returned.
                 "type": "string",
                 "description": "Custom output path (relative to project root or absolute). Only used when generating a single image.",
             },
+            "use_queue": {
+                "type": "boolean",
+                "description": "Force queue-based execution (more reliable for slow models). Default: false (sync with auto-fallback to queue on timeout).",
+                "default": False,
+            },
             "extra_params": {
                 "type": "object",
                 "description": "Additional model-specific parameters merged directly into the request body. Use this for params not covered above (e.g. guidance_scale, num_inference_steps, aspect_ratio, etc.).",
@@ -886,7 +591,6 @@ async def fal_text_to_image(args: Dict[str, Any]) -> Dict[str, Any]:
             "num_images": num_images,
         },
         extra_params,
-        model,
     )
     if negative_prompt:
         payload["negative_prompt"] = negative_prompt
@@ -967,6 +671,11 @@ Edited image is saved to 05_App_Data/generated_images/ and the file path is retu
                 "type": "string",
                 "description": "Override the parameter name for the source image URL. Default: 'image_url'. Some models use 'image', 'input_image', etc.",
             },
+            "use_queue": {
+                "type": "boolean",
+                "description": "Force queue-based execution.",
+                "default": False,
+            },
             "extra_params": {
                 "type": "object",
                 "description": "Additional model-specific parameters (e.g. num_inference_steps, guidance_scale).",
@@ -1009,7 +718,6 @@ async def fal_image_to_image(args: Dict[str, Any]) -> Dict[str, Any]:
                 param_name: cdn_url,
             },
             extra_params,
-            model,
         )
         if strength is not None:
             payload["strength"] = strength
@@ -1100,6 +808,11 @@ Image is saved to 05_App_Data/generated_images/ and the file path is returned.""
                 "type": "string",
                 "description": "Override the auto-detected parameter name for reference image URLs. Only needed for models not in the built-in mapping.",
             },
+            "use_queue": {
+                "type": "boolean",
+                "description": "Force queue-based execution.",
+                "default": False,
+            },
             "extra_params": {
                 "type": "object",
                 "description": "Additional model-specific parameters.",
@@ -1153,7 +866,6 @@ async def fal_multi_ref_image(args: Dict[str, Any]) -> Dict[str, Any]:
         payload, effective_extra_params = _build_fal_image_payload(
             {"prompt": prompt},
             extra_params,
-            model,
         )
 
         # Set the reference image parameter using the correct name and mode
@@ -1202,292 +914,6 @@ async def fal_multi_ref_image(args: Dict[str, Any]) -> Dict[str, Any]:
         msg = _fmt_exc(e)
         logger.error(f"fal multi-ref failed: {msg}")
         return _error(f"fal multi-ref failed: {msg}")
-
-
-@register_tool("image")
-@tool(
-    name="fal_reference_to_video",
-    description="""Generate a video from reference/start images plus a prompt via fal.ai.
-
-This is the Character/AI Character Generator video path for reference-to-video and
-single-start-image image-to-video fal endpoints. Local images are uploaded to
-fal's CDN, URL references are passed through as-is, and the returned video is
-downloaded into 05_App_Data/ai-character/generations/ before the tool returns.
-This direct call waits for completion. Internally, video uses fal's queue-backed
-polling for durability/retries; that is transport plumbing, not a chat-latency
-shortcut. For multi-minute visible conversations, prefer a nonblocking
-background pattern once one exists.
-
-Default model: ByteDance Seedance 2.0 Fast reference-to-video.
-Known mappings:
-  - bytedance/seedance-2.0/.../reference-to-video uses image_urls
-  - bytedance/seedance-2.0/.../image-to-video uses image_url (single start image)
-  - fal-ai/kling-video/.../reference-to-video uses image_urls
-  - xai/grok-imagine-video/reference-to-video uses reference_image_urls
-  - xai/grok-imagine-video/.../image-to-video uses image_url (single start image)
-  - fal-ai/kling-video/v3/.../image-to-video uses start_image_url (single scene/start image)
-    and optional identity_image_paths -> elements
-
-For Kling v3 Pro image-to-video, pass one image_paths item and model
-fal-ai/kling-video/v3/pro/image-to-video. To preserve Character identity, keep
-image_paths[0] as the scene/start frame, put local identity refs in
-identity_image_paths, and reference @Element1 in the prompt. extra_params.elements
-still works for explicit public URL elements when identity_image_paths is absent.
-For Grok Imagine and Seedance image-to-video endpoints, pass one image_paths item;
-the tool sends it as model-native image_url. For Grok reference-to-video, include
-prompt references such as @Image1, @Image2 as required by that model. Use
-extra_params for model-specific options such as generate_audio, bitrate_mode,
-seed, negative_prompt, or cfg_scale.""",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "image_paths": {
-                "type": "array",
-                "items": {"type": "string"},
-                "minItems": 1,
-                "description": "Reference/start image paths or URLs. For single-start-image models such as Kling v3 Pro, Grok, or Seedance image-to-video, pass one item. Local paths are relative to the Second Brain root or absolute paths inside it.",
-            },
-            "identity_image_paths": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "Kling v3 image-to-video only. Optional local paths or URLs for identity refs: identity_image_paths[0] becomes elements[0].frontal_image_url, later items become elements[0].reference_image_urls. Keep image_paths[0] as the scene/start frame and reference @Element1 in the prompt.",
-            },
-            "prompt": {
-                "type": "string",
-                "description": "Video prompt. For Kling v3 identity refs, reference @Element1 in the prompt. For Grok Imagine, reference images in the prompt using @Image1, @Image2, etc.",
-            },
-            "model": {
-                "type": "string",
-                "description": "fal.ai video endpoint ID. Supports reference-to-video endpoints and single-start-image image-to-video endpoints such as fal-ai/kling-video/v3/pro/image-to-video, xai/grok-imagine-video/v1.5/image-to-video, and bytedance/seedance-2.0/image-to-video.",
-                "default": DEFAULT_REFERENCE_VIDEO_MODEL,
-            },
-            "duration": {
-                "type": ["string", "number"],
-                "description": "Optional model-specific duration value.",
-            },
-            "resolution": {
-                "type": "string",
-                "description": "Optional model-specific resolution value.",
-            },
-            "aspect_ratio": {
-                "type": "string",
-                "description": "Optional model-specific aspect ratio value.",
-            },
-            "output_path": {
-                "type": "string",
-                "description": "Custom output path inside the Second Brain tree. If no extension is supplied, the tool uses the returned video extension or .mp4.",
-            },
-            "max_wait_seconds": {
-                "type": "number",
-                "description": "Maximum direct-call wait budget in seconds while the internal fal job is polled. Default: 300.",
-                "default": QUEUE_MAX_WAIT,
-                "minimum": 1,
-            },
-            "image_param_name": {
-                "type": "string",
-                "description": "Override the model-specific reference/start image URL parameter name.",
-            },
-            "extra_params": {
-                "type": "object",
-                "description": "Additional model-specific parameters merged directly into the request body.",
-            },
-        },
-        "required": ["image_paths", "prompt"],
-    },
-)
-async def fal_reference_to_video(args: Dict[str, Any]) -> Dict[str, Any]:
-    """Generate a video from reference images + prompt via fal.ai."""
-    image_paths = args.get("image_paths", [])
-    identity_image_paths = args.get("identity_image_paths", [])
-    prompt = args.get("prompt", "").strip()
-
-    if not image_paths:
-        return _error("Error: image_paths is required (list of file paths or URLs)")
-    if not prompt:
-        return _error("Error: prompt is required")
-
-    model = args.get("model", DEFAULT_REFERENCE_VIDEO_MODEL)
-    duration = args.get("duration")
-    resolution = args.get("resolution")
-    aspect_ratio = args.get("aspect_ratio")
-    output_path = args.get("output_path")
-    if "use_queue" in args and args.get("use_queue") is not True:
-        logger.info(
-            "Ignoring caller-provided use_queue=%r for fal_reference_to_video; "
-            "video always uses queue-backed polling.",
-            args.get("use_queue"),
-        )
-    max_wait_seconds = args.get("max_wait_seconds", QUEUE_MAX_WAIT)
-    image_param_name = args.get("image_param_name")
-    extra_params = args.get("extra_params", {}) or {}
-    ref_config = _get_reference_video_config(model, image_param_name)
-    param_name = ref_config["param"]
-    ref_mode = ref_config["mode"]
-
-    try:
-        requested_paths = [path.strip() for path in image_paths if path.strip()]
-        if not requested_paths:
-            return _error("Error: no valid reference images after upload")
-        requested_identity_paths = [
-            path.strip() for path in identity_image_paths if path.strip()
-        ]
-        has_identity_refs = bool(requested_identity_paths)
-        if identity_image_paths and not has_identity_refs:
-            return _error("Error: no valid identity images after upload")
-        if has_identity_refs and not _is_kling_v3_image_to_video_model(model):
-            return _error(
-                "Error: identity_image_paths is only supported for "
-                "fal-ai/kling-video/v3/.../image-to-video models. "
-                f"Current model: {model}"
-            )
-        if has_identity_refs and "elements" in extra_params:
-            return _error(
-                "Error: identity_image_paths cannot be combined with "
-                "extra_params.elements. Use identity_image_paths for local identity "
-                "refs or extra_params.elements for explicit public URL elements."
-            )
-        if has_identity_refs and param_name != "start_image_url":
-            return _error(
-                "Error: identity_image_paths requires Kling v3 image-to-video's "
-                "start_image_url mapping; remove image_param_name override."
-            )
-
-        ignored_reference_count = 0
-        paths_to_process = requested_paths
-        if ref_mode == "single" and len(requested_paths) > 1:
-            ignored_reference_count = len(requested_paths) - 1
-            paths_to_process = requested_paths[:1]
-            logger.warning(
-                f"Model {model} only accepts a single reference image. "
-                f"Using first of {len(requested_paths)} provided."
-            )
-
-        cdn_urls = []
-        source_paths = []
-        for i, path in enumerate(paths_to_process):
-            source_paths.append(path)
-            if path.startswith(("http://", "https://")):
-                cdn_urls.append(path)
-                continue
-            resolved = _resolve_path(path)
-            if not os.path.isfile(resolved):
-                return _error(f"Reference image not found: {resolved}")
-            logger.info(
-                f"Uploading video reference image {i+1}/{len(paths_to_process)}: {path}"
-            )
-            url = await _upload_to_fal_cdn(path)
-            cdn_urls.append(url)
-
-        if not cdn_urls:
-            return _error("Error: no valid reference images after upload")
-
-        identity_urls = []
-        identity_source_paths = []
-        for i, path in enumerate(requested_identity_paths):
-            identity_source_paths.append(path)
-            if path.startswith(("http://", "https://")):
-                identity_urls.append(path)
-                continue
-            resolved = _resolve_path(path)
-            if not os.path.isfile(resolved):
-                return _error(f"Identity image not found: {resolved}")
-            logger.info(
-                f"Uploading identity image {i+1}/{len(requested_identity_paths)}: {path}"
-            )
-            url = await _upload_to_fal_cdn(path)
-            identity_urls.append(url)
-
-        payload: Dict[str, Any] = {
-            "prompt": prompt,
-        }
-        if ref_mode == "single":
-            payload[param_name] = cdn_urls[0]
-        else:
-            payload[param_name] = cdn_urls
-        if duration is not None:
-            payload["duration"] = duration
-        if resolution:
-            payload["resolution"] = resolution
-        if aspect_ratio:
-            payload["aspect_ratio"] = aspect_ratio
-        effective_extra_params = dict(extra_params)
-        payload.update(effective_extra_params)
-        constructed_elements = None
-        if identity_urls:
-            constructed_elements = [
-                {
-                    "frontal_image_url": identity_urls[0],
-                    "reference_image_urls": identity_urls[1:],
-                }
-            ]
-            payload["elements"] = constructed_elements
-
-        logger.info(
-            f"fal video: model={model}, param={param_name}, mode={ref_mode}, "
-            f"{len(cdn_urls)} ref(s), {len(identity_urls)} identity ref(s), "
-            f"queue=internal, prompt={prompt[:80]}..."
-        )
-        result = await _fal_run(
-            model,
-            payload,
-            use_queue=True,
-            max_wait_seconds=max_wait_seconds,
-        )
-
-        video_url, video_metadata = _extract_video_result(result)
-        local_path = _resolve_video_output_path(output_path, video_url)
-        await _download_file(video_url, local_path)
-        file_size = _file_size_or_error(local_path)
-        metadata = _collect_video_metadata(result, video_metadata)
-
-        text = (
-            f"Generated video via {model} with {len(cdn_urls)} "
-            "reference/start image(s):\n"
-        )
-        text += f"  Prompt: {prompt}\n"
-        text += f"  Model: {model}\n"
-        if ref_mode == "single":
-            text += f"  Scene/start image: {source_paths[0]}\n"
-        else:
-            text += f"  References used ({len(source_paths)}):\n"
-            for path in source_paths:
-                text += f"    - {path}\n"
-        if ignored_reference_count:
-            text += (
-                f"  Ignored references: {ignored_reference_count} "
-                "extra image(s); model uses a single start image\n"
-            )
-        if identity_source_paths:
-            text += f"  Identity refs used ({len(identity_source_paths)}):\n"
-            for path in identity_source_paths:
-                text += f"    - {path}\n"
-            text += f"  Constructed elements: {constructed_elements}\n"
-        text += f"  Param: {param_name}, Mode: {ref_mode}\n"
-        text += (
-            "  Direct call: waits for completion "
-            f"(wait budget: {float(max_wait_seconds):g}s; "
-            "internal queue-backed polling)\n"
-        )
-        if duration is not None:
-            text += f"  Requested duration: {duration}\n"
-        if resolution:
-            text += f"  Requested resolution: {resolution}\n"
-        if aspect_ratio:
-            text += f"  Requested aspect ratio: {aspect_ratio}\n"
-        if effective_extra_params:
-            text += f"  Extra: {effective_extra_params}\n"
-        if metadata:
-            meta_text = ", ".join(f"{key}={value}" for key, value in metadata.items())
-            text += f"  Returned metadata: {meta_text}\n"
-        text += f"  Remote video: {video_url}\n"
-        text += f"  Local output: {local_path}\n"
-        text += f"  File size: {file_size} bytes\n"
-        return _success(text)
-
-    except Exception as e:
-        msg = _fmt_exc(e)
-        logger.error(f"fal reference-to-video failed: {msg}")
-        return _error(f"fal reference-to-video failed: {msg}")
 
 
 @register_tool("image")
@@ -1602,6 +1028,5 @@ __all__ = [
     "fal_text_to_image",
     "fal_image_to_image",
     "fal_multi_ref_image",
-    "fal_reference_to_video",
     "fal_list_models",
 ]

@@ -243,6 +243,8 @@ def _should_relay_agent_invoke_to_backend(mode: str) -> bool:
 
 def _should_relay_ping_to_backend() -> bool:
     """Return True when direct agent launch must be handed to the backend."""
+    if _running_under_codex_stdio_bridge():
+        return True
     return not _running_in_backend_process()
 
 

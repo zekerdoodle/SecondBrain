@@ -183,6 +183,7 @@ IMAGE_TOOLS = [
     "fal_text_to_image",
     "fal_image_to_image",
     "fal_multi_ref_image",
+    "fal_reference_to_video",
     "fal_list_models",
 ]
 

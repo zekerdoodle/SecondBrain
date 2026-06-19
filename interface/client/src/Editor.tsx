@@ -1,9 +1,10 @@
-import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
+import { useState, useCallback, useMemo, useRef, useEffect, useLayoutEffect } from 'react';
 import MDEditor from '@uiw/react-md-editor';
 import { FileText, Eye, Edit2, RotateCcw, Check, ExternalLink, X, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useCodeBlockWrap } from './hooks/useCodeBlockWrap';
 import { useScrollOverflow } from './hooks/useScrollOverflow';
 import { escapeNonHtmlTags } from './utils/escapeNonHtmlTags';
+import { isVideoPath } from './utils/filePaths';
 import { clsx } from 'clsx';
 import { API_URL } from './config';
 
@@ -209,6 +210,53 @@ const isImageFile = (filename: string | undefined): boolean => {
   return /\.(png|jpg|jpeg|gif|webp|svg|bmp|ico)$/.test(lower);
 };
 
+const isVideoFile = (filename: string | undefined): boolean => {
+  return filename ? isVideoPath(filename) : false;
+};
+
+const getVideoMimeType = (filename: string): string | undefined => {
+  const lower = filename.toLowerCase();
+  if (lower.endsWith('.mp4')) return 'video/mp4';
+  if (lower.endsWith('.webm')) return 'video/webm';
+  if (lower.endsWith('.mov')) return 'video/quicktime';
+  return undefined;
+};
+
+interface VideoPreviewProps {
+  path: string;
+}
+
+const VideoPreview: React.FC<VideoPreviewProps> = ({ path }) => {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const videoSrc = `${API_URL}/raw/${path}`;
+  const videoType = getVideoMimeType(path);
+
+  useLayoutEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    video.pause();
+    video.load();
+  }, [videoSrc]);
+
+  return (
+    <div className="flex items-center justify-center h-full p-4" data-video-preview-path={path}>
+      <video
+        key={path}
+        ref={videoRef}
+        src={videoSrc}
+        controls
+        playsInline
+        preload="metadata"
+        data-video-path={path}
+        data-video-src={videoSrc}
+        data-video-type={videoType || ''}
+        className="max-w-full max-h-full rounded-lg bg-black shadow-lg"
+      />
+    </div>
+  );
+};
+
 interface EditorViewProps {
   selectedFile: string | undefined;
   viewMode: 'view' | 'edit';
@@ -363,6 +411,8 @@ export const EditorView: React.FC<EditorViewProps> = ({
 }) => {
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
   const editorViewRef = useRef<HTMLDivElement>(null);
+  const selectedIsVideo = isVideoFile(selectedFile);
+  const effectiveViewMode = selectedIsVideo ? 'view' : viewMode;
   useCodeBlockWrap(editorViewRef);
   const { scrollRef: fileTabScrollRef, canScrollLeft: fileCanScrollLeft, canScrollRight: fileCanScrollRight, scrollLeft: fileScrollLeft, scrollRight: fileScrollRight, onWheel: fileOnWheel } = useScrollOverflow();
 
@@ -572,19 +622,21 @@ export const EditorView: React.FC<EditorViewProps> = ({
           <div className="flex bg-[var(--bg-secondary)] rounded-lg border border-[var(--border-color)] p-0.5">
             <button
               onClick={() => setViewMode('view')}
-              className={clsx("px-2.5 py-1 text-[11px] font-medium rounded-md flex items-center gap-1 transition-colors", viewMode === 'view' ? "bg-[var(--accent-primary)] text-white" : "text-[var(--text-secondary)] hover:text-[var(--text-primary)]")}
+              className={clsx("px-2.5 py-1 text-[11px] font-medium rounded-md flex items-center gap-1 transition-colors", effectiveViewMode === 'view' ? "bg-[var(--accent-primary)] text-white" : "text-[var(--text-secondary)] hover:text-[var(--text-primary)]")}
             >
               <Eye size={12} /> View
             </button>
-            <button
-              onClick={() => setViewMode('edit')}
-              className={clsx("px-2.5 py-1 text-[11px] font-medium rounded-md flex items-center gap-1 transition-colors", viewMode === 'edit' ? "bg-[var(--accent-primary)] text-white" : "text-[var(--text-secondary)] hover:text-[var(--text-primary)]")}
-            >
-              <Edit2 size={12} /> Edit
-            </button>
+            {!selectedIsVideo && (
+              <button
+                onClick={() => setViewMode('edit')}
+                className={clsx("px-2.5 py-1 text-[11px] font-medium rounded-md flex items-center gap-1 transition-colors", effectiveViewMode === 'edit' ? "bg-[var(--accent-primary)] text-white" : "text-[var(--text-secondary)] hover:text-[var(--text-primary)]")}
+              >
+                <Edit2 size={12} /> Edit
+              </button>
+            )}
           </div>
 
-          {selectedFile && viewMode === 'edit' && (
+          {selectedFile && effectiveViewMode === 'edit' && (
             <>
               {hasUnsavedChanges && (
                 <button
@@ -705,7 +757,7 @@ export const EditorView: React.FC<EditorViewProps> = ({
 
       {/* Content Area */}
       <div className="flex-1 overflow-hidden relative">
-        {viewMode === 'view' ? (
+        {effectiveViewMode === 'view' ? (
           <div ref={editorViewRef} className={`absolute inset-0 ${isHtmlFile(selectedFile) ? 'overflow-hidden' : 'overflow-auto p-8'} bg-[var(--bg-secondary)]`} data-color-mode="light">
             {isMarkdownFile(selectedFile) ? (
               <div className="prose font-editor w-full max-w-none" style={{ fontFamily: 'var(--font-editor)', fontSize: 'var(--font-size-base)' }}>
@@ -728,6 +780,8 @@ export const EditorView: React.FC<EditorViewProps> = ({
                   className="max-w-full max-h-full object-contain rounded-lg shadow-lg"
                 />
               </div>
+            ) : selectedIsVideo && selectedFile ? (
+              <VideoPreview key={selectedFile} path={selectedFile} />
             ) : (
               <pre className="w-full max-w-none font-code text-sm text-[var(--text-primary)] whitespace-pre-wrap leading-relaxed" style={{ fontFamily: 'var(--font-code)' }}>
                 {markdown}

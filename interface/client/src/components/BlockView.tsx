@@ -119,6 +119,15 @@ function TextBlockView({ block, onOpenFile }: TextBlockViewProps) {
                   />
                 );
               }
+              if (isVideoPath(relativePath)) {
+                return (
+                  <InlineFilePathVideo
+                    path={relativePath}
+                    originalText={text}
+                    onOpenFile={onOpenFile}
+                  />
+                );
+              }
               if (onOpenFile) {
                 return (
                   <code
@@ -151,6 +160,15 @@ function TextBlockView({ block, onOpenFile }: TextBlockViewProps) {
                   />
                 );
               }
+              if (isVideoPath(relativePath)) {
+                return (
+                  <InlineFilePathVideo
+                    path={relativePath}
+                    originalText={src}
+                    onOpenFile={onOpenFile}
+                  />
+                );
+              }
             }
             return <img src={src} alt={alt} {...props} />;
           }
@@ -161,8 +179,9 @@ function TextBlockView({ block, onOpenFile }: TextBlockViewProps) {
 }
 
 // File path detection — shared utility (no more duplication!)
-import { looksLikeFilePath, toRelativePath, isImagePath } from '../utils/filePaths';
+import { looksLikeFilePath, toRelativePath, isImagePath, isVideoPath } from '../utils/filePaths';
 import { InlineFilePathImage } from './InlineFilePathImage';
+import { InlineFilePathVideo } from './InlineFilePathVideo';
 
 // --- ToolChipBlock (combined tool_use + tool_result) ---
 

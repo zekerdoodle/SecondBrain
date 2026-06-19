@@ -15,6 +15,7 @@ import { Salons } from './Salons';
 import { Menu, FileText, MessageSquare, Sidebar, PanelRight, Settings, Layout, Columns, ArrowLeft, Users, Bug, Send, X, CheckCircle, AlertTriangle, Loader2 } from 'lucide-react';
 import { clsx } from 'clsx';
 import { API_URL } from './config';
+import { isBinaryPreviewPath } from './utils/filePaths';
 
 // Modal state types
 interface InputModalState {
@@ -274,6 +275,14 @@ function App() {
         if (res.ok) {
           const config = await res.json();
           if (config.default_editor_file) {
+            if (isBinaryPreviewPath(config.default_editor_file)) {
+              setSelectedFile(config.default_editor_file);
+              setMarkdown('');
+              setSavedContent('');
+              setOpenTabs([config.default_editor_file]);
+              setViewMode('view');
+              return;
+            }
             // Load the default file
             const fileRes = await fetch(`${API_URL}/file/${config.default_editor_file}`);
             if (fileRes.ok) {
@@ -464,6 +473,14 @@ function App() {
     // Add to open tabs if not already present
     setOpenTabs(prev => prev.includes(path) ? prev : [...prev, path]);
 
+    if (isBinaryPreviewPath(path)) {
+      setMarkdown('');
+      setSavedContent('');
+      setViewMode('view');
+      if (isMobile) setActiveTab('editor');
+      return;
+    }
+
     // Check if there's a draft for the new file
     if (draftContent[path] !== undefined) {
       setMarkdown(draftContent[path]);
@@ -581,6 +598,13 @@ function App() {
 
     setSecondaryFile(path);
     setSecondaryOpenTabs(prev => prev.includes(path) ? prev : [...prev, path]);
+
+    if (isBinaryPreviewPath(path)) {
+      setSecondaryMarkdown('');
+      setSecondarySavedContent('');
+      setSecondaryViewMode('view');
+      return;
+    }
 
     if (draftContent[path] !== undefined) {
       setSecondaryMarkdown(draftContent[path]);

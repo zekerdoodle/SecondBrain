@@ -127,8 +127,9 @@ const normalizeMessageForRender = (value: unknown, index: number): ChatMessage[]
 
 
 // File path detection for clickable links — shared utility
-import { looksLikeFilePath, toRelativePath, isImagePath } from './utils/filePaths';
+import { looksLikeFilePath, toRelativePath, isImagePath, isVideoPath } from './utils/filePaths';
 import { InlineFilePathImage } from './components/InlineFilePathImage';
+import { InlineFilePathVideo } from './components/InlineFilePathVideo';
 
 // --- Emoji Reaction Components ---
 const EmojiPicker = ({ onSelect, onClose }: { onSelect: (emoji: string) => void; onClose: () => void }) => {
@@ -902,6 +903,15 @@ const ChatMessageItem = React.memo<ChatMessageProps>(({
                                     />
                                   );
                                 }
+                                if (isVideoPath(relativePath)) {
+                                  return (
+                                    <InlineFilePathVideo
+                                      path={relativePath}
+                                      originalText={text}
+                                      onOpenFile={onOpenFile}
+                                    />
+                                  );
+                                }
                                 if (onOpenFile) {
                                   return (
                                     <code
@@ -930,6 +940,15 @@ const ChatMessageItem = React.memo<ChatMessageProps>(({
                                       path={relativePath}
                                       originalText={src}
                                       alt={alt}
+                                      onOpenFile={onOpenFile}
+                                    />
+                                  );
+                                }
+                                if (isVideoPath(relativePath)) {
+                                  return (
+                                    <InlineFilePathVideo
+                                      path={relativePath}
+                                      originalText={src}
                                       onOpenFile={onOpenFile}
                                     />
                                   );
@@ -984,6 +1003,15 @@ const ChatMessageItem = React.memo<ChatMessageProps>(({
                             />
                           );
                         }
+                        if (isVideoPath(relativePath)) {
+                          return (
+                            <InlineFilePathVideo
+                              path={relativePath}
+                              originalText={text}
+                              onOpenFile={onOpenFile}
+                            />
+                          );
+                        }
                         if (onOpenFile) {
                           return (
                             <code
@@ -1012,6 +1040,15 @@ const ChatMessageItem = React.memo<ChatMessageProps>(({
                               path={relativePath}
                               originalText={src}
                               alt={alt}
+                              onOpenFile={onOpenFile}
+                            />
+                          );
+                        }
+                        if (isVideoPath(relativePath)) {
+                          return (
+                            <InlineFilePathVideo
+                              path={relativePath}
+                              originalText={src}
                               onOpenFile={onOpenFile}
                             />
                           );
