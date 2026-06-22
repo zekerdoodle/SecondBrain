@@ -43,8 +43,8 @@ Use this when you need to know whether anyone (or you yourself, or a specific ag
 Returns one entry per live invocation. Filter by agent or kind. Kinds:
 - chat: a WebSocket chat session (the user or Character talking to an agent).
 - invoke_foreground / invoke_ping / invoke_trust: another agent invoked this one via invoke_agent.
-- scheduled: a scheduled task is running (the outer wrapper around the actual agent call — the inner call also appears as an invoke_* entry).
-- salon_convener: reserved for salon convener decisions; not currently hooked as a live entry.
+- scheduled: a scheduled task wrapper is running. Scheduled-agent work is protected by durable inner invoke_trust / invoke_foreground rows with scheduled_task_id and caller_agent="scheduler"; legacy non-agent prompt tasks, if present, are represented only by this outer scheduled row.
+- salon_convener: the salon dispatcher is choosing next salon speaker(s); live convener rows are expected to carry salon_id and caller_agent="salon_dispatcher".
 - salon_agent: an agent is running inside a salon (group chat) dispatch.
 - background_processing: an agent's idle-time background-processing hook fired.
 - agent_conversation_join: an invocation that joined an existing agent-to-agent thread.

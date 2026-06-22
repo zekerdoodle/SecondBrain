@@ -10,7 +10,7 @@ Defines:
 """
 
 from dataclasses import dataclass, field, replace
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Literal, Optional, Union, cast
 
@@ -292,6 +292,23 @@ class AgentResult:
         )
 
 
+def _parse_optional_datetime(value: Any) -> Optional[datetime]:
+    """Parse an optional ISO datetime and normalize it to naive UTC."""
+    if not value:
+        return None
+    parsed = datetime.fromisoformat(str(value))
+    if parsed.tzinfo is not None and parsed.utcoffset() is not None:
+        parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    return parsed
+
+
+def _parse_nonnegative_int(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
 @dataclass
 class PendingNotification:
     """
@@ -305,6 +322,8 @@ class PendingNotification:
         source_chat_id: Chat to inject notification into
         agent_response: The agent's final response
         status: pending, delivering, delivered, or expired
+        delivery_started_at: When the current delivery attempt was claimed
+        delivery_attempts: Number of delivery attempts claimed
     """
     id: str
     agent: str
@@ -313,6 +332,8 @@ class PendingNotification:
     source_chat_id: str
     agent_response: str
     status: Literal["pending", "delivering", "delivered", "injected", "expired"] = "pending"
+    delivery_started_at: Optional[datetime] = None
+    delivery_attempts: int = 0
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""
@@ -324,6 +345,12 @@ class PendingNotification:
             "source_chat_id": self.source_chat_id,
             "agent_response": self.agent_response,
             "status": self.status,
+            "delivery_started_at": (
+                self.delivery_started_at.isoformat()
+                if self.delivery_started_at
+                else None
+            ),
+            "delivery_attempts": int(self.delivery_attempts or 0),
         }
 
     @classmethod
@@ -337,6 +364,8 @@ class PendingNotification:
             source_chat_id=data["source_chat_id"],
             agent_response=data["agent_response"],
             status="delivered" if data.get("status") == "injected" else data.get("status", "pending"),
+            delivery_started_at=_parse_optional_datetime(data.get("delivery_started_at")),
+            delivery_attempts=_parse_nonnegative_int(data.get("delivery_attempts")),
         )
 
     def is_stale(self, threshold_minutes: int = 5, threshold_seconds: Optional[int] = None) -> bool:
@@ -349,7 +378,10 @@ class PendingNotification:
         if self.status != "pending":
             return False
         from datetime import timedelta
-        age = datetime.utcnow() - self.completed_at
+        completed_at = self.completed_at
+        if completed_at.tzinfo is not None and completed_at.utcoffset() is not None:
+            completed_at = completed_at.astimezone(timezone.utc).replace(tzinfo=None)
+        age = datetime.utcnow() - completed_at
         if threshold_seconds is not None:
             return age > timedelta(seconds=threshold_seconds)
         return age > timedelta(minutes=threshold_minutes)

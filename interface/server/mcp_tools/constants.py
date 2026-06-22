@@ -185,6 +185,8 @@ IMAGE_TOOLS = [
     "fal_multi_ref_image",
     "fal_reference_to_video",
     "fal_list_models",
+    "atlas_multi_ref_image",
+    "atlas_reference_to_video",
 ]
 
 SKILLS_TOOLS = [

@@ -19,6 +19,8 @@ from models import PendingNotification
 
 logger = logging.getLogger("agents.notifications")
 
+DEFAULT_STALE_DELIVERY_SECONDS = 5 * 60 * 60
+
 # Singleton instance
 _notification_queue: Optional["NotificationQueue"] = None
 
@@ -166,6 +168,29 @@ class NotificationQueue:
             threshold_seconds=threshold_seconds
         )]
 
+    def get_stale_delivering(
+        self,
+        threshold_seconds: int = DEFAULT_STALE_DELIVERY_SECONDS,
+    ) -> List[PendingNotification]:
+        """
+        Get delivering notifications whose delivery claim is stale.
+
+        Legacy delivering rows without delivery_started_at are returned so the
+        caller can fail closed instead of leaving them invisible forever.
+        """
+        notifications = self._load_unlocked()
+        now = datetime.utcnow()
+        stale: List[PendingNotification] = []
+        for n in notifications:
+            if n.status != "delivering":
+                continue
+            if n.delivery_started_at is None:
+                stale.append(n)
+                continue
+            if now - n.delivery_started_at > timedelta(seconds=threshold_seconds):
+                stale.append(n)
+        return stale
+
     def claim_pending(self, chat_id: Optional[str] = None, threshold_seconds: Optional[int] = None) -> List[PendingNotification]:
         """Backward-compatible claim helper.
 
@@ -190,9 +215,12 @@ class NotificationQueue:
         claimed: List[PendingNotification] = []
 
         def _do_claim(notifications):
+            now = datetime.utcnow()
             for n in notifications:
                 if n.id in id_set and n.status == "pending":
                     n.status = "delivering"
+                    n.delivery_started_at = now
+                    n.delivery_attempts = int(n.delivery_attempts or 0) + 1
                     claimed.append(n)
             return notifications
 
@@ -214,6 +242,7 @@ class NotificationQueue:
             for n in notifications:
                 if n.id in id_set and n.status == "delivering":
                     n.status = "delivered"
+                    n.delivery_started_at = None
                     marked += 1
             return notifications
 
@@ -238,6 +267,7 @@ class NotificationQueue:
             for n in notifications:
                 if n.id in id_set and n.status == "delivering":
                     n.status = "pending"
+                    n.delivery_started_at = None
                     released += 1
             return notifications
 
@@ -267,6 +297,7 @@ class NotificationQueue:
             for n in notifications:
                 if n.id in id_set and n.status in ("pending", "delivering"):
                     n.status = "expired"
+                    n.delivery_started_at = None
                     marked += 1
             return notifications
 

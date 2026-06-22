@@ -48,6 +48,12 @@
     "description": "Move timeline, listings, evidence, services, PTO, and exports"
   },
   {
+    "name": "Patch",
+    "icon": "patch-visibility/icon.svg",
+    "entry": "patch-visibility/index.html",
+    "description": "Patch work, changes, blockers, and checks that need your eyes"
+  },
+  {
     "name": "Sit",
     "icon": "meditation/icon-20260611b.svg",
     "entry": "meditation/index.html",
