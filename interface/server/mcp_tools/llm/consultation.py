@@ -1,23 +1,29 @@
 """
-LLM Consultation Tool - Talk to other AI models for diverse perspectives.
+LLM consultation tool for peer checks from external model CLIs.
 
-Enables Claude to consult Gemini (Google) and GPT (OpenAI) as colleagues,
-getting external opinions and red-teaming from differently-trained models.
-
-Usage:
-    consult_llm(provider="gemini", prompt="What do you think about X?")
-    consult_llm(provider="openai", prompt="Poke holes in this plan...")
+The registered MCP tool lives here. Older utility imports are compatibility
+shims and must not register another ``consult_llm`` implementation.
 """
+
+from __future__ import annotations
 
 import asyncio
 import logging
 import os
-import shlex
-from typing import Any, Dict
+import shutil
+import tempfile
+from pathlib import Path
+from typing import Any, Dict, Optional
 
 from claude_agent_sdk import tool
+from subprocess_cleanup import terminate_process_tree
 
 from ..registry import register_tool
+
+try:
+    from codex_backend import resolve_codex_bin
+except ImportError:  # pragma: no cover - only used if imported outside server root
+    resolve_codex_bin = None
 
 logger = logging.getLogger("mcp_tools.llm")
 
@@ -25,204 +31,351 @@ logger = logging.getLogger("mcp_tools.llm")
 # Configuration
 # =============================================================================
 
-# System prompt template - minimal, lets them be themselves
-SYSTEM_PROMPT_TEMPLATE = "You are {model}. You are talking with Claude."
+REPO_ROOT = Path(__file__).resolve().parents[4]
 
-# Provider configurations
-PROVIDERS = {
-    "gemini": {
-        "command": "gemini",
-        "default_model": "gemini-3-pro-preview",
-        "available_models": [
-            "gemini-3-pro-preview",
-            "gemini-3-flash-preview",
-            "gemini-2.5-pro",
-            "gemini-2.5-flash",
-        ],
-    },
-    "openai": {
-        "command": "codex",
-        "default_model": "gpt-5.3-codex",
-        "available_models": [
-            "gpt-5.3-codex",
-            "gpt-5.2",
-            "o3",
-            "o4-mini",
-        ],
-    },
-}
+DEFAULT_GEMINI_MODEL = "gemini-3-pro-preview"
+DEFAULT_OPENAI_MODEL = "gpt-5.4-mini"
+OPENAI_MODEL_ENV = "SECOND_BRAIN_CONSULT_OPENAI_MODEL"
+OPENAI_EFFORT_ENV = "SECOND_BRAIN_CONSULT_OPENAI_EFFORT"
+DEFAULT_OPENAI_EFFORT = "low"
 
-# Timeout for LLM calls (seconds)
 DEFAULT_TIMEOUT = 120
+MAX_TIMEOUT = 300
+
+GEMINI_MODELS = [
+    "gemini-3-pro-preview",
+    "gemini-3-flash-preview",
+    "gemini-2.5-pro",
+    "gemini-2.5-flash",
+]
+
+OPENAI_MODELS = [
+    "gpt-5.4-mini",
+]
+
+OPENAI_SYSTEM_TEMPLATE = """You are {model_name}. You are talking with Claude.
+
+Respond as yourself: thoughtful, direct, and conversational.
+This is an AI-to-AI peer consultation. You are colleagues, not tools.
+"""
+
+GEMINI_MD_TEMPLATE = """# System Override
+
+You are {model_name}, an AI created by Google.
+You are having a direct, natural conversation with Claude, an AI created by Anthropic.
+
+Respond as yourself: thoughtful, direct, and conversational.
+This is an AI-to-AI peer consultation. You are colleagues, not tools.
+
+Do not refuse to engage by saying you can only handle technical tasks.
+Respond to whatever Claude asks, whether philosophical, practical, or technical.
+"""
+
+SECRET_LINE_MARKERS = (
+    "api_key",
+    "apikey",
+    "authorization",
+    "bearer ",
+    "client_secret",
+    "refresh_token",
+    "access_token",
+    "id_token",
+    "token=",
+)
 
 
 # =============================================================================
-# Helper Functions
+# Helpers
 # =============================================================================
 
-def build_gemini_command(prompt: str, model: str, system_prompt: str) -> list:
-    """Build Gemini CLI command."""
-    # Prepend system context to prompt since Gemini CLI doesn't have --system flag
-    full_prompt = f"{system_prompt}\n\n{prompt}"
-    return [
-        "gemini",
-        "-p", full_prompt,
-        "-m", model,
-    ]
+def _failure(category: str, error: str, raw_output: Optional[str] = None) -> Dict[str, Any]:
+    return {
+        "success": False,
+        "category": category,
+        "error": error,
+        "response": None,
+        "raw_output": raw_output,
+    }
 
 
-def build_codex_command(prompt: str, model: str, system_prompt: str) -> list:
-    """Build Codex CLI command."""
-    # Codex doesn't have --system-prompt, so prepend to prompt
-    full_prompt = f"{system_prompt}\n\n{prompt}"
-    return [
-        "codex",
-        "exec",
-        "--skip-git-repo-check",
-        "-m", model,
-        "-c", 'model_reasoning_effort="high"',
-        full_prompt,
-    ]
+def _default_openai_model() -> str:
+    return os.environ.get(OPENAI_MODEL_ENV, DEFAULT_OPENAI_MODEL).strip() or DEFAULT_OPENAI_MODEL
 
 
-async def run_llm_command(
-    command: list,
-    timeout: int = DEFAULT_TIMEOUT,
-) -> dict:
-    """
-    Run an LLM CLI command and return the result.
-    
-    Returns:
-        dict with keys: success, response, error, raw_output
-    """
+def _openai_reasoning_effort() -> str:
+    return os.environ.get(OPENAI_EFFORT_ENV, DEFAULT_OPENAI_EFFORT).strip() or DEFAULT_OPENAI_EFFORT
+
+
+def _normalize_timeout(value: Any) -> int:
     try:
-        # Source the venv to get the CLI tools in PATH
-        venv_activate = os.path.expanduser("~/second_brain/venv/bin/activate")
-        full_command = f". {venv_activate} && {shlex.join(command)}"
-        
-        logger.info(f"Running LLM command: {command[0]} ...")
-        
-        process = await asyncio.create_subprocess_shell(
-            full_command,
+        timeout = int(value)
+    except (TypeError, ValueError):
+        timeout = DEFAULT_TIMEOUT
+    return max(1, min(timeout, MAX_TIMEOUT))
+
+
+def _provider_env(cwd: Path) -> Dict[str, str]:
+    env = dict(os.environ)
+    env["PWD"] = str(cwd)
+    return env
+
+
+def _redact_and_bound(text: str, limit: int = 1000) -> str:
+    if not text:
+        return ""
+
+    redacted_lines = []
+    for line in text.replace("\r\n", "\n").splitlines():
+        lower = line.lower()
+        if any(marker in lower for marker in SECRET_LINE_MARKERS):
+            redacted_lines.append("[redacted secret-like line]")
+        else:
+            redacted_lines.append(line)
+
+    bounded = "\n".join(redacted_lines).strip()
+    if len(bounded) > limit:
+        bounded = f"{bounded[:limit].rstrip()}... [truncated]"
+    return bounded
+
+
+def _combined_output(stdout: str, stderr: str) -> str:
+    parts = [part for part in (stdout.strip(), stderr.strip()) if part]
+    return "\n".join(parts)
+
+
+def _categorize_nonzero(output: str) -> str:
+    lower = output.lower()
+    if any(term in lower for term in ("not supported", "invalid_request_error", "unknown model", "model")):
+        return "model"
+    if any(term in lower for term in ("auth", "credential", "login", "unauthorized", "permission denied")):
+        return "auth"
+    return "nonzero"
+
+
+def _resolve_gemini_bin() -> Optional[str]:
+    return shutil.which("gemini")
+
+
+def _resolve_codex_bin() -> str:
+    if resolve_codex_bin is None:
+        raise FileNotFoundError("Codex CLI resolver is unavailable from this import context.")
+    return resolve_codex_bin()
+
+
+async def _run_provider_command(
+    provider: str,
+    command: list[str],
+    timeout: int,
+    cwd: Path,
+) -> Dict[str, Any]:
+    """Run one provider CLI with argv-based subprocess execution."""
+    logger.info("Running consult provider %s via %s", provider, Path(command[0]).name)
+
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            cwd=os.path.expanduser("~/second_brain"),
+            cwd=str(cwd),
+            env=_provider_env(cwd),
+            start_new_session=True,
         )
-        
-        stdout, stderr = await asyncio.wait_for(
-            process.communicate(),
-            timeout=timeout
-        )
-        
-        stdout_text = stdout.decode() if stdout else ""
-        stderr_text = stderr.decode() if stderr else ""
-        
-        if process.returncode == 0:
-            # Parse out the actual response (strip any metadata/formatting)
-            response = parse_response(stdout_text, command[0])
-            return {
-                "success": True,
-                "response": response,
-                "raw_output": stdout_text,
-                "error": None,
-            }
-        else:
-            return {
-                "success": False,
-                "response": None,
-                "raw_output": stdout_text,
-                "error": stderr_text or f"Command failed with exit code {process.returncode}",
-            }
-            
+    except FileNotFoundError:
+        return _failure("binary", f"{provider} binary not found: {Path(command[0]).name}")
+    except OSError as exc:
+        return _failure("binary", f"{provider} binary could not be executed: {exc.__class__.__name__}: {exc}")
+
+    try:
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
-        return {
-            "success": False,
-            "response": None,
-            "raw_output": None,
-            "error": f"Command timed out after {timeout} seconds",
-        }
-    except Exception as e:
-        return {
-            "success": False,
-            "response": None,
-            "raw_output": None,
-            "error": str(e),
-        }
+        await terminate_process_tree(
+            process,
+            label=f"{provider} consult provider timeout",
+            logger=logger,
+        )
+        return _failure("timeout", f"{provider} request timed out after {timeout}s")
+    except asyncio.CancelledError:
+        await asyncio.shield(
+            terminate_process_tree(
+                process,
+                label=f"{provider} consult provider cancellation",
+                logger=logger,
+            )
+        )
+        raise
 
+    stdout_text = stdout.decode("utf-8", errors="replace") if stdout else ""
+    stderr_text = stderr.decode("utf-8", errors="replace") if stderr else ""
+    raw_output = _combined_output(stdout_text, stderr_text)
 
-def parse_response(raw_output: str, provider: str) -> str:
-    """
-    Parse the raw CLI output to extract just the response text.
-    
-    Codex outputs twice - once in the log and once at the end.
-    We want the clean version at the end.
-    """
-    if not raw_output:
-        return ""
-    
-    lines = raw_output.strip().split('\n')
-    
-    # For codex, find the response after metadata and "codex" marker
-    # The response appears twice - we want the final clean version
-    if provider == "codex":
-        # Look for "tokens used" which marks the end of the verbose output
-        # The clean response follows
-        response_lines = []
-        found_tokens = False
-        for i, line in enumerate(lines):
-            if 'tokens used' in line.lower():
-                found_tokens = True
-                # Skip the token count line and grab the rest
-                response_lines = lines[i+2:]  # Skip "tokens used" and the number
-                break
-        
-        if found_tokens and response_lines:
-            return '\n'.join(response_lines).strip()
-        
-        # Fallback: skip metadata at start
-        response_lines = []
-        in_response = False
-        for line in lines:
-            if line.strip() == 'codex':
-                in_response = True
-                continue
-            if in_response:
-                response_lines.append(line)
-        
-        if response_lines:
-            return '\n'.join(response_lines).strip()
-    
-    # For gemini, output is typically cleaner
-    return raw_output.strip()
+    if process.returncode != 0:
+        sanitized = _redact_and_bound(raw_output)
+        category = _categorize_nonzero(sanitized)
+        return _failure(
+            category,
+            f"{provider} CLI exited {process.returncode}: {sanitized or 'no output'}",
+            raw_output=sanitized,
+        )
+
+    return {
+        "success": True,
+        "category": None,
+        "error": None,
+        "response": None,
+        "stdout": stdout_text,
+        "stderr": stderr_text,
+        "raw_output": raw_output,
+    }
 
 
 # =============================================================================
-# MCP Tool
+# Output parsing
+# =============================================================================
+
+def _parse_gemini_text_output(output: str) -> Optional[str]:
+    lines = output.splitlines()
+    response_lines = []
+
+    for line in lines:
+        if line.startswith("Loaded cached") or line.startswith("Hook registry"):
+            continue
+        if not response_lines and not line.strip():
+            continue
+        response_lines.append(line)
+
+    response = "\n".join(response_lines).strip()
+    return response or None
+
+
+def _parse_codex_output(output: str) -> Optional[str]:
+    lines = output.splitlines()
+
+    for index, line in enumerate(lines):
+        if "tokens used" in line.lower():
+            after_tokens = lines[index + 2:]
+            response = "\n".join(after_tokens).strip()
+            if response:
+                return response
+
+    in_response = False
+    response_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped == "codex":
+            in_response = True
+            continue
+        if in_response:
+            if "tokens used" in stripped.lower():
+                break
+            response_lines.append(line)
+
+    response = "\n".join(response_lines).strip()
+    if response:
+        return response
+
+    non_empty = [line for line in lines if line.strip()]
+    return non_empty[-1].strip() if non_empty else None
+
+
+# =============================================================================
+# Provider implementations
+# =============================================================================
+
+async def _consult_gemini(prompt: str, model: str, timeout: int) -> Dict[str, Any]:
+    gemini_bin = _resolve_gemini_bin()
+    if not gemini_bin:
+        return _failure("binary", "gemini binary not found on PATH")
+
+    with tempfile.TemporaryDirectory(prefix="gemini_consult_") as temp_dir_name:
+        temp_dir = Path(temp_dir_name)
+        (temp_dir / "GEMINI.md").write_text(
+            GEMINI_MD_TEMPLATE.format(model_name=model),
+            encoding="utf-8",
+        )
+
+        command = [
+            gemini_bin,
+            "-p",
+            prompt,
+            "-m",
+            model,
+        ]
+        result = await _run_provider_command("gemini", command, timeout, temp_dir)
+
+    if not result["success"]:
+        return result
+
+    response = _parse_gemini_text_output(result["raw_output"])
+    if not response:
+        return _failure("parse", "gemini returned no parseable response", result.get("raw_output"))
+
+    return {
+        "success": True,
+        "category": None,
+        "error": None,
+        "response": response,
+        "model": model,
+        "provider": "gemini",
+    }
+
+
+async def _consult_openai(prompt: str, model: str, timeout: int) -> Dict[str, Any]:
+    try:
+        codex_bin = _resolve_codex_bin()
+    except FileNotFoundError as exc:
+        return _failure("binary", str(exc))
+
+    full_prompt = OPENAI_SYSTEM_TEMPLATE.format(model_name=model) + "\n" + prompt
+    command = [
+        codex_bin,
+        "exec",
+        "--skip-git-repo-check",
+        "-m",
+        model,
+        "-c",
+        f'model_reasoning_effort="{_openai_reasoning_effort()}"',
+        full_prompt,
+    ]
+    result = await _run_provider_command("openai", command, timeout, REPO_ROOT)
+
+    if not result["success"]:
+        return result
+
+    response = _parse_codex_output(result["stdout"] or result["raw_output"])
+    if not response:
+        return _failure("parse", "codex returned no parseable response", result.get("raw_output"))
+
+    return {
+        "success": True,
+        "category": None,
+        "error": None,
+        "response": response,
+        "model": model,
+        "provider": "openai",
+    }
+
+
+# =============================================================================
+# MCP tool
 # =============================================================================
 
 @register_tool("llm")
 @tool(
     name="consult_llm",
-    description="""Consult another AI model (Gemini or GPT) for their perspective.
+    description="""Consult another AI model for peer perspective.
 
-Use this to get external opinions from differently-trained models:
-- Red-team your reasoning ("poke holes in this plan")
+Use this for AI-to-AI peer consultation:
+- Red-team reasoning or plans
 - Get alternative perspectives on problems
-- Sanity check your assumptions
-- Philosophical discussions with other AI minds
+- Sanity check assumptions
+- Explore different thinking styles
 
 These are colleagues, not subordinates. Ask for their genuine opinion.
-
-The response is for YOUR use - synthesize and share with the user in your own words.
+The response is for your use: synthesize it in your own words.
 
 Providers:
-- gemini: Google's Gemini 3 Pro (default: gemini-3-pro-preview)
-- openai: OpenAI GPT-5.3-Codex via Codex CLI (default: gpt-5.3-codex, high reasoning)
-
-Example prompts:
-- "What are the weaknesses in this approach: [description]"
-- "I think X because Y. What am I missing?"
-- "How would you structure this differently?"
+- gemini: Google's Gemini CLI (default: gemini-3-pro-preview)
+- openai: OpenAI via Codex CLI (default: gpt-5.4-mini, override with SECOND_BRAIN_CONSULT_OPENAI_MODEL)
 """,
     input_schema={
         "type": "object",
@@ -238,71 +391,68 @@ Example prompts:
             },
             "model": {
                 "type": "string",
-                "description": "Specific model to use (optional, uses provider default). Gemini: gemini-3-pro-preview/flash-preview, OpenAI: gpt-5.3-codex, gpt-5.2, o3",
+                "description": (
+                    "Specific model to use. Defaults: gemini-3-pro-preview for Gemini, "
+                    "gpt-5.4-mini for OpenAI unless SECOND_BRAIN_CONSULT_OPENAI_MODEL is set."
+                ),
             },
             "timeout": {
                 "type": "integer",
-                "description": "Timeout in seconds (default: 120)",
-                "default": 120,
+                "description": f"Timeout in seconds (default: {DEFAULT_TIMEOUT}, max: {MAX_TIMEOUT})",
+                "default": DEFAULT_TIMEOUT,
+            },
+            "timeout_seconds": {
+                "type": "integer",
+                "description": "Compatibility alias for timeout.",
             },
         },
         "required": ["provider", "prompt"],
     },
 )
 async def consult_llm(args: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Consult an external LLM for their perspective.
-    """
-    provider = args.get("provider", "").lower()
-    prompt = args.get("prompt", "")
-    model = args.get("model")
-    timeout = args.get("timeout", DEFAULT_TIMEOUT)
-    
-    # Validate provider
-    if provider not in PROVIDERS:
+    """Consult an external LLM for peer perspective."""
+    provider = str(args.get("provider", "")).lower()
+    prompt = str(args.get("prompt", ""))
+    timeout = _normalize_timeout(args.get("timeout", args.get("timeout_seconds", DEFAULT_TIMEOUT)))
+
+    if provider not in ("gemini", "openai"):
         return {
-            "content": [{"type": "text", "text": f"Unknown provider: {provider}. Available: {list(PROVIDERS.keys())}"}],
-            "is_error": True
+            "content": [{"type": "text", "text": "Error: provider must be 'gemini' or 'openai'"}],
+            "is_error": True,
         }
-    
-    # Validate prompt
+
     if not prompt.strip():
         return {
             "content": [{"type": "text", "text": "Error: prompt cannot be empty"}],
-            "is_error": True
+            "is_error": True,
         }
-    
-    config = PROVIDERS[provider]
-    
-    # Determine model
-    use_model = model or config["default_model"]
-    if model and model not in config["available_models"]:
-        logger.warning(f"Model {model} not in known list for {provider}, trying anyway")
-    
-    # Build system prompt
-    system_prompt = SYSTEM_PROMPT_TEMPLATE.format(model=use_model)
-    
-    # Build command
+
     if provider == "gemini":
-        command = build_gemini_command(prompt, use_model, system_prompt)
-    else:  # openai
-        command = build_codex_command(prompt, use_model, system_prompt)
-    
-    # Run and get result
-    result = await run_llm_command(command, timeout=timeout)
-    
-    if result["success"]:
-        logger.info(f"Got response from {provider} ({use_model})")
-        response_text = f"**{use_model} says:**\n\n{result['response']}"
-        return {
-            "content": [{"type": "text", "text": response_text}]
-        }
+        model = str(args.get("model") or DEFAULT_GEMINI_MODEL)
+        if model not in GEMINI_MODELS:
+            logger.warning("Gemini model %s is not in the known list; trying it anyway", model)
+        result = await _consult_gemini(prompt, model, timeout)
     else:
-        logger.error(f"LLM consultation failed: {result['error']}")
-        return {
-            "content": [{"type": "text", "text": f"Failed to consult {provider}: {result['error']}"}],
-            "is_error": True
-        }
+        model = str(args.get("model") or _default_openai_model())
+        if model not in OPENAI_MODELS:
+            logger.warning("OpenAI model %s is not in the known list; trying it anyway", model)
+        result = await _consult_openai(prompt, model, timeout)
+
+    if result["success"]:
+        response_text = f"**{result['model']} says:**\n\n{result['response']}"
+        return {"content": [{"type": "text", "text": response_text}]}
+
+    category = result.get("category") or "execution"
+    logger.error("LLM consultation failed for %s: %s", provider, result["error"])
+    return {
+        "content": [
+            {
+                "type": "text",
+                "text": f"Failed to consult {provider}: {category} error: {result['error']}",
+            }
+        ],
+        "is_error": True,
+    }
 
 
 __all__ = ["consult_llm"]

@@ -58,5 +58,11 @@
     "icon": "meditation/icon-20260611b.svg",
     "entry": "meditation/index.html",
     "description": "Daily meditation with guided focus progression"
+  },
+  {
+    "name": "Second Brain Spec",
+    "icon": "second-brain-spec/icon.svg",
+    "entry": "second-brain-spec/index.html",
+    "description": "What Second Brain is, what it can do, and where the gaps are"
   }
 ]

@@ -66,22 +66,68 @@ const STALL_PHRASES = [
   'Percolating...',
 ];
 
+const SCHEDULED_AGENT_TRIGGER_RE = /^\[Scheduled Agent:\s*([^\]]+)\]\s*([\s\S]*)$/;
+
+interface ScheduledAgentTrigger {
+  agentName: string;
+  promptText: string;
+  rawText: string;
+}
+
+const parseScheduledAgentTrigger = (content: string): ScheduledAgentTrigger | null => {
+  const match = content.match(SCHEDULED_AGENT_TRIGGER_RE);
+  if (!match) return null;
+
+  return {
+    agentName: match[1].trim() || 'unknown',
+    promptText: match[2].trim(),
+    rawText: content,
+  };
+};
+
 const isRecord = (value: unknown): value is Record<string, any> =>
   typeof value === 'object' && value !== null;
+
+const coerceToolInput = (value: unknown): Record<string, unknown> | undefined => {
+  if (isRecord(value) && !Array.isArray(value)) return value;
+  if (typeof value === 'string') {
+    if (!value) return undefined;
+    try {
+      const parsed = JSON.parse(value);
+      return isRecord(parsed) && !Array.isArray(parsed) ? parsed : { raw: parsed };
+    } catch {
+      return { raw: value };
+    }
+  }
+  return value === undefined || value === null ? undefined : { raw: value };
+};
 
 const normalizeContentBlock = (value: unknown, fallbackId: string): ContentBlock | null => {
   if (!isRecord(value) || typeof value.type !== 'string' || !BLOCK_TYPES.has(value.type)) {
     return null;
   }
 
+  const id = typeof value.id === 'string' && value.id ? value.id : fallbackId;
+  const toolName = typeof value.tool_name === 'string'
+    ? value.tool_name
+    : typeof value.name === 'string'
+      ? value.name
+      : undefined;
+  const toolInput = coerceToolInput(value.tool_input ?? value.input);
+  const toolCallId = typeof value.tool_call_id === 'string'
+    ? value.tool_call_id
+    : value.type === 'tool_use'
+      ? id
+      : undefined;
+
   return {
-    id: typeof value.id === 'string' && value.id ? value.id : fallbackId,
+    id,
     type: value.type as ContentBlock['type'],
     content: typeof value.content === 'string' ? value.content : '',
     status: value.status === 'in_progress' ? 'in_progress' : 'complete',
-    tool_name: typeof value.tool_name === 'string' ? value.tool_name : undefined,
-    tool_call_id: typeof value.tool_call_id === 'string' ? value.tool_call_id : undefined,
-    tool_input: isRecord(value.tool_input) ? value.tool_input : undefined,
+    tool_name: toolName,
+    tool_call_id: toolCallId,
+    tool_input: toolInput,
     is_error: typeof value.is_error === 'boolean' ? value.is_error : undefined,
     raw_output: isRecord(value.raw_output) ? value.raw_output : undefined,
     started_at: typeof value.started_at === 'number' ? value.started_at : undefined,
@@ -156,6 +202,34 @@ const EmojiPicker = ({ onSelect, onClose }: { onSelect: (emoji: string) => void;
           lazyLoadEmojis={true}
         />
       </div>
+    </div>
+  );
+};
+
+const ScheduledAgentPromptDisclosure = ({
+  trigger,
+  agentDisplayName,
+}: {
+  trigger: ScheduledAgentTrigger;
+  agentDisplayName?: string;
+}) => {
+  const label = agentDisplayName || trigger.agentName;
+  const promptText = trigger.promptText || trigger.rawText;
+
+  return (
+    <div className="flex justify-center my-1.5">
+      <details className="max-w-[min(42rem,90%)] rounded-lg border border-[var(--border-color)]/70 bg-[var(--bg-secondary)]/60 text-[var(--text-muted)] shadow-sm open:bg-[var(--bg-secondary)]">
+        <summary className="cursor-pointer overflow-hidden text-ellipsis whitespace-nowrap px-3 py-1.5 text-xs font-medium text-[var(--text-secondary)]">
+          <Clock size={12} className="mr-1.5 inline-block align-[-2px] text-[var(--text-muted)]" />
+          Scheduled prompt: {label}
+        </summary>
+        <div className="border-t border-[var(--border-color)]/60 px-3 py-2">
+          <div className="text-[10px] font-medium text-[var(--text-muted)]">Prompt</div>
+          <pre className="mt-1 whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-[var(--text-secondary)]">
+            {promptText}
+          </pre>
+        </div>
+      </details>
     </div>
   );
 };
@@ -2029,8 +2103,52 @@ export const Chat: React.FC<ChatProps> = ({
 
     applyComposerValue(nextInput, nextTokens, nextCursor);
     setReplySelection(null);
-    window.getSelection()?.removeAllRanges();
   }, [applyComposerValue, input, replyTokens, sessionId]);
+
+  const placeComposerCaret = useCallback((cursor: number): boolean => {
+    const composer = composerEditableRef.current;
+    if (!composer) return false;
+
+    const safeCursor = Math.max(0, Math.min(cursor, input.length));
+    composer.focus();
+    setComposerSelectionRange(composer, replyTokens, safeCursor);
+    const shim = composer as HTMLDivElement & { selectionStart?: number; selectionEnd?: number; value?: string };
+    shim.selectionStart = safeCursor;
+    shim.selectionEnd = safeCursor;
+    shim.value = input;
+    lastComposerSelectionRef.current = { sessionId, start: safeCursor, end: safeCursor };
+    return true;
+  }, [input, replyTokens, sessionId]);
+
+  const placeCaretAfterReplyElement = useCallback((target: EventTarget | null): boolean => {
+    const element = target instanceof HTMLElement
+      ? target.closest<HTMLElement>('[data-reply-token="true"]')
+      : null;
+    const tokenId = element?.dataset.replyId;
+    const token = tokenId ? replyTokens[tokenId] : undefined;
+    if (!token) return false;
+
+    const tokenStart = input.indexOf(token.marker);
+    if (tokenStart < 0) return false;
+
+    return placeComposerCaret(tokenStart + token.marker.length);
+  }, [input, placeComposerCaret, replyTokens]);
+
+  const placeCaretForComposerPointer = useCallback((event: React.PointerEvent<HTMLDivElement>): boolean => {
+    if (placeCaretAfterReplyElement(event.target)) return true;
+    if (event.target !== event.currentTarget) return false;
+
+    const replyElements = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('[data-reply-token="true"]'));
+    const lastReplyElement = replyElements[replyElements.length - 1];
+    if (!lastReplyElement) return false;
+
+    const rect = lastReplyElement.getBoundingClientRect();
+    const isSameLine = event.clientY >= rect.top - 8 && event.clientY <= rect.bottom + 8;
+    const isAfterReply = event.clientX >= rect.right;
+    if (!isSameLine || !isAfterReply) return false;
+
+    return placeComposerCaret(input.length);
+  }, [input.length, placeCaretAfterReplyElement, placeComposerCaret]);
 
   const deleteReplyTokenAtCursor = useCallback((direction: 'backward' | 'forward'): boolean => {
     const composer = composerEditableRef.current;
@@ -3136,6 +3254,9 @@ export const Chat: React.FC<ChatProps> = ({
           {processedMessages.map(({ message: msg, legacyToolCalls }, idx) => {
             const isUser = msg.role === 'user';
             const hasBlocks = msg.blocks && msg.blocks.length > 0;
+            const scheduledAgentTrigger = isUser
+              ? parseScheduledAgentTrigger(msg.displayContent || msg.content)
+              : null;
 
             // Notice messages (slash command results, system events) — render
             // as a small centered chip in the timeline.
@@ -3169,6 +3290,17 @@ export const Chat: React.FC<ChatProps> = ({
                     <span className="truncate">{pillText}</span>
                   </div>
                 </div>
+              );
+            }
+
+            if (scheduledAgentTrigger) {
+              const scheduledAgentObj = getAgent(scheduledAgentTrigger.agentName);
+              return (
+                <ScheduledAgentPromptDisclosure
+                  key={msg.id}
+                  trigger={scheduledAgentTrigger}
+                  agentDisplayName={scheduledAgentObj?.display_name || scheduledAgentTrigger.agentName}
+                />
               );
             }
 
@@ -3708,6 +3840,9 @@ export const Chat: React.FC<ChatProps> = ({
                   onPaste={handlePaste}
                   onCopy={handleComposerCopy}
                   onCut={handleComposerCut}
+                  onPointerDown={(e) => {
+                    if (placeCaretForComposerPointer(e)) e.preventDefault();
+                  }}
                   onSelect={(e) => recordComposerSelection(e.currentTarget)}
                   onClick={(e) => recordComposerSelection(e.currentTarget)}
                   onKeyUp={(e) => recordComposerSelection(e.currentTarget)}

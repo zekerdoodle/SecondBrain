@@ -157,6 +157,21 @@ PSEUDO_AGENT_THREAD_CALLERS = frozenset({
 })
 
 
+_CODEX_APP_SERVER_VISIBLE_EVENT_TYPES = {
+    "content_delta",
+    "thinking_delta",
+    "tool_output_delta",
+    "tool_start",
+    "tool_use",
+    "tool_end",
+}
+_CODEX_APP_SERVER_TOOL_EVENT_TYPES = {"tool_output_delta", "tool_start", "tool_use", "tool_end"}
+
+
+def _is_structured_codex_prompt(prompt: Any) -> bool:
+    return isinstance(prompt, list)
+
+
 RILEY_ANTHROPIC_PROXY_BASE_PATH = "/internal/anthropic-proxy"
 SECOND_BRAIN_ROOT = Path(__file__).resolve().parents[2]
 CLAUDE_CODE_CLI_PATH = SECOND_BRAIN_ROOT / "node_modules" / ".bin" / "claude"
@@ -2036,6 +2051,7 @@ async def _run_codex_agent(
     Threaded through to the shared Codex backend.
     """
     from codex_backend import CodexRunOptions, run_codex
+    from codex_app_server_canary import select_codex_app_server_runtime
 
     logger.info(f"Running Codex agent '{config.name}' with model {config.model}")
 
@@ -2258,26 +2274,98 @@ async def _run_codex_agent(
                     config, invocation, effective_tools
                 ),
             )
-            codex_result = await run_codex(run_options, stream_callback=stream_callback)
-            if (
-                codex_result.returncode == 0
-                and not codex_result.blocks
-                and not (codex_result.response or "").strip()
-                and run_options.effort != "low"
-            ):
-                logger.warning(
-                    "Agent '%s' returned empty Codex content; retrying once with effort=low",
-                    config.name,
+
+            async def _run_exec_path(options: CodexRunOptions):
+                result = await run_codex(options, stream_callback=stream_callback)
+                if (
+                    result.returncode == 0
+                    and not result.blocks
+                    and not (result.response or "").strip()
+                    and options.effort != "low"
+                ):
+                    logger.warning(
+                        "Agent '%s' returned empty Codex content; retrying once with effort=low",
+                        config.name,
+                    )
+                    retry_prompt = (
+                        "IMPORTANT: Produce a visible assistant reply. "
+                        "If the request involves images, answer briefly in text before deciding whether to use tools.\n\n"
+                        f"{options.prompt}"
+                    )
+                    retry_options = CodexRunOptions(
+                        **{**options.__dict__, "effort": "low", "prompt": retry_prompt}
+                    )
+                    result = await run_codex(retry_options, stream_callback=stream_callback)
+                return result
+
+            async def _run_app_server_path(options: CodexRunOptions):
+                from codex_app_server_backend import run_codex_app_server
+
+                app_visible_work = False
+                app_tool_started = False
+
+                async def _app_event(event: Dict[str, Any]) -> None:
+                    nonlocal app_visible_work, app_tool_started
+                    event_type = event.get("type")
+                    if event_type in _CODEX_APP_SERVER_VISIBLE_EVENT_TYPES:
+                        app_visible_work = True
+                    if event_type in _CODEX_APP_SERVER_TOOL_EVENT_TYPES:
+                        app_tool_started = True
+
+                async def _app_stream_callback(snapshot: list) -> None:
+                    nonlocal app_visible_work
+                    if snapshot:
+                        app_visible_work = True
+                    if stream_callback is not None:
+                        await stream_callback(snapshot)
+
+                result = await run_codex_app_server(
+                    options,
+                    stream_callback=_app_stream_callback,
+                    event_callback=_app_event,
                 )
-                retry_prompt = (
-                    "IMPORTANT: Produce a visible assistant reply. "
-                    "If the request involves images, answer briefly in text before deciding whether to use tools.\n\n"
-                    f"{run_options.prompt}"
+                result_has_visible_work = bool(result.blocks) or bool((result.response or "").strip())
+                should_fallback = (
+                    result.returncode != 0
+                    and not app_visible_work
+                    and not app_tool_started
+                    and not result_has_visible_work
+                    and not _is_structured_codex_prompt(options.prompt)
                 )
-                retry_options = CodexRunOptions(
-                    **{**run_options.__dict__, "effort": "low", "prompt": retry_prompt}
-                )
-                codex_result = await run_codex(retry_options, stream_callback=stream_callback)
+                if should_fallback:
+                    logger.warning(
+                        "Agent '%s': Codex App Server failed before visible work; falling back to codex exec",
+                        config.name,
+                    )
+                    return await _run_exec_path(options)
+
+                if result_has_visible_work and not app_visible_work and stream_callback is not None:
+                    await stream_callback(result.blocks)
+                    app_visible_work = True
+                if result.returncode != 0:
+                    error_text = result.stderr or f"Codex App Server exited with {result.returncode}"
+                    if app_visible_work or app_tool_started or result_has_visible_work:
+                        error_text = (
+                            "Codex App Server failed after visible work; not falling back to codex exec "
+                            f"to avoid duplicate tool side effects: {error_text}"
+                        )
+                    result.stderr = error_text
+                return result
+
+            app_server_selection = select_codex_app_server_runtime(config, launch_cwd)
+            logger.info(
+                "Agent '%s': Codex App Server selection enabled=%s source=%s reason=%s config=%s expires_at=%s",
+                config.name,
+                app_server_selection.enabled,
+                app_server_selection.source,
+                app_server_selection.reason,
+                app_server_selection.config_path or "",
+                app_server_selection.expires_at or "",
+            )
+            if app_server_selection.enabled:
+                codex_result = await _run_app_server_path(run_options)
+            else:
+                codex_result = await _run_exec_path(run_options)
             result_text = codex_result.response
             transcript = codex_result.transcript
             blocks = codex_result.blocks

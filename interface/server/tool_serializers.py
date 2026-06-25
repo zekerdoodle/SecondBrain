@@ -42,6 +42,92 @@ def _parse_args(args_raw) -> dict:
     return {}
 
 
+def _has_text(value: Any) -> bool:
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, list):
+        return any(_has_text(item) for item in value)
+    return value is not None
+
+
+def _parse_json_object(value: Any) -> dict:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _native_web_tool_name(tool_name: str) -> bool:
+    normalized = str(tool_name or "").replace("_", "").replace("-", "").lower()
+    return normalized in {
+        "websearch",
+        "websearchcall",
+        "webfetch",
+        "webfetchcall",
+    }
+
+
+def _web_args_have_signal(args: dict) -> bool:
+    if any(_has_text(args.get(key)) for key in ("query", "queries", "url", "pattern")):
+        return True
+    action = args.get("action")
+    if isinstance(action, dict):
+        return any(_has_text(action.get(key)) for key in ("query", "queries", "url", "pattern"))
+    return False
+
+
+def _extract_web_payload(payload: dict) -> dict:
+    recovered = {
+        key: payload.get(key)
+        for key in ("query", "queries", "url", "pattern")
+        if _has_text(payload.get(key))
+    }
+    action = payload.get("action") if isinstance(payload.get("action"), dict) else {}
+    action_payload = {
+        key: action.get(key)
+        for key in ("type", "query", "queries", "url", "pattern")
+        if _has_text(action.get(key))
+    }
+    if action_payload:
+        recovered["action"] = action_payload
+        for key in ("query", "queries", "url", "pattern"):
+            if key not in recovered and _has_text(action_payload.get(key)):
+                recovered[key] = action_payload[key]
+    return recovered
+
+
+def recover_tool_args_from_output(tool_name: str, args_raw: Any, output: str) -> dict:
+    """Recover native tool args when the final receipt has better parameter data."""
+    args = _parse_args(args_raw)
+    if not _native_web_tool_name(tool_name) or _web_args_have_signal(args):
+        return args
+
+    payload = _parse_json_object(output)
+    recovered = _extract_web_payload(payload)
+    if not recovered:
+        return args
+
+    merged = dict(args)
+    for key, value in recovered.items():
+        current = merged.get(key)
+        if not _has_text(current) or key == "action":
+            merged[key] = value
+    return merged
+
+
+def _pick_native_web_args(args: dict) -> dict:
+    return {
+        key: args[key]
+        for key in ("query", "queries", "url", "pattern", "action")
+        if key in args and (key == "action" or _has_text(args.get(key)))
+    }
+
+
 def _pick(d: dict, keys: list) -> dict:
     """Pick specific keys from a dict."""
     return {k: d[k] for k in keys if k in d}
@@ -67,7 +153,7 @@ def serialize_invoke_agent(args: dict, output: str, is_error: bool) -> dict:
 
 
 def serialize_invoke_agent_chain(args: dict, output: str, is_error: bool) -> dict:
-    kept = _pick(args, ["agents", "context"])
+    kept = _pick(args, ["chain", "agents", "context", "on_failure", "summarize"])
     if "initial_prompt" in args:
         kept["initial_prompt"] = str(args["initial_prompt"])  # Store verbatim
     return {
@@ -77,7 +163,7 @@ def serialize_invoke_agent_chain(args: dict, output: str, is_error: bool) -> dic
 
 
 def serialize_invoke_agent_parallel(args: dict, output: str, is_error: bool) -> dict:
-    kept = {}
+    kept = _pick(args, ["context"])
     if "agents" in args and isinstance(args["agents"], list):
         # Preserve full agent/prompt pairs verbatim — prompts are already compressed
         kept["agents"] = [
@@ -86,6 +172,13 @@ def serialize_invoke_agent_parallel(args: dict, output: str, is_error: bool) -> 
         ]
     return {
         "args": kept,
+        "output_summary": _truncate(output, 500),
+    }
+
+
+def serialize_native_web(args: dict, output: str, is_error: bool) -> dict:
+    return {
+        "args": _pick_native_web_args(args),
         "output_summary": _truncate(output, 500),
     }
 
@@ -356,6 +449,11 @@ TOOL_SERIALIZERS: Dict[str, Callable[[dict, str, bool], dict]] = {
     # Tier 1
     "bash": serialize_bash,
     "Bash": serialize_bash,
+    "WebSearch": serialize_native_web,
+    "WebFetch": serialize_native_web,
+    "web_search_call": serialize_native_web,
+    "webSearch": serialize_native_web,
+    "webFetch": serialize_native_web,
     "invoke_agent": serialize_invoke_agent,
     "invoke_agent_chain": serialize_invoke_agent_chain,
     "invoke_agent_parallel": serialize_invoke_agent_parallel,
@@ -464,7 +562,7 @@ def serialize_tool_call(
     if lookup_name.startswith(MCP_PREFIX):
         lookup_name = lookup_name[len(MCP_PREFIX):]
 
-    args = _parse_args(args_raw)
+    args = recover_tool_args_from_output(tool_name, args_raw, output or "")
     serializer = TOOL_SERIALIZERS.get(lookup_name, _default_serializer)
 
     try:

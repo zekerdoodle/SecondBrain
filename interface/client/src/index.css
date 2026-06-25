@@ -1034,7 +1034,9 @@ html, body, #root {
 }
 
 .reply-composer-pill {
-  cursor: default;
+  cursor: text;
+  margin-right: 6px;
+  max-width: min(420px, calc(100% - 48px));
   user-select: all;
 }
 

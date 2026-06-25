@@ -7,6 +7,9 @@ export interface ContentBlock {
   tool_name?: string;
   tool_call_id?: string;
   tool_input?: Record<string, unknown>;
+  // Legacy runner/Codex aliases kept for defensive rendering of saved history.
+  name?: string;
+  input?: unknown;
   is_error?: boolean;
   raw_output?: Record<string, unknown>;
   // Thinking/timing fields

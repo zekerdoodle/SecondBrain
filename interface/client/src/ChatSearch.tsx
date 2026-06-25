@@ -7,6 +7,7 @@ interface SearchResult {
   message_id: string;
   chat_id: string;
   chat_title: string;
+  chat_agent?: string | null;
   role: string;
   content_preview: string;
   timestamp: number;
@@ -48,6 +49,7 @@ export const ChatSearch: React.FC<ChatSearchProps> = ({ onSelectResult, onClose 
 
   // Filters
   const [roleFilter, setRoleFilter] = useState<'all' | 'user' | 'assistant'>('all');
+  const [agentFilter, setAgentFilter] = useState<string>('all');
   const [dateFrom, setDateFrom] = useState<string>('');
   const [dateTo, setDateTo] = useState<string>('');
   const [showFilters, setShowFilters] = useState(false);
@@ -72,7 +74,7 @@ export const ChatSearch: React.FC<ChatSearchProps> = ({ onSelectResult, onClose 
   }, [onClose]);
 
   // Perform search
-  const performSearch = useCallback(async (q: string, semanticOnly: boolean = false) => {
+  const performSearch = useCallback(async (q: string) => {
     if (!q.trim()) {
       setResults([]);
       return;
@@ -83,11 +85,13 @@ export const ChatSearch: React.FC<ChatSearchProps> = ({ onSelectResult, onClose 
         q,
         exclude_system: 'true',
         limit: '30',
-        semantic_only: semanticOnly.toString(),
       });
 
       if (roleFilter !== 'all') {
         params.set('roles', roleFilter);
+      }
+      if (agentFilter !== 'all') {
+        params.set('agent', agentFilter);
       }
       if (dateFrom) {
         params.set('date_from', dateFrom);
@@ -105,7 +109,7 @@ export const ChatSearch: React.FC<ChatSearchProps> = ({ onSelectResult, onClose 
       setError('Search failed. Please try again.');
       return null;
     }
-  }, [roleFilter, dateFrom, dateTo]);
+  }, [roleFilter, agentFilter, dateFrom, dateTo]);
 
   // Main search effect
   useEffect(() => {
@@ -119,52 +123,13 @@ export const ChatSearch: React.FC<ChatSearchProps> = ({ onSelectResult, onClose 
     setIsLoading(true);
     setError(null);
 
-    // Phase 1: Fast keyword search
-    performSearch(debouncedQuery, false).then(keywordData => {
+    performSearch(debouncedQuery).then(searchData => {
       setIsLoading(false);
-      if (!keywordData) return;
+      if (!searchData) return;
 
-      setResults(keywordData.results);
-      setSemanticPending(keywordData.semantic_pending);
-      setTotalTime(keywordData.query_time_ms);
-
-      // Phase 2: Async semantic enrichment
-      if (keywordData.semantic_pending) {
-        performSearch(debouncedQuery, true).then(semanticData => {
-          setSemanticPending(false);
-          if (!semanticData) return;
-
-          // Merge results
-          setResults(prev => {
-            const merged = new Map<string, SearchResult>();
-
-            // Add keyword results
-            for (const r of prev) {
-              merged.set(r.message_id, r);
-            }
-
-            // Merge semantic results
-            for (const r of semanticData.results) {
-              const existing = merged.get(r.message_id);
-              if (existing) {
-                // Both matched - update score and type
-                merged.set(r.message_id, {
-                  ...existing,
-                  score: Math.max(existing.score, r.score),
-                  match_type: 'both'
-                });
-              } else {
-                merged.set(r.message_id, r);
-              }
-            }
-
-            // Sort by score
-            const sorted = Array.from(merged.values());
-            sorted.sort((a, b) => b.score - a.score);
-            return sorted.slice(0, 30);
-          });
-        });
-      }
+      setResults(searchData.results);
+      setSemanticPending(searchData.semantic_pending);
+      setTotalTime(searchData.query_time_ms);
     });
   }, [debouncedQuery, performSearch]);
 
@@ -177,7 +142,15 @@ export const ChatSearch: React.FC<ChatSearchProps> = ({ onSelectResult, onClose 
     });
   };
 
-  const hasActiveFilters = roleFilter !== 'all' || dateFrom || dateTo;
+  const formatAgent = (agent?: string | null) => {
+    if (!agent) return '';
+    return agent
+      .split('_')
+      .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(' ');
+  };
+
+  const hasActiveFilters = roleFilter !== 'all' || agentFilter !== 'all' || dateFrom || dateTo;
 
   return (
     <div className="absolute inset-0 bg-[var(--bg-primary)] z-50 flex flex-col">
@@ -216,7 +189,7 @@ export const ChatSearch: React.FC<ChatSearchProps> = ({ onSelectResult, onClose 
 
         {/* Filters - collapsible */}
         {showFilters && (
-          <div className="flex items-center gap-4 mt-3 max-w-2xl mx-auto animate-in">
+          <div className="flex flex-wrap items-center gap-4 mt-3 max-w-2xl mx-auto animate-in">
             {/* Role Filter */}
             <div className="flex items-center gap-1.5 text-sm">
               <span className="text-[var(--text-muted)]">From:</span>
@@ -228,6 +201,28 @@ export const ChatSearch: React.FC<ChatSearchProps> = ({ onSelectResult, onClose 
                 <option value="all">All</option>
                 <option value="user">Me</option>
                 <option value="assistant">Assistant</option>
+              </select>
+            </div>
+
+            {/* Agent Filter */}
+            <div className="flex items-center gap-1.5 text-sm">
+              <span className="text-[var(--text-muted)]">Agent:</span>
+              <select
+                value={agentFilter}
+                onChange={e => setAgentFilter(e.target.value)}
+                className="border border-[var(--border-color)] bg-[var(--bg-tertiary)] rounded-lg px-2 py-1 text-[var(--text-primary)] text-sm focus:outline-none focus:ring-1 focus:ring-[var(--accent-primary)] appearance-none cursor-pointer"
+              >
+                <option value="all">All agents</option>
+                <option value="finance">Finance</option>
+                <option value="life_admin">Life Admin</option>
+                <option value="patch">Patch</option>
+                <option value="character">Character</option>
+                <option value="running_coach">Running Coach</option>
+                <option value="nutrition_coach">Nutrition Coach</option>
+                <option value="lifting_coach">Lifting Coach</option>
+                <option value="kestrel">Kestrel</option>
+                <option value="ash">Ash</option>
+                <option value="ops">Ops</option>
               </select>
             </div>
 
@@ -252,7 +247,7 @@ export const ChatSearch: React.FC<ChatSearchProps> = ({ onSelectResult, onClose 
             {/* Clear filters */}
             {hasActiveFilters && (
               <button
-                onClick={() => { setRoleFilter('all'); setDateFrom(''); setDateTo(''); }}
+                onClick={() => { setRoleFilter('all'); setAgentFilter('all'); setDateFrom(''); setDateTo(''); }}
                 className="text-xs text-[var(--accent-primary)] hover:underline"
               >
                 Clear
@@ -333,6 +328,7 @@ export const ChatSearch: React.FC<ChatSearchProps> = ({ onSelectResult, onClose 
                     </span>
                   )}
                   <span className="text-[11px] text-[var(--text-muted)]">
+                    {result.chat_agent ? `${formatAgent(result.chat_agent)} · ` : ''}
                     {formatDate(result.timestamp)}
                   </span>
                 </div>

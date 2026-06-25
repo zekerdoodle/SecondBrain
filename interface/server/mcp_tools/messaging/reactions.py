@@ -6,6 +6,12 @@ Allows agents to react to messages in their current conversation with emoji.
 
 import json
 import logging
+import os
+import sys
+import urllib.error
+import urllib.request
+import asyncio
+from pathlib import Path
 from typing import Any, Dict
 
 from claude_agent_sdk import tool
@@ -14,52 +20,78 @@ from ..registry import register_tool
 
 logger = logging.getLogger("mcp_tools.messaging.reactions")
 
-
-def _get_visible_text(msg: dict) -> str:
-    """Extract visible text from a message, skipping thinking blocks."""
-    # Try direct content first
-    content = msg.get("content", "")
-    if isinstance(content, str) and content.strip():
-        return content.strip()
-    # Try blocks (display_messages format) — skip thinking blocks
-    blocks = msg.get("blocks", [])
-    for block in blocks:
-        btype = block.get("type", "")
-        if btype in ("thinking", "tool_use", "tool_result"):
-            continue
-        text = block.get("content", "") or block.get("text", "")
-        if isinstance(text, str) and text.strip():
-            return text.strip()
-    # Try content as list of blocks (messages format)
-    if isinstance(content, list):
-        for block in content:
-            if isinstance(block, dict):
-                btype = block.get("type", "")
-                if btype in ("thinking", "tool_use", "tool_result"):
-                    continue
-                text = block.get("text", "")
-                if isinstance(text, str) and text.strip():
-                    return text.strip()
-    return ""
+ROOT_DIR = Path(__file__).resolve().parents[4]
+INTERNAL_AGENT_INVOKE_TOKEN_FILE = ROOT_DIR / ".claude" / ".secrets" / "internal_agent_invoke_token"
 
 
-def _resolve_message_by_content(chat_data: dict, starts_with: str) -> str | None:
-    """Find a message ID by matching the start of its visible text.
+def _running_under_codex_stdio_bridge() -> bool:
+    argv = " ".join(sys.argv)
+    return "mcp_tools/stdio_server.py" in argv or argv.endswith("stdio_server.py")
 
-    Searches display_messages first (newest→oldest), then falls back to messages.
-    Returns the message ID or None.
-    """
-    prefix = starts_with.strip().lower()
-    # Search display_messages in reverse (newest first)
-    for source_key in ("display_messages", "messages"):
-        msgs = chat_data.get(source_key, [])
-        for msg in reversed(msgs):
-            visible = _get_visible_text(msg)
-            if visible.lower().startswith(prefix):
-                mid = msg.get("id")
-                if mid:
-                    return mid
-    return None
+
+def _backend_main_module():
+    """Return the live backend main module when this tool is running in-process."""
+    if _running_under_codex_stdio_bridge():
+        return None
+
+    main_mod = sys.modules.get("main") or sys.modules.get("__main__")
+    if not main_mod or not hasattr(main_mod, "apply_message_reaction"):
+        return None
+
+    backend_pid = os.environ.get("SECOND_BRAIN_BACKEND_PID")
+    if backend_pid:
+        try:
+            if int(backend_pid) != os.getpid():
+                return None
+        except ValueError:
+            return None
+
+    return main_mod
+
+
+def _get_internal_agent_invoke_token() -> str | None:
+    try:
+        token = INTERNAL_AGENT_INVOKE_TOKEN_FILE.read_text(encoding="utf-8").strip()
+    except OSError:
+        token = None
+    return token or os.environ.get("SECOND_BRAIN_INTERNAL_AGENT_TOKEN") or None
+
+
+def _post_internal_message_reaction(payload: Dict[str, Any]) -> Dict[str, Any]:
+    token = _get_internal_agent_invoke_token()
+    if not token:
+        return {"error": "internal message reaction relay token unavailable"}
+
+    base_url = os.environ.get("SECOND_BRAIN_INTERNAL_BASE_URL", "http://127.0.0.1:8000")
+    url = base_url.rstrip("/") + "/api/internal/message-reaction"
+    body = json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Second-Brain-Internal-Token": token,
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            raw = response.read().decode("utf-8")
+            return json.loads(raw) if raw else {"status": "ok"}
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", errors="replace")
+        try:
+            data = json.loads(detail)
+            detail = data.get("detail", detail)
+        except Exception:
+            pass
+        return {"error": f"internal message reaction relay failed ({e.code}): {detail}"}
+    except Exception as e:
+        return {"error": f"internal message reaction relay failed: {e}"}
+
+
+async def _relay_message_reaction_to_backend(payload: Dict[str, Any]) -> Dict[str, Any]:
+    return await asyncio.to_thread(_post_internal_message_reaction, payload)
 
 
 _MESSAGE_REACT_DESCRIPTION = """React to a message with an emoji.
@@ -108,10 +140,6 @@ _MESSAGE_REACT_SCHEMA = {
 async def message_react(args: Dict[str, Any]) -> Dict[str, Any]:
     """React to a message with an emoji."""
     try:
-        import main
-
-        cm = main.chat_manager
-
         message_id = args.get("message_id", "").strip()
         message_starts_with = args.get("message_starts_with", "").strip()
         emoji = args.get("emoji", "").strip()
@@ -126,81 +154,44 @@ async def message_react(args: Dict[str, Any]) -> Dict[str, Any]:
         if not chat_id:
             return {"content": [{"type": "text", "text": "Error: no source chat context available"}], "is_error": True}
 
-        # Load chat
-        chat_data = cm.load_chat(chat_id)
-        if not chat_data:
-            return {"content": [{"type": "text", "text": f"Error: chat '{chat_id}' not found"}], "is_error": True}
+        payload = {
+            "chat_id": chat_id,
+            "message_id": message_id or None,
+            "message_starts_with": message_starts_with or None,
+            "emoji": emoji,
+            "remove": bool(remove),
+            "reactor": agent_name,
+        }
 
-        # Resolve message_starts_with → message_id
-        if not message_id and message_starts_with:
-            resolved_id = _resolve_message_by_content(chat_data, message_starts_with)
-            if not resolved_id:
-                return {"content": [{"type": "text", "text": f"Error: no message found starting with '{message_starts_with[:50]}...'"}], "is_error": True}
-            message_id = resolved_id
-
-        def _toggle_reaction(msg: dict) -> bool:
-            if msg.get("id") != message_id:
-                return False
-            reactions = msg.setdefault("reactions", {})
-            if remove:
-                reactors = reactions.get(emoji, [])
-                if agent_name in reactors:
-                    reactors.remove(agent_name)
-                if not reactors:
-                    reactions.pop(emoji, None)
+        main_mod = _backend_main_module()
+        try:
+            if main_mod:
+                result = await main_mod.apply_message_reaction(
+                    chat_id=chat_id,
+                    message_id=message_id or None,
+                    message_starts_with=message_starts_with or None,
+                    emoji=emoji,
+                    reactor=agent_name,
+                    remove=remove,
+                )
             else:
-                reactors = reactions.setdefault(emoji, [])
-                if agent_name not in reactors:
-                    reactors.append(agent_name)
-            if not reactions:
-                msg.pop("reactions", None)
-            return True
+                result = await _relay_message_reaction_to_backend(payload)
+        except ValueError as e:
+            return {"content": [{"type": "text", "text": f"Error: {e}"}], "is_error": True}
 
-        found = False
-        for msg in chat_data.get("messages", []):
-            if _toggle_reaction(msg):
-                found = True
-                break
-        for msg in chat_data.get("display_messages", []):
-            if _toggle_reaction(msg):
-                found = True
-                break
+        if result.get("error"):
+            return {"content": [{"type": "text", "text": f"Error: {result['error']}"}], "is_error": True}
 
-        if not found:
-            return {"content": [{"type": "text", "text": f"Error: message '{message_id}' not found"}], "is_error": True}
-
-        # Persist
-        cm.save_chat(chat_id, chat_data)
-
-        # Update in-memory streaming state if active
-        ss = main.session_streaming_states.get(chat_id)
-        if ss:
-            for msg in ss.messages:
-                _toggle_reaction(msg)
-
-        # Get final reactions
-        final_reactions = None
-        for msg in chat_data.get("display_messages", chat_data.get("messages", [])):
-            if msg.get("id") == message_id:
-                final_reactions = msg.get("reactions")
-                break
-
-        # Broadcast
-        await main.broadcast_to_session(chat_id, {
-            "type": "reaction_update",
-            "sessionId": chat_id,
-            "messageId": message_id,
-            "reactions": final_reactions or {},
-        })
+        resolved_message_id = result.get("message_id") or message_id
 
         action = "Removed" if remove else "Added"
-        logger.info(f"message_react: {action} {emoji} by {agent_name} on {message_id} in {chat_id}")
+        logger.info(f"message_react: {action} {emoji} by {agent_name} on {resolved_message_id} in {chat_id}")
 
         return {"content": [{"type": "text", "text": json.dumps({
             "status": "ok",
             "action": "removed" if remove else "added",
             "emoji": emoji,
-            "message_id": message_id,
+            "message_id": resolved_message_id,
         })}]}
 
     except Exception as e:

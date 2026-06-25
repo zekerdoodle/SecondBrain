@@ -1331,16 +1331,33 @@ class ClaudeWrapper:
             async def _run_app_server_path(run_options: CodexRunOptions) -> None:
                 app_visible_work = False
                 app_tool_started = False
+                app_active_tools: List[Dict[str, Any]] = []
                 steering_bridge = CodexAppServerSteeringBridge()
                 self._injection_queue = steering_bridge
 
                 async def _app_event(event: Dict[str, Any]) -> None:
-                    nonlocal app_visible_work, app_tool_started
+                    nonlocal app_visible_work, app_tool_started, app_active_tools
                     event_type = event.get("type")
                     if event_type in _CODEX_APP_SERVER_VISIBLE_EVENT_TYPES:
                         app_visible_work = True
                     if event_type in _CODEX_APP_SERVER_TOOL_EVENT_TYPES:
                         app_tool_started = True
+                    if event_type in {"tool_start", "tool_use"}:
+                        tool_id = event.get("id")
+                        if tool_id:
+                            app_active_tools = [
+                                tool for tool in app_active_tools if tool.get("id") != tool_id
+                            ]
+                        app_active_tools.append({
+                            "id": tool_id,
+                            "name": event.get("name"),
+                        })
+                    elif event_type == "tool_end":
+                        tool_id = event.get("id")
+                        if tool_id:
+                            app_active_tools = [
+                                tool for tool in app_active_tools if tool.get("id") != tool_id
+                            ]
                     if event_type == "result_meta":
                         # App Server sends live token-usage updates before turn completion.
                         # Keep them in the backend result and emit one final result_meta
@@ -1390,12 +1407,25 @@ class ClaudeWrapper:
                 await _emit_result_meta(result)
                 if result.returncode != 0:
                     error_text = result.stderr or f"Codex App Server exited with {result.returncode}"
+                    error_event: Dict[str, Any] = {"type": "error", "text": error_text}
                     if app_visible_work or app_tool_started:
                         error_text = (
                             "Codex App Server failed after visible work; not falling back to codex exec "
                             f"to avoid duplicate tool side effects: {error_text}"
                         )
-                    await event_queue.put({"type": "error", "text": error_text})
+                        error_event.update({
+                            "text": error_text,
+                            "source": "codex_app_server",
+                            "error_kind": "codex_app_server_post_side_effect_no_fallback",
+                            "no_fallback_after_side_effects": True,
+                            "no_fallback_reason": "visible_or_tool_side_effect_started",
+                            "app_visible_work": app_visible_work,
+                            "app_tool_started": app_tool_started,
+                            "returncode": result.returncode,
+                            "stderr": result.stderr or "",
+                            "active_tools": app_active_tools,
+                        })
+                    await event_queue.put(error_event)
 
             async def _run() -> None:
                 try:

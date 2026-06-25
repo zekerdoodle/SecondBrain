@@ -8,11 +8,14 @@ import os
 import sys
 import asyncio
 import subprocess
+import logging
 from typing import Any, Dict
 
 from claude_agent_sdk import tool
 
 from ..registry import register_tool
+
+logger = logging.getLogger("mcp_tools.restart")
 
 _ALLOWED_RESTART_CONSUMER = "main_streaming_finalizer"
 _AGENT_MANAGED_RESTART_CONSUMER = "agent_managed_restart"
@@ -107,39 +110,6 @@ def _spawn_managed_restart_subprocess(restart_script: str, log_file: str) -> Non
         start_new_session=True,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-    )
-
-
-def _legacy_visible_chat_bootstrap_allowed(
-    *,
-    restart_consumer: str,
-    session_id: str | None,
-    source_chat_id: str | None,
-    source_agent: str,
-    running_invocations: list[dict[str, Any]],
-) -> bool:
-    """Allow the first visible-chat restart after this gate is deployed.
-
-    The live backend may still be running the old main.py/ClaudeWrapper code and
-    therefore cannot pass ``--restart-consumer main_streaming_finalizer`` into
-    the Codex MCP bridge yet. The old backend finalizer can still consume the
-    marker and spawn the restart, but only for the visible WebSocket chat path.
-
-    Keep this bootstrap deliberately tiny: one active running_agents entry, it
-    is a chat entry, and it is the same chat/agent that invoked restart_server.
-    Scheduled/invoked agents may carry the same source_chat_id, so any extra
-    entry or non-chat kind fails closed before marker writes.
-    """
-    if restart_consumer != "none":
-        return False
-    trigger_chat_id = source_chat_id or session_id
-    if not trigger_chat_id or len(running_invocations) != 1:
-        return False
-    entry = running_invocations[0]
-    return (
-        entry.get("kind") == "chat"
-        and entry.get("source_chat_id") == trigger_chat_id
-        and entry.get("agent") == source_agent
     )
 
 
@@ -258,6 +228,24 @@ async def restart_server(args: Dict[str, Any]) -> Dict[str, Any]:
             running_invocations = await running_agents.list_source_of_truth()
         except running_agents.RunningAgentsEndpointMissingError as e:
             if restart_consumer != _ALLOWED_RESTART_CONSUMER:
+                if _is_agent_managed_restart_consumer(restart_consumer):
+                    endpoint_rejection_reason = "agent_managed_guard_unavailable"
+                elif restart_consumer == "none":
+                    endpoint_rejection_reason = "no_restart_consumer"
+                else:
+                    endpoint_rejection_reason = "unsupported_restart_consumer"
+                logger.warning(
+                    "RESTART: rejected restart request before marker writes "
+                    "(reason=%s, consumer=%s, "
+                    "source_agent=%s, session_id=%s, source_chat_id=%s, "
+                    "running_agents=endpoint_missing, error=%s)",
+                    endpoint_rejection_reason,
+                    restart_consumer,
+                    source_agent,
+                    session_id,
+                    source_chat_id,
+                    e,
+                )
                 return {
                     "content": [{
                         "type": "text",
@@ -266,7 +254,7 @@ async def restart_server(args: Dict[str, Any]) -> Dict[str, Any]:
                             "This MCP call was not launched with the main.py streaming finalizer "
                             "that performs the clean save and detached restart subprocess spawn, "
                             "and the authoritative running_agents endpoint is not available to "
-                            "prove a legacy visible-chat bootstrap context. "
+                            "validate a Patch-only agent-managed restart context. "
                             "No pending restart or continuation marker was written."
                         ),
                     }],
@@ -288,6 +276,16 @@ async def restart_server(args: Dict[str, Any]) -> Dict[str, Any]:
                 "authoritative read failure."
             )
         except Exception as e:
+            logger.warning(
+                "RESTART: rejected restart request before marker writes "
+                "(reason=running_agents_read_failed, consumer=%s, "
+                "source_agent=%s, session_id=%s, source_chat_id=%s, error=%s)",
+                restart_consumer,
+                source_agent,
+                session_id,
+                source_chat_id,
+                e,
+            )
             return {
                 "content": [{
                     "type": "text",
@@ -299,13 +297,6 @@ async def restart_server(args: Dict[str, Any]) -> Dict[str, Any]:
                 "is_error": True,
             }
 
-        legacy_visible_chat_bootstrap = _legacy_visible_chat_bootstrap_allowed(
-            restart_consumer=restart_consumer,
-            session_id=session_id,
-            source_chat_id=source_chat_id,
-            source_agent=source_agent,
-            running_invocations=running_invocations,
-        )
         agent_managed_restart = False
         agent_managed_restart_error = ""
         if _is_agent_managed_restart_consumer(restart_consumer):
@@ -316,41 +307,59 @@ async def restart_server(args: Dict[str, Any]) -> Dict[str, Any]:
             ) or ""
             agent_managed_restart = not agent_managed_restart_error
 
-        if (
-            restart_consumer != _ALLOWED_RESTART_CONSUMER
-            and not legacy_visible_chat_bootstrap
-            and not agent_managed_restart
-        ):
-            guard_detail = (
-                f" Agent-managed guard detail: {agent_managed_restart_error}."
-                if agent_managed_restart_error
-                else ""
+        acceptance_mode = None
+        if restart_consumer == _ALLOWED_RESTART_CONSUMER:
+            acceptance_mode = _ALLOWED_RESTART_CONSUMER
+        elif agent_managed_restart:
+            acceptance_mode = _AGENT_MANAGED_RESTART_CONSUMER
+
+        if acceptance_mode is None:
+            if restart_consumer == "none":
+                rejection_detail = (
+                    "This MCP call did not provide a restart consumer, so no "
+                    "streaming finalizer or direct-spawn owner is known."
+                )
+                rejection_reason = "no_restart_consumer"
+            elif agent_managed_restart_error:
+                rejection_detail = (
+                    "This MCP call did not satisfy the Patch-only "
+                    f"agent-managed restart guard. Detail: {agent_managed_restart_error}."
+                )
+                rejection_reason = "agent_managed_guard_failed"
+            else:
+                rejection_detail = f"Unsupported restart consumer: {restart_consumer}."
+                rejection_reason = "unsupported_restart_consumer"
+            running_summary = ", ".join(
+                _summarize_running_entry(entry) for entry in running_invocations[:3]
+            )
+            if len(running_invocations) > 3:
+                running_summary += f", +{len(running_invocations) - 3} more"
+            logger.warning(
+                "RESTART: rejected restart request before marker writes "
+                "(reason=%s, consumer=%s, source_agent=%s, session_id=%s, "
+                "source_chat_id=%s, running_invocations=%d%s)",
+                rejection_reason,
+                restart_consumer,
+                source_agent,
+                session_id,
+                source_chat_id,
+                len(running_invocations),
+                f", running_summary={running_summary}" if running_summary else "",
             )
             return {
                 "content": [{
                     "type": "text",
                     "text": (
                         "Error: restart_server cannot safely restart from this invocation context. "
-                        "This MCP call was not launched with the main.py streaming finalizer "
-                        "that performs the clean save and detached restart subprocess spawn, "
-                        "did not match the single-active-visible-chat bootstrap guard, "
-                        "and did not satisfy the Patch-only agent-managed restart guard."
-                        f"{guard_detail} "
+                        f"{rejection_detail} "
+                        "Restart success requires either the main.py streaming finalizer "
+                        "consumer or the Patch-only agent-managed restart guard."
+                        " "
                         "No pending restart or continuation marker was written."
                     ),
                 }],
                 "is_error": True,
             }
-        if legacy_visible_chat_bootstrap:
-            running_agents_bootstrap_note = (
-                "\nWarning: accepted through the legacy visible-chat restart bootstrap path. "
-                "The live backend has not loaded restart_consumer forwarding yet, but "
-                "authoritative running_agents shows this caller is the sole active "
-                "visible chat, whose main.py finalizer can consume pending_restart.json "
-                "and spawn the detached restart subprocess. After this restart loads "
-                "the saved code, visible-chat restarts must use the explicit "
-                "main_streaming_finalizer consumer."
-            )
         if agent_managed_restart:
             running_agents_bootstrap_note = (
                 "\nManaged restart accepted from a scheduled/invoked Patch context. "
@@ -409,6 +418,17 @@ async def restart_server(args: Dict[str, Any]) -> Dict[str, Any]:
         continuation = None
         wrote_continuation = False
         try:
+            logger.info(
+                "RESTART: accepting restart request before marker writes "
+                "(consumer=%s, acceptance_mode=%s, source_agent=%s, session_id=%s, "
+                "source_chat_id=%s, running_invocations=%d)",
+                restart_consumer,
+                acceptance_mode,
+                source_agent,
+                session_id,
+                source_chat_id,
+                len(running_invocations),
+            )
             continuation = rt.save_continuation_state(
                 session_id=session_id,
                 reason=reason,
@@ -424,6 +444,7 @@ async def restart_server(args: Dict[str, Any]) -> Dict[str, Any]:
                 "restart_type": restart_type,
                 "wait_time": wait_time,
                 "restart_consumer": restart_consumer,
+                "acceptance_mode": acceptance_mode,
             }))
         except Exception:
             try:

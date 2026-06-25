@@ -3,8 +3,65 @@ import { ChevronDown, ChevronRight, Brain, Wrench, AlertTriangle, Loader2 } from
 import { clsx } from 'clsx';
 import MDEditor from '@uiw/react-md-editor';
 import { escapeNonHtmlTags } from '../utils/escapeNonHtmlTags';
-import { getToolDisplayName, extractToolSummary } from '../utils/toolDisplay';
+import {
+  getToolDisplayName,
+  extractToolSummary,
+  formatToolParameterValue,
+  recoverToolArgsForDisplay,
+} from '../utils/toolDisplay';
 import type { ContentBlock } from '../types';
+
+const BLOCK_TYPES = new Set(['thinking', 'text', 'tool_use', 'tool_result']);
+
+const isRecord = (value: unknown): value is Record<string, any> =>
+  typeof value === 'object' && value !== null;
+
+const coerceToolInput = (value: unknown): Record<string, unknown> | undefined => {
+  if (isRecord(value) && !Array.isArray(value)) return value;
+  if (typeof value === 'string') {
+    if (!value) return undefined;
+    try {
+      const parsed = JSON.parse(value);
+      return isRecord(parsed) && !Array.isArray(parsed) ? parsed : { raw: parsed };
+    } catch {
+      return { raw: value };
+    }
+  }
+  return value === undefined || value === null ? undefined : { raw: value };
+};
+
+const normalizeBlockForRender = (value: unknown, fallbackId: string): ContentBlock | null => {
+  if (!isRecord(value) || typeof value.type !== 'string' || !BLOCK_TYPES.has(value.type)) {
+    return null;
+  }
+
+  const id = typeof value.id === 'string' && value.id ? value.id : fallbackId;
+  const toolName = typeof value.tool_name === 'string'
+    ? value.tool_name
+    : typeof value.name === 'string'
+      ? value.name
+      : undefined;
+  const toolInput = coerceToolInput(value.tool_input ?? value.input);
+  const toolCallId = typeof value.tool_call_id === 'string'
+    ? value.tool_call_id
+    : value.type === 'tool_use'
+      ? id
+      : undefined;
+
+  return {
+    id,
+    type: value.type as ContentBlock['type'],
+    content: typeof value.content === 'string' ? value.content : '',
+    status: value.status === 'in_progress' ? 'in_progress' : 'complete',
+    tool_name: toolName,
+    tool_call_id: toolCallId,
+    tool_input: toolInput,
+    is_error: typeof value.is_error === 'boolean' ? value.is_error : undefined,
+    raw_output: isRecord(value.raw_output) ? value.raw_output : undefined,
+    started_at: typeof value.started_at === 'number' ? value.started_at : undefined,
+    duration_ms: typeof value.duration_ms === 'number' ? value.duration_ms : undefined,
+  };
+};
 
 // --- ThinkingBlock ---
 
@@ -195,8 +252,14 @@ function ToolChipBlock({ toolUse, toolResult }: ToolChipBlockProps) {
   const isRunning = toolUse.status === 'in_progress';
   const isError = toolUse.is_error || toolResult?.is_error;
   const displayName = getToolDisplayName(toolUse.tool_name || 'tool', !isRunning);
-  const summary = toolUse.tool_input
-    ? extractToolSummary(toolUse.tool_name || '', toolUse.tool_input as Record<string, any>)
+  const displayInput = recoverToolArgsForDisplay(
+    toolUse.tool_name || '',
+    toolUse.tool_input as Record<string, any> | undefined,
+    toolResult?.content
+  );
+  const hasDisplayInput = Object.keys(displayInput).length > 0;
+  const summary = hasDisplayInput
+    ? extractToolSummary(toolUse.tool_name || '', displayInput)
     : undefined;
 
   const toggle = useCallback(() => setExpanded(prev => !prev), []);
@@ -238,23 +301,26 @@ function ToolChipBlock({ toolUse, toolResult }: ToolChipBlockProps) {
         )}
       </button>
 
-      {expanded && (toolUse.tool_input || toolResult?.content) && (
+      {expanded && (hasDisplayInput || toolResult?.content) && (
         <div className={clsx(
           "mt-1.5 ml-2 rounded-lg border p-2.5 text-xs animate-in",
           isError
             ? "bg-red-50/50 border-red-200 dark:bg-red-900/10 dark:border-red-800"
             : "bg-[var(--bg-secondary)] border-[var(--border-color)]"
         )}>
-          {toolUse.tool_input && (
+          {hasDisplayInput && (
             <div className="space-y-1">
-              {Object.entries(toolUse.tool_input).map(([key, value]) => (
+              {Object.entries(displayInput).map(([key, value]) => (
                 <div key={key} className="flex gap-2">
                   <span className="font-mono text-[var(--text-muted)] flex-shrink-0">{key}:</span>
                   <span className={clsx(
                     "font-mono break-all",
                     isError ? "text-red-700 dark:text-red-400" : "text-[var(--text-primary)]"
                   )}>
-                    {String(value).length > 200 ? String(value).slice(0, 200) + '...' : String(value)}
+                    {formatToolParameterValue(
+                      value,
+                      ['agents', 'chain', 'context'].includes(key) || key.includes('prompt') ? 600 : 200
+                    )}
                   </span>
                 </div>
               ))}
@@ -264,7 +330,7 @@ function ToolChipBlock({ toolUse, toolResult }: ToolChipBlockProps) {
           {/* Tool result output */}
           {toolResult?.content && (
             <>
-              {toolUse.tool_input && (
+              {hasDisplayInput && (
                 <div className={clsx(
                   "border-t my-2",
                   isError ? "border-red-200 dark:border-red-800" : "border-[var(--border-color)]"
@@ -294,13 +360,16 @@ interface BlockRendererProps {
 }
 
 export const BlockRenderer: React.FC<BlockRendererProps> = React.memo(({ blocks, onOpenFile }) => {
+  const renderBlocks = blocks
+    .map((block, index) => normalizeBlockForRender(block, `block-${index}`))
+    .filter((block): block is ContentBlock => block !== null);
   const elements: React.ReactNode[] = [];
   let i = 0;
-  while (i < blocks.length) {
-    const block = blocks[i];
+  while (i < renderBlocks.length) {
+    const block = renderBlocks[i];
     if (block.type === 'tool_use') {
       // Look ahead for matching tool_result
-      const result = blocks.find(b =>
+      const result = renderBlocks.find(b =>
         b.type === 'tool_result' && b.tool_call_id === block.tool_call_id
       );
       // Tool chips render standalone — no bubble wrapper
@@ -309,7 +378,7 @@ export const BlockRenderer: React.FC<BlockRendererProps> = React.memo(({ blocks,
       );
       i++;
       // Skip the tool_result if it's the next block
-      if (i < blocks.length && blocks[i].type === 'tool_result' && blocks[i].tool_call_id === block.tool_call_id) {
+      if (i < renderBlocks.length && renderBlocks[i].type === 'tool_result' && renderBlocks[i].tool_call_id === block.tool_call_id) {
         i++;
       }
       continue;

@@ -1,7 +1,7 @@
 import React, { useState, useCallback } from 'react';
 import { Wrench, ChevronDown, ChevronRight, AlertTriangle } from 'lucide-react';
 import { clsx } from 'clsx';
-import { getToolDisplayName, extractToolSummary } from '../utils/toolDisplay';
+import { getToolDisplayName, extractToolSummary, formatToolParameterValue, recoverToolArgsForDisplay } from '../utils/toolDisplay';
 
 export interface ToolCallData {
   id: string;
@@ -21,23 +21,16 @@ function formatArgs(args: Record<string, any>): { key: string; value: string }[]
   if (!args || typeof args !== 'object') return [];
 
   return Object.entries(args).map(([key, value]) => {
-    let display: string;
-    if (typeof value === 'string') {
-      display = value.length > 200 ? value.slice(0, 200) + '…' : value;
-    } else if (typeof value === 'object' && value !== null) {
-      const json = JSON.stringify(value);
-      display = json.length > 200 ? json.slice(0, 200) + '…' : json;
-    } else {
-      display = String(value);
-    }
-    return { key, value: display };
+    const maxLen = ['agents', 'chain', 'context'].includes(key) || key.includes('prompt') ? 600 : 200;
+    return { key, value: formatToolParameterValue(value, maxLen) };
   });
 }
 
 const ToolChip: React.FC<{ tool: ToolCallData }> = ({ tool }) => {
   const [expanded, setExpanded] = useState(false);
   const displayName = getToolDisplayName(tool.tool_name, true);
-  const summary = extractToolSummary(tool.tool_name, tool.args);
+  const displayArgs = recoverToolArgsForDisplay(tool.tool_name, tool.args, tool.output_summary);
+  const summary = extractToolSummary(tool.tool_name, displayArgs);
   const isError = tool.is_error;
 
   const toggle = useCallback(() => setExpanded(prev => !prev), []);
@@ -84,7 +77,7 @@ const ToolChip: React.FC<{ tool: ToolCallData }> = ({ tool }) => {
         )}>
           {/* Args */}
           <div className="space-y-1">
-            {formatArgs(tool.args).map(({ key, value }) => (
+            {formatArgs(displayArgs).map(({ key, value }) => (
               <div key={key} className="flex gap-2">
                 <span className="font-mono text-[var(--text-muted)] flex-shrink-0">{key}:</span>
                 <span className={clsx(

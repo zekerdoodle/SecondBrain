@@ -16,6 +16,14 @@ export const TOOL_DISPLAY_NAMES: Record<string, [string, string]> = {
   'Grep': ['Searching content', 'Searched content'],
   'WebSearch': ['Searching the web', 'Searched the web'],
   'WebFetch': ['Fetching page', 'Fetched page'],
+  'ToolSearch': ['Searching tools', 'Searched tools'],
+  'ImageGeneration': ['Generating image', 'Generated image'],
+  'web_search_call': ['Searching the web', 'Searched the web'],
+  'tool_search_call': ['Searching tools', 'Searched tools'],
+  'local_shell_call': ['Running command', 'Ran command'],
+  'fileChange': ['Editing file', 'Edited file'],
+  'function_call': ['Running function', 'Ran function'],
+  'custom_tool_call': ['Running custom tool', 'Ran custom tool'],
   'Task': ['Running task', 'Ran task'],
   'TaskOutput': ['Reading task output', 'Read task output'],
   'TaskStop': ['Stopping task', 'Stopped task'],
@@ -23,6 +31,7 @@ export const TOOL_DISPLAY_NAMES: Record<string, [string, string]> = {
 
   // MCP Brain tools - Agents
   'mcp__brain__invoke_agent': ['Invoking agent', 'Invoked agent'],
+  'mcp__brain__invoke_agent_parallel': ['Invoking agents', 'Invoked agents'],
   'mcp__brain__invoke_agent_chain': ['Running agent chain', 'Ran agent chain'],
   'mcp__brain__schedule_agent': ['Scheduling agent', 'Scheduled agent'],
 
@@ -133,6 +142,23 @@ export const TOOL_DISPLAY_NAMES: Record<string, [string, string]> = {
   'mcp__brain__fetch_skill': ['Loading skill', 'Loaded skill'],
 };
 
+const humanizeRawToolName = (toolName: string): string => {
+  const text = toolName
+    .replace(/^mcp__(?:[^_]+)__/, '')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+
+  if (!text || text === 'tool' || text === 'unknown' || text === 'unknown tool') {
+    return '';
+  }
+
+  return text;
+};
+
 /**
  * Get a human-friendly display name for a tool.
  * @param toolName - raw tool name
@@ -163,6 +189,29 @@ export const getToolDisplayName = (toolName: string, done: boolean = false): str
     // Capitalize first letter
     return action.charAt(0).toUpperCase() + action.slice(1);
   }
+  if (lowerToolName.includes('websearch') || lowerToolName.includes('web_search')) {
+    return TOOL_DISPLAY_NAMES.WebSearch[idx];
+  }
+  if (lowerToolName.includes('webfetch') || lowerToolName.includes('web_fetch')) {
+    return TOOL_DISPLAY_NAMES.WebFetch[idx];
+  }
+  if (lowerToolName.includes('filechange') || lowerToolName.includes('file_change')) {
+    return TOOL_DISPLAY_NAMES.fileChange[idx];
+  }
+  if (lowerToolName.includes('local_shell') || lowerToolName.includes('commandexecution')) {
+    return TOOL_DISPLAY_NAMES.Bash[idx];
+  }
+  if (lowerToolName.includes('tool_search')) {
+    return TOOL_DISPLAY_NAMES.ToolSearch[idx];
+  }
+  if (lowerToolName.includes('imagegeneration') || lowerToolName.includes('image_generation')) {
+    return TOOL_DISPLAY_NAMES.ImageGeneration[idx];
+  }
+
+  const humanizedName = humanizeRawToolName(toolName);
+  if (humanizedName) {
+    return `${done ? 'Ran' : 'Running'} ${humanizedName}`;
+  }
 
   return done ? 'Ran tool' : 'Running tool';
 };
@@ -176,10 +225,106 @@ function truncateSummary(s: string, maxLen: number = MAX_SUMMARY_LENGTH): string
   return s.slice(0, maxLen - 3) + '...';
 }
 
+export function formatToolParameterValue(value: unknown, maxLen: number = 200): string {
+  let display: string;
+  if (typeof value === 'string') {
+    display = value;
+  } else if (value === undefined) {
+    display = '';
+  } else if (value === null) {
+    display = 'null';
+  } else if (typeof value === 'object') {
+    try {
+      display = JSON.stringify(value);
+    } catch {
+      display = String(value);
+    }
+  } else {
+    display = String(value);
+  }
+
+  if (display.length <= maxLen) return display;
+  return display.slice(0, Math.max(0, maxLen - 3)) + '...';
+}
+
+const isRecord = (value: unknown): value is Record<string, any> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const hasDisplaySignal = (value: unknown): boolean => {
+  if (typeof value === 'string') return value.trim().length > 0;
+  if (Array.isArray(value)) return value.some(hasDisplaySignal);
+  return value !== undefined && value !== null;
+};
+
+const isNativeWebToolName = (toolName: string): boolean => {
+  const normalized = toolName.replace(/[_-]+/g, '').toLowerCase();
+  return ['websearch', 'websearchcall', 'webfetch', 'webfetchcall'].includes(normalized);
+};
+
+const webArgsHaveSignal = (args: Record<string, any>): boolean => {
+  if (['query', 'queries', 'url', 'pattern'].some(key => hasDisplaySignal(args[key]))) {
+    return true;
+  }
+  const action = isRecord(args.action) ? args.action : {};
+  return ['query', 'queries', 'url', 'pattern'].some(key => hasDisplaySignal(action[key]));
+};
+
+const extractWebPayload = (payload: Record<string, any>): Record<string, any> => {
+  const recovered: Record<string, any> = {};
+  for (const key of ['query', 'queries', 'url', 'pattern']) {
+    if (hasDisplaySignal(payload[key])) recovered[key] = payload[key];
+  }
+  const action = isRecord(payload.action) ? payload.action : {};
+  const actionPayload: Record<string, any> = {};
+  for (const key of ['type', 'query', 'queries', 'url', 'pattern']) {
+    if (hasDisplaySignal(action[key])) actionPayload[key] = action[key];
+  }
+  if (Object.keys(actionPayload).length > 0) {
+    recovered.action = actionPayload;
+    for (const key of ['query', 'queries', 'url', 'pattern']) {
+      if (!(key in recovered) && hasDisplaySignal(actionPayload[key])) {
+        recovered[key] = actionPayload[key];
+      }
+    }
+  }
+  return recovered;
+};
+
+export function recoverToolArgsForDisplay(
+  toolName: string,
+  args: Record<string, any> | undefined,
+  outputSummary?: string
+): Record<string, any> {
+  const current = args && typeof args === 'object' ? args : {};
+  if (!isNativeWebToolName(toolName) || webArgsHaveSignal(current) || !outputSummary) {
+    return current;
+  }
+  try {
+    const parsed = JSON.parse(outputSummary);
+    if (!isRecord(parsed)) return current;
+    const recovered = extractWebPayload(parsed);
+    if (Object.keys(recovered).length === 0) return current;
+    return { ...current, ...recovered };
+  } catch {
+    return current;
+  }
+}
+
 function extractBasename(path: string): string {
   const parts = path.split('/');
   return parts[parts.length - 1] || path;
 }
+
+const summarizeAgentList = (items: unknown): string => {
+  if (!Array.isArray(items) || items.length === 0) return '';
+  const names = items
+    .map(item => item && typeof item === 'object' && 'agent' in item ? String((item as Record<string, unknown>).agent || '') : '')
+    .filter(Boolean);
+  if (names.length > 0) {
+    return truncateSummary(names.join(' -> '));
+  }
+  return `${items.length} agent${items.length === 1 ? '' : 's'}`;
+};
 
 export function extractToolSummary(toolName: string, argsJson: string | Record<string, any>): string {
   try {
@@ -189,6 +334,12 @@ export function extractToolSummary(toolName: string, argsJson: string | Record<s
     const name = toolName.toLowerCase();
 
     // Agent invocations
+    if (name.includes('invoke_agent_parallel')) {
+      return summarizeAgentList(args.agents);
+    }
+    if (name.includes('invoke_agent_chain')) {
+      return summarizeAgentList(args.chain || args.agents) || truncateSummary(args.initial_prompt || '');
+    }
     if (name.includes('invoke_agent') || name === 'task') {
       return truncateSummary(args.agent_name || args.agent || args.description || args.prompt?.slice(0, 50) || '');
     }
@@ -215,13 +366,20 @@ export function extractToolSummary(toolName: string, argsJson: string | Record<s
 
     // Web tools
     if (name === 'websearch' || name.includes('web_search') || name.includes('search')) {
-      return truncateSummary(args.query || args.search_query || '');
+      const action = args.action && typeof args.action === 'object' ? args.action : {};
+      const queries = args.queries || action.queries;
+      if (Array.isArray(queries) && queries.length > 0) {
+        return truncateSummary(queries.join(', '));
+      }
+      return truncateSummary(args.query || action.query || args.search_query || action.pattern || '');
     }
     if (name === 'webfetch' || name.includes('page_parser') || name.includes('fetch')) {
+      const action = args.action && typeof args.action === 'object' ? args.action : {};
+      const url = args.url || action.url || '';
       try {
-        return truncateSummary(new URL(args.url || '').hostname);
+        return truncateSummary(new URL(url).hostname);
       } catch {
-        return truncateSummary(args.url || '');
+        return truncateSummary(url);
       }
     }
 

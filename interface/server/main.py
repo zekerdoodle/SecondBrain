@@ -71,13 +71,14 @@ STARTUP_ENV_KEYS, STARTUP_ENV_ERROR = _load_startup_env_file(STARTUP_ENV_FILE)
 from claude_wrapper import ClaudeWrapper, ChatManager, ConversationState
 from notifications import should_notify, send_notification, NotificationDecision
 from message_wal import init_wal, get_wal, MessageWAL
-from tool_serializers import serialize_tool_call, format_tool_for_history
+from tool_serializers import serialize_tool_call, format_tool_for_history, recover_tool_args_from_output
 from tool_output_artifacts import (
     DEFAULT_DISPLAY_LIMIT_CHARS,
     compact_tool_output_for_display,
     maybe_write_raw_tool_output_artifact,
     with_truncation_flags,
 )
+from block_normalization import canonicalize_blocks
 from process_registry import register_process, deregister_by_pid, clear_registry
 import running_agents
 from mention_parser import parse_mentions
@@ -2383,6 +2384,15 @@ class InternalAgentInvokeRequest(BaseModel):
     worktree_path: Optional[str] = None
 
 
+class InternalMessageReactionRequest(BaseModel):
+    chat_id: str
+    emoji: str
+    reactor: str
+    message_id: Optional[str] = None
+    message_starts_with: Optional[str] = None
+    remove: bool = False
+
+
 INTERNAL_AGENT_INVOKE_MODES = {"foreground", "ping", "trust"}
 
 
@@ -2440,6 +2450,26 @@ async def internal_running_agents(request: Request, agent: Optional[str] = None,
         raise HTTPException(status_code=403, detail="Forbidden")
     entries = await running_agents.list_all(filter_agent=agent, filter_kind=kind)
     return {"entries": entries, "source": "backend", "backend_pid": os.getpid()}
+
+
+@app.post("/api/internal/message-reaction")
+async def internal_message_reaction(req: InternalMessageReactionRequest, request: Request):
+    """Apply an agent-originated message reaction in the backend-owned live state."""
+    token = request.headers.get("X-Second-Brain-Internal-Token")
+    if not token or token != INTERNAL_AGENT_INVOKE_TOKEN:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    try:
+        return await apply_message_reaction(
+            chat_id=req.chat_id,
+            message_id=req.message_id,
+            message_starts_with=req.message_starts_with,
+            emoji=req.emoji,
+            reactor=req.reactor,
+            remove=req.remove,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.post("/api/internal/agent-invoke")
@@ -3612,6 +3642,7 @@ class ChatSearchResult(BaseModel):
     message_id: str
     chat_id: str
     chat_title: str
+    chat_agent: Optional[str] = None
     role: str
     content_preview: str
     timestamp: float
@@ -3632,6 +3663,7 @@ def search_chats(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     roles: Optional[str] = None,
+    agent: Optional[str] = None,
     exclude_system: bool = True,
     semantic_only: bool = False,
     limit: int = 20
@@ -3647,7 +3679,12 @@ def search_chats(
     if index is None:
         return ChatSearchResponse(results=[], total_count=0, semantic_pending=False, query_time_ms=0)
 
-    from contextual_memory.chat_embedding_index import keyword_search, search as semantic_search
+    from contextual_memory.chat_embedding_index import (
+        expand_agent_names,
+        hybrid_search,
+        keyword_search,
+        search as semantic_search,
+    )
 
     # Build date range filter
     date_range = None
@@ -3662,20 +3699,53 @@ def search_chats(
     # Role filtering: we'll filter results after the search since the Qwen3 index
     # doesn't have a built-in role filter
     role_set = set(roles.split(",")) if roles else None
+    agent_filter = None
+    if agent and agent.strip().lower() != "all":
+        agent_filter = expand_agent_names(agent)
 
     if semantic_only:
         # Phase 2: Semantic search using Qwen3 embeddings
         # This requires the embedding model to be loaded — may fail on first call
         try:
-            raw_results = semantic_search(index, q, k=limit * 2, date_range=date_range)
+            raw_results = semantic_search(
+                index,
+                q,
+                k=limit * 2,
+                date_range=date_range,
+                agent_filter=agent_filter,
+                exclude_system=exclude_system,
+            )
             match_type = "semantic"
         except Exception as e:
             logger.warning(f"Semantic search failed (model may not be loaded): {e}")
             return ChatSearchResponse(results=[], total_count=0, semantic_pending=False, query_time_ms=0)
     else:
-        # Phase 1: Fast keyword search (no model needed)
-        raw_results = keyword_search(index, q, k=limit * 2, date_range=date_range)
-        match_type = "keyword"
+        # Default UI path: let the backend rank hybrid results so keyword and
+        # semantic scores are normalized together. If embeddings are unavailable
+        # or the model is cold, fall back to keyword search rather than asking the
+        # client to merge raw scores.
+        try:
+            raw_results = hybrid_search(
+                index,
+                q,
+                q,
+                k=limit * 2,
+                date_range=date_range,
+                agent_filter=agent_filter,
+                exclude_system=exclude_system,
+            )
+            match_type = "both"
+        except Exception as e:
+            logger.warning(f"Hybrid chat search failed, falling back to keyword search: {e}")
+            raw_results = keyword_search(
+                index,
+                q,
+                k=limit * 2,
+                date_range=date_range,
+                agent_filter=agent_filter,
+                exclude_system=exclude_system,
+            )
+            match_type = "keyword"
 
     # Convert to API response format
     results = []
@@ -3699,6 +3769,7 @@ def search_chats(
             message_id=meta.message_id,
             chat_id=meta.chat_id,
             chat_title=meta.chat_title,
+            chat_agent=meta.chat_agent,
             role=meta.role,
             content_preview=preview,
             timestamp=meta.timestamp or 0.0,
@@ -3714,7 +3785,7 @@ def search_chats(
     return ChatSearchResponse(
         results=results,
         total_count=len(results),
-        semantic_pending=not semantic_only,  # Semantic still pending if this was keyword-only
+        semantic_pending=False,
         query_time_ms=query_time,
     )
 
@@ -4532,11 +4603,28 @@ def _build_tool_end_block_events(
     final_content: str,
     is_error: bool,
     raw_output_artifact: Optional[Dict[str, Any]],
+    tool_name: Optional[str] = None,
+    raw_output_text: str = "",
 ) -> List[dict]:
     msg_id_blk, events = _ensure_assistant_message_events(ss, state_key)
 
     for block in ss._current_blocks:
         if block.type == "tool_use" and block.tool_call_id == tool_call_id:
+            recovered_input = recover_tool_args_from_output(
+                tool_name or block.tool_name or "",
+                block.tool_input or {},
+                raw_output_text or final_content,
+            )
+            if recovered_input != (block.tool_input or {}):
+                block.tool_input = recovered_input
+                events.append({
+                    "type": "block_update",
+                    "seq": ss._next_seq(),
+                    "sessionId": state_key,
+                    "message_id": msg_id_blk,
+                    "block_id": block.id,
+                    "block": block.to_dict(),
+                })
             block.status = "complete"
             if block.started_at:
                 block.duration_ms = int((time.time() - block.started_at) * 1000)
@@ -4582,6 +4670,90 @@ def _build_tool_end_block_events(
             "block": result_block.to_dict(),
         })
     return events
+
+
+def _is_codex_app_server_post_side_effect_error(event: Dict[str, Any]) -> bool:
+    return (
+        event.get("source") == "codex_app_server"
+        and event.get("error_kind") == "codex_app_server_post_side_effect_no_fallback"
+        and event.get("no_fallback_after_side_effects") is True
+    )
+
+
+def _is_invoke_agent_tool_name(tool_name: Optional[str]) -> bool:
+    return bool(tool_name) and str(tool_name).endswith("invoke_agent")
+
+
+def _parse_tool_args(args_raw: Any) -> Dict[str, Any]:
+    if isinstance(args_raw, dict):
+        return dict(args_raw)
+    if isinstance(args_raw, str):
+        try:
+            parsed = json.loads(args_raw)
+        except Exception:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _interrupted_invoke_agent_receipt(tool_input: Dict[str, Any]) -> str:
+    agent = str(tool_input.get("agent") or "unknown").strip() or "unknown"
+    mode = str(tool_input.get("mode") or "foreground").strip() or "foreground"
+    receipt_parts = [f"agent={agent}", f"mode={mode}"]
+    if tool_input.get("conversation_id"):
+        receipt_parts.append(f"conversation_id={tool_input['conversation_id']}")
+    receipt = "; ".join(receipt_parts)
+    return (
+        "Foreground agent work started before the runner failed.\n"
+        "Second Brain did not retry it to avoid duplicate side effects.\n"
+        "It may still be running; check active agents, the requested report path, "
+        "or the agent conversation if needed.\n\n"
+        f"Receipt: {receipt}"
+    )
+
+
+def _finalize_interrupted_app_server_invoke_agent_tools(
+    ss: SessionStreamingState,
+    state_key: str,
+    pending_tool_calls: Dict[str, dict],
+) -> Tuple[List[dict], List[dict]]:
+    """Close incomplete foreground invoke_agent blocks after App Server failure."""
+    events: List[dict] = []
+    serialized_tool_calls: List[dict] = []
+
+    for block in list(ss._current_blocks):
+        if block.type != "tool_use" or block.status != "in_progress":
+            continue
+        tool_id = block.tool_call_id
+        pending = pending_tool_calls.get(tool_id) if tool_id else None
+        tool_name = block.tool_name or (pending or {}).get("name")
+        if not _is_invoke_agent_tool_name(tool_name):
+            continue
+
+        tool_input = block.tool_input if isinstance(block.tool_input, dict) else {}
+        if not tool_input:
+            tool_input = _parse_tool_args((pending or {}).get("args"))
+        receipt = _interrupted_invoke_agent_receipt(tool_input)
+        events.extend(_build_tool_end_block_events(ss, state_key, tool_id, receipt, True, None))
+
+        stashed = pending_tool_calls.pop(tool_id, None) if tool_id else None
+        args_raw = stashed["args"] if stashed else tool_input
+        history_tool_name = stashed["name"] if stashed else (tool_name or "mcp__brain__invoke_agent")
+        try:
+            tc = serialize_tool_call(
+                tool_name=history_tool_name,
+                args_raw=args_raw,
+                output=receipt,
+                is_error=True,
+                tool_id=tool_id,
+            )
+            tc["timestamp"] = int(time.time())
+            serialized_tool_calls.append(tc)
+        except Exception as ser_err:
+            logger.warning(f"Interrupted invoke_agent serialization error: {ser_err}")
+
+    return events, serialized_tool_calls
+
 
 # Map of session_id -> streaming state
 session_streaming_states: Dict[str, SessionStreamingState] = {}
@@ -6516,6 +6688,8 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
                         compact_tool_output_for_display(tool_output_raw, raw_output_artifact),
                         is_error,
                         raw_output_artifact,
+                        tool_name=tool_name,
+                        raw_output_text=tool_output_raw,
                     )
                     for evt in events_to_broadcast:
                         await broadcast_to_session(state_key, evt)
@@ -6660,6 +6834,25 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
             elif event_type == "error":
                 had_error = True
                 state_key = preserve_chat_id or new_session_id or streaming_state_key
+                if _is_codex_app_server_post_side_effect_error(event):
+                    ss = session_streaming_states.get(state_key)
+                    if ss:
+                        receipt_events, interrupted_tool_calls = _finalize_interrupted_app_server_invoke_agent_tools(
+                            ss,
+                            state_key,
+                            pending_tool_calls,
+                        )
+                        for evt in receipt_events:
+                            await broadcast_to_session(state_key, evt)
+                        for tc in interrupted_tool_calls:
+                            completed_tool_calls.append((len(all_segments), tc))
+                        if interrupted_tool_calls:
+                            has_active = any(
+                                b.type == "tool_use" and b.status == "in_progress"
+                                for b in ss._current_blocks
+                            )
+                            if not has_active:
+                                stop_tool_heartbeat(state_key)
                 await broadcast_to_session(state_key, event)
 
             elif event_type == "result_meta":
@@ -7282,31 +7475,94 @@ async def handle_interrupt(websocket: WebSocket, data: dict):
         })
 
 
-async def handle_reaction(websocket: WebSocket, data: dict):
-    """
-    Handle emoji reaction toggle from a user.
+def _reaction_visible_text(msg: dict) -> str:
+    """Extract user-visible message text for message_starts_with matching."""
+    content = msg.get("content", "")
+    if isinstance(content, str) and content.strip():
+        return content.strip()
 
-    Adds/removes a reaction on a message, persists to disk, updates
-    in-memory streaming state if active, and broadcasts to all clients.
-    """
-    session_id = data.get("sessionId")
-    message_id = data.get("messageId")
-    emoji = data.get("emoji", "")
-    remove = data.get("remove", False)
-    reactor = "user"
+    blocks = msg.get("blocks", [])
+    if isinstance(blocks, list):
+        for block in blocks:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type", "") in ("thinking", "tool_use", "tool_result"):
+                continue
+            text = block.get("content", "") or block.get("text", "")
+            if isinstance(text, str) and text.strip():
+                return text.strip()
 
-    if not session_id or not message_id or not emoji:
-        logger.warning(f"REACTION: Missing required fields: session={session_id}, msg={message_id}, emoji={emoji}")
-        return
+    if isinstance(content, list):
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type", "") in ("thinking", "tool_use", "tool_result"):
+                continue
+            text = block.get("text", "")
+            if isinstance(text, str) and text.strip():
+                return text.strip()
+
+    return ""
+
+
+def _resolve_reaction_message_id(chat_data: dict, starts_with: str) -> Optional[str]:
+    prefix = (starts_with or "").strip().lower()
+    if not prefix:
+        return None
+
+    for source_key in ("display_messages", "messages"):
+        for msg in reversed(chat_data.get(source_key, []) or []):
+            visible = _reaction_visible_text(msg)
+            if visible.lower().startswith(prefix):
+                msg_id = msg.get("id")
+                if msg_id:
+                    return msg_id
+    return None
+
+
+async def apply_message_reaction(
+    *,
+    chat_id: str,
+    message_id: Optional[str],
+    emoji: str,
+    reactor: str,
+    remove: bool = False,
+    message_starts_with: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Apply a message reaction through the backend-owned state and broadcast registry.
+
+    This is shared by user-originated WebSocket reactions and agent/MCP
+    message_react calls relayed from Codex stdio processes.
+    """
+    chat_id = (chat_id or "").strip()
+    message_id = (message_id or "").strip()
+    message_starts_with = (message_starts_with or "").strip()
+    emoji = (emoji or "").strip()
+    reactor = (reactor or "").strip()
+    remove = bool(remove)
+
+    if not chat_id:
+        raise ValueError("chat_id is required")
+    if not message_id and not message_starts_with:
+        raise ValueError("provide either message_id or message_starts_with")
+    if not emoji:
+        raise ValueError("emoji is required")
+    if not reactor:
+        raise ValueError("reactor is required")
 
     # Load chat from disk (ChatManager.save_chat uses FileLock for atomicity)
-    chat_data = chat_manager.load_chat(session_id)
+    chat_data = chat_manager.load_chat(chat_id)
     if not chat_data:
-        logger.warning(f"REACTION: Chat {session_id} not found")
-        return
+        raise ValueError(f"chat '{chat_id}' not found")
 
-    def _toggle_reaction(msg: dict) -> bool:
-        """Toggle reaction on a single message dict. Returns True if found."""
+    if not message_id and message_starts_with:
+        resolved_id = _resolve_reaction_message_id(chat_data, message_starts_with)
+        if not resolved_id:
+            raise ValueError(f"no message found starting with '{message_starts_with[:50]}...'")
+        message_id = resolved_id
+
+    def _set_reaction(msg: dict) -> bool:
         if msg.get("id") != message_id:
             return False
         reactions = msg.setdefault("reactions", {})
@@ -7320,57 +7576,86 @@ async def handle_reaction(websocket: WebSocket, data: dict):
             reactors = reactions.setdefault(emoji, [])
             if reactor not in reactors:
                 reactors.append(reactor)
-        # Clean up empty reactions dict
         if not reactions:
             msg.pop("reactions", None)
         return True
 
-    # Update in both messages and display_messages arrays
     found = False
-    for msg in chat_data.get("messages", []):
-        if _toggle_reaction(msg):
+    for msg in chat_data.get("messages", []) or []:
+        if _set_reaction(msg):
             found = True
             break
-    for msg in chat_data.get("display_messages", []):
-        if _toggle_reaction(msg):
+    for msg in chat_data.get("display_messages", []) or []:
+        if _set_reaction(msg):
             found = True
             break
 
     if not found:
-        logger.warning(f"REACTION: Message {message_id} not found in chat {session_id}")
-        return
+        raise ValueError(f"message '{message_id}' not found")
 
-    # Persist
-    chat_manager.save_chat(session_id, chat_data)
+    # Persist first so reload/subscription state and live broadcast agree.
+    chat_manager.save_chat(chat_id, chat_data)
 
-    # Update in-memory conversation state (used by _collect_pending_reactions)
-    conv = active_conversations.get(session_id)
+    # Keep active in-memory state aligned so later turn saves cannot overwrite the
+    # reaction with a stale pre-reaction message object.
+    conv = active_conversations.get(chat_id)
     if conv:
         for msg in conv.messages:
-            _toggle_reaction(msg)
+            _set_reaction(msg)
 
-    # Update in-memory streaming state if active
-    ss = session_streaming_states.get(session_id)
+    ss = session_streaming_states.get(chat_id)
     if ss:
         for msg in ss.messages:
-            _toggle_reaction(msg)
+            _set_reaction(msg)
 
-    # Get final reactions for the message (from the authoritative disk copy)
     final_reactions = None
-    for msg in chat_data.get("display_messages", chat_data.get("messages", [])):
-        if msg.get("id") == message_id:
-            final_reactions = msg.get("reactions")
+    for source_key in ("display_messages", "messages"):
+        for msg in chat_data.get(source_key, []) or []:
+            if msg.get("id") == message_id:
+                final_reactions = msg.get("reactions")
+                break
+        if final_reactions is not None:
             break
 
-    # Broadcast to all clients viewing this session
-    await broadcast_to_session(session_id, {
+    payload = {
         "type": "reaction_update",
-        "sessionId": session_id,
+        "sessionId": chat_id,
         "messageId": message_id,
         "reactions": final_reactions or {},
-    })
+    }
+    await broadcast_to_session(chat_id, payload)
 
-    logger.info(f"REACTION: {'Removed' if remove else 'Added'} {emoji} on {message_id} in {session_id}")
+    logger.info(
+        f"REACTION: {'Removed' if remove else 'Added'} {emoji} by {reactor} on {message_id} in {chat_id}"
+    )
+    return {"status": "ok", "message_id": message_id, "reactions": final_reactions or {}}
+
+
+async def handle_reaction(websocket: WebSocket, data: dict):
+    """
+    Handle emoji reaction toggle from a user.
+
+    Adds/removes a reaction on a message, persists to disk, updates
+    in-memory streaming state if active, and broadcasts to all clients.
+    """
+    session_id = data.get("sessionId")
+    message_id = data.get("messageId")
+    emoji = data.get("emoji", "")
+    remove = data.get("remove", False)
+
+    try:
+        await apply_message_reaction(
+            chat_id=session_id,
+            message_id=message_id,
+            message_starts_with=None,
+            emoji=emoji,
+            reactor="user",
+            remove=remove,
+        )
+    except ValueError as e:
+        logger.warning(
+            f"REACTION: Could not apply user reaction: session={session_id}, msg={message_id}, emoji={emoji}, error={e}"
+        )
 
 
 async def handle_slash_command_ws(websocket: WebSocket, data: dict):
@@ -7760,7 +8045,8 @@ def _build_agent_display_messages(prompt: str, result, agent_name: str) -> list:
         "status": "complete",
     }
 
-    blocks = getattr(result, "blocks", None) if result.status == "success" else None
+    result_blocks = getattr(result, "blocks", None) if result.status == "success" else None
+    blocks = canonicalize_blocks(result_blocks) if result_blocks else None
 
     if blocks:
         # Always populate content with text fallback for conversation history.
