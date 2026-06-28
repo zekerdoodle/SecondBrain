@@ -3680,9 +3680,9 @@ def search_chats(
         return ChatSearchResponse(results=[], total_count=0, semantic_pending=False, query_time_ms=0)
 
     from contextual_memory.chat_embedding_index import (
+        conversation_hybrid_search,
+        conversation_keyword_search,
         expand_agent_names,
-        hybrid_search,
-        keyword_search,
         search as semantic_search,
     )
 
@@ -3696,9 +3696,7 @@ def search_chats(
         if date_to:
             date_range["end"] = dt.fromisoformat(date_to).timestamp()
 
-    # Role filtering: we'll filter results after the search since the Qwen3 index
-    # doesn't have a built-in role filter
-    role_set = set(roles.split(",")) if roles else None
+    role_set = {role.strip() for role in roles.split(",") if role.strip()} if roles else None
     agent_filter = None
     if agent and agent.strip().lower() != "all":
         agent_filter = expand_agent_names(agent)
@@ -3710,11 +3708,23 @@ def search_chats(
             raw_results = semantic_search(
                 index,
                 q,
-                k=limit * 2,
+                k=limit * 10,
                 date_range=date_range,
                 agent_filter=agent_filter,
                 exclude_system=exclude_system,
             )
+            seen_chats = set()
+            collapsed_results = []
+            for meta, score in raw_results:
+                if role_set and meta.role not in role_set:
+                    continue
+                if meta.chat_id in seen_chats:
+                    continue
+                seen_chats.add(meta.chat_id)
+                collapsed_results.append((meta, score))
+                if len(collapsed_results) >= limit:
+                    break
+            raw_results = collapsed_results
             match_type = "semantic"
         except Exception as e:
             logger.warning(f"Semantic search failed (model may not be loaded): {e}")
@@ -3725,38 +3735,33 @@ def search_chats(
         # or the model is cold, fall back to keyword search rather than asking the
         # client to merge raw scores.
         try:
-            raw_results = hybrid_search(
+            raw_results = conversation_hybrid_search(
                 index,
                 q,
                 q,
-                k=limit * 2,
+                k=limit,
                 date_range=date_range,
                 agent_filter=agent_filter,
                 exclude_system=exclude_system,
+                role_filter=role_set,
             )
             match_type = "both"
         except Exception as e:
             logger.warning(f"Hybrid chat search failed, falling back to keyword search: {e}")
-            raw_results = keyword_search(
+            raw_results = conversation_keyword_search(
                 index,
                 q,
-                k=limit * 2,
+                k=limit,
                 date_range=date_range,
                 agent_filter=agent_filter,
                 exclude_system=exclude_system,
+                role_filter=role_set,
             )
             match_type = "keyword"
 
     # Convert to API response format
     results = []
     for meta, score in raw_results:
-        # Role filter
-        if role_set and meta.role not in role_set:
-            continue
-
-        # Exclude system/scheduled chats (agent-only chats without user messages)
-        # We keep all results for now since the index already filters short messages
-
         # Get full text for highlighting if available
         if index.texts and meta.doc_idx < len(index.texts):
             full_text = index.texts[meta.doc_idx]
@@ -3797,7 +3802,20 @@ def refresh_search_index():
     from contextual_memory.chat_embedding_index import load_index
     _chat_index = load_index()
     msg_count = len(_chat_index.metadata) if _chat_index else 0
-    return {"status": "ok", "message": f"Index reloaded: {msg_count} messages"}
+    vector_count = len(_chat_index.vectors) if _chat_index else 0
+    keyword_only_count = max(0, msg_count - vector_count)
+    chat_count = len(_chat_index.chat_mtimes) if _chat_index else 0
+    built_at = _chat_index.built_at if _chat_index else 0.0
+    status = "ok" if _chat_index else "missing"
+    return {
+        "status": status,
+        "message": f"Index reloaded: {msg_count} messages",
+        "message_count": msg_count,
+        "vector_count": vector_count,
+        "keyword_only_count": keyword_only_count,
+        "chat_count": chat_count,
+        "built_at": built_at,
+    }
 
 
 

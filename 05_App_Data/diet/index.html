@@ -83,6 +83,24 @@ textarea { resize: vertical; min-height: 60px; }
 /* === GREETING === */
 .greeting { font-size: 24px; font-weight: 700; margin-bottom: 4px; }
 .greeting-sub { font-size: var(--font-size-md); color: var(--text-muted); margin-bottom: var(--sp-2xl); }
+.date-control {
+  background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius-xl);
+  padding: var(--sp-md); margin: var(--sp-md) 0 var(--sp-lg); text-align: left;
+}
+.date-control.is-backfill { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); box-shadow: 0 0 0 1px var(--accent-glow); }
+.date-control-top { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-md); margin-bottom: var(--sp-sm); }
+.date-control-label { font-size: var(--font-size-xs); color: var(--text-muted); }
+.date-control-date { font-size: var(--font-size-lg); font-weight: 700; color: var(--text); }
+.date-control-badge {
+  font-size: var(--font-size-xs); font-weight: 700; color: var(--accent);
+  background: var(--accent-glow); border-radius: var(--radius-full); padding: 4px 10px; white-space: nowrap;
+}
+.date-control-actions { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: var(--sp-sm); align-items: center; }
+.date-control-actions input[type="date"] {
+  font-size: var(--font-size-sm); padding: 8px 10px; border-radius: var(--radius-md); min-height: 38px;
+}
+.date-control-actions .btn { min-height: 38px; padding: 8px 12px; }
+.date-control-today { margin-top: var(--sp-sm); width: 100%; }
 
 /* === WEIGHT INPUT === */
 .weight-input-wrap { margin-bottom: var(--sp-lg); text-align: center; }
@@ -253,6 +271,8 @@ textarea { resize: vertical; min-height: 60px; }
 .combo-note { font-size: var(--font-size-xs); color: var(--text-muted); font-style: italic; margin: var(--sp-sm) 0; line-height: 1.35; }
 .combo-logged-label { color: var(--accent); font-size: var(--font-size-xs); font-weight: 700; margin: 4px 0 2px; }
 @media (max-width: 480px) {
+  .date-control-actions { grid-template-columns: 1fr 1fr; }
+  .date-control-actions input[type="date"] { grid-column: 1 / -1; order: -1; }
   .combo-totals-grid { grid-template-columns: 1fr; }
 }
 
@@ -513,7 +533,8 @@ let foods = {};          // foods.json -> { foods: { key: {...} } }
 let mealPlan = null;     // meal_plan.json
 let dailyLog = {};       // daily_log.json
 let pinnedMeals = {};    // pinned_meals.json -> { "1": [{food, amount}, ...], ... }
-let todayKey = '';
+let todayKey = '';        // selected logging date key
+let calendarTodayKey = '';
 let weightChart = null;
 let expandedSlot = null; // which slot is currently expanded
 let addingToSlot = null;  // logged slot currently showing the add-more interface
@@ -641,6 +662,49 @@ function formatDate(dateStr) {
   return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
 }
 
+function formatLongDate(dateStr) {
+  const d = new Date(dateStr + 'T12:00:00');
+  return d.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
+}
+
+function dateToKey(d) {
+  return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+}
+
+function parseDateKey(dateStr) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(dateStr || ''))) return null;
+  const d = new Date(dateStr + 'T12:00:00');
+  if (Number.isNaN(d.getTime())) return null;
+  return dateToKey(d) === dateStr ? d : null;
+}
+
+function addDaysToKey(dateStr, days) {
+  const d = parseDateKey(dateStr) || new Date();
+  d.setDate(d.getDate() + days);
+  return dateToKey(d);
+}
+
+function getCurrentDateKey() {
+  return calendarTodayKey || getToday();
+}
+
+function getEarliestSelectableDate() {
+  return addDaysToKey(getCurrentDateKey(), -6);
+}
+
+function clampDateKey(dateStr) {
+  if (!parseDateKey(dateStr)) return getCurrentDateKey();
+  const current = getCurrentDateKey();
+  const earliest = getEarliestSelectableDate();
+  if (dateStr > current) return current;
+  if (dateStr < earliest) return earliest;
+  return dateStr;
+}
+
+function isSelectedToday() {
+  return todayKey === getCurrentDateKey();
+}
+
 function getGreeting() {
   const h = new Date().getHours();
   if (h < 12) return 'Good morning';
@@ -695,15 +759,23 @@ function getSlotInfo(slotNum) {
   return mealPlan.slots.find(s => s.slot === slotNum) || null;
 }
 
+function getDayData(dateKey = todayKey) {
+  return dailyLog[dateKey] || null;
+}
+
 function getTodayData() {
-  return dailyLog[todayKey] || null;
+  return getDayData(todayKey);
+}
+
+function ensureDayExists(dateKey = todayKey) {
+  if (!dailyLog[dateKey]) {
+    dailyLog[dateKey] = { weight: null, weight_time: null, meals: [] };
+  }
+  return dailyLog[dateKey];
 }
 
 function ensureTodayExists() {
-  if (!dailyLog[todayKey]) {
-    dailyLog[todayKey] = { weight: null, weight_time: null, meals: [] };
-  }
-  return dailyLog[todayKey];
+  return ensureDayExists(todayKey);
 }
 
 function getYesterdayWeight() {
@@ -714,7 +786,7 @@ function getYesterdayWeight() {
   return null;
 }
 
-// Get today's totals from all logged meals (handles both old and new formats)
+// Get selected day's totals from all logged meals (handles both old and new formats)
 function getTodayTotals() {
   const today = getTodayData();
   if (!today) return { cal: 0, protein: 0, fat: 0, carb: 0 };
@@ -794,6 +866,68 @@ function getPinnedMealForSlot(slotNum) {
   return pinnedMeals[String(slotNum)] || null;
 }
 
+function resetSelectedDateState() {
+  expandedSlot = null;
+  addingToSlot = null;
+  buildItems = [];
+  describingSlot = null;
+  selectedFeel = 0;
+  buildFoodSearchQuery = '';
+  clearComboCandidate();
+}
+
+function setSelectedDate(dateStr) {
+  const requested = parseDateKey(dateStr) ? dateStr : null;
+  const next = clampDateKey(dateStr);
+  const current = getCurrentDateKey();
+  const earliest = getEarliestSelectableDate();
+
+  if (!requested) {
+    BrainKit.toast('Choose a valid date', 'warning');
+  } else if (requested > current) {
+    BrainKit.toast('Future dates are not loggable', 'warning');
+  } else if (requested < earliest) {
+    BrainKit.toast('Backfill is available for the last 7 days', 'warning');
+  }
+
+  if (next !== todayKey) {
+    todayKey = next;
+    resetSelectedDateState();
+  }
+  renderToday();
+}
+
+function shiftSelectedDate(days) {
+  setSelectedDate(addDaysToKey(todayKey || getCurrentDateKey(), days));
+}
+
+function selectToday() {
+  setSelectedDate(getCurrentDateKey());
+}
+
+function renderDateControl() {
+  const current = getCurrentDateKey();
+  const earliest = getEarliestSelectableDate();
+  const isToday = isSelectedToday();
+  return `
+    <div class="date-control${isToday ? '' : ' is-backfill'}">
+      <div class="date-control-top">
+        <div>
+          <div class="date-control-label">${isToday ? 'Logging today' : 'Backfill date'}</div>
+          <div class="date-control-date">${formatLongDate(todayKey)}</div>
+        </div>
+        ${isToday ? '' : '<div class="date-control-badge">Backfill</div>'}
+      </div>
+      <div class="date-control-actions">
+        <button class="btn btn-secondary btn-sm" onclick="shiftSelectedDate(-1)" ${todayKey <= earliest ? 'disabled' : ''}>Prev</button>
+        <input type="date" value="${todayKey}" min="${earliest}" max="${current}" onchange="setSelectedDate(this.value)">
+        <button class="btn btn-secondary btn-sm" onclick="shiftSelectedDate(1)" ${todayKey >= current ? 'disabled' : ''}>Next</button>
+      </div>
+      <button class="btn btn-ghost btn-sm date-control-today" onclick="selectToday()" ${isToday ? 'disabled' : ''}>Return to Today</button>
+    </div>
+  `;
+}
+
 // ============================================================
 // PERSISTENCE
 // ============================================================
@@ -867,8 +1001,19 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
 
 function checkDateChange() {
   const now = getToday();
-  if (now !== todayKey) { todayKey = now; return true; }
-  return false;
+  let changed = false;
+  if (now !== calendarTodayKey) {
+    calendarTodayKey = now;
+    changed = true;
+  }
+
+  const clamped = clampDateKey(todayKey || calendarTodayKey);
+  if (clamped !== todayKey) {
+    todayKey = clamped;
+    resetSelectedDateState();
+    changed = true;
+  }
+  return changed;
 }
 
 function renderTab(tab) {
@@ -904,19 +1049,19 @@ function renderWeightInput(container) {
   container.innerHTML = `
     <div class="animate-in" style="padding-top:40px;text-align:center;">
       <div class="greeting">${getGreeting()}, the user</div>
-      <div class="greeting-sub">${formatDate(todayKey)}</div>
+      ${renderDateControl()}
       <div class="weight-input-wrap" style="margin-top:32px;">
         <label>Weight (lbs)</label>
         <input type="number" id="weight-input" class="weight-big" step="0.1" min="100" max="400"
                placeholder="225.0" inputmode="decimal">
-        ${yesterday ? `<div class="yesterday-ref">Yesterday: ${yesterday} lbs</div>` : ''}
+        ${yesterday ? `<div class="yesterday-ref">Previous logged: ${yesterday} lbs</div>` : ''}
       </div>
       <button class="btn btn-primary btn-large" style="max-width:200px;margin:16px auto 0;"
               onclick="logWeight()">Log Weight</button>
       <div style="margin-top:12px;">
         <a href="#" onclick="event.preventDefault();skipWeight()"
            style="color:var(--text-muted);font-size:var(--font-size-sm);text-decoration:none;">
-          Skip for today
+          Skip weight
         </a>
       </div>
     </div>
@@ -962,10 +1107,10 @@ function renderMealDay(container, today) {
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:var(--sp-md);">
       <div>
         <div style="font-size:var(--font-size-lg);font-weight:700;">${getGreeting()}, the user</div>
-        <div style="font-size:var(--font-size-sm);color:var(--text-muted);">${formatDate(todayKey)}</div>
       </div>
       <button class="btn btn-ghost btn-sm" onclick="openResetConfirm()">Reset Day</button>
     </div>
+    ${renderDateControl()}
   `;
 
   // Macro bar
@@ -1606,10 +1751,10 @@ function normalizeMacroNumber(value) {
   return Number.isFinite(num) && num >= 0 ? Math.round(num) : 0;
 }
 
-function normalizeComboCandidate(raw, requestId, slotNum) {
+function normalizeComboCandidate(raw, requestId, slotNum, dateKey) {
   if (!raw || typeof raw !== 'object') throw new Error('Candidate JSON was not an object');
   if (raw.request_id !== requestId) throw new Error('Candidate request id did not match');
-  if (raw.date !== todayKey) throw new Error('Candidate date did not match today');
+  if (raw.date !== dateKey) throw new Error('Candidate date did not match selected day');
   if (Number(raw.slot) !== Number(slotNum)) throw new Error('Candidate slot did not match');
 
   const estimatedItems = Array.isArray(raw.estimated_items) ? raw.estimated_items : Array.isArray(raw.items) ? raw.items : [];
@@ -1638,7 +1783,7 @@ function normalizeComboCandidate(raw, requestId, slotNum) {
   return {
     version: raw.version || 1,
     request_id: requestId,
-    date: todayKey,
+    date: dateKey,
     slot: Number(slotNum),
     missing_description: String(raw.missing_description || comboMissingText).trim(),
     estimated_items: normalizedItems,
@@ -1652,13 +1797,14 @@ async function requestCoachComboCandidate(slotNum) {
   if (buildItems.length === 0) { BrainKit.toast('Add known foods first', 'warning'); return; }
   if (!missingText) { BrainKit.toast('Describe the missing items', 'warning'); return; }
 
+  const dateKey = todayKey;
   const slotInfo = getSlotInfo(slotNum);
   const requestId = 'diet_combo_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
   const knownItems = buildKnownComboItems();
   const knownTotals = calcItemsTotals(buildItems);
   const requestPayload = {
     request_id: requestId,
-    date: todayKey,
+    date: dateKey,
     slot: slotNum,
     slot_name: slotInfo?.name || 'Meal ' + slotNum,
     known_items: knownItems,
@@ -1673,7 +1819,7 @@ async function requestCoachComboCandidate(slotNum) {
 
   try {
     await BrainKit.askAgent('nutrition_coach',
-      `This message is from the user, sent from the diet tracker app. He is building ${requestPayload.slot_name} on ${todayKey}.
+      `This message is from the user, sent from the diet tracker app. He is building ${requestPayload.slot_name} on ${dateKey}.
 
 The app already knows these foods and has already computed their macros. Do not re-estimate these known foods.
 
@@ -1686,7 +1832,7 @@ Write one JSON object to 05_App_Data/diet/_combo_candidate.json with this shape:
 {
   "version": 1,
   "request_id": "${requestId}",
-  "date": "${todayKey}",
+  "date": "${dateKey}",
   "slot": ${slotNum},
   "missing_description": ${JSON.stringify(missingText)},
   "estimated_items": [{"name": "Item name", "amount": "portion", "cal": 0, "protein": 0, "fat": 0, "carb": 0, "confidence": "medium", "source_note": "why this estimate fits"}],
@@ -1699,8 +1845,8 @@ Do not edit foods.json, meal_plan.json, pinned_meals.json, daily_log.json, or an
 
     const resultStr = await BrainKit.readFile('diet/_combo_candidate.json');
     const raw = typeof resultStr === 'string' ? JSON.parse(resultStr) : resultStr;
-    if (comboCandidateRequestId !== requestId) return;
-    comboCandidate = normalizeComboCandidate(raw, requestId, slotNum);
+    if (comboCandidateRequestId !== requestId || todayKey !== dateKey) return;
+    comboCandidate = normalizeComboCandidate(raw, requestId, slotNum, dateKey);
     comboCandidateSlot = slotNum;
     comboCandidateLoadingSlot = null;
     BrainKit.toast('Coach estimate ready', 'success');
@@ -1710,7 +1856,7 @@ Do not edit foods.json, meal_plan.json, pinned_meals.json, daily_log.json, or an
     clearComboCandidate({ keepMissingText: true });
   } finally {
     if (comboCandidateRequestId === requestId) comboCandidateLoadingSlot = null;
-    refreshBuildUI(slotNum);
+    if (todayKey === dateKey) refreshBuildUI(slotNum);
   }
 }
 
@@ -1883,13 +2029,14 @@ async function submitDescribeMeal(slotNum) {
   const text = textarea.value.trim();
   if (!text) { BrainKit.toast('Describe what you ate', 'warning'); return; }
 
+  const dateKey = todayKey;
   const slotInfo = getSlotInfo(slotNum);
   describingSlot = slotNum;
   renderToday();
 
   try {
     await BrainKit.askAgent('nutrition_coach',
-      `This message is from the user, sent from the diet tracker app. He's telling you what he ate for ${slotInfo?.name || 'Meal ' + slotNum} on ${todayKey}:
+      `This message is from the user, sent from the diet tracker app. He's telling you what he ate for ${slotInfo?.name || 'Meal ' + slotNum} on ${dateKey}:
 
 "${text}"
 
@@ -1919,7 +2066,7 @@ Round calories to nearest 5, protein to nearest 1g. Match portions to what the u
     const resultStr = await BrainKit.readFile('diet/_estimate.json');
     const result = JSON.parse(resultStr);
 
-    const today = ensureTodayExists();
+    const today = ensureDayExists(dateKey);
     const entry = {
       slot: slotNum,
       type: 'described',
@@ -2059,8 +2206,8 @@ function reopenMealLogging() {
 // RESET
 // ============================================================
 function openResetConfirm() {
-  document.getElementById('confirm-title').textContent = 'Reset Today';
-  document.getElementById('confirm-message').textContent = "Reset today's data? This can't be undone.";
+  document.getElementById('confirm-title').textContent = isSelectedToday() ? 'Reset Today' : 'Reset ' + formatDate(todayKey);
+  document.getElementById('confirm-message').textContent = `Reset ${formatDate(todayKey)}'s data? This can't be undone.`;
   document.getElementById('confirm-action-btn').onclick = confirmResetToday;
   document.getElementById('confirm-modal').classList.add('open');
 }
@@ -2072,9 +2219,9 @@ function closeConfirmModal() {
 async function confirmResetToday() {
   closeConfirmModal();
   delete dailyLog[todayKey];
-  expandedSlot = null;
+  resetSelectedDateState();
   await saveLog();
-  BrainKit.toast('Today reset', 'success');
+  BrainKit.toast('Day reset', 'success');
   renderToday();
 }
 
@@ -2675,7 +2822,8 @@ function renderSettings() {
 // INIT
 // ============================================================
 async function init() {
-  todayKey = getToday();
+  calendarTodayKey = getToday();
+  todayKey = calendarTodayKey;
   await loadData();
   renderToday();
 
