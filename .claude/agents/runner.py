@@ -671,11 +671,11 @@ async def invoke_agent(
         )
 
     # ---- Salon fast path -----------------------------------------------------
-    # When salon_id is set, the salon owns the conversation (its JSON file). We
-    # skip thread setup entirely and just run the agent. Only foreground mode
-    # is supported — the salon dispatch loop in main.py runs us synchronously
-    # and persists the result into the salon.
-    if salon_id is not None:
+    # When salon_id is set for an ordinary salon turn, the salon owns the
+    # conversation (its JSON file). We skip thread setup entirely and just run
+    # the agent. Salon background-processing trust work still creates an agent
+    # conversation, using salon_id only as running_agents provenance.
+    if salon_id is not None and not is_background_processing:
         if worktree_metadata:
             return _worktree_request_error_result(
                 name,
@@ -1328,14 +1328,14 @@ async def _maybe_retitle_thread(conversation_id: str) -> None:
 def _infer_kind(invocation: AgentInvocation) -> str:
     """Map an AgentInvocation onto the running_agents kind enum.
 
-    Priority order: salon > background_processing > thread-join > mode.
+    Priority order: background_processing > salon > thread-join > mode.
     See running_agents.KINDS for the full enum and the project plan §3 for
     the rationale behind the priority ordering.
     """
-    if invocation.salon_id:
-        return "salon_agent"
     if invocation.is_background_processing:
         return "background_processing"
+    if invocation.salon_id:
+        return "salon_agent"
     mode = invocation.mode
     if mode == InvocationMode.PING:
         return "invoke_ping"
@@ -1365,6 +1365,7 @@ async def _register_running_agent_entry(config: AgentConfig, invocation: AgentIn
         worktree_branch=invocation.worktree_branch,
         worktree_slug=invocation.worktree_slug,
         worktree_path=invocation.worktree_path,
+        timeout_seconds=config.timeout_seconds,
     )
 
 
@@ -1377,6 +1378,11 @@ async def _running_agent_scope(
     """Own the running_agents entry for the duration of actual execution."""
     if running_entry_id is None:
         running_entry_id = await _register_running_agent_entry(config, invocation)
+    else:
+        await running_agents.update(
+            running_entry_id,
+            timeout_seconds=config.timeout_seconds,
+        )
     try:
         yield running_entry_id
     finally:
@@ -1405,17 +1411,19 @@ async def _run_agent(
             the legacy streaming consumer for full details.
     """
     started_at = datetime.utcnow()
-    async with _running_agent_scope(config, invocation, running_entry_id):
+    async with _running_agent_scope(config, invocation, running_entry_id) as active_running_entry_id:
         try:
             if config.type == AgentType.SDK:
                 response, transcript, blocks = await _run_anthropic_sdk_agent(
                     config, invocation, stream_callback=stream_callback,
                     history_messages=history_messages,
+                    running_entry_id=active_running_entry_id,
                 )
             else:
                 response, transcript, blocks = await _run_codex_agent(
                     config, invocation, stream_callback=stream_callback,
                     history_messages=history_messages,
+                    running_entry_id=active_running_entry_id,
                 )
 
             return AgentResult(
@@ -2043,6 +2051,7 @@ async def _run_codex_agent(
     invocation: AgentInvocation,
     stream_callback: Optional[Callable[[list], Awaitable[None]]] = None,
     history_messages: Optional[List[Dict[str, Any]]] = None,
+    running_entry_id: Optional[str] = None,
 ) -> str:
     """
     Run a Codex/GPT agent through the shared Codex CLI backend.
@@ -2060,6 +2069,8 @@ async def _run_codex_agent(
     reg_id = None
     try:
         reg_id = register_process(config.name, task=task_desc, pid=None)
+        if running_entry_id:
+            await running_agents.update(running_entry_id, process_id=reg_id)
     except Exception as e:
         logger.warning(f"Failed to register agent '{config.name}' in process registry: {e}")
 
@@ -2401,6 +2412,7 @@ async def _run_anthropic_sdk_agent(
     invocation: AgentInvocation,
     stream_callback: Optional[Callable[[list], Awaitable[None]]] = None,
     history_messages: Optional[List[Dict[str, Any]]] = None,
+    running_entry_id: Optional[str] = None,
 ) -> str:
     """
     Run an SDK-based agent using claude_agent_sdk.query().
@@ -2418,6 +2430,8 @@ async def _run_anthropic_sdk_agent(
     reg_id = None
     try:
         reg_id = register_process(config.name, task=task_desc, pid=None)
+        if running_entry_id:
+            await running_agents.update(running_entry_id, process_id=reg_id)
     except Exception as e:
         logger.warning(f"Failed to register agent '{config.name}' in process registry: {e}")
 

@@ -104,6 +104,7 @@ def _inject_agent_context(tools, agent_name: str, salon_id: Optional[str] = None
         "working_memory_snapshot",
         "message_user", "message_react",
         "restart_server",
+        "zeke_activity_status",
         "leave_on_desk",
         "set_mood",
         # Agent-to-agent conversation tools need to know the calling agent
@@ -124,6 +125,9 @@ def _inject_agent_context(tools, agent_name: str, salon_id: Optional[str] = None
         # Coder-worktree operator tools are Patch-only and enforce the
         # caller restriction in-tool using this injected name.
         "coder_worktree_inspect", "coder_worktree_cleanup",
+        # Windows desktop bridge queue tools are Patch-only and queue-only.
+        "windows_desktop_bridge_submit", "windows_desktop_bridge_list",
+        "windows_desktop_bridge_read", "windows_desktop_bridge_cancel",
     }
 
     # Tools that also receive _salon_id (when this MCP server is bound to a salon).
@@ -308,6 +312,7 @@ def _load_all_tools():
     from . import forms
     from . import moltbook
     from . import llm
+    from . import windows_desktop
     from . import chess
     from . import image
     from . import skills

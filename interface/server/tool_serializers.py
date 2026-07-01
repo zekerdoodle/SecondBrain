@@ -30,6 +30,11 @@ def _truncate(text: str, max_chars: int) -> str:
     return cut + "..."
 
 
+def _one_line(text: str, max_chars: int) -> str:
+    compact = " ".join(str(text or "").split())
+    return _truncate(compact, max_chars)
+
+
 def _parse_args(args_raw) -> dict:
     """Parse args from string or dict."""
     if isinstance(args_raw, dict):
@@ -437,8 +442,44 @@ def serialize_memory_read(args: dict, output: str, is_error: bool) -> dict:
     return {"args": {}, "output_summary": "read memory.md"}
 
 
+_RESTART_FAIL_CLOSED_PHRASES = (
+    "restart_server cannot safely restart from this invocation context",
+    "No pending restart or continuation marker was written",
+)
+_RESTART_NO_CONSUMER_PHRASE = "did not provide a restart consumer"
+_RESTART_ACCEPTED_PHRASES = (
+    "Restart initiated",
+    "The server will restart",
+    "Managed restart accepted",
+)
+
+
 def serialize_restart_server(args: dict, output: str, is_error: bool) -> dict:
-    return {"args": {}, "output_summary": "restarted server"}
+    text = str(output or "").strip()
+
+    if any(phrase in text for phrase in _RESTART_FAIL_CLOSED_PHRASES):
+        if _RESTART_NO_CONSUMER_PHRASE in text:
+            summary = "restart refused: no restart consumer"
+        elif "No pending restart or continuation marker was written" in text:
+            summary = "restart refused: no marker written"
+        else:
+            summary = "restart refused"
+        return {"args": {}, "output_summary": summary}
+
+    if is_error:
+        detail = _one_line(text, 240)
+        summary = f"restart error: {detail}" if detail else "restart error"
+        return {"args": {}, "output_summary": summary}
+
+    if any(phrase in text for phrase in _RESTART_ACCEPTED_PHRASES):
+        return {"args": {}, "output_summary": "restart initiated"}
+
+    if text:
+        return {"args": {}, "output_summary": _one_line(text, 300)}
+
+    return {"args": {}, "output_summary": "restart request finished"}
+
+
 
 
 # ── Registry ──

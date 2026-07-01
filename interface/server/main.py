@@ -11,7 +11,7 @@ FastAPI server providing:
 from fastapi import FastAPI, WebSocket, HTTPException, WebSocketDisconnect, UploadFile, File as FastAPIFile, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, PlainTextResponse, HTMLResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, PlainTextResponse, HTMLResponse, RedirectResponse, Response, JSONResponse
 from pydantic import BaseModel
 import os
 import logging
@@ -35,7 +35,7 @@ from PIL import Image, ImageOps
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Any, List, Set, Tuple
 from contextlib import asynccontextmanager
-from collections import defaultdict
+from collections import defaultdict, deque
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -81,6 +81,7 @@ from tool_output_artifacts import (
 from block_normalization import canonicalize_blocks
 from process_registry import register_process, deregister_by_pid, clear_registry
 import running_agents
+import zeke_activity
 from mention_parser import parse_mentions
 from anthropic_cache_proxy import router as anthropic_cache_proxy_router
 from slash_commands import (
@@ -134,6 +135,29 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger("server")
+
+
+def _record_zeke_activity(category: str, source: str, metadata: Optional[Dict[str, Any]] = None) -> None:
+    try:
+        zeke_activity.record_activity(category, source=source, metadata=metadata)
+    except Exception as exc:
+        logger.warning("Failed to record the user activity %s/%s: %s", source, category, exc)
+
+
+def _record_zeke_frontend_ping(category: str, source: str, metadata: Optional[Dict[str, Any]] = None) -> None:
+    try:
+        zeke_activity.record_frontend_ping(category, source=source, metadata=metadata)
+    except ValueError:
+        raise
+    except Exception as exc:
+        logger.warning("Failed to record the user frontend activity %s/%s: %s", source, category, exc)
+
+
+def _record_zeke_presence() -> None:
+    try:
+        zeke_activity.record_presence(client_sessions)
+    except Exception as exc:
+        logger.warning("Failed to record the user presence: %s", exc)
 
 # Secret used by Codex MCP bridge subprocesses to hand ping launches back to
 # this long-lived server process without exposing an unauthenticated invoke
@@ -226,12 +250,226 @@ WAL_DIR = os.path.join(ROOT_DIR, ".claude", "wal")
 CHAT_IMAGES_DIR = os.path.join(ROOT_DIR, ".claude", "chat_images")
 SERVER_STATE_FILE = os.path.join(ROOT_DIR, ".claude", "server_state.json")
 RESTART_CONTINUATION_FILE = os.path.join(ROOT_DIR, ".claude", "restart_continuation.json")
+BACKEND_HEARTBEAT_FILE = Path(ROOT_DIR) / ".claude" / "backend_heartbeat.json"
 os.makedirs(CHATS_DIR, exist_ok=True)
 os.makedirs(WAL_DIR, exist_ok=True)
 os.makedirs(CHAT_IMAGES_DIR, exist_ok=True)
 
 # Initialize Write-Ahead Log for message persistence
 message_wal = init_wal(WAL_DIR)
+
+
+# --- Backend Health / Event Loop Heartbeat ---
+
+HEALTH_SCHEMA = "second-brain-backend-health"
+HEALTH_SCHEMA_VERSION = 1
+BACKEND_STARTED_MONOTONIC = time.monotonic()
+BACKEND_STARTED_AT_UTC = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+HEARTBEAT_INTERVAL_SECONDS = 1.0
+HEARTBEAT_STALE_AFTER_SECONDS = 5.0
+LOOP_LAG_DEGRADED_AFTER_MS = 2000.0
+LOOP_LAG_SAMPLE_COUNT = 60
+
+_backend_loop_lag_samples_ms = deque(maxlen=LOOP_LAG_SAMPLE_COUNT)
+_backend_health_task: Optional[asyncio.Task] = None
+_backend_health_state: Dict[str, Any] = {
+    "last_heartbeat_monotonic": None,
+    "last_heartbeat_utc": None,
+    "last_loop_lag_ms": None,
+    "heartbeat_file_status": "not_started",
+    "heartbeat_file_path": str(BACKEND_HEARTBEAT_FILE),
+    "heartbeat_file_last_write_utc": None,
+    "heartbeat_file_error": None,
+    "heartbeat_task_error": None,
+}
+
+
+def _health_utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _rounded(value: float | None, digits: int = 3) -> float | None:
+    if value is None:
+        return None
+    return round(float(value), digits)
+
+
+def _health_error_text(exc: Exception) -> str:
+    text = f"{exc.__class__.__name__}: {exc}"
+    text = re.sub(
+        r"(?i)((?:api[_-]?key|token|secret|password|credential)\s*[=:]\s*)[^\s\"']+",
+        r"\1[REDACTED]",
+        text,
+    )
+    text = re.sub(r"\b[A-Za-z0-9_=-]{48,}\b", "[REDACTED_LONG_TOKEN]", text)
+    if len(text) > 240:
+        text = text[:225] + "...[truncated]"
+    return text
+
+
+def _atomic_write_backend_heartbeat_file(
+    payload: Dict[str, Any],
+    path: Path = BACKEND_HEARTBEAT_FILE,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp_path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(tmp_path, path)
+
+
+def _build_backend_health_payload(
+    *,
+    now_monotonic: float | None = None,
+    now_utc: str | None = None,
+) -> Dict[str, Any]:
+    now_monotonic = time.monotonic() if now_monotonic is None else now_monotonic
+    now_utc = _health_utc_now() if now_utc is None else now_utc
+    last_heartbeat = _backend_health_state.get("last_heartbeat_monotonic")
+    heartbeat_age_seconds = (
+        None
+        if last_heartbeat is None
+        else max(0.0, now_monotonic - float(last_heartbeat))
+    )
+    last_loop_lag_ms = _backend_health_state.get("last_loop_lag_ms")
+    max_recent_loop_lag_ms = (
+        max(_backend_loop_lag_samples_ms) if _backend_loop_lag_samples_ms else None
+    )
+
+    degraded_reasons: list[str] = []
+    if heartbeat_age_seconds is None:
+        degraded_reasons.append("heartbeat_not_started")
+    elif heartbeat_age_seconds > HEARTBEAT_STALE_AFTER_SECONDS:
+        degraded_reasons.append("heartbeat_stale")
+    if (
+        isinstance(last_loop_lag_ms, (int, float))
+        and float(last_loop_lag_ms) > LOOP_LAG_DEGRADED_AFTER_MS
+    ):
+        degraded_reasons.append("last_loop_lag_high")
+    if (
+        isinstance(max_recent_loop_lag_ms, (int, float))
+        and float(max_recent_loop_lag_ms) > LOOP_LAG_DEGRADED_AFTER_MS
+    ):
+        degraded_reasons.append("recent_loop_lag_high")
+
+    warnings: list[str] = []
+    if _backend_health_state.get("heartbeat_file_status") == "write_error":
+        warnings.append("heartbeat_file_write_error")
+
+    status = "degraded" if degraded_reasons else "ok"
+    return {
+        "schema": HEALTH_SCHEMA,
+        "schema_version": HEALTH_SCHEMA_VERSION,
+        "status": status,
+        "pid": os.getpid(),
+        "startup_utc": BACKEND_STARTED_AT_UTC,
+        "now_utc": now_utc,
+        "uptime_seconds": _rounded(now_monotonic - BACKEND_STARTED_MONOTONIC),
+        "heartbeat_age_seconds": _rounded(heartbeat_age_seconds),
+        "last_heartbeat_utc": _backend_health_state.get("last_heartbeat_utc"),
+        "last_loop_lag_ms": _rounded(last_loop_lag_ms),
+        "max_recent_loop_lag_ms": _rounded(max_recent_loop_lag_ms),
+        "thresholds": {
+            "heartbeat_interval_seconds": HEARTBEAT_INTERVAL_SECONDS,
+            "heartbeat_stale_after_seconds": HEARTBEAT_STALE_AFTER_SECONDS,
+            "loop_lag_degraded_after_ms": LOOP_LAG_DEGRADED_AFTER_MS,
+            "loop_lag_sample_count": LOOP_LAG_SAMPLE_COUNT,
+        },
+        "degraded_reasons": degraded_reasons,
+        "warnings": warnings,
+        "heartbeat_file": {
+            "path": str(BACKEND_HEARTBEAT_FILE),
+            "status": _backend_health_state.get("heartbeat_file_status"),
+            "last_write_utc": _backend_health_state.get("heartbeat_file_last_write_utc"),
+            "last_error": _backend_health_state.get("heartbeat_file_error"),
+        },
+        "heartbeat_task_error": _backend_health_state.get("heartbeat_task_error"),
+    }
+
+
+def _record_backend_heartbeat(
+    loop_lag_ms: float,
+    *,
+    now_monotonic: float | None = None,
+) -> None:
+    now_monotonic = time.monotonic() if now_monotonic is None else now_monotonic
+    now_utc = _health_utc_now()
+    loop_lag_ms = max(0.0, float(loop_lag_ms))
+    _backend_loop_lag_samples_ms.append(loop_lag_ms)
+    _backend_health_state.update(
+        {
+            "last_heartbeat_monotonic": now_monotonic,
+            "last_heartbeat_utc": now_utc,
+            "last_loop_lag_ms": loop_lag_ms,
+            "heartbeat_file_path": str(BACKEND_HEARTBEAT_FILE),
+            "heartbeat_task_error": None,
+        }
+    )
+    file_payload = _build_backend_health_payload(
+        now_monotonic=now_monotonic,
+        now_utc=now_utc,
+    )
+    file_payload["heartbeat_file"].update(
+        {
+            "status": "ok",
+            "last_write_utc": now_utc,
+            "last_error": None,
+        }
+    )
+    try:
+        _atomic_write_backend_heartbeat_file(file_payload, BACKEND_HEARTBEAT_FILE)
+        _backend_health_state.update(
+            {
+                "heartbeat_file_status": "ok",
+                "heartbeat_file_last_write_utc": now_utc,
+                "heartbeat_file_error": None,
+            }
+        )
+    except Exception as exc:
+        _backend_health_state.update(
+            {
+                "heartbeat_file_status": "write_error",
+                "heartbeat_file_error": _health_error_text(exc),
+            }
+        )
+
+
+async def _backend_health_heartbeat_loop() -> None:
+    expected_next = time.monotonic() + HEARTBEAT_INTERVAL_SECONDS
+    while True:
+        try:
+            await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
+            now_monotonic = time.monotonic()
+            loop_lag_ms = max(0.0, (now_monotonic - expected_next) * 1000.0)
+            _record_backend_heartbeat(loop_lag_ms, now_monotonic=now_monotonic)
+            expected_next = now_monotonic + HEARTBEAT_INTERVAL_SECONDS
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            _backend_health_state["heartbeat_task_error"] = _health_error_text(exc)
+            expected_next = time.monotonic() + HEARTBEAT_INTERVAL_SECONDS
+
+
+def _start_backend_health_heartbeat() -> None:
+    global _backend_health_task
+    if _backend_health_task is not None and not _backend_health_task.done():
+        return
+    _record_backend_heartbeat(0.0)
+    _backend_health_task = asyncio.create_task(_backend_health_heartbeat_loop())
+
+
+async def _stop_backend_health_heartbeat() -> None:
+    global _backend_health_task
+    task = _backend_health_task
+    _backend_health_task = None
+    if task is None or task.done():
+        return
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    except Exception as exc:
+        logger.debug("Backend health heartbeat task stopped with error: %s", exc)
 
 
 def load_ui_config():
@@ -906,13 +1144,30 @@ async def _run_salon_background_processing(
             prompt=combined_prompt,
             mode="trust",
             is_background_processing=True,
+            salon_id=salon_id,
+            caller_agent="salon_background_processing",
         )
         result_status = result.get("status") if isinstance(result, dict) else getattr(result, "status", "unknown")
-        finish_status = "completed"
-        logger.info(
-            f"SALON_BG: Completed for {agent_name} in salon {salon_id} "
-            f"frontier={frontier_key} (status={result_status})"
-        )
+        if isinstance(result, dict) and result.get("error"):
+            finish_status = "failed"
+            error = str(result.get("error"))
+            logger.error(
+                f"SALON_BG: Acceptance failed for {agent_name} in salon {salon_id} "
+                f"frontier={frontier_key} (status={result_status}, error={error})"
+            )
+        else:
+            finish_status = "accepted"
+            result_conversation_id = (
+                result.get("conversation_id")
+                if isinstance(result, dict)
+                else getattr(result, "conversation_id", None)
+            )
+            logger.info(
+                f"SALON_BG: Accepted for {agent_name} in salon {salon_id} "
+                f"frontier={frontier_key} "
+                f"(ack_status={result_status}, conversation_id={result_conversation_id or '-'}, "
+                f"prompt_chars={len(combined_prompt)})"
+            )
     except Exception as e:
         error = str(e)
         logger.error(f"SALON_BG: Failed for {agent_name} in salon {salon_id} frontier={frontier_key}: {e}")
@@ -1096,6 +1351,16 @@ class PatchVisibilityReplyRequest(BaseModel):
 class AppBridgeWriteRequest(BaseModel):
     path: str
     data: str
+
+
+class ActivityPingRequest(BaseModel):
+    category: str
+    chat_id: Optional[str] = None
+    agent: Optional[str] = None
+    app_path: Optional[str] = None
+    app_entry: Optional[str] = None
+    app_name: Optional[str] = None
+    session_id: Optional[str] = None
 
 
 class EditMessageRequest(BaseModel):
@@ -1334,6 +1599,13 @@ def restart_server_endpoint(rebuild: bool = False, reason: str = None):
     )
 
 
+@app.get("/api/health")
+async def get_backend_health():
+    payload = _build_backend_health_payload()
+    status_code = 200 if payload.get("status") == "ok" else 503
+    return JSONResponse(content=payload, status_code=status_code)
+
+
 # --- File API ---
 
 
@@ -1422,6 +1694,17 @@ def save_file(file_path: str, req: FileRequest):
     os.makedirs(os.path.dirname(target_path), exist_ok=True)
     with open(target_path, 'w', encoding='utf-8') as f:
         f.write(req.content or "")
+    _record_zeke_activity("editor_save", "editor", {"path": file_path})
+    return {"status": "ok"}
+
+
+@app.post("/api/activity/ping")
+def activity_ping(req: ActivityPingRequest):
+    metadata = req.dict(exclude={"category"}, exclude_none=True)
+    try:
+        _record_zeke_frontend_ping(req.category, "frontend_http", metadata)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     return {"status": "ok"}
 
 
@@ -2259,6 +2542,7 @@ def app_bridge_write(req: AppBridgeWriteRequest):
         # Atomic rename (same filesystem, so this is guaranteed atomic)
         os.replace(temp_path, abs_path)
         temp_path = None  # Successfully moved, no cleanup needed
+        _record_zeke_activity("app_write", "app_bridge", {"app_path": req.path})
         return {"status": "ok"}
     except HTTPException:
         raise
@@ -2282,7 +2566,9 @@ def app_bridge_read(path: str):
         if not os.path.exists(abs_path):
             raise HTTPException(status_code=404, detail="File not found")
         with open(abs_path, 'r', encoding='utf-8') as f:
-            return PlainTextResponse(f.read())
+            data = f.read()
+        _record_zeke_activity("app_read", "app_bridge", {"app_path": path})
+        return PlainTextResponse(data)
     except HTTPException:
         raise
     except Exception as e:
@@ -2328,7 +2614,8 @@ async def app_bridge_ask_claude(req: AskClaudeRequest):
         )
         result_text = result.response
 
-        logger.info(f"App Bridge askClaude: prompt={req.prompt[:80]}... response_len={len(result_text)}")
+        logger.info(f"App Bridge askClaude: response_len={len(result_text)}")
+        _record_zeke_activity("app_ask_claude", "app_bridge")
         return {"response": result_text}
 
     except Exception as e:
@@ -2358,7 +2645,8 @@ async def app_bridge_ask_agent(req: AskAgentRequest):
             timeout=120
         )
         response_text = result.response or result.transcript or ""
-        logger.info(f"App Bridge askAgent: agent={req.agent} prompt={req.prompt[:80]}... response_len={len(response_text)}")
+        logger.info(f"App Bridge askAgent: agent={req.agent} response_len={len(response_text)}")
+        _record_zeke_activity("app_ask_agent", "app_bridge", {"agent": req.agent})
         return {"response": response_text}
     except asyncio.TimeoutError:
         logger.warning(f"App Bridge askAgent timed out: agent={req.agent}")
@@ -2558,6 +2846,7 @@ def app_bridge_list_files(dirPath: str = ""):
                 "isDir": os.path.isdir(entry_path),
                 "size": os.path.getsize(entry_path) if os.path.isfile(entry_path) else None
             })
+        _record_zeke_activity("app_list", "app_bridge", {"app_path": dirPath})
         return {"files": files}
     except HTTPException:
         raise
@@ -2574,6 +2863,7 @@ def app_bridge_stat_file(path: str):
         if not os.path.exists(abs_path):
             raise HTTPException(status_code=404, detail="File not found")
         st = os.stat(abs_path)
+        _record_zeke_activity("app_stat", "app_bridge", {"app_path": path})
         return {"mtime": st.st_mtime, "size": st.st_size}
     except HTTPException:
         raise
@@ -2593,6 +2883,7 @@ def app_bridge_delete_file(req: AppBridgeDeleteRequest):
             raise HTTPException(status_code=400, detail="Cannot delete directories via this endpoint")
         os.remove(abs_path)
         logger.info(f"App bridge deleted: {req.path}")
+        _record_zeke_activity("app_delete", "app_bridge", {"app_path": req.path})
         return {"status": "ok"}
     except HTTPException:
         raise
@@ -4287,6 +4578,54 @@ _RESTART_FAIL_CLOSED_TEXT = "restart_server cannot safely restart from this invo
 _RESTART_NO_MARKER_TEXT = "No pending restart or continuation marker was written"
 
 
+def _is_restart_tool_name(tool_name: Optional[str]) -> bool:
+    normalized = str(tool_name or "")
+    if normalized.startswith("mcp__brain__"):
+        normalized = normalized[len("mcp__brain__"):]
+    return normalized == "restart_server"
+
+
+def _restart_output_is_fail_closed(tool_output: Any) -> bool:
+    text = str(tool_output or "")
+    return _RESTART_FAIL_CLOSED_TEXT in text or _RESTART_NO_MARKER_TEXT in text
+
+
+def _tool_output_artifact_error_flag(tool_name: Optional[str], tool_output: Any, is_error: bool) -> bool:
+    return bool(is_error) or (
+        _is_restart_tool_name(tool_name)
+        and _restart_output_is_fail_closed(tool_output)
+    )
+
+
+def _maybe_write_tool_output_artifact_for_history(
+    *,
+    chat_id: Any,
+    tool_call_id: Any,
+    tool_name: Optional[str],
+    output: Any,
+    is_error: bool,
+) -> Optional[Dict[str, Any]]:
+    tool_output_raw = str(output or "")
+    try:
+        raw_output_artifact = maybe_write_raw_tool_output_artifact(
+            chat_id=chat_id,
+            tool_call_id=tool_call_id or f"tool-{int(time.time() * 1000)}",
+            tool_name=tool_name or "tool",
+            output=tool_output_raw,
+            is_error=_tool_output_artifact_error_flag(tool_name, tool_output_raw, is_error),
+        )
+        if raw_output_artifact:
+            raw_output_artifact = with_truncation_flags(
+                raw_output_artifact,
+                display_truncated=len(tool_output_raw) > DEFAULT_DISPLAY_LIMIT_CHARS,
+                history_truncated=len(tool_output_raw) > 500,
+            )
+        return raw_output_artifact
+    except Exception as artifact_err:
+        logger.warning(f"Tool output artifact write failed: {artifact_err}")
+        return None
+
+
 def _restart_tool_result_allows_finalizer(tool_output: Any, is_error: bool) -> bool:
     """Return True only when restart_server produced a restart marker contract.
 
@@ -4296,11 +4635,7 @@ def _restart_tool_result_allows_finalizer(tool_output: Any, is_error: bool) -> b
     """
     if is_error:
         return False
-    text = str(tool_output or "")
-    return not (
-        _RESTART_FAIL_CLOSED_TEXT in text
-        or _RESTART_NO_MARKER_TEXT in text
-    )
+    return not _restart_output_is_fail_closed(tool_output)
 
 
 async def _load_fresh_pending_restart_config(trigger_time: float) -> Dict[str, Any]:
@@ -5326,6 +5661,7 @@ async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     # Create client session for visibility tracking
     client_sessions[websocket] = ClientSession(websocket=websocket)
+    _record_zeke_presence()
 
     # Notify client if server was restarted
     if server_restart_info:
@@ -5420,6 +5756,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 )
                 data["turnId"] = turn_id
                 register_client(websocket, state_key)
+                _record_zeke_activity("chat_send", "chat_ws", {"chat_id": state_key, "agent": ws_agent})
                 logger.info(f"PRE-TASK: Registered streaming state for {state_key}")
 
                 # IMMEDIATELY send session_init so client can update localStorage
@@ -5500,6 +5837,27 @@ async def websocket_endpoint(websocket: WebSocket):
             elif action == "inject":
                 # Mid-stream message injection - send while Claude is working
                 await handle_inject(websocket, data)
+            elif action == "activity_ping":
+                session = client_sessions.get(websocket)
+                chat_id = data.get("chatId") or (session.current_chat_id if session else None)
+                if session:
+                    session.update_visibility(is_active=session.is_active, chat_id=chat_id)
+                try:
+                    _record_zeke_frontend_ping(
+                        data.get("category", ""),
+                        "frontend_ws",
+                        {
+                            "chat_id": chat_id,
+                            "agent": data.get("agent"),
+                            "session_id": data.get("sessionId"),
+                            "app_path": data.get("appPath"),
+                            "app_entry": data.get("appEntry"),
+                            "app_name": data.get("appName"),
+                        },
+                    )
+                except ValueError as exc:
+                    await websocket.send_json({"type": "error", "text": str(exc)})
+                _record_zeke_presence()
             elif action == "visibility_update":
                 # Update client's visibility state
                 session = client_sessions.get(websocket)
@@ -5507,6 +5865,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     is_active = data.get("isActive", False)
                     chat_id = data.get("chatId")
                     session.update_visibility(is_active=is_active, chat_id=chat_id)
+                    _record_zeke_presence()
                     logger.info(f"Visibility update: active={is_active}, chat={chat_id}")
 
                     # Update active room tracking if user is focused on a specific chat
@@ -5533,6 +5892,7 @@ async def websocket_endpoint(websocket: WebSocket):
             pass
     finally:
         client_sessions.pop(websocket, None)
+        _record_zeke_presence()
         # Also remove from session_clients
         for sid, clients in list(session_clients.items()):
             clients.discard(websocket)
@@ -6677,24 +7037,13 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
                 tool_end_output = event.get("output", "")
                 tool_output_raw = str(tool_end_output or "")
                 is_error = event.get("is_error", False)
-                raw_output_artifact = None
-                try:
-                    raw_output_artifact = maybe_write_raw_tool_output_artifact(
-                        chat_id=state_key or effective_session_id or new_session_id or "unknown-chat",
-                        tool_call_id=tool_end_id or f"tool-{int(time.time() * 1000)}",
-                        tool_name=tool_name or "tool",
-                        output=tool_output_raw,
-                        is_error=bool(is_error),
-                    )
-                    if raw_output_artifact:
-                        raw_output_artifact = with_truncation_flags(
-                            raw_output_artifact,
-                            display_truncated=len(tool_output_raw) > DEFAULT_DISPLAY_LIMIT_CHARS,
-                            history_truncated=len(tool_output_raw) > 500,
-                        )
-                except Exception as artifact_err:
-                    logger.warning(f"Tool output artifact write failed: {artifact_err}")
-                    raw_output_artifact = None
+                raw_output_artifact = _maybe_write_tool_output_artifact_for_history(
+                    chat_id=state_key or effective_session_id or new_session_id or "unknown-chat",
+                    tool_call_id=tool_end_id,
+                    tool_name=tool_name,
+                    output=tool_output_raw,
+                    is_error=is_error,
+                )
 
                 # ========== Block model: complete tool_use block, finalize tool_result ==========
                 ss = session_streaming_states.get(state_key)
@@ -8548,11 +8897,26 @@ async def scheduler_loop():
             try:
                 stale_entries = await running_agents.sweep_stale()
                 for entry in stale_entries:
+                    elapsed = entry.get("elapsed_seconds")
+                    if elapsed is None:
+                        elapsed = time.time() - entry.get("started_at", time.time())
+                    timeout = entry.get("timeout_seconds")
+                    stale_after = entry.get("stale_after_seconds")
+                    deadline = entry.get("deadline_at")
                     logger.warning(
                         "running_agents: dropped stale entry "
                         f"id={entry.get('id')} agent={entry.get('agent')} "
-                        f"kind={entry.get('kind')} elapsed="
-                        f"{time.time() - entry.get('started_at', time.time()):.0f}s"
+                        f"kind={entry.get('kind')} elapsed={float(elapsed):.0f}s "
+                        f"timeout={f'{float(timeout):.0f}s' if timeout is not None else '-'} "
+                        f"stale_after={f'{float(stale_after):.0f}s' if stale_after is not None else '-'} "
+                        f"deadline_at={f'{float(deadline):.3f}' if deadline is not None else '-'} "
+                        f"conversation_id={entry.get('conversation_id') or '-'} "
+                        f"salon_id={entry.get('salon_id') or '-'} "
+                        f"scheduled_task_id={entry.get('scheduled_task_id') or '-'} "
+                        f"caller_agent={entry.get('caller_agent') or '-'} "
+                        f"source_chat_id={entry.get('source_chat_id') or '-'} "
+                        f"process_id={entry.get('process_id') or '-'} "
+                        f"reason={entry.get('stale_reason') or 'deadline_exceeded'}"
                     )
             except Exception as e:
                 logger.warning(f"running_agents: periodic sweep failed: {e}")
@@ -9535,6 +9899,14 @@ Please review the agent response(s) and take any necessary follow-up action. If 
                     tool_end_error = event.get("is_error", False)
                     logger.info(f"WAKEUP_TOOL: tool_end name={tool_end_name} id={tool_end_id} segments_so_far={len(all_segments)} pending_keys={list(pending_tool_calls_wakeup.keys())}")
                     stashed = pending_tool_calls_wakeup.pop(tool_end_id, None) if tool_end_id else None
+                    artifact_tool_name = (stashed or {}).get("name") or tool_end_name
+                    raw_output_artifact = _maybe_write_tool_output_artifact_for_history(
+                        chat_id=chat_id,
+                        tool_call_id=tool_end_id,
+                        tool_name=artifact_tool_name,
+                        output=tool_end_output,
+                        is_error=tool_end_error,
+                    )
                     if stashed:
                         try:
                             tc = serialize_tool_call(
@@ -9543,6 +9915,7 @@ Please review the agent response(s) and take any necessary follow-up action. If 
                                 output=tool_end_output,
                                 is_error=tool_end_error,
                                 tool_id=tool_end_id,
+                                raw_output=raw_output_artifact,
                             )
                             tc["timestamp"] = int(time.time())
                             completed_tool_calls_wakeup.append((len(all_segments), tc))
@@ -9557,6 +9930,7 @@ Please review the agent response(s) and take any necessary follow-up action. If 
                                 output=tool_end_output,
                                 is_error=tool_end_error,
                                 tool_id=tool_end_id,
+                                raw_output=raw_output_artifact,
                             )
                             tc["timestamp"] = int(time.time())
                             completed_tool_calls_wakeup.append((len(all_segments), tc))
@@ -9748,6 +10122,7 @@ async def startup_event():
 
     # Setup signal handlers for graceful shutdown
     setup_signal_handlers()
+    _start_backend_health_heartbeat()
 
     # ========== Register desk broker for leave_on_desk broadcasts ==========
     from desk_broker import register_broadcast
@@ -9870,6 +10245,7 @@ async def startup_event():
 async def shutdown_event():
     """Save state on graceful shutdown."""
     logger.info("Server shutting down, saving state...")
+    await _stop_backend_health_heartbeat()
     save_server_state()
     save_continuation_on_shutdown()
 

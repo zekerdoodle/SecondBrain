@@ -36,6 +36,7 @@ import type { EmojiClickData } from 'emoji-picker-react';
 const CHAT_TABS_KEY = 'second_brain_chat_tabs';
 const CHAT_DRAFTS_KEY = 'second_brain_chat_drafts';
 const MAX_CHAT_TABS = 8;
+const TYPING_ACTIVITY_PING_MS = 8000;
 const MESSAGE_ROLES = new Set(['user', 'assistant', 'system', 'notice', 'tool_call']);
 const BLOCK_TYPES = new Set(['thinking', 'text', 'tool_use', 'tool_result']);
 
@@ -1475,6 +1476,7 @@ export const Chat: React.FC<ChatProps> = ({
     dismissQueuedMessage,
     currentAgent,
     sendMessageWithAgent,
+    sendActivityPing,
     todos,
     streamPhase,
     toggleReaction,
@@ -1482,6 +1484,8 @@ export const Chat: React.FC<ChatProps> = ({
     helperSettings,
     updateHelperSettings,
   } = claude;
+
+  const lastTypingActivityPingRef = useRef(0);
 
   // Keep ref updated
   loadChatRef.current = loadChat;
@@ -2490,7 +2494,14 @@ export const Chat: React.FC<ChatProps> = ({
       }
     }
     syncComposerStateFromDom(composer);
-  }, [applyComposerValue, effectiveAgentName, messages.length, replyTokens, syncComposerStateFromDom, tryAutoSelectAgent]);
+    if (value.trim()) {
+      const now = Date.now();
+      if (now - lastTypingActivityPingRef.current >= TYPING_ACTIVITY_PING_MS) {
+        lastTypingActivityPingRef.current = now;
+        sendActivityPing('typing');
+      }
+    }
+  }, [applyComposerValue, effectiveAgentName, messages.length, replyTokens, sendActivityPing, syncComposerStateFromDom, tryAutoSelectAgent]);
 
   const replaceComposerRangeWithText = useCallback((start: number, end: number, text: string) => {
     const value = composerEditableRef.current

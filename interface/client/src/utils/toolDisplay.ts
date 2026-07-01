@@ -109,7 +109,7 @@ export const TOOL_DISPLAY_NAMES: Record<string, [string, string]> = {
 
   // MCP Brain tools - Utilities
   'mcp__brain__page_parser': ['Reading page', 'Read page'],
-  'mcp__brain__restart_server': ['Restarting server', 'Restarted server'],
+  'mcp__brain__restart_server': ['Requesting restart', 'Restart request finished'],
   'mcp__brain__claude_code': ['Running legacy coding tool', 'Ran legacy coding tool'],
   'mcp__brain__web_search': ['Searching the web', 'Searched the web'],
   'mcp__brain__send_critical_notification': ['Sending notification', 'Sent notification'],

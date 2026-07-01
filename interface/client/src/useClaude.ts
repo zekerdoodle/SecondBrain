@@ -106,6 +106,7 @@ export interface ClaudeHook {
   // Multi-agent support
   currentAgent: string | null;
   sendMessageWithAgent: (text: string, agent?: string, images?: ChatImageRef[], displayPayload?: ChatDisplayPayload) => boolean;
+  sendActivityPing: (category: string, metadata?: Record<string, string | undefined>) => boolean;
   // Todo list from agents using TodoWrite
   todos: TodoItem[];
   // Stream phase for UI phrase selection
@@ -466,6 +467,24 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
       }));
     }
   }, [sessionId]);
+
+  const sendActivityPing = useCallback((category: string, metadata: Record<string, string | undefined> = {}): boolean => {
+    if (!ws.current || ws.current.readyState !== WebSocket.OPEN) {
+      return false;
+    }
+    const effectiveSessionId = sessionIdRef.current;
+    ws.current.send(JSON.stringify({
+      action: 'activity_ping',
+      category,
+      chatId: metadata.chatId || (effectiveSessionId !== 'new' ? effectiveSessionId : undefined),
+      sessionId: metadata.sessionId || effectiveSessionId,
+      agent: metadata.agent || currentAgent || undefined,
+      appPath: metadata.appPath,
+      appEntry: metadata.appEntry,
+      appName: metadata.appName,
+    }));
+    return true;
+  }, [currentAgent]);
 
   const connect = useCallback(() => {
     // Skip connection when instance is disabled (e.g., split view not yet open)
@@ -2250,6 +2269,7 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
     dismissQueuedMessage,
     currentAgent,
     sendMessageWithAgent,
+    sendActivityPing,
     todos,
     streamPhase,
     toggleReaction,

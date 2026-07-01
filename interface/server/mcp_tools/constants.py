@@ -222,6 +222,13 @@ SAFE_DEPLOY_TOOLS = [
     "apply_patch_deploy",
 ]
 
+WINDOWS_DESKTOP_TOOLS = [
+    "windows_desktop_bridge_submit",
+    "windows_desktop_bridge_list",
+    "windows_desktop_bridge_read",
+    "windows_desktop_bridge_cancel",
+]
+
 
 # =============================================================================
 # Category Mapping - Maps category names to tool lists
@@ -253,6 +260,7 @@ TOOL_CATEGORIES = {
     "mood": MOOD_TOOLS,
     "salons": SALON_TOOLS,
     "safe_deploy": SAFE_DEPLOY_TOOLS,
+    "windows_desktop": WINDOWS_DESKTOP_TOOLS,
 }
 
 
@@ -282,7 +290,8 @@ ALL_TOOL_NAMES = (
     PRESENCE_TOOLS +
     MOOD_TOOLS +
     SALON_TOOLS +
-    SAFE_DEPLOY_TOOLS
+    SAFE_DEPLOY_TOOLS +
+    WINDOWS_DESKTOP_TOOLS
 )
 
 # Set for O(1) lookup

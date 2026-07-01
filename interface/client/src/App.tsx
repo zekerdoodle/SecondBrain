@@ -350,6 +350,14 @@ function App() {
     }).catch(() => {});
   }, []);
 
+  const recordActivityPing = useCallback((payload: Record<string, string | undefined>) => {
+    void fetch(`${API_URL}/activity/ping`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }).catch(err => console.warn('Failed to record activity ping:', err));
+  }, []);
+
   // Open an app in fullscreen mode
   const openAppFullscreen = useCallback(async (filePath: string) => {
     try {
@@ -364,10 +372,16 @@ function App() {
         name: app?.name || filePath.split('/').slice(-2, -1)[0] || 'App',
         html,
       });
+      recordActivityPing({
+        category: 'app_open',
+        app_path: filePath,
+        app_entry: entryPath,
+        app_name: app?.name || filePath.split('/').slice(-2, -1)[0] || 'App',
+      });
     } catch (err) {
       console.error('Failed to open app fullscreen:', err);
     }
-  }, [appRegistry]);
+  }, [appRegistry, recordActivityPing]);
 
   useEffect(() => {
     setAppFeedbackOpen(false);
