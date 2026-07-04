@@ -483,9 +483,14 @@ class ClaudeWrapper:
         parts = []
         if agent_config.prompt:
             parts.append(agent_config.prompt)
-        global_visible = self._load_global_instructions("global_visible.md")
-        if global_visible:
-            parts.append(global_visible)
+        import prompt_assembly
+        parts.extend(
+            prompt_assembly.load_global_instruction_parts(
+                Path(self.cwd) / ".claude" / "agents",
+                is_visible=True,
+                read_instruction_file=self._load_global_instructions,
+            )
+        )
         skill_reminder = self._get_skill_reminder(agent_config)
         if skill_reminder:
             parts.append(skill_reminder)
@@ -503,9 +508,14 @@ class ClaudeWrapper:
         append_parts = []
         if agent_config.prompt:
             append_parts.append(agent_config.prompt)
-        global_visible = self._load_global_instructions("global_visible.md")
-        if global_visible:
-            append_parts.append(global_visible)
+        import prompt_assembly
+        append_parts.extend(
+            prompt_assembly.load_global_instruction_parts(
+                Path(self.cwd) / ".claude" / "agents",
+                is_visible=True,
+                read_instruction_file=self._load_global_instructions,
+            )
+        )
         skill_reminder = self._get_skill_reminder(agent_config)
         if skill_reminder:
             append_parts.append(skill_reminder)

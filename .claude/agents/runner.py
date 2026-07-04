@@ -2105,29 +2105,10 @@ async def _run_codex_agent(
     except Exception as e:
         logger.warning(f"Agent '{config.name}': failed to get agent list: {e}")
 
-    # Load global safety rules (injected into ALL agents)
-    _global_rules = ""
-    global_rules_path = Path(__file__).parent / "global_rules.md"
-    if global_rules_path.exists():
-        try:
-            _global_rules = global_rules_path.read_text().strip()
-        except Exception as e:
-            logger.warning(f"Agent '{config.name}': could not read global_rules.md: {e}")
-
-    # Load mode-specific global instructions based on visibility flag
-    _global_mode_instructions = ""
-    if invocation.is_visible:
-        _mode_file = "global_visible.md"
-    else:
-        _mode_file = "global_silent.md"
-    _mode_path = Path(__file__).parent / _mode_file
-    if _mode_path.exists():
-        try:
-            _global_mode_instructions = _mode_path.read_text().strip()
-            if _global_mode_instructions:
-                logger.info(f"Agent '{config.name}': loaded {_mode_file} (is_visible={invocation.is_visible})")
-        except Exception as e:
-            logger.warning(f"Agent '{config.name}': could not read {_mode_file}: {e}")
+    _global_instruction_parts = prompt_assembly.load_global_instruction_parts(
+        Path(__file__).parent,
+        is_visible=invocation.is_visible,
+    )
 
     # Identity-only assembly. The pieces below are stable across turns —
     # prompt.md, global rules, mode instructions, skill menu, agent list.
@@ -2136,10 +2117,7 @@ async def _run_codex_agent(
     identity_parts: List[str] = []
     if config.prompt:
         identity_parts.append(config.prompt)
-    if _global_rules:
-        identity_parts.append(_global_rules)
-    if _global_mode_instructions:
-        identity_parts.append(_global_mode_instructions)
+    identity_parts.extend(_global_instruction_parts)
     if _skill_reminder:
         identity_parts.append(_skill_reminder)
     if _agent_list_block:
@@ -2466,29 +2444,10 @@ async def _run_anthropic_sdk_agent(
     except Exception as e:
         logger.warning(f"Agent '{config.name}': failed to get agent list: {e}")
 
-    # Load global safety rules (injected into ALL agents)
-    _global_rules = ""
-    global_rules_path = Path(__file__).parent / "global_rules.md"
-    if global_rules_path.exists():
-        try:
-            _global_rules = global_rules_path.read_text().strip()
-        except Exception as e:
-            logger.warning(f"Agent '{config.name}': could not read global_rules.md: {e}")
-
-    # Load mode-specific global instructions based on visibility flag
-    _global_mode_instructions = ""
-    if invocation.is_visible:
-        _mode_file = "global_visible.md"
-    else:
-        _mode_file = "global_silent.md"
-    _mode_path = Path(__file__).parent / _mode_file
-    if _mode_path.exists():
-        try:
-            _global_mode_instructions = _mode_path.read_text().strip()
-            if _global_mode_instructions:
-                logger.info(f"Agent '{config.name}': loaded {_mode_file} (is_visible={invocation.is_visible})")
-        except Exception as e:
-            logger.warning(f"Agent '{config.name}': could not read {_mode_file}: {e}")
+    _global_instruction_parts = prompt_assembly.load_global_instruction_parts(
+        Path(__file__).parent,
+        is_visible=invocation.is_visible,
+    )
 
     # Identity-only assembly. The pieces below are stable across turns —
     # prompt.md, global rules, mode instructions, skill menu, agent list.
@@ -2497,10 +2456,7 @@ async def _run_anthropic_sdk_agent(
     identity_parts: List[str] = []
     if config.prompt:
         identity_parts.append(config.prompt)
-    if _global_rules:
-        identity_parts.append(_global_rules)
-    if _global_mode_instructions:
-        identity_parts.append(_global_mode_instructions)
+    identity_parts.extend(_global_instruction_parts)
     if _skill_reminder:
         identity_parts.append(_skill_reminder)
     if _agent_list_block:

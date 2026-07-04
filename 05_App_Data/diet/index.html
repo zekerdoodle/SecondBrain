@@ -2020,6 +2020,175 @@ async function unpinSlot(slotNum) {
   renderToday();
 }
 
+function makeDescribeEstimateError(kind, message, details = {}) {
+  const err = new Error(message);
+  err.kind = kind;
+  err.details = details;
+  return err;
+}
+
+function serializeDescribeError(err) {
+  if (!err) return null;
+  return {
+    kind: err.kind || 'unknown',
+    message: err.message || String(err),
+    details: err.details || null
+  };
+}
+
+function firstPresent(...values) {
+  return values.find(v => v !== undefined && v !== null && v !== '');
+}
+
+function normalizeDescribeTextForCompare(value) {
+  return String(value || '').trim().replace(/\s+/g, ' ');
+}
+
+function normalizeDescribeEstimateError(err, defaultKind = 'invalid-json') {
+  if (err?.kind) return err;
+  const message = err?.message || String(err);
+  const lower = message.toLowerCase();
+  let kind = defaultKind;
+  if (lower.includes('timed out') || lower.includes('timeout')) {
+    kind = 'agent-timeout';
+  } else if (
+    lower.includes('brain bridge') ||
+    lower.includes('app bridge') ||
+    lower.includes('askagent') ||
+    lower.includes('failed to fetch') ||
+    lower.includes('network')
+  ) {
+    kind = 'agent-bridge-failure';
+  } else if (lower.includes('json') || err instanceof SyntaxError) {
+    kind = 'invalid-json';
+  }
+  return makeDescribeEstimateError(kind, message, { original_name: err?.name || null });
+}
+
+function describeCorrelationFromEstimate(raw) {
+  const requestMeta = raw?.request || raw?.request_context || {};
+  return {
+    request_id: raw?.request_id ?? raw?.requestId ?? requestMeta.request_id ?? requestMeta.requestId,
+    date: raw?.date ?? raw?.date_key ?? raw?.dateKey ?? requestMeta.date ?? requestMeta.date_key ?? requestMeta.dateKey,
+    slot: raw?.slot ?? raw?.slot_num ?? raw?.slotNum ?? requestMeta.slot ?? requestMeta.slot_num ?? requestMeta.slotNum,
+    slot_name: raw?.slot_name ?? raw?.slotName ?? requestMeta.slot_name ?? requestMeta.slotName,
+    source_description: raw?.source_description ?? raw?.description ?? raw?.meal_description ?? requestMeta.source_description ?? requestMeta.description ?? requestMeta.meal_description
+  };
+}
+
+function validateDescribeEstimateCorrelation(raw, requestContext, source) {
+  const correlation = describeCorrelationFromEstimate(raw);
+  const expectedDescription = normalizeDescribeTextForCompare(requestContext.description);
+  const actualDescription = normalizeDescribeTextForCompare(correlation.source_description);
+  const actualSlot = Number(correlation.slot);
+
+  if (correlation.request_id !== requestContext.requestId) {
+    throw makeDescribeEstimateError('stale-estimate', `${source} request_id did not match current describe request`, {
+      expected_request_id: requestContext.requestId,
+      actual_request_id: correlation.request_id || null
+    });
+  }
+  if (correlation.date !== requestContext.dateKey) {
+    throw makeDescribeEstimateError('stale-estimate', `${source} date did not match current describe request`, {
+      expected_date: requestContext.dateKey,
+      actual_date: correlation.date || null
+    });
+  }
+  if (!Number.isFinite(actualSlot) || actualSlot !== Number(requestContext.slotNum)) {
+    throw makeDescribeEstimateError('stale-estimate', `${source} slot did not match current describe request`, {
+      expected_slot: requestContext.slotNum,
+      actual_slot: correlation.slot ?? null
+    });
+  }
+  if (actualDescription !== expectedDescription) {
+    throw makeDescribeEstimateError('stale-estimate', `${source} description did not match current describe request`, {
+      expected_description: requestContext.description,
+      actual_description: correlation.source_description || null
+    });
+  }
+  if (correlation.slot_name && correlation.slot_name !== requestContext.slotName) {
+    throw makeDescribeEstimateError('stale-estimate', `${source} slot name did not match current describe request`, {
+      expected_slot_name: requestContext.slotName,
+      actual_slot_name: correlation.slot_name
+    });
+  }
+}
+
+function normalizeDescribeEstimate(raw, requestContext, source) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw makeDescribeEstimateError('invalid-json', `${source} estimate JSON was not an object`, { source });
+  }
+
+  validateDescribeEstimateCorrelation(raw, requestContext, source);
+
+  const rawItems = Array.isArray(raw.estimated_items) ? raw.estimated_items : Array.isArray(raw.items) ? raw.items : [];
+  const items = rawItems.map(item => ({
+    name: String(firstPresent(item?.name, item?.label, 'Estimated item')).trim() || 'Estimated item',
+    amount: String(firstPresent(item?.amount, item?.portion, '')).trim(),
+    cal: normalizeMacroNumber(firstPresent(item?.cal, item?.calories)),
+    protein: normalizeMacroNumber(firstPresent(item?.protein, item?.protein_g)),
+    fat: normalizeMacroNumber(firstPresent(item?.fat, item?.fat_g)),
+    carb: normalizeMacroNumber(firstPresent(item?.carb, item?.carbs, item?.carb_g, item?.carbs_g)),
+    confidence: item?.confidence ? String(item.confidence) : undefined,
+    source_note: item?.source_note ? String(item.source_note) : undefined
+  }));
+  const itemTotals = items.reduce((acc, item) => addMacroTotals(acc, item), { cal: 0, protein: 0, fat: 0, carb: 0 });
+  const rawTotals = raw.estimated_totals || raw.totals || raw.macros || {};
+  const totals = {
+    cal: normalizeMacroNumber(firstPresent(rawTotals.cal, rawTotals.calories, raw.cal, raw.calories, itemTotals.cal)),
+    protein: normalizeMacroNumber(firstPresent(rawTotals.protein, rawTotals.protein_g, raw.protein, raw.protein_g, itemTotals.protein)),
+    fat: normalizeMacroNumber(firstPresent(rawTotals.fat, rawTotals.fat_g, raw.fat, raw.fat_g, itemTotals.fat)),
+    carb: normalizeMacroNumber(firstPresent(rawTotals.carb, rawTotals.carbs, rawTotals.carb_g, rawTotals.carbs_g, raw.carb, raw.carbs, raw.carb_g, raw.carbs_g, itemTotals.carb))
+  };
+
+  const topLevelMacroValues = [
+    rawTotals.cal, rawTotals.calories, rawTotals.protein, rawTotals.protein_g, rawTotals.fat, rawTotals.fat_g, rawTotals.carb, rawTotals.carbs, rawTotals.carb_g, rawTotals.carbs_g,
+    raw.cal, raw.calories, raw.protein, raw.protein_g, raw.fat, raw.fat_g, raw.carb, raw.carbs, raw.carb_g, raw.carbs_g
+  ];
+  const hasAnyMacroSource = topLevelMacroValues.some(v => v !== undefined && v !== null && v !== '') || rawItems.some(item => {
+    return [item?.cal, item?.calories, item?.protein, item?.protein_g, item?.fat, item?.fat_g, item?.carb, item?.carbs, item?.carb_g, item?.carbs_g].some(v => v !== undefined && v !== null && v !== '');
+  });
+  const hasUsableTotals = totals.cal > 0 || totals.protein > 0 || totals.fat > 0 || totals.carb > 0;
+  if (!hasUsableTotals && !hasAnyMacroSource) {
+    throw makeDescribeEstimateError('unusable-estimate', `${source} estimate had no usable macros or items`, { source });
+  }
+
+  return {
+    request_id: requestContext.requestId,
+    date: requestContext.dateKey,
+    slot: requestContext.slotNum,
+    source,
+    totals,
+    items
+  };
+}
+
+function describeFailureToast(agentError, fallbackError) {
+  const agentKind = agentError?.kind;
+  const fallbackKind = fallbackError?.kind;
+  if (agentKind === 'agent-timeout') {
+    return fallbackKind === 'stale-estimate' ? 'Coach timed out; stale estimate ignored' : 'Coach timed out; no meal logged';
+  }
+  if (agentKind === 'agent-bridge-failure') {
+    return fallbackKind === 'stale-estimate' ? 'Coach bridge failed; stale estimate ignored' : 'Coach bridge failed; no meal logged';
+  }
+  if (fallbackKind === 'stale-estimate' || agentKind === 'stale-estimate') {
+    return 'Stale coach estimate ignored; no meal logged';
+  }
+  if (agentKind === 'invalid-json' || agentKind === 'unusable-estimate' || fallbackKind === 'invalid-json' || fallbackKind === 'unusable-estimate') {
+    return 'Coach returned unusable estimate; no meal logged';
+  }
+  return 'Failed to estimate; no meal logged';
+}
+
+function buildDescribeFailure(agentError, fallbackError, requestContext) {
+  return makeDescribeEstimateError('describe-estimate-failed', describeFailureToast(agentError, fallbackError), {
+    request: requestContext,
+    agent_error: serializeDescribeError(agentError),
+    fallback_error: serializeDescribeError(fallbackError)
+  });
+}
+
 // ============================================================
 // DESCRIBE MODE
 // ============================================================
@@ -2031,16 +2200,40 @@ async function submitDescribeMeal(slotNum) {
 
   const dateKey = todayKey;
   const slotInfo = getSlotInfo(slotNum);
+  const slotName = slotInfo?.name || 'Meal ' + slotNum;
+  const requestId = 'diet_describe_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+  const requestContext = {
+    requestId,
+    dateKey,
+    slotNum,
+    slotName,
+    description: text
+  };
+  const requestPayload = {
+    request_id: requestId,
+    date: dateKey,
+    slot: slotNum,
+    slot_name: slotName,
+    source_description: text
+  };
   describingSlot = slotNum;
   renderToday();
 
-  try {
-    await BrainKit.askAgent('nutrition_coach',
-      `This message is from the user, sent from the diet tracker app. He's telling you what he ate for ${slotInfo?.name || 'Meal ' + slotNum} on ${dateKey}:
+  let agentError = null;
+  let fallbackError = null;
+  let estimate = null;
 
-"${text}"
+  try {
+    try {
+      const directResult = await BrainKit.askAgent('nutrition_coach',
+        `This message is from the user, sent from the diet tracker app. He is describing food to log for ${slotName} on ${dateKey}.
+
+Request JSON:
+${JSON.stringify(requestPayload, null, 2)}
 
 Use your full brain and toolset to figure out how to log this properly. You are his coach — you know him. Don't just guess a generic estimate.
+
+Time budget: this is an app-bridge request with a hard 120-second timeout. Use retrieved memory/context first, keep memory/log/meal-plan searches bounded and targeted, and return the best correlated JSON estimate before the timeout instead of continuing open-ended search. Preserve the user-specific quality: if a known order or prior log is findable quickly, use it; if not, estimate from the description and mark confidence/source_note honestly.
 
 BEFORE estimating, think about whether the user is referencing something you should already know:
 - Phrases like "my classic X", "the usual", "I always get", "you know the deal", "same as last time" mean there IS a prior log. FIND IT.
@@ -2050,45 +2243,79 @@ BEFORE estimating, think about whether the user is referencing something you sho
 
 Only fall back to USDA/generic estimation if there's genuinely no prior reference for this food.
 
-When you have the answer, write it as JSON to 05_App_Data/diet/_estimate.json. Write ONLY the JSON — no prose, no markdown, no code fences:
+Return one JSON object directly as your final response. Do not wrap it in markdown or prose. The direct response is the app's primary input.
+
+If you also write 05_App_Data/diet/_estimate.json for compatibility, write the exact same JSON object there. Do not edit daily_log.json, meal_plan.json, foods.json, pinned_meals.json, custom_meal_library.json, or any other diet data file.
+
+Required JSON shape:
 
 {
-  "cal": number,
-  "protein": number,
-  "fat": number,
-  "carb": number,
-  "items": [{"name": "Item name", "cal": number, "protein": number}]
+  "version": 1,
+  "request_id": "${requestId}",
+  "date": "${dateKey}",
+  "slot": ${slotNum},
+  "slot_name": ${JSON.stringify(slotName)},
+  "source_description": ${JSON.stringify(text)},
+  "estimated_totals": {"cal": number, "protein": number, "fat": number, "carb": number},
+  "estimated_items": [{"name": "Item name", "amount": "portion", "cal": number, "protein": number, "fat": number, "carb": number, "confidence": "high|medium|low", "source_note": "why this estimate fits"}],
+  "coach_note": "short optional note"
 }
 
-Round calories to nearest 5, protein to nearest 1g. Match portions to what the user actually described — not a default serving.`
-    );
+Round calories to nearest 5 and protein/fat/carb to nearest 1g. Match portions to what the user actually described — not a default serving.`
+      , { json: true });
+      estimate = normalizeDescribeEstimate(directResult, requestContext, 'direct-response');
+    } catch (e) {
+      agentError = normalizeDescribeEstimateError(e, 'agent-bridge-failure');
+      console.warn('Describe direct estimate unavailable:', {
+        request: requestContext,
+        error: serializeDescribeError(agentError)
+      });
+    }
 
-    const resultStr = await BrainKit.readFile('diet/_estimate.json');
-    const result = JSON.parse(resultStr);
+    if (!estimate) {
+      try {
+        const resultStr = await BrainKit.readFile('diet/_estimate.json');
+        const rawFallback = typeof resultStr === 'string' ? JSON.parse(resultStr) : resultStr;
+        estimate = normalizeDescribeEstimate(rawFallback, requestContext, 'side-effect-file');
+        console.info('Describe estimate recovered from side-effect file:', {
+          request: requestContext,
+          direct_error: serializeDescribeError(agentError)
+        });
+      } catch (e) {
+        fallbackError = normalizeDescribeEstimateError(e, 'side-effect-unavailable');
+        throw buildDescribeFailure(agentError, fallbackError, requestContext);
+      }
+    }
 
     const today = ensureDayExists(dateKey);
     const entry = {
       slot: slotNum,
       type: 'described',
       description: text,
-      totals: {
-        cal: result.cal || 0,
-        protein: result.protein || 0,
-        fat: result.fat || 0,
-        carb: result.carb || 0
-      },
+      totals: estimate.totals,
       time: nowTime(),
       rating: null,
       rating_note: null
     };
-    if (result.items) entry.estimated_items = result.items;
+    if (estimate.items.length > 0) entry.estimated_items = estimate.items;
 
     today.meals.push(entry);
     await saveLog();
+    console.info('Describe meal logged:', {
+      request: requestContext,
+      estimate_source: estimate.source,
+      totals: entry.totals
+    });
     BrainKit.toast(`Logged: ~${entry.totals.cal} cal / ${entry.totals.protein}g P`, 'success');
   } catch (e) {
-    console.error('Describe meal failed:', e);
-    BrainKit.toast('Failed to estimate — try again?', 'error');
+    const failure = e?.kind === 'describe-estimate-failed' ? e : buildDescribeFailure(normalizeDescribeEstimateError(e), fallbackError, requestContext);
+    console.error('Describe meal failed:', {
+      request: requestContext,
+      error: serializeDescribeError(failure),
+      agent_error: serializeDescribeError(agentError),
+      fallback_error: serializeDescribeError(fallbackError)
+    });
+    BrainKit.toast(failure.message || 'Failed to estimate; no meal logged', 'error');
   } finally {
     describingSlot = null;
     expandedSlot = null;

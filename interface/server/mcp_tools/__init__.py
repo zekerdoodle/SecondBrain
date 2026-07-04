@@ -16,8 +16,9 @@ Usage:
     server = create_mcp_server(include_tools=["google_list", "schedule_self"])
 """
 
+import importlib
 import logging
-from typing import List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
 from claude_agent_sdk import create_sdk_mcp_server
 
@@ -41,6 +42,40 @@ from .constants import (
 )
 
 logger = logging.getLogger("mcp_tools")
+
+_Importer = Callable[[str], object]
+
+_TOOL_PACKAGE_NAMES: Tuple[str, ...] = (
+    "google",
+    "gmail",
+    "youtube",
+    "spotify",
+    "finance",
+    "snaptrade",
+    "scheduler",
+    "memory",
+    "utilities",
+    "agents",
+    "bash",
+    "forms",
+    "moltbook",
+    "llm",
+    "windows_desktop",
+    "chess",
+    "image",
+    "skills",
+    "messaging",
+    "mood",
+    "salons",
+    "safe_deploy",
+)
+
+_TOOL_LOAD_FAILURES: List[Dict[str, str]] = []
+
+
+def get_tool_load_failures() -> Tuple[Dict[str, str], ...]:
+    """Return MCP tool package import failures recorded during the latest load."""
+    return tuple(dict(failure) for failure in _TOOL_LOAD_FAILURES)
 
 
 def _inject_chat_context(tools, chat_id: str):
@@ -294,39 +329,35 @@ def create_mcp_server(
     )
 
 
-# Import all tool modules to trigger registration
-# These imports must come after the registry is defined
-def _load_all_tools():
-    """Load all tool modules to register them with the registry."""
-    from . import google
-    from . import gmail
-    from . import youtube
-    from . import spotify
-    from . import finance
-    from . import snaptrade
-    from . import scheduler
-    from . import memory
-    from . import utilities
-    from . import agents
-    from . import bash
-    from . import forms
-    from . import moltbook
-    from . import llm
-    from . import windows_desktop
-    from . import chess
-    from . import image
-    from . import skills
-    from . import messaging
-    from . import mood
-    from . import salons
-    from . import safe_deploy
+# Import all tool modules to trigger registration.
+# These imports must come after the registry is defined.
+def _load_all_tools(importer: Optional[_Importer] = None):
+    """Load all tool packages to register them with the registry."""
+    package_importer = importer or importlib.import_module
+    _TOOL_LOAD_FAILURES.clear()
+
+    for package_name in _TOOL_PACKAGE_NAMES:
+        module_name = f"{__name__}.{package_name}"
+        try:
+            package_importer(module_name)
+        except ImportError as e:
+            _TOOL_LOAD_FAILURES.append(
+                {
+                    "package": package_name,
+                    "module": module_name,
+                    "error_type": type(e).__name__,
+                    "error": str(e),
+                }
+            )
+            logger.exception(
+                "Failed to load MCP tool package '%s' (%s); continuing with remaining packages",
+                package_name,
+                module_name,
+            )
 
 
-# Auto-load tools when module is imported
-try:
-    _load_all_tools()
-except ImportError as e:
-    logger.warning(f"Some tool modules failed to load: {e}")
+# Auto-load tools when module is imported.
+_load_all_tools()
 
 
 # Backward compatibility: original function name
@@ -353,6 +384,7 @@ __all__ = [
     "list_categories",
     "list_tools",
     "get_tool_count",
+    "get_tool_load_failures",
     # Constants
     "MCP_SERVER_NAME",
     "MCP_PREFIX",
