@@ -2681,7 +2681,138 @@ class InternalMessageReactionRequest(BaseModel):
     remove: bool = False
 
 
+class InternalMessageUserRequest(BaseModel):
+    contents: Optional[str] = None
+    room_id: Optional[str] = None
+    title: Optional[str] = None
+    agent_name: str = "assistant"
+
+
+class InternalSalonEventRequest(BaseModel):
+    event_type: str
+    payload: Dict[str, Any]
+
+
+class InternalUiBroadcastRequest(BaseModel):
+    event_type: str
+    payload: Dict[str, Any]
+
+
 INTERNAL_AGENT_INVOKE_MODES = {"foreground", "ping", "trust"}
+INTERNAL_SALON_EVENT_PAYLOAD_FIELDS = {
+    "salon_created": {
+        "salon_id",
+        "title",
+        "participants",
+        "creator",
+        "had_opening_message",
+    },
+    "salon_participant_added": {"salon_id", "added_by", "participant"},
+    "salon_message_posted": {"salon_id", "message_id", "from"},
+}
+
+
+def _validate_internal_ui_broadcast_payload(event_type: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    if event_type == "leave_on_desk":
+        allowed_fields = {"file_path", "reason"}
+        extra = sorted(set(payload.keys()) - allowed_fields)
+        if extra:
+            raise HTTPException(
+                status_code=400,
+                detail=f"ui broadcast payload includes unsupported field(s): {', '.join(extra)}",
+            )
+        file_path = payload.get("file_path")
+        if not isinstance(file_path, str) or not file_path.strip():
+            raise HTTPException(status_code=400, detail="leave_on_desk file_path must be a non-empty string")
+        reason = payload.get("reason", "")
+        if reason is not None and not isinstance(reason, str):
+            raise HTTPException(status_code=400, detail="leave_on_desk reason must be a string")
+        return {
+            "type": "leave_on_desk",
+            "file_path": file_path,
+            "reason": reason or "",
+        }
+
+    if event_type == "theme_update":
+        allowed_fields = {"theme"}
+        extra = sorted(set(payload.keys()) - allowed_fields)
+        if extra:
+            raise HTTPException(
+                status_code=400,
+                detail=f"ui broadcast payload includes unsupported field(s): {', '.join(extra)}",
+            )
+        theme = payload.get("theme")
+        if not isinstance(theme, dict) or not theme:
+            raise HTTPException(status_code=400, detail="theme_update theme must be a non-empty object")
+        return {"type": "theme_update", "theme": theme}
+
+    if event_type == "mood_updated":
+        allowed_fields = {"agent"}
+        extra = sorted(set(payload.keys()) - allowed_fields)
+        if extra:
+            raise HTTPException(
+                status_code=400,
+                detail=f"ui broadcast payload includes unsupported field(s): {', '.join(extra)}",
+            )
+        agent = payload.get("agent")
+        if not isinstance(agent, str) or not agent.strip():
+            raise HTTPException(status_code=400, detail="mood_updated agent must be a non-empty string")
+        return {"type": "mood_updated", "agent": agent}
+
+    raise HTTPException(status_code=400, detail="unsupported ui broadcast event type")
+
+
+def _validate_internal_salon_event_payload(event_type: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    allowed_fields = INTERNAL_SALON_EVENT_PAYLOAD_FIELDS.get(event_type)
+    if allowed_fields is None:
+        raise HTTPException(status_code=400, detail="unsupported salon event type")
+
+    payload_fields = set(payload.keys())
+    missing = sorted(allowed_fields - payload_fields)
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail=f"salon event payload missing required field(s): {', '.join(missing)}",
+        )
+
+    extra = sorted(payload_fields - allowed_fields)
+    if extra:
+        raise HTTPException(
+            status_code=400,
+            detail=f"salon event payload includes unsupported field(s): {', '.join(extra)}",
+        )
+
+    for field_name in allowed_fields - {"participants", "had_opening_message", "title"}:
+        value = payload.get(field_name)
+        if not isinstance(value, str) or not value.strip():
+            raise HTTPException(
+                status_code=400,
+                detail=f"salon event payload field {field_name!r} must be a non-empty string",
+            )
+
+    if event_type == "salon_created":
+        if not isinstance(payload.get("title"), str):
+            raise HTTPException(
+                status_code=400,
+                detail="salon_created title must be a string",
+            )
+        participants = payload.get("participants")
+        if (
+            not isinstance(participants, list)
+            or not participants
+            or any(not isinstance(participant, str) or not participant.strip() for participant in participants)
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="salon_created participants must be a non-empty list of strings",
+            )
+        if not isinstance(payload.get("had_opening_message"), bool):
+            raise HTTPException(
+                status_code=400,
+                detail="salon_created had_opening_message must be a boolean",
+            )
+
+    return payload
 
 
 @app.get("/api/agent-activity")
@@ -2758,6 +2889,83 @@ async def internal_message_reaction(req: InternalMessageReactionRequest, request
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/internal/message-user")
+async def internal_message_user(req: InternalMessageUserRequest, request: Request):
+    """Create or append a proactive agent message from backend-owned state."""
+    token = request.headers.get("X-Second-Brain-Internal-Token")
+    if not token or token != INTERNAL_AGENT_INVOKE_TOKEN:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    try:
+        result = await deliver_message_user(
+            room_id=req.room_id,
+            contents=req.contents,
+            title=req.title,
+            agent_name=req.agent_name,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error("Internal message_user failed before live delivery: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+    if result.get("error"):
+        raise HTTPException(status_code=500, detail=result)
+
+    return {
+        **result,
+        "source": "backend",
+        "backend_pid": os.getpid(),
+    }
+
+
+@app.post("/api/internal/salon-event")
+async def internal_salon_event(req: InternalSalonEventRequest, request: Request):
+    """Publish an already-written salon event from the backend-owned event bus."""
+    token = request.headers.get("X-Second-Brain-Internal-Token")
+    if not token or token != INTERNAL_AGENT_INVOKE_TOKEN:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    payload = _validate_internal_salon_event_payload(req.event_type, dict(req.payload))
+    try:
+        from salon_events import publish
+
+        publish(req.event_type, payload)
+    except Exception as e:
+        logger.error("Internal salon event publish failed for %s: %s", req.event_type, e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return {
+        "status": "ok",
+        "event_type": req.event_type,
+        "salon_id": payload["salon_id"],
+        "source": "backend",
+        "backend_pid": os.getpid(),
+    }
+
+
+@app.post("/api/internal/ui-broadcast")
+async def internal_ui_broadcast(req: InternalUiBroadcastRequest, request: Request):
+    """Broadcast an already-written UI event from backend-owned WebSocket state."""
+    token = request.headers.get("X-Second-Brain-Internal-Token")
+    if not token or token != INTERNAL_AGENT_INVOKE_TOKEN:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    event = _validate_internal_ui_broadcast_payload(req.event_type, dict(req.payload))
+    try:
+        await broadcast_to_all_clients(event)
+    except Exception as e:
+        logger.error("Internal UI broadcast failed for %s: %s", req.event_type, e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return {
+        "status": "ok",
+        "event_type": req.event_type,
+        "source": "backend",
+        "backend_pid": os.getpid(),
+    }
 
 
 @app.post("/api/internal/agent-invoke")
@@ -4312,6 +4520,15 @@ def _find_chat_with_message(msg_id: str) -> Optional[str]:
             continue
 
     return None
+
+
+def _append_message_if_missing(messages: Any, message: Dict[str, Any]) -> None:
+    if not isinstance(messages, list):
+        return
+    message_id = message.get("id")
+    if message_id and any(isinstance(msg, dict) and msg.get("id") == message_id for msg in messages):
+        return
+    messages.append(dict(message))
 
 
 async def broadcast_to_session(session_id: str, message: dict):
@@ -7840,6 +8057,129 @@ async def handle_interrupt(websocket: WebSocket, data: dict):
             "success": interrupted,
             "sessionId": session_id
         })
+
+
+async def deliver_message_user(
+    *,
+    room_id: Optional[str],
+    contents: Optional[str],
+    title: Optional[str],
+    agent_name: str,
+) -> Dict[str, Any]:
+    """Create/append a proactive agent message through backend-owned live state."""
+    room_id = (room_id or "").strip() or None
+    contents = contents.strip() if isinstance(contents, str) else ""
+    title = title.strip() if isinstance(title, str) else None
+    agent_name = (agent_name or "assistant").strip() or "assistant"
+
+    if not contents:
+        raise ValueError("contents is required")
+
+    now = time.time()
+    msg_id = f"msg-{int(now * 1000)}-{uuid.uuid4().hex[:8]}"
+    assistant_msg = {
+        "id": msg_id,
+        "role": "assistant",
+        "content": contents,
+        "created_at": now,
+    }
+    is_new_room = False
+
+    if room_id:
+        existing = chat_manager.load_chat(room_id)
+        if not existing:
+            raise ValueError(f"room '{room_id}' not found")
+
+        existing.setdefault("messages", []).append(dict(assistant_msg))
+        if isinstance(existing.get("display_messages"), list):
+            existing["display_messages"].append(dict(assistant_msg))
+        existing["last_message_at"] = now
+        chat_manager.save_chat(room_id, existing)
+        title = existing.get("title", "Untitled")
+    else:
+        room_id = f"msg-{uuid.uuid4().hex[:12]}"
+        is_new_room = True
+
+        if not title:
+            title = contents[:47].replace("\n", " ").strip()
+            if len(contents) > 47:
+                title += "..."
+
+        chat_data = {
+            "title": title,
+            "agent": agent_name,
+            "messages": [dict(assistant_msg)],
+            "last_message_at": now,
+            "is_system": False,
+            "scheduled": False,
+        }
+        chat_manager.save_chat(room_id, chat_data)
+
+    result = {
+        "room_id": room_id,
+        "title": title,
+        "is_new_room": is_new_room,
+        "message_id": msg_id,
+    }
+
+    conv = active_conversations.get(room_id)
+    if conv and hasattr(conv, "messages"):
+        _append_message_if_missing(conv.messages, assistant_msg)
+
+    ss = session_streaming_states.get(room_id)
+    if ss and hasattr(ss, "messages"):
+        _append_message_if_missing(ss.messages, assistant_msg)
+
+    try:
+        if is_new_room:
+            await broadcast_chat_created(
+                chat_id=room_id,
+                title=title,
+                agent=agent_name,
+            )
+
+        await broadcast_to_session(room_id, {
+            "type": "message_accepted",
+            "sessionId": room_id,
+            "message": dict(assistant_msg),
+        })
+
+        decision = should_notify(
+            chat_id=room_id,
+            is_silent=False,
+            client_sessions=client_sessions,
+        )
+
+        if decision.notify:
+            preview = contents[:100] if contents else "New message"
+            await send_notification(
+                client_sessions=client_sessions,
+                chat_id=room_id,
+                preview=preview,
+                play_sound=decision.play_sound,
+                title=title or "",
+            )
+    except Exception as e:
+        logger.error(
+            "message_user live delivery failed after durable save: room=%s message=%s error=%s",
+            room_id,
+            msg_id,
+            e,
+            exc_info=True,
+        )
+        return {
+            **result,
+            "saved": True,
+            "error": f"backend live delivery failed after durable save: {e}",
+        }
+
+    logger.info(
+        "message_user: %s room %s (agent=%s)",
+        "created" if is_new_room else "appended to",
+        room_id,
+        agent_name,
+    )
+    return result
 
 
 def _reaction_visible_text(msg: dict) -> str:

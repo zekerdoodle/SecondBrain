@@ -106,9 +106,15 @@ async def leave_on_desk(args: Dict[str, Any]) -> Dict[str, Any]:
             import logging
             logging.getLogger(__name__).warning(f"LEAVE_ON_DESK: Broker broadcast failed: {e}")
 
-        broadcast_note = "" if broadcast_ok else " (WebSocket broadcast may not have reached browser.)"
+        if broadcast_ok:
+            result_text = f"Left {filename} on the user's desk.{wm_note}"
+        else:
+            result_text = (
+                f"Validated {filename} and saved the desk note.{wm_note} "
+                "Live desk broadcast may not have reached the backend/browser."
+            )
         return {
-            "content": [{"type": "text", "text": f"Left {filename} on the user's desk.{wm_note}{broadcast_note}"}]
+            "content": [{"type": "text", "text": result_text}]
         }
 
     except Exception as e:

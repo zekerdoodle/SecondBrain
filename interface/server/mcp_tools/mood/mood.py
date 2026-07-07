@@ -113,20 +113,22 @@ def _find_mood_items(store) -> List[int]:
     ]
 
 
-async def _broadcast_change(agent_name: str) -> None:
+async def _broadcast_change(agent_name: str) -> bool:
     """Notify the UI that this agent's mood changed.
 
-    Lazy-imports the broadcast helper from main (the running uvicorn module)
-    to avoid circular imports. Silent on failure — the tool still succeeds.
+    Uses the desk broker so stdio/non-backend MCP processes relay through the
+    backend-owned WebSocket broadcaster instead of a private local main module.
     """
     try:
-        main_mod = sys.modules.get("main") or sys.modules.get("__main__")
-        broadcaster = getattr(main_mod, "broadcast_mood_changed", None) if main_mod else None
-        if broadcaster:
-            await broadcaster(agent_name)
-    except Exception:
-        # Broadcast is best-effort — never block the tool result on UI sync.
-        pass
+        from desk_broker import broadcast_mood_event
+
+        ok = await broadcast_mood_event(agent_name)
+        if not ok:
+            logger.warning("SET_MOOD: Mood broadcast did not reach backend/browser for %s", agent_name)
+        return ok
+    except Exception as e:
+        logger.warning("SET_MOOD: Mood broadcast failed for %s: %s", agent_name, e, exc_info=True)
+        return False
 
 
 def _clear_existing_mood(store) -> bool:
@@ -192,8 +194,9 @@ async def set_mood(args: Dict[str, Any]) -> Dict[str, Any]:
         if preset == "clear" or preset == "neutral":
             was_active = _clear_existing_mood(store)
             if was_active:
-                await _broadcast_change(agent_name)
-                return {"content": [{"type": "text", "text": "Mood cleared. Back to baseline."}]}
+                broadcast_ok = await _broadcast_change(agent_name)
+                warning = "" if broadcast_ok else " Mood was cleared in working memory, but live UI refresh may not have reached the backend/browser."
+                return {"content": [{"type": "text", "text": f"Mood cleared. Back to baseline.{warning}"}]}
             else:
                 return {"content": [{"type": "text", "text": "No active mood to clear."}]}
 
@@ -261,8 +264,9 @@ async def set_mood(args: Dict[str, Any]) -> Dict[str, Any]:
             pin_rank=1,  # High priority — shows first
         )
 
-        await _broadcast_change(agent_name)
-        return {"content": [{"type": "text", "text": f"Mood set: **{mood_label}** ✓ (auto-saved to your working memory — no need to set it yourself)\n\nYour mood instructions:\n\n{mood_instructions}"}]}
+        broadcast_ok = await _broadcast_change(agent_name)
+        warning = "" if broadcast_ok else "\n\nMood was saved to working memory, but live UI refresh may not have reached the backend/browser."
+        return {"content": [{"type": "text", "text": f"Mood set: **{mood_label}** ✓ (auto-saved to your working memory — no need to set it yourself){warning}\n\nYour mood instructions:\n\n{mood_instructions}"}]}
 
     except Exception as e:
         import traceback

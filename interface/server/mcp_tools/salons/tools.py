@@ -15,8 +15,14 @@ fire is wired separately in main.py.)
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import os
+import sys
+import urllib.error
+import urllib.request
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from claude_agent_sdk import tool
@@ -25,11 +31,110 @@ from ..registry import register_tool
 
 logger = logging.getLogger("mcp_tools.salons")
 
+ROOT_DIR = Path(__file__).resolve().parents[4]
+INTERNAL_AGENT_INVOKE_TOKEN_FILE = ROOT_DIR / ".claude" / ".secrets" / "internal_agent_invoke_token"
+
 
 def _get_salon_manager():
     """Lazy import — keeps the tool module loadable even if salon_manager has issues."""
     from salon_manager import get_manager
     return get_manager()
+
+
+def _running_under_codex_stdio_bridge() -> bool:
+    argv = " ".join(sys.argv)
+    return "mcp_tools/stdio_server.py" in argv or argv.endswith("stdio_server.py")
+
+
+def _running_in_backend_process() -> bool:
+    """Return True only when this tool is executing inside the live backend."""
+    if _running_under_codex_stdio_bridge():
+        return False
+
+    argv = " ".join(sys.argv)
+    if "uvicorn" not in argv or "main:app" not in argv:
+        return False
+
+    backend_pid = os.environ.get("SECOND_BRAIN_BACKEND_PID")
+    if not backend_pid:
+        return False
+
+    try:
+        return int(backend_pid) == os.getpid()
+    except ValueError:
+        return False
+
+
+def _get_internal_agent_invoke_token() -> Optional[str]:
+    try:
+        token = INTERNAL_AGENT_INVOKE_TOKEN_FILE.read_text(encoding="utf-8").strip()
+    except OSError:
+        token = None
+    return token or os.environ.get("SECOND_BRAIN_INTERNAL_AGENT_TOKEN") or None
+
+
+def _post_internal_salon_event(event_type: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    token = _get_internal_agent_invoke_token()
+    if not token:
+        return {"error": "internal salon event relay token unavailable"}
+
+    base_url = os.environ.get("SECOND_BRAIN_INTERNAL_BASE_URL", "http://127.0.0.1:8000")
+    url = base_url.rstrip("/") + "/api/internal/salon-event"
+    body = json.dumps({"event_type": event_type, "payload": payload}).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Second-Brain-Internal-Token": token,
+        },
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            raw = response.read().decode("utf-8")
+            return json.loads(raw) if raw else {"status": "ok"}
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", errors="replace")
+        try:
+            data = json.loads(detail)
+            detail = data.get("detail", detail)
+        except Exception:
+            pass
+        return {"error": f"internal salon event relay failed ({e.code}): {detail}"}
+    except Exception as e:
+        return {"error": f"internal salon event relay failed: {e}"}
+
+
+async def _relay_salon_event_to_backend(event_type: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    return await asyncio.to_thread(_post_internal_salon_event, event_type, payload)
+
+
+def _relay_error_result(
+    action: str,
+    salon_id: str,
+    relay_error: str,
+    *,
+    message_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    ids = [f"salon_id: {salon_id}"]
+    if message_id:
+        ids.append(f"message_id: {message_id}")
+
+    return {
+        "content": [{
+            "type": "text",
+            "text": (
+                f"{action} was saved to Salon JSON, but backend live event relay failed.\n"
+                f"{chr(10).join(ids)}\n"
+                f"relay_error: {relay_error}\n"
+                "The live UI/Convener may not have routed this event. Patch can recover manually "
+                "by re-emitting the corresponding salon event."
+            ),
+        }],
+        "isError": True,
+    }
 
 
 # ------------------------------------------------------------------
@@ -104,13 +209,15 @@ async def create_salon(args: Dict[str, Any]) -> Dict[str, Any]:
         }
 
     # Notify the server so it can fire the convener / broadcast.
-    _emit_salon_event("salon_created", {
+    event_result = await _emit_salon_event("salon_created", {
         "salon_id": salon_id,
         "title": title,
         "participants": participants,
         "creator": agent_name,
         "had_opening_message": bool(opening_message),
     })
+    if event_result.get("error"):
+        return _relay_error_result("Salon creation", salon_id, event_result["error"])
 
     text = (
         f"✨ Salon created: '{title}'\n"
@@ -190,11 +297,17 @@ async def add_to_salon(args: Dict[str, Any]) -> Dict[str, Any]:
             }],
         }
 
-    _emit_salon_event("salon_participant_added", {
+    event_result = await _emit_salon_event("salon_participant_added", {
         "salon_id": salon_id,
         "added_by": agent_name,
         "participant": participant,
     })
+    if event_result.get("error"):
+        return _relay_error_result(
+            f"Adding {participant}",
+            salon_id,
+            event_result["error"],
+        )
 
     return {
         "content": [{
@@ -409,11 +522,18 @@ async def post_to_salon(args: Dict[str, Any]) -> Dict[str, Any]:
             "isError": True,
         }
 
-    _emit_salon_event("salon_message_posted", {
+    event_result = await _emit_salon_event("salon_message_posted", {
         "salon_id": salon_id,
         "message_id": message_id,
         "from": agent_name,
     })
+    if event_result.get("error"):
+        return _relay_error_result(
+            "Salon message",
+            salon_id,
+            event_result["error"],
+            message_id=message_id,
+        )
 
     return {
         "content": [{
@@ -428,18 +548,21 @@ async def post_to_salon(args: Dict[str, Any]) -> Dict[str, Any]:
 # ------------------------------------------------------------------
 
 
-def _emit_salon_event(event_type: str, payload: Dict[str, Any]) -> None:
-    """Publish a salon event to the in-process event bus.
+async def _emit_salon_event(event_type: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Publish a salon event through the backend-owned event bus."""
+    if _running_in_backend_process():
+        try:
+            # Lazy import to avoid circulars.
+            from salon_events import publish
 
-    Soft-fail: if the server isn't running this in-process (e.g. CLI
-    testing), the event is just logged. The actual convener-fire wiring
-    lives in main.py and reads from this bus.
-    """
-    try:
-        # Lazy import to avoid circulars
-        from salon_events import publish
+            publish(event_type, payload)
+            return {"status": "ok", "source": "backend-process"}
+        except Exception as e:
+            logger.warning(f"salon event {event_type} not published in backend process: {e}")
+            return {"error": f"backend salon event publish failed: {e}"}
 
-        publish(event_type, payload)
-    except Exception as e:
-        logger.debug(f"salon event {event_type} not published (no bus?): {e}")
-        logger.info(f"[salon-event] {event_type} {json.dumps(payload)}")
+    result = await _relay_salon_event_to_backend(event_type, payload)
+    if result.get("error"):
+        logger.warning("salon event %s relay failed: %s", event_type, result["error"])
+        logger.info(f"[salon-event-relay-failed] {event_type} {json.dumps(payload)}")
+    return result

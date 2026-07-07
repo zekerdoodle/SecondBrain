@@ -6,18 +6,24 @@ Tools:
 - scan_rooms: Search and list existing conversation rooms
 """
 
+import asyncio
 import json
 import logging
 import os
-import time
-import uuid
-from typing import Any, Dict
+import sys
+import urllib.error
+import urllib.request
+from pathlib import Path
+from typing import Any, Dict, Optional
 
 from claude_agent_sdk import tool
 
 from ..registry import register_tool
 
 logger = logging.getLogger("mcp_tools.messaging")
+
+ROOT_DIR = Path(__file__).resolve().parents[4]
+INTERNAL_AGENT_INVOKE_TOKEN_FILE = ROOT_DIR / ".claude" / ".secrets" / "internal_agent_invoke_token"
 
 
 # =============================================================================
@@ -121,6 +127,111 @@ async def scan_rooms(args: Dict[str, Any]) -> Dict[str, Any]:
 # message_user — Proactive agent-to-user messaging
 # =============================================================================
 
+
+def _running_under_codex_stdio_bridge() -> bool:
+    argv = " ".join(sys.argv)
+    return "mcp_tools/stdio_server.py" in argv or argv.endswith("stdio_server.py")
+
+
+def _running_in_backend_process() -> bool:
+    """Return True only when this tool is executing inside the live backend."""
+    if _running_under_codex_stdio_bridge():
+        return False
+
+    argv = " ".join(sys.argv)
+    if "uvicorn" not in argv or "main:app" not in argv:
+        return False
+
+    backend_pid = os.environ.get("SECOND_BRAIN_BACKEND_PID")
+    if not backend_pid:
+        return False
+
+    try:
+        return int(backend_pid) == os.getpid()
+    except ValueError:
+        return False
+
+
+def _backend_main_module():
+    if not _running_in_backend_process():
+        return None
+
+    main_mod = sys.modules.get("main") or sys.modules.get("__main__")
+    if not main_mod or not hasattr(main_mod, "deliver_message_user"):
+        return None
+    return main_mod
+
+
+def _get_internal_agent_invoke_token() -> Optional[str]:
+    try:
+        token = INTERNAL_AGENT_INVOKE_TOKEN_FILE.read_text(encoding="utf-8").strip()
+    except OSError:
+        token = None
+    return token or os.environ.get("SECOND_BRAIN_INTERNAL_AGENT_TOKEN") or None
+
+
+def _post_internal_message_user(payload: Dict[str, Any]) -> Dict[str, Any]:
+    token = _get_internal_agent_invoke_token()
+    if not token:
+        return {"error": "internal message_user relay token unavailable"}
+
+    base_url = os.environ.get("SECOND_BRAIN_INTERNAL_BASE_URL", "http://127.0.0.1:8000")
+    url = base_url.rstrip("/") + "/api/internal/message-user"
+    body = json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Second-Brain-Internal-Token": token,
+        },
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            raw = response.read().decode("utf-8")
+            return json.loads(raw) if raw else {"status": "ok"}
+    except urllib.error.HTTPError as e:
+        detail_raw = e.read().decode("utf-8", errors="replace")
+        relay_error = detail_raw
+        result: Dict[str, Any] = {}
+        try:
+            data = json.loads(detail_raw)
+            detail = data.get("detail", detail_raw)
+            if isinstance(detail, dict):
+                relay_error = detail.get("error") or json.dumps(detail, sort_keys=True)
+                for key in ("room_id", "title", "is_new_room", "message_id", "saved"):
+                    if key in detail:
+                        result[key] = detail[key]
+            else:
+                relay_error = str(detail)
+        except Exception:
+            pass
+        result["error"] = f"internal message_user relay failed ({e.code}): {relay_error}"
+        return result
+    except Exception as e:
+        return {"error": f"internal message_user relay failed: {e}"}
+
+
+async def _relay_message_user_to_backend(payload: Dict[str, Any]) -> Dict[str, Any]:
+    return await asyncio.to_thread(_post_internal_message_user, payload)
+
+
+def _error_result_from_message_user_failure(result: Dict[str, Any]) -> Dict[str, Any]:
+    lines = [f"Error: {result.get('error', 'message_user failed')}"]
+    for key in ("room_id", "title", "is_new_room", "message_id"):
+        if key in result and result[key] is not None:
+            lines.append(f"{key}: {result[key]}")
+    if result.get("saved"):
+        lines.append("The message was durably saved before live delivery failed; Patch can recover manually from the IDs above.")
+
+    return {
+        "content": [{"type": "text", "text": "\n".join(lines)}],
+        "is_error": True,
+    }
+
+
 _MESSAGE_USER_DESCRIPTION = """Send a message directly to the user.
 
 This bypasses the inference loop — the message is delivered as-is, no tokens burned.
@@ -159,12 +270,6 @@ _MESSAGE_USER_SCHEMA = {
 async def message_user(args: Dict[str, Any]) -> Dict[str, Any]:
     """Send a message to the user, creating a new room or appending to an existing one."""
     try:
-        # Lazy imports to avoid circular dependencies
-        import main
-        from notifications import should_notify, send_notification
-
-        cm = main.chat_manager
-
         room_id = args.get("room_id")
         contents = args.get("contents", "").strip()
         title = args.get("title")
@@ -173,107 +278,40 @@ async def message_user(args: Dict[str, Any]) -> Dict[str, Any]:
         if not contents:
             return {"content": [{"type": "text", "text": "Error: contents is required"}], "is_error": True}
 
-        now = time.time()
-        msg_id = f"msg-{int(now * 1000)}-{uuid.uuid4().hex[:8]}"
-        is_new_room = False
+        payload = {
+            "room_id": room_id.strip() if isinstance(room_id, str) and room_id.strip() else None,
+            "contents": contents,
+            "title": title.strip() if isinstance(title, str) and title.strip() else None,
+            "agent_name": agent_name,
+        }
 
-        if room_id:
-            # --- Append to existing room ---
-            existing = cm.load_chat(room_id)
-            if not existing:
-                return {
-                    "content": [{"type": "text", "text": f"Error: room '{room_id}' not found"}],
-                    "is_error": True
-                }
-
-            # Append the assistant message
-            existing.setdefault("messages", []).append({
-                "id": msg_id,
-                "role": "assistant",
-                "content": contents,
-                "created_at": now,
-            })
-            existing["last_message_at"] = now
-            cm.save_chat(room_id, existing)
-            title = existing.get("title", "Untitled")
-
+        main_mod = _backend_main_module()
+        if main_mod:
+            try:
+                result = await main_mod.deliver_message_user(**payload)
+            except ValueError as e:
+                return {"content": [{"type": "text", "text": f"Error: {e}"}], "is_error": True}
         else:
-            # --- Create new room ---
-            room_id = f"msg-{uuid.uuid4().hex[:12]}"
-            is_new_room = True
+            result = await _relay_message_user_to_backend(payload)
 
-            if not title:
-                # Auto-generate from first 50 chars of content
-                title = contents[:47].replace("\n", " ").strip()
-                if len(contents) > 47:
-                    title += "..."
+        if result.get("error"):
+            return _error_result_from_message_user_failure(result)
 
-            chat_data = {
-                "title": title,
-                "agent": agent_name,
-                "messages": [
-                    {
-                        "id": msg_id,
-                        "role": "assistant",
-                        "content": contents,
-                        "created_at": now,
-                    }
-                ],
-                "last_message_at": now,
-                "is_system": False,
-                "scheduled": False,
-            }
-            cm.save_chat(room_id, chat_data)
+        response = {
+            "room_id": result.get("room_id"),
+            "title": result.get("title"),
+            "is_new_room": result.get("is_new_room"),
+            "message_id": result.get("message_id"),
+        }
 
-        # --- Broadcast to connected clients ---
-
-        # If it's a new room, tell all clients about it (for sidebar update)
-        if is_new_room:
-            await main.broadcast_chat_created(
-                chat_id=room_id,
-                title=title,
-                agent=agent_name,
-            )
-
-        # Broadcast the message to anyone viewing this room
-        # Uses "message_accepted" type which the frontend already handles
-        await main.broadcast_to_session(room_id, {
-            "type": "message_accepted",
-            "sessionId": room_id,
-            "message": {
-                "id": msg_id,
-                "role": "assistant",
-                "content": contents,
-                "created_at": now,
-            },
-        })
-
-        # --- Send notification ---
-        # Always notify for message_user (override silent flag)
-        decision = should_notify(
-            chat_id=room_id,
-            is_silent=False,  # Never silent — whole point is to reach the user
-            client_sessions=main.client_sessions,
+        logger.info(
+            "message_user: %s room %s (agent=%s)",
+            "created" if response["is_new_room"] else "appended to",
+            response["room_id"],
+            agent_name,
         )
 
-        if decision.notify:
-            preview = contents[:100] if contents else "New message"
-            await send_notification(
-                client_sessions=main.client_sessions,
-                chat_id=room_id,
-                preview=preview,
-                play_sound=decision.play_sound,
-                title=title or "",
-            )
-
-        logger.info(f"message_user: {'created' if is_new_room else 'appended to'} room {room_id} (agent={agent_name})")
-
-        return {"content": [{"type": "text", "text": json.dumps({
-            "room_id": room_id,
-            "title": title,
-            "is_new_room": is_new_room,
-            "message_id": msg_id,
-        })}]}
+        return {"content": [{"type": "text", "text": json.dumps(response)}]}
 
     except Exception as e:
         import traceback

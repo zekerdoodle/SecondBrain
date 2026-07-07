@@ -39,7 +39,13 @@ PROJECT_OUTPUT_CONTRACT_VALUES = {
 }
 BACKEND_RELAY_MODES = {"foreground", "ping", "trust"}
 DETACHED_RELAY_TIMEOUT_SECONDS = 60.0
-FOREGROUND_RELAY_TIMEOUT_SECONDS = 1900.0
+FOREGROUND_RELAY_TIMEOUT_SECONDS = 14400.0
+CHAIN_STDIO_FAIL_CLOSED_MESSAGE = (
+    "Error: agent chain tools are temporarily backend-only from Codex "
+    "stdio/non-backend MCP processes. Use repeated invoke_agent calls for now; "
+    "direct invoke_agent is backend-owned and restart-visible. No local chain "
+    "checkpoint, background task, or notification was created."
+)
 
 
 def _build_invoke_tool_schema():
@@ -227,6 +233,13 @@ def _running_under_codex_stdio_bridge() -> bool:
 
 def _running_in_backend_process() -> bool:
     """Return True only in the long-lived backend process that owns ping tasks."""
+    if _running_under_codex_stdio_bridge():
+        return False
+
+    argv = " ".join(sys.argv)
+    if "uvicorn" not in argv or "main:app" not in argv:
+        return False
+
     backend_pid = os.environ.get("SECOND_BRAIN_BACKEND_PID")
     if not backend_pid:
         return False
@@ -529,8 +542,6 @@ _CHAIN_DESCRIPTION, _CHAIN_SCHEMA = _build_chain_tool_schema()
 async def invoke_agent_chain(args: Dict[str, Any]) -> Dict[str, Any]:
     """Invoke multiple agents in sequence (serial execution)."""
     try:
-        from runner import invoke_agent_chain as _invoke_chain
-
         chain = args.get("chain", [])
         on_failure = args.get("on_failure", "alert_and_stop")
         summarize = args.get("summarize", False)
@@ -538,11 +549,19 @@ async def invoke_agent_chain(args: Dict[str, Any]) -> Dict[str, Any]:
         if not chain:
             return {"content": [{"type": "text", "text": "Error: chain is required and must not be empty"}], "is_error": True}
 
+        if _should_relay_ping_to_backend():
+            return {
+                "content": [{"type": "text", "text": CHAIN_STDIO_FAIL_CLOSED_MESSAGE}],
+                "is_error": True,
+            }
+
         # Get source chat ID: injected by MCP wrapper (concurrent-safe) or env var (fallback)
         source_chat_id = args.pop("_source_chat_id", None) or os.environ.get("CURRENT_CHAT_ID")
 
         if not source_chat_id:
             return {"content": [{"type": "text", "text": "Error: source_chat_id required for chain notifications"}], "is_error": True}
+
+        from runner import invoke_agent_chain as _invoke_chain
 
         # Delegate to runner (same pattern as ping mode)
         result = await _invoke_chain(
@@ -592,14 +611,20 @@ Use list_chain_checkpoints to find available chain IDs.""",
 async def resume_agent_chain(args: Dict[str, Any]) -> Dict[str, Any]:
     """Resume a failed/stopped agent chain from checkpoint."""
     try:
-        from runner import resume_agent_chain as _resume_chain
-
         chain_id = args.get("chain_id", "")
         if not chain_id:
             return {"content": [{"type": "text", "text": "Error: chain_id is required"}], "is_error": True}
 
+        if _should_relay_ping_to_backend():
+            return {
+                "content": [{"type": "text", "text": CHAIN_STDIO_FAIL_CLOSED_MESSAGE}],
+                "is_error": True,
+            }
+
         # Get source chat ID
         source_chat_id = args.pop("_source_chat_id", None) or os.environ.get("CURRENT_CHAT_ID")
+
+        from runner import resume_agent_chain as _resume_chain
 
         result = await _resume_chain(
             chain_id=chain_id,
@@ -732,7 +757,6 @@ _PARALLEL_DESCRIPTION, _PARALLEL_SCHEMA = _build_parallel_tool_schema()
 async def invoke_agent_parallel(args: Dict[str, Any]) -> Dict[str, Any]:
     """Run multiple agents in parallel and return all results."""
     import logging
-    from runner import invoke_agent as _invoke_agent
 
     logger = logging.getLogger("agents.parallel")
 
@@ -764,10 +788,9 @@ async def invoke_agent_parallel(args: Dict[str, Any]) -> Dict[str, Any]:
             async with semaphore:
                 try:
                     result = await asyncio.wait_for(
-                        _invoke_agent(
-                            name=agent_name,
+                        _invoke_parallel_child(
+                            agent_name=agent_name,
                             prompt=prompt,
-                            mode="foreground",
                             source_chat_id=source_chat_id,
                             model_override=model_override,
                             caller_agent=caller_agent,
@@ -792,7 +815,20 @@ async def invoke_agent_parallel(args: Dict[str, Any]) -> Dict[str, Any]:
                                 "idx": idx, "status": "error", "error": error_msg,
                                 "duration": duration, "conversation_id": conv_id,
                             }
-                    elif isinstance(result, dict) and "error" in result:
+                    elif isinstance(result, dict) and "status" in result:
+                        conv_id = result.get("conversation_id")
+                        if result.get("status") == "success":
+                            return {
+                                "idx": idx, "status": "success",
+                                "response": result.get("transcript") or result.get("response") or "",
+                                "duration": duration, "conversation_id": conv_id,
+                            }
+                        return {
+                            "idx": idx, "status": "error",
+                            "error": result.get("error") or result.get("status"),
+                            "duration": duration, "conversation_id": conv_id,
+                        }
+                    elif isinstance(result, dict) and result.get("error"):
                         return {
                             "idx": idx, "status": "error", "error": result["error"],
                             "duration": duration,
@@ -884,6 +920,40 @@ def _format_parallel_results(
         parts.append("")
 
     return "\n".join(parts)
+
+
+async def _invoke_parallel_child(
+    *,
+    agent_name: str,
+    prompt: str,
+    source_chat_id: Optional[str],
+    model_override: Optional[str],
+    caller_agent: str,
+) -> Any:
+    """Invoke one foreground parallel child without local work in MCP subprocesses."""
+    if _should_relay_agent_invoke_to_backend("foreground"):
+        return await _relay_agent_invoke_to_backend({
+            "agent": agent_name,
+            "prompt": prompt,
+            "mode": "foreground",
+            "source_chat_id": source_chat_id,
+            "model_override": model_override,
+            "project": None,
+            "project_output_contract": PROJECT_OUTPUT_CONTRACT_AGENT_OUTPUTS,
+            "conversation_id": None,
+            "caller_agent": caller_agent,
+        })
+
+    from runner import invoke_agent as _invoke_agent
+
+    return await _invoke_agent(
+        name=agent_name,
+        prompt=prompt,
+        mode="foreground",
+        source_chat_id=source_chat_id,
+        model_override=model_override,
+        caller_agent=caller_agent,
+    )
 
 
 def _fmt_duration(seconds: float) -> str:

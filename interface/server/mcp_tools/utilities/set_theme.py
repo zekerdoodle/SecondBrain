@@ -428,9 +428,15 @@ async def set_theme(args: Dict[str, Any]) -> Dict[str, Any]:
         if mode:
             parts.append(f"mode to {mode}")
 
-        broadcast_note = "" if broadcast_ok else " (Broadcast may not have reached all clients.)"
+        if broadcast_ok:
+            result_text = f"Theme updated: {', '.join(parts)}. Applied to all connected clients."
+        else:
+            result_text = (
+                f"Theme preferences saved: {', '.join(parts)}. "
+                "Live theme broadcast may not have reached the backend/browser; connected clients may need refresh."
+            )
         return {
-            "content": [{"type": "text", "text": f"Theme updated: {', '.join(parts)}. Applied to all connected clients.{broadcast_note}"}]
+            "content": [{"type": "text", "text": result_text}]
         }
 
     except ValueError as e:
