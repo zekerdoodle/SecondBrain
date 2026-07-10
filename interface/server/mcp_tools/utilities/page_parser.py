@@ -2,7 +2,7 @@
 Page Parser tool.
 
 Fetches and parses web pages into clean Markdown.
-Supports full content mode and summary mode (AI-condensed via Haiku).
+Supports full content mode and AI-condensed summary mode.
 """
 
 import logging
@@ -50,6 +50,9 @@ async def _summarize_content(title: str, url: str, content: str, truncated: bool
     Returns the summary text, or falls back to truncated content on error.
     """
     from codex_backend import CodexRunOptions, ROOT_DIR, run_codex
+    import system_models
+
+    model_cfg = system_models.get("page_summarizer")
 
     trunc_note = ""
     if truncated:
@@ -72,7 +75,8 @@ Produce a structured summary following your guidelines."""
     try:
         result = await run_codex(
             CodexRunOptions(
-                model="haiku",
+                model=model_cfg["model"],
+                effort=model_cfg.get("effort") or None,
                 cwd=str(ROOT_DIR),
                 identity_instructions=SUMMARY_SYSTEM_PROMPT,
                 prompt=prompt,
@@ -105,13 +109,13 @@ Use this to extract readable content from URLs. Supports:
 - HTML pages (uses Readability + markdownify for clean extraction)
 - PDF documents (extracts text)
 - Multiple URLs in one call
-- **Summary mode**: AI-condensed version via Haiku — great for long docs, papers, or any content where you need the key points fast
+- **Summary mode**: AI-condensed version — great for long docs, papers, or any content where you need the key points fast
 
 The tool:
 1. Fetches the URL with proper headers and retries
 2. Extracts main content (removes nav, ads, boilerplate)
 3. Converts to clean Markdown with proper code block fencing
-4. In summary mode, runs the content through Haiku for an intelligent summary
+4. In summary mode, runs the content through the configured summarizer
 5. Optionally saves to docs/webresults for future reference
 
 Content is truncated at ~50k chars by default. Truncated/saved pages are stored for full retrieval later.""",
@@ -169,7 +173,7 @@ async def page_parser(args: Dict[str, Any]) -> Dict[str, Any]:
                 continue
 
             if mode == "summary":
-                # Run the content through Haiku for summarization
+                # Run the content through the configured summarizer
                 summary = await _summarize_content(
                     title=result.get("title", ""),
                     url=result.get("url", url),
@@ -185,7 +189,7 @@ async def page_parser(args: Dict[str, Any]) -> Dict[str, Any]:
                         f"Source: {result.get('url', url)}",
                         f"Domain: {result.get('domain', '')}",
                         f"Original: {result.get('char_count', 0):,} chars",
-                        f"Mode: AI Summary (Haiku)",
+                        f"Mode: AI Summary",
                     ]
                     if result.get("saved_path"):
                         header_lines.append(f"Full content saved: {result['saved_path']}")

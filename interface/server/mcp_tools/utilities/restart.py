@@ -9,10 +9,12 @@ import sys
 import asyncio
 import subprocess
 import logging
+import inspect
 from typing import Any, Dict
 
 from claude_agent_sdk import tool
 
+import restart_provenance as rp
 from ..registry import register_tool
 
 logger = logging.getLogger("mcp_tools.restart")
@@ -103,14 +105,54 @@ def _is_agent_managed_restart_consumer(restart_consumer: str) -> bool:
     return bool(mode and conversation_id)
 
 
-def _spawn_managed_restart_subprocess(restart_script: str, log_file: str) -> None:
+def _spawn_managed_restart_subprocess(
+    restart_script: str,
+    log_file: str,
+    *,
+    provenance_env: dict[str, str] | None = None,
+) -> None:
+    env = os.environ.copy()
+    if provenance_env:
+        env.update(provenance_env)
     subprocess.Popen(
         f"sleep 1 && bash {restart_script} > {log_file} 2>&1",
         shell=True,
         start_new_session=True,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
+        env=env,
     )
+
+
+def _spawn_managed_restart_subprocess_compat(
+    restart_script: str,
+    log_file: str,
+    *,
+    provenance_env: dict[str, str],
+) -> None:
+    """Call the spawn hook with provenance when the hook supports it.
+
+    Several focused tests monkeypatch the hook with a two-argument fake. Keeping
+    that fake shape valid lets those tests continue proving "spawn/no spawn"
+    behavior without needing to inspect provenance env.
+    """
+    try:
+        signature = inspect.signature(_spawn_managed_restart_subprocess)
+        params = signature.parameters.values()
+        supports_provenance_env = "provenance_env" in signature.parameters or any(
+            param.kind == inspect.Parameter.VAR_KEYWORD for param in params
+        )
+    except (TypeError, ValueError):
+        supports_provenance_env = True
+
+    if supports_provenance_env:
+        _spawn_managed_restart_subprocess(
+            restart_script,
+            log_file,
+            provenance_env=provenance_env,
+        )
+    else:
+        _spawn_managed_restart_subprocess(restart_script, log_file)
 
 
 # Add scripts directory to path
@@ -408,6 +450,14 @@ async def restart_server(args: Dict[str, Any]) -> Dict[str, Any]:
             wait_time = 5
 
         log_file = rt.CLAUDE_DIR / "server_restart.log"
+        restart_provenance = rp.build_managed_restart_provenance(
+            reason=reason,
+            restart_script=str(restart_script),
+            acceptance_mode=acceptance_mode,
+            restart_consumer=restart_consumer,
+        )
+        restart_provenance_env = rp.safe_env_from_record(restart_provenance)
+        restart_attempt_id = restart_provenance["restart_attempt_id"]
 
         # Save the continuation marker and pending restart config as one
         # logical operation. If the second write fails, remove the marker this
@@ -420,8 +470,9 @@ async def restart_server(args: Dict[str, Any]) -> Dict[str, Any]:
         try:
             logger.info(
                 "RESTART: accepting restart request before marker writes "
-                "(consumer=%s, acceptance_mode=%s, source_agent=%s, session_id=%s, "
+                "(attempt_id=%s, consumer=%s, acceptance_mode=%s, source_agent=%s, session_id=%s, "
                 "source_chat_id=%s, running_invocations=%d)",
+                restart_attempt_id,
                 restart_consumer,
                 acceptance_mode,
                 source_agent,
@@ -435,6 +486,7 @@ async def restart_server(args: Dict[str, Any]) -> Dict[str, Any]:
                 source=source_agent,
                 all_active_sessions=all_active,
                 running_invocations=running_invocations,
+                restart_provenance=restart_provenance,
             )
             wrote_continuation = True
             pending_restart_file.write_text(json.dumps({
@@ -445,6 +497,9 @@ async def restart_server(args: Dict[str, Any]) -> Dict[str, Any]:
                 "wait_time": wait_time,
                 "restart_consumer": restart_consumer,
                 "acceptance_mode": acceptance_mode,
+                "restart_attempt_id": restart_attempt_id,
+                "restart_provenance": restart_provenance,
+                "restart_provenance_env": restart_provenance_env,
             }))
         except Exception:
             try:
@@ -464,7 +519,17 @@ async def restart_server(args: Dict[str, Any]) -> Dict[str, Any]:
             except FileNotFoundError:
                 pass
             try:
-                _spawn_managed_restart_subprocess(str(restart_script), str(log_file))
+                logger.info(
+                    "RESTART: spawning agent-managed restart subprocess "
+                    "(attempt_id=%s, script=%s)",
+                    restart_attempt_id,
+                    restart_script,
+                )
+                _spawn_managed_restart_subprocess_compat(
+                    str(restart_script),
+                    str(log_file),
+                    provenance_env=restart_provenance_env,
+                )
             except Exception:
                 try:
                     pending_restart_file.unlink()
@@ -491,6 +556,7 @@ async def restart_server(args: Dict[str, Any]) -> Dict[str, Any]:
                 "text": (
                     f"Restart initiated for session {session_id}.\n"
                     f"Source: {source_agent}\n"
+                    f"Restart attempt: {restart_attempt_id}\n"
                     f"Reason: {reason}\n"
                     f"Mode: {restart_type}\n"
                     f"The server will restart in ~{wait_time} seconds.\n"

@@ -173,10 +173,10 @@ Only suggest a new title if the topic has significantly changed."""
 
 Generate a concise, descriptive title for this conversation."""
 
-    # Resolve model + reasoning effort from system_models config (with haiku
+    # Resolve model + reasoning effort from system_models config (with Luna
     # default). Re-read every call so agent-builder edits take effect without
     # a server restart.
-    model = "haiku"
+    model = "gpt-5.6-luna"
     effort = ""
     try:
         import sys as _sys
@@ -186,10 +186,10 @@ Generate a concise, descriptive title for this conversation."""
             _sys.path.insert(0, str(_server_dir))
         import system_models as _sm
         _cfg = _sm.get("chat_titler")
-        model = _cfg.get("model") or "haiku"
+        model = _cfg.get("model") or "gpt-5.6-luna"
         effort = _cfg.get("effort") or ""
     except Exception as e:
-        logger.warning(f"chat_titler: system_models load failed ({e}); using haiku default")
+        logger.warning(f"chat_titler: system_models load failed ({e}); using Luna default")
 
     logger.info(f"Running Titler on {len(messages)} messages (retitle={is_retitle}, model={model}, prompt_len={len(prompt)})")
 

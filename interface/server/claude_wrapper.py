@@ -124,6 +124,23 @@ def _current_claude_code_cli_path() -> Path:
     return CLAUDE_CODE_CLI_PATH
 
 
+def _format_retrieval_query_bundle(retrieval_queries: Any) -> str:
+    """Return human-editable query text, omitting internal weights."""
+    queries: List[str] = []
+    items = retrieval_queries if isinstance(retrieval_queries, (list, tuple)) else [retrieval_queries]
+    for item in items:
+        query_text = item[0] if isinstance(item, (list, tuple)) and item else item
+        query_text = str(query_text or "").strip()
+        if query_text:
+            queries.append(query_text)
+    return "\n".join(queries)
+
+
+def _parse_manual_retrieval_queries(manual_query: Any) -> List[str]:
+    """Return nonblank manual retrieval queries, one per textarea line."""
+    return [line.strip() for line in str(manual_query or "").splitlines() if line.strip()]
+
+
 def _riley_anthropic_proxy_base_url() -> str:
     base_url = os.environ.get("SECOND_BRAIN_RILEY_ANTHROPIC_PROXY_BASE_URL")
     if base_url:
@@ -864,11 +881,11 @@ class ClaudeWrapper:
             from contextual_memory import auto_retrieve_context, rewrite_query_for_retrieval
 
             if mode == "manual":
-                manual_query = str(memory_settings.get("manual_query") or "")
-                if not manual_query.strip():
+                manual_queries = _parse_manual_retrieval_queries(memory_settings.get("manual_query"))
+                if not manual_queries:
                     logger.info(f"Agent '{agent_config.name}': manual contextual memory query blank; skipping retrieval")
                     return
-                retrieval_queries = [(manual_query, 1.0)]
+                retrieval_queries = manual_queries[0] if len(manual_queries) == 1 else manual_queries
                 logger.info(f"Agent '{agent_config.name}': using manual contextual memory query")
             else:
                 # 20s timeout — Sonnet rewriter success is 3-5s, but the SDK
@@ -891,6 +908,13 @@ class ClaudeWrapper:
                         f"'{agent_config.name}' — falling back to raw prompt."
                     )
                     retrieval_queries = [(raw_query, 1.0)]
+                last_auto_query = _format_retrieval_query_bundle(retrieval_queries)
+                if isinstance(helper_settings, dict):
+                    helper_memory = helper_settings.get("contextual_memory")
+                    if not isinstance(helper_memory, dict):
+                        helper_memory = {}
+                        helper_settings["contextual_memory"] = helper_memory
+                    helper_memory["last_auto_query"] = last_auto_query
 
             # Run CPU-bound retrieval (embedding model inference) in a thread
             # to avoid blocking the event loop / freezing WebSocket heartbeats.

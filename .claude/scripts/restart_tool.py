@@ -132,6 +132,8 @@ def save_continuation_state(
     messages: list = None,
     all_active_sessions: dict = None,
     running_invocations: list = None,
+    restart_provenance: dict = None,
+    shutdown_provenance: dict = None,
 ):
     """Save continuation marker for post-restart resumption.
 
@@ -147,6 +149,8 @@ def save_continuation_state(
             sessions that were actively processing at restart time.
         running_invocations: Optional running_agents snapshots for non-chat
             agent work that must be resumed on startup.
+        restart_provenance: Optional managed/script restart provenance metadata.
+        shutdown_provenance: Optional signal/shutdown attribution metadata.
     """
     reason = reason or "Server restart requested"
     source = source or "unknown"
@@ -224,6 +228,10 @@ def save_continuation_state(
             "If you were testing a change, verify it now."
         )
     }
+    if restart_provenance:
+        continuation["restart_provenance"] = restart_provenance
+    if shutdown_provenance:
+        continuation["shutdown_provenance"] = shutdown_provenance
 
     RESTART_MARKER.write_text(json.dumps(continuation, indent=2))
     return continuation

@@ -26,9 +26,74 @@ export ENABLE_TOOL_SEARCH=false
 export SECOND_BRAIN_CODEX_BIN="${SECOND_BRAIN_CODEX_BIN:-/home/debian/.nvm/versions/node/v22.17.1/bin/codex}"
 export PATH="$(dirname "$SECOND_BRAIN_CODEX_BIN"):$PATH"
 
+ensure_restart_attempt_id() {
+    if [ -z "${SECOND_BRAIN_RESTART_ATTEMPT_ID:-}" ]; then
+        if [ -r /proc/sys/kernel/random/uuid ]; then
+            SECOND_BRAIN_RESTART_ATTEMPT_ID="$(cat /proc/sys/kernel/random/uuid)"
+        elif command -v uuidgen >/dev/null 2>&1; then
+            SECOND_BRAIN_RESTART_ATTEMPT_ID="$(uuidgen)"
+        else
+            SECOND_BRAIN_RESTART_ATTEMPT_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+        fi
+        export SECOND_BRAIN_RESTART_ATTEMPT_ID
+    fi
+    export SECOND_BRAIN_RESTART_PROVENANCE_SOURCE="${SECOND_BRAIN_RESTART_PROVENANCE_SOURCE:-manual_or_unknown_shell}"
+    export SECOND_BRAIN_RESTART_PROVENANCE_TRIGGER="${SECOND_BRAIN_RESTART_PROVENANCE_TRIGGER:-restart-server.sh}"
+    export SECOND_BRAIN_RESTART_PROVENANCE_RESTART_SCRIPT="${SECOND_BRAIN_RESTART_PROVENANCE_RESTART_SCRIPT:-$SCRIPT_DIR/restart-server.sh}"
+}
+
+write_restart_provenance_intent() {
+    ensure_restart_attempt_id
+    echo "Restart provenance: attempt_id=$SECOND_BRAIN_RESTART_ATTEMPT_ID source=$SECOND_BRAIN_RESTART_PROVENANCE_SOURCE"
+
+    local helper="$SCRIPT_DIR/server/restart_provenance.py"
+    if [ ! -f "$helper" ]; then
+        echo "WARNING: restart provenance helper missing: $helper"
+        return 0
+    fi
+
+    local python_bin="${SECOND_BRAIN_RESTART_PROVENANCE_PYTHON:-$SCRIPT_DIR/server/venv/bin/python3}"
+    if [ ! -x "$python_bin" ]; then
+        python_bin="$(command -v python3 || true)"
+    fi
+    if [ -z "$python_bin" ]; then
+        echo "WARNING: python3 unavailable; skipping restart provenance marker."
+        return 0
+    fi
+
+    if ! "$python_bin" "$helper" write-intent \
+        --project-root "$SCRIPT_DIR/.." \
+        --attempt-id "$SECOND_BRAIN_RESTART_ATTEMPT_ID" \
+        --source "$SECOND_BRAIN_RESTART_PROVENANCE_SOURCE" \
+        --trigger "$SECOND_BRAIN_RESTART_PROVENANCE_TRIGGER" \
+        --reason "${SECOND_BRAIN_RESTART_PROVENANCE_REASON:-}" \
+        --script-pid "$$" \
+        --script-ppid "$PPID" \
+        --restart-script "$SECOND_BRAIN_RESTART_PROVENANCE_RESTART_SCRIPT" \
+        --pre-restart-evidence-dir "${SECOND_BRAIN_RESTART_PROVENANCE_PRE_RESTART_EVIDENCE_DIR:-}" \
+        --acceptance-mode "${SECOND_BRAIN_RESTART_PROVENANCE_ACCEPTANCE_MODE:-}" \
+        --restart-consumer "${SECOND_BRAIN_RESTART_PROVENANCE_CONSUMER:-}"; then
+        echo "WARNING: restart provenance marker write failed; continuing restart."
+    fi
+}
+
+scrub_restart_provenance_env() {
+    unset SECOND_BRAIN_RESTART_ATTEMPT_ID \
+        SECOND_BRAIN_RESTART_PROVENANCE_SOURCE \
+        SECOND_BRAIN_RESTART_PROVENANCE_TRIGGER \
+        SECOND_BRAIN_RESTART_PROVENANCE_REASON \
+        SECOND_BRAIN_RESTART_PROVENANCE_RESTART_SCRIPT \
+        SECOND_BRAIN_RESTART_PROVENANCE_PRE_RESTART_EVIDENCE_DIR \
+        SECOND_BRAIN_RESTART_PROVENANCE_ACCEPTANCE_MODE \
+        SECOND_BRAIN_RESTART_PROVENANCE_CONSUMER \
+        SECOND_BRAIN_RESTART_PROVENANCE_PYTHON
+}
+
 echo "Quick restart (skipping frontend build)..."
 
 # Gracefully stop previous server (SIGTERM first so shutdown handler can save state)
+write_restart_provenance_intent
+scrub_restart_provenance_env
 fuser -k -TERM $PORT/tcp 2>/dev/null
 sleep 2
 # Force kill if still running

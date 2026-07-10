@@ -100,7 +100,8 @@ class NotificationQueue:
         agent_response: str,
         source_chat_id: str,
         invoked_at: datetime,
-        completed_at: Optional[datetime] = None
+        completed_at: Optional[datetime] = None,
+        dedupe_key: Optional[str] = None,
     ) -> PendingNotification:
         """
         Add a notification to the queue.
@@ -111,6 +112,8 @@ class NotificationQueue:
             source_chat_id: Chat to inject notification into
             invoked_at: When the agent was invoked
             completed_at: When the agent completed (default: now)
+            dedupe_key: Stable logical-obligation key. When present, repeated
+                adds return the existing row instead of creating a duplicate.
 
         Returns:
             The created notification
@@ -122,16 +125,33 @@ class NotificationQueue:
             completed_at=completed_at or datetime.utcnow(),
             source_chat_id=source_chat_id,
             agent_response=agent_response,
-            status="pending"
+            status="pending",
+            dedupe_key=dedupe_key,
         )
 
+        selected = {"notification": notification, "created": True}
+
         def _do_add(notifications):
+            if dedupe_key:
+                for existing in notifications:
+                    if existing.dedupe_key == dedupe_key:
+                        selected["notification"] = existing
+                        selected["created"] = False
+                        return notifications
             notifications.append(notification)
             return notifications
 
         self._locked_update(_do_add)
-        logger.info(f"Added notification for agent '{agent}' (chat: {source_chat_id})")
-        return notification
+        if selected["created"]:
+            logger.info(
+                f"Added notification for agent '{agent}' (chat: {source_chat_id})"
+            )
+        else:
+            logger.info(
+                f"Reused notification obligation for agent '{agent}' "
+                f"(dedupe_key: {dedupe_key})"
+            )
+        return selected["notification"]
 
     def get_pending(self, chat_id: Optional[str] = None) -> List[PendingNotification]:
         """

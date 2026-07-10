@@ -609,7 +609,7 @@ select {
       </div>
       <div class="field">
         <label>Model</label>
-        <input type="text" id="f-model" value="gpt-5.4-mini" placeholder="gpt-5.5" oninput="updateThinkingInfo()" />
+        <input type="text" id="f-model" value="gpt-5.6-terra" placeholder="gpt-5.6-terra" oninput="updateThinkingInfo()" />
         <div class="hint">Top-level fallback model. Legacy aliases like opus, sonnet, and haiku are still accepted.</div>
       </div>
       <div class="field">
@@ -670,7 +670,17 @@ select {
               <option value="low">Low</option>
               <option value="medium">Medium</option>
               <option value="high">High</option>
+              <option value="xhigh">Extra High</option>
               <option value="max">Max</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Verbosity</label>
+            <select id="f-runtime-chat-verbosity">
+              <option value="">Fallback</option>
+              <option value="low">Low</option>
+              <option value="medium">Medium</option>
+              <option value="high">High</option>
             </select>
           </div>
         </div>
@@ -695,7 +705,17 @@ select {
               <option value="low">Low</option>
               <option value="medium">Medium</option>
               <option value="high">High</option>
+              <option value="xhigh">Extra High</option>
               <option value="max">Max</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Verbosity</label>
+            <select id="f-runtime-nonchat-verbosity">
+              <option value="">Fallback</option>
+              <option value="low">Low</option>
+              <option value="medium">Medium</option>
+              <option value="high">High</option>
             </select>
           </div>
         </div>
@@ -731,7 +751,8 @@ select {
           <option value="low">Low — fast, minimal reasoning</option>
           <option value="medium">Medium — balanced</option>
           <option value="high">High — thorough analysis</option>
-          <option value="max">Max — deepest reasoning</option>
+          <option value="xhigh">Extra High — deepest reasoning</option>
+          <option value="max">Max — legacy extra-high alias</option>
         </select>
         <div class="hint">Trades latency for reasoning depth within each response.</div>
       </div>
@@ -821,15 +842,11 @@ select {
     <!-- Convener -->
     <div class="field" style="margin-top:8px">
       <label style="font-weight:600">Convener (salon orchestrator)</label>
-      <div class="hint" style="margin-bottom:8px">Routes who speaks next in a salon. Mini or stronger recommended — has to read the room.</div>
+      <div class="hint" style="margin-bottom:8px">Routes who speaks next in a salon. Luna or stronger recommended — has to read the room.</div>
       <div style="display:flex; gap:10px; align-items:flex-start">
         <div style="flex:2">
           <label style="font-size:var(--font-size-xs)">Model</label>
-          <select id="f-sm-convener-model">
-            <option value="gpt-5.4-mini" selected>GPT-5.4 Mini</option>
-            <option value="gpt-5.5">GPT-5.5</option>
-            <option value="gpt-5.4-nano">GPT-5.4 Nano</option>
-          </select>
+          <input type="text" id="f-sm-convener-model" value="gpt-5.6-luna" placeholder="gpt-5.6-luna" />
         </div>
         <div style="flex:1">
           <label style="font-size:var(--font-size-xs)">Reasoning</label>
@@ -851,11 +868,7 @@ select {
       <div style="display:flex; gap:10px; align-items:flex-start">
         <div style="flex:2">
           <label style="font-size:var(--font-size-xs)">Model</label>
-          <select id="f-sm-salontitler-model">
-            <option value="gpt-5.4-mini">GPT-5.4 Mini</option>
-            <option value="gpt-5.5">GPT-5.5</option>
-            <option value="gpt-5.4-nano" selected>GPT-5.4 Nano</option>
-          </select>
+          <input type="text" id="f-sm-salontitler-model" value="gpt-5.6-luna" placeholder="gpt-5.6-luna" />
         </div>
         <div style="flex:1">
           <label style="font-size:var(--font-size-xs)">Reasoning</label>
@@ -877,15 +890,99 @@ select {
       <div style="display:flex; gap:10px; align-items:flex-start">
         <div style="flex:2">
           <label style="font-size:var(--font-size-xs)">Model</label>
-          <select id="f-sm-chattitler-model">
-            <option value="gpt-5.4-mini">GPT-5.4 Mini</option>
-            <option value="gpt-5.5">GPT-5.5</option>
-            <option value="gpt-5.4-nano" selected>GPT-5.4 Nano</option>
-          </select>
+          <input type="text" id="f-sm-chattitler-model" value="gpt-5.6-luna" placeholder="gpt-5.6-luna" />
         </div>
         <div style="flex:1">
           <label style="font-size:var(--font-size-xs)">Reasoning</label>
           <select id="f-sm-chattitler-effort">
+            <option value="">Default</option>
+            <option value="low">Low</option>
+            <option value="medium">Medium</option>
+            <option value="high">High</option>
+            <option value="xhigh">Extra High</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <!-- Contextual Memory Rewriter -->
+    <div class="field" style="margin-top:14px">
+      <label style="font-weight:600">Contextual Memory Rewriter</label>
+      <div class="hint" style="margin-bottom:8px">Creates targeted semantic queries for contextual-memory retrieval.</div>
+      <div style="display:flex; gap:10px; align-items:flex-start">
+        <div style="flex:2">
+          <label style="font-size:var(--font-size-xs)">Model</label>
+          <input type="text" id="f-sm-memoryrewriter-model" value="gpt-5.6-luna" placeholder="gpt-5.6-luna" />
+        </div>
+        <div style="flex:1">
+          <label style="font-size:var(--font-size-xs)">Reasoning</label>
+          <select id="f-sm-memoryrewriter-effort">
+            <option value="">Default</option>
+            <option value="low">Low</option>
+            <option value="medium">Medium</option>
+            <option value="high">High</option>
+            <option value="xhigh">Extra High</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <!-- Chat Search Extractor -->
+    <div class="field" style="margin-top:14px">
+      <label style="font-weight:600">Chat Search Extractor</label>
+      <div class="hint" style="margin-bottom:8px">Selects structured results from chat-history search windows.</div>
+      <div style="display:flex; gap:10px; align-items:flex-start">
+        <div style="flex:2">
+          <label style="font-size:var(--font-size-xs)">Model</label>
+          <input type="text" id="f-sm-chatextractor-model" value="gpt-5.6-luna" placeholder="gpt-5.6-luna" />
+        </div>
+        <div style="flex:1">
+          <label style="font-size:var(--font-size-xs)">Reasoning</label>
+          <select id="f-sm-chatextractor-effort">
+            <option value="">Default</option>
+            <option value="low">Low</option>
+            <option value="medium">Medium</option>
+            <option value="high">High</option>
+            <option value="xhigh">Extra High</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <!-- Page Summarizer -->
+    <div class="field" style="margin-top:14px">
+      <label style="font-weight:600">Page Summarizer</label>
+      <div class="hint" style="margin-bottom:8px">Condenses parsed page content in summary mode.</div>
+      <div style="display:flex; gap:10px; align-items:flex-start">
+        <div style="flex:2">
+          <label style="font-size:var(--font-size-xs)">Model</label>
+          <input type="text" id="f-sm-pagesummarizer-model" value="gpt-5.6-luna" placeholder="gpt-5.6-luna" />
+        </div>
+        <div style="flex:1">
+          <label style="font-size:var(--font-size-xs)">Reasoning</label>
+          <select id="f-sm-pagesummarizer-effort">
+            <option value="">Default</option>
+            <option value="low">Low</option>
+            <option value="medium">Medium</option>
+            <option value="high">High</option>
+            <option value="xhigh">Extra High</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <!-- Conversation Compactor -->
+    <div class="field" style="margin-top:14px">
+      <label style="font-weight:600">Conversation Compactor</label>
+      <div class="hint" style="margin-bottom:8px">Summarizes history before destructive 1:1 or salon compaction. Sol is the deliberate full-strength default.</div>
+      <div style="display:flex; gap:10px; align-items:flex-start">
+        <div style="flex:2">
+          <label style="font-size:var(--font-size-xs)">Model</label>
+          <input type="text" id="f-sm-conversationcompactor-model" value="gpt-5.6-sol" placeholder="gpt-5.6-sol" />
+        </div>
+        <div style="flex:1">
+          <label style="font-size:var(--font-size-xs)">Reasoning</label>
+          <select id="f-sm-conversationcompactor-effort">
             <option value="">Default</option>
             <option value="low">Low</option>
             <option value="medium">Medium</option>
@@ -1019,18 +1116,31 @@ async function init() {
 }
 
 // =============================================================================
-// System Models (convener / salon_titler / chat_titler)
+// System Models
 // =============================================================================
+const SYSTEM_MODEL_FIELDS = [
+  { configKey: 'convener', fieldKey: 'convener' },
+  { configKey: 'salon_titler', fieldKey: 'salontitler' },
+  { configKey: 'chat_titler', fieldKey: 'chattitler' },
+  { configKey: 'contextual_memory_rewriter', fieldKey: 'memoryrewriter' },
+  { configKey: 'chat_search_extractor', fieldKey: 'chatextractor' },
+  { configKey: 'page_summarizer', fieldKey: 'pagesummarizer' },
+  { configKey: 'conversation_compactor', fieldKey: 'conversationcompactor' },
+];
+
 async function fetchSystemModels() {
   try {
     const res = await fetch(`${API}/system-models`);
     const data = await res.json();
-    const sm = data.system_models || {};
-    setSystemModelField('convener', sm.convener || {});
-    setSystemModelField('salontitler', sm.salon_titler || {});
-    setSystemModelField('chattitler', sm.chat_titler || {});
+    applySystemModels(data.system_models || {});
   } catch (e) {
     console.error('Failed to fetch system_models:', e);
+  }
+}
+
+function applySystemModels(systemModels) {
+  for (const { configKey, fieldKey } of SYSTEM_MODEL_FIELDS) {
+    setSystemModelField(fieldKey, systemModels[configKey] || {});
   }
 }
 
@@ -1041,24 +1151,22 @@ function setSystemModelField(key, cfg) {
   if (eff) eff.value = cfg.effort || '';
 }
 
+function readSystemModelsForm() {
+  const systemModels = {};
+  for (const { configKey, fieldKey } of SYSTEM_MODEL_FIELDS) {
+    systemModels[configKey] = {
+      model: document.getElementById(`f-sm-${fieldKey}-model`).value,
+      effort: document.getElementById(`f-sm-${fieldKey}-effort`).value || '',
+    };
+  }
+  return systemModels;
+}
+
 async function saveSystemModels() {
   const btn = document.getElementById('sm-save-btn');
   const status = document.getElementById('sm-status');
   const payload = {
-    system_models: {
-      convener: {
-        model: document.getElementById('f-sm-convener-model').value,
-        effort: document.getElementById('f-sm-convener-effort').value || '',
-      },
-      salon_titler: {
-        model: document.getElementById('f-sm-salontitler-model').value,
-        effort: document.getElementById('f-sm-salontitler-effort').value || '',
-      },
-      chat_titler: {
-        model: document.getElementById('f-sm-chattitler-model').value,
-        effort: document.getElementById('f-sm-chattitler-effort').value || '',
-      },
-    },
+    system_models: readSystemModelsForm(),
   };
 
   btn.disabled = true;
@@ -1073,10 +1181,7 @@ async function saveSystemModels() {
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
-    const sm = data.system_models || {};
-    setSystemModelField('convener', sm.convener || {});
-    setSystemModelField('salontitler', sm.salon_titler || {});
-    setSystemModelField('chattitler', sm.chat_titler || {});
+    applySystemModels(data.system_models || {});
     status.style.color = 'var(--success)';
     status.textContent = 'Saved.';
     setTimeout(() => { status.style.display = 'none'; }, 2200);
@@ -1163,6 +1268,7 @@ function setRuntimeFields(prefix, cfg) {
   document.getElementById(`f-runtime-${prefix}-type`).value = runtime.type || '';
   document.getElementById(`f-runtime-${prefix}-model`).value = runtime.model || '';
   document.getElementById(`f-runtime-${prefix}-effort`).value = runtime.effort || '';
+  document.getElementById(`f-runtime-${prefix}-verbosity`).value = runtime.verbosity || '';
 }
 
 function applyRuntimePath(runtime, path, prefix) {
@@ -1172,10 +1278,12 @@ function applyRuntimePath(runtime, path, prefix) {
   const type = document.getElementById(`f-runtime-${prefix}-type`).value.trim();
   const model = document.getElementById(`f-runtime-${prefix}-model`).value.trim();
   const effort = document.getElementById(`f-runtime-${prefix}-effort`).value.trim();
+  const verbosity = document.getElementById(`f-runtime-${prefix}-verbosity`).value.trim();
 
   if (type) existing.type = type; else delete existing.type;
   if (model) existing.model = model; else delete existing.model;
   if (effort) existing.effort = effort; else delete existing.effort;
+  if (verbosity) existing.verbosity = verbosity; else delete existing.verbosity;
 
   if (Object.keys(existing).length > 0) {
     runtime[path] = existing;
@@ -1201,7 +1309,7 @@ function resetForm() {
   document.getElementById('f-name').value = '';
   document.getElementById('f-display-name').value = '';
   document.getElementById('f-desc').value = '';
-  document.getElementById('f-model').value = 'gpt-5.4-mini';
+  document.getElementById('f-model').value = 'gpt-5.6-terra';
   document.getElementById('f-timeout').value = '300';
   document.getElementById('f-max-turns').value = '200';
   document.getElementById('f-prompt').value = '';
@@ -1272,7 +1380,7 @@ async function loadAgentForEdit() {
     document.getElementById('f-name').value = name;
     document.getElementById('f-display-name').value = config.display_name || '';
     document.getElementById('f-desc').value = config.description || '';
-    document.getElementById('f-model').value = config.model || 'gpt-5.4-mini';
+    document.getElementById('f-model').value = config.model || 'gpt-5.6-terra';
     document.getElementById('f-timeout').value = config.timeout_seconds || config.timeout || 300;
     document.getElementById('f-max-turns').value = config.max_turns || 200;
     document.getElementById('f-prompt').value = data.prompt || '';
@@ -1586,12 +1694,12 @@ function renderSkillChips() {
 // Thinking Mode
 // =============================================================================
 const THINKING_MODEL_DEFAULTS = {
-  'gpt-5.5':      { mode: 'Reasoning', effort: 'High' },
-  'gpt-5.4-mini': { mode: 'Reasoning', effort: 'Medium' },
-  'gpt-5.4-nano': { mode: 'Reasoning', effort: 'Low' },
-  opus:           { mode: 'Legacy alias -> GPT-5.5', effort: 'High' },
-  sonnet:         { mode: 'Legacy alias -> GPT-5.4 Mini', effort: 'Medium' },
-  haiku:          { mode: 'Legacy alias -> GPT-5.4 Mini', effort: 'Low' },
+  'gpt-5.6-sol':   { mode: 'Reasoning', effort: 'Model default' },
+  'gpt-5.6-terra': { mode: 'Reasoning', effort: 'Model default' },
+  'gpt-5.6-luna':  { mode: 'Reasoning', effort: 'Model default' },
+  opus:            { mode: 'Legacy alias -> GPT-5.6 Sol', effort: 'Model default' },
+  sonnet:          { mode: 'Legacy alias -> GPT-5.6 Terra', effort: 'Model default' },
+  haiku:           { mode: 'Legacy alias -> GPT-5.6 Luna', effort: 'Model default' },
 };
 
 function updateThinkingUI() {
@@ -1663,7 +1771,7 @@ async function saveAgent() {
   const config = mode === 'edit' ? cloneConfig(loadedConfig) : {};
   config.name = name;
   config.description = desc;
-  config.model = model.trim() || 'gpt-5.4-mini';
+  config.model = model.trim() || 'gpt-5.6-terra';
   config.type = mode === 'edit' && editOriginalType ? editOriginalType : (config.type || 'codex');
   config.timeout_seconds = timeout;
   config.max_turns = maxTurns;

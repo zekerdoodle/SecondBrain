@@ -34,10 +34,10 @@ logger = logging.getLogger("mcp_tools.llm")
 REPO_ROOT = Path(__file__).resolve().parents[4]
 
 DEFAULT_GEMINI_MODEL = "gemini-3-pro-preview"
-DEFAULT_OPENAI_MODEL = "gpt-5.4-mini"
+DEFAULT_OPENAI_MODEL = "gpt-5.6-luna"
 OPENAI_MODEL_ENV = "SECOND_BRAIN_CONSULT_OPENAI_MODEL"
 OPENAI_EFFORT_ENV = "SECOND_BRAIN_CONSULT_OPENAI_EFFORT"
-DEFAULT_OPENAI_EFFORT = "low"
+DEFAULT_OPENAI_EFFORT = ""
 
 DEFAULT_TIMEOUT = 120
 MAX_TIMEOUT = 300
@@ -50,7 +50,7 @@ GEMINI_MODELS = [
 ]
 
 OPENAI_MODELS = [
-    "gpt-5.4-mini",
+    "gpt-5.6-luna",
 ]
 
 OPENAI_SYSTEM_TEMPLATE = """You are {model_name}. You are talking with Claude.
@@ -332,10 +332,11 @@ async def _consult_openai(prompt: str, model: str, timeout: int) -> Dict[str, An
         "--skip-git-repo-check",
         "-m",
         model,
-        "-c",
-        f'model_reasoning_effort="{_openai_reasoning_effort()}"',
         full_prompt,
     ]
+    effort = _openai_reasoning_effort()
+    if effort:
+        command[5:5] = ["-c", f'model_reasoning_effort="{effort}"']
     result = await _run_provider_command("openai", command, timeout, REPO_ROOT)
 
     if not result["success"]:
@@ -375,7 +376,7 @@ The response is for your use: synthesize it in your own words.
 
 Providers:
 - gemini: Google's Gemini CLI (default: gemini-3-pro-preview)
-- openai: OpenAI via Codex CLI (default: gpt-5.4-mini, override with SECOND_BRAIN_CONSULT_OPENAI_MODEL)
+- openai: OpenAI via Codex CLI (default: gpt-5.6-luna, override with SECOND_BRAIN_CONSULT_OPENAI_MODEL)
 """,
     input_schema={
         "type": "object",
@@ -393,7 +394,7 @@ Providers:
                 "type": "string",
                 "description": (
                     "Specific model to use. Defaults: gemini-3-pro-preview for Gemini, "
-                    "gpt-5.4-mini for OpenAI unless SECOND_BRAIN_CONSULT_OPENAI_MODEL is set."
+                    "gpt-5.6-luna for OpenAI unless SECOND_BRAIN_CONSULT_OPENAI_MODEL is set."
                 ),
             },
             "timeout": {

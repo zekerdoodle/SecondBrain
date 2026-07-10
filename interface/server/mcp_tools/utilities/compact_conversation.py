@@ -12,7 +12,7 @@ Three modes for reclaiming context window budget in long conversations:
    entirely, keeping only the tool name + a short hint of the args. All
    user/assistant dialogue preserved verbatim. Fast, no external LLM call.
 
-3. "summarize" — Original behavior: an Opus subagent produces a dense narrative
+3. "summarize" — A full-strength subagent produces a dense narrative
    summary of older messages. Semantic and slower (~10-30s), but
    preserves meaning across long-ago dialogue. Use when there's lots of OLD
    dialogue that needs collapsing (not just tool bloat).
@@ -339,10 +339,13 @@ async def _summarize_messages(messages: List[Dict]) -> str:
     """
     Run the compaction subagent to summarize older messages.
 
-    Uses the configured Opus-equivalent Codex model for maximum comprehension and thoroughness.
+    Uses the configured full-strength Codex model for maximum comprehension and thoroughness.
     Returns a text summary.
     """
     from codex_backend import CodexRunOptions, ROOT_DIR, run_codex
+    import system_models
+
+    model_cfg = system_models.get("conversation_compactor")
 
     conversation_text = _format_messages_for_summary(messages)
 
@@ -356,7 +359,8 @@ async def _summarize_messages(messages: List[Dict]) -> str:
     try:
         result = await run_codex(
             CodexRunOptions(
-                model="opus",
+                model=model_cfg["model"],
+                effort=model_cfg.get("effort") or None,
                 cwd=str(ROOT_DIR),
                 identity_instructions=COMPACTION_SYSTEM_PROMPT,
                 prompt=prompt,
@@ -841,6 +845,9 @@ async def run_salon_compaction(
 
     # Reuse the 1:1 compaction subagent, with a salon-flavored prompt.
     from codex_backend import CodexRunOptions, ROOT_DIR, run_codex
+    import system_models
+
+    model_cfg = system_models.get("conversation_compactor")
     salon_intro = (
         f"This is a group-chat (\"salon\") between the user and multiple AI agents. "
         f"Participants visible in this excerpt: "
@@ -851,7 +858,8 @@ async def run_salon_compaction(
     try:
         result = await run_codex(
             CodexRunOptions(
-                model="opus",
+                model=model_cfg["model"],
+                effort=model_cfg.get("effort") or None,
                 cwd=str(ROOT_DIR),
                 identity_instructions=COMPACTION_SYSTEM_PROMPT,
                 prompt=f"{salon_intro}\n\n{rendered_older}",
@@ -923,7 +931,7 @@ Three modes — pick based on WHY context is bloated:
 
 - **"strip_tools"**: More aggressive — replace tool outputs entirely with "[output stripped]", keeping only tool name + short arg hint. Dialogue still verbatim. Fast, free. Use when truncate isn't enough, or when the tool results are truly unneeded going forward.
 
-- **"summarize"**: Opus-powered semantic summary of older messages. Collapses BOTH dialogue and tools into a narrative. Slower (~10-30s). ⚠️ **In a group chat (salon), this summarizes the conversation for EVERYONE — verbatim chat history is permanently lost from every other participant who may still need it.** Think carefully before using summarize in a salon. Generally prefer `truncate_tools` or `strip_tools` to avoid burdening other agents. In a 1:1 chat with the user, summarize is safe.
+- **"summarize"**: Full-strength semantic summary of older messages. Collapses BOTH dialogue and tools into a narrative. Slower (~10-30s). ⚠️ **In a group chat (salon), this summarizes the conversation for EVERYONE — verbatim chat history is permanently lost from every other participant who may still need it.** Think carefully before using summarize in a salon. Generally prefer `truncate_tools` or `strip_tools` to avoid burdening other agents. In a 1:1 chat with the user, summarize is safe.
 
 **`keep_exchanges` semantics:**
 - In a 1:1 chat with the user: counts user→assistant exchanges (default 5).

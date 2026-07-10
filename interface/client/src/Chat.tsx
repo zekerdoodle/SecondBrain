@@ -1590,11 +1590,16 @@ export const Chat: React.FC<ChatProps> = ({
   }, [helperSettings, saveHelperSettings]);
 
   const setMemoryMode = useCallback((mode: ChatHelperSettings['contextual_memory']['mode']) => {
+    const enteringManual = helperSettings.contextual_memory.mode !== 'manual' && mode === 'manual';
+    const lastAutoQuery = helperSettings.contextual_memory.last_auto_query.trim();
     saveHelperSettings({
       ...helperSettings,
       contextual_memory: {
         ...helperSettings.contextual_memory,
         mode,
+        manual_query: enteringManual && lastAutoQuery
+          ? helperSettings.contextual_memory.last_auto_query
+          : helperSettings.contextual_memory.manual_query,
       },
     });
   }, [helperSettings, saveHelperSettings]);
@@ -3797,11 +3802,12 @@ export const Chat: React.FC<ChatProps> = ({
                     </div>
 
                     {helperSettings.contextual_memory.mode === 'manual' && (
-                      <input
+                      <textarea
                         className="chat-helper-query"
                         value={helperSettings.contextual_memory.manual_query}
                         onChange={(e) => setManualMemoryQuery(e.target.value)}
-                        placeholder="Manual contextual memory query"
+                        placeholder="Manual contextual memory queries"
+                        rows={3}
                       />
                     )}
                   </div>

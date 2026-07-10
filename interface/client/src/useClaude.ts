@@ -11,7 +11,7 @@ const LAST_SYNC_KEY = 'second_brain_last_sync';
 
 export const DEFAULT_CHAT_HELPER_SETTINGS: ChatHelperSettings = {
   titler: { paused: false },
-  contextual_memory: { mode: 'auto', manual_query: '' },
+  contextual_memory: { mode: 'auto', manual_query: '', last_auto_query: '' },
 };
 
 export const normalizeHelperSettings = (value: unknown): ChatHelperSettings => {
@@ -25,10 +25,15 @@ export const normalizeHelperSettings = (value: unknown): ChatHelperSettings => {
     : typeof memory.manualQuery === 'string'
       ? memory.manualQuery
       : '';
+  const lastAutoQuery = typeof memory.last_auto_query === 'string'
+    ? memory.last_auto_query
+    : typeof memory.lastAutoQuery === 'string'
+      ? memory.lastAutoQuery
+      : '';
 
   return {
     titler: { paused: Boolean(titler.paused ?? raw.titler_paused ?? false) },
-    contextual_memory: { mode, manual_query: manualQuery },
+    contextual_memory: { mode, manual_query: manualQuery, last_auto_query: lastAutoQuery },
   };
 };
 
@@ -1108,6 +1113,11 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
 
           if (data.sessionId) {
             setSessionId(data.sessionId);
+          }
+          if (data.helper_settings) {
+            const normalized = normalizeHelperSettings(data.helper_settings);
+            setHelperSettings(normalized);
+            helperSettingsRef.current = normalized;
           }
 
           // Keep streaming blocks intact — don't sync with server's disk format.

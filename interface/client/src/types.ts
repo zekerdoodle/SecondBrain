@@ -92,6 +92,7 @@ export interface ChatHelperSettings {
   contextual_memory: {
     mode: ContextualMemoryMode;
     manual_query: string;
+    last_auto_query: string;
   };
 }
 

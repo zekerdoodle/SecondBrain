@@ -78,6 +78,7 @@ from tool_output_artifacts import (
     maybe_write_raw_tool_output_artifact,
     with_truncation_flags,
 )
+import restart_provenance as restart_provenance
 from block_normalization import canonicalize_blocks
 from process_registry import register_process, deregister_by_pid, clear_registry
 import running_agents
@@ -543,7 +544,50 @@ def load_server_state() -> Optional[Dict]:
         return None
 
 
-def save_continuation_on_shutdown():
+def _classify_shutdown_restart_provenance(signal_number: int | None = None) -> Dict[str, Any]:
+    try:
+        summary = restart_provenance.classify_shutdown_provenance(
+            project_root=ROOT_DIR,
+            signal_number=signal_number,
+        )
+    except Exception as exc:
+        warning = str(exc).replace("\n", " ")[:240]
+        logger.warning(f"Shutdown: restart provenance classification failed: {warning}")
+        return {
+            "schema": restart_provenance.SHUTDOWN_SCHEMA,
+            "classified_at_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "signal_number": signal_number,
+            "classification": restart_provenance.SOURCE_UNKNOWN_EXTERNAL_SIGTERM,
+            "recent_intent": {
+                "matched": False,
+                "classification": restart_provenance.SOURCE_UNKNOWN_EXTERNAL_SIGTERM,
+                "match_reason": "classification_failed",
+            },
+        }
+
+    recent = summary.get("recent_intent") or {}
+    if recent.get("matched"):
+        logger.info(
+            "Shutdown: restart provenance classification=%s "
+            "(attempt_id=%s, source=%s, trigger=%s, age=%ss)",
+            summary.get("classification"),
+            recent.get("restart_attempt_id"),
+            recent.get("source"),
+            recent.get("trigger"),
+            recent.get("intent_age_seconds"),
+        )
+    else:
+        logger.info(
+            "Shutdown: restart provenance classification=%s "
+            "(match_reason=%s, ttl=%s)",
+            summary.get("classification"),
+            recent.get("match_reason"),
+            recent.get("ttl_seconds"),
+        )
+    return summary
+
+
+def save_continuation_on_shutdown(signal_number: int | None = None):
     """Save restart continuation for active chats and agent invocations.
 
     A fresh marker from restart_server may already exist. The shutdown handler
@@ -551,6 +595,7 @@ def save_continuation_on_shutdown():
     child-process MCP tool calls cannot accidentally save only the triggering
     chat and lose concurrently running agent work.
     """
+    shutdown_provenance = _classify_shutdown_restart_provenance(signal_number)
     try:
         running_invocations = running_agents.snapshot_all_sync()
     except Exception:
@@ -633,6 +678,7 @@ def save_continuation_on_shutdown():
                             "scheduled_task_id": entry.get("scheduled_task_id"),
                             "caller_agent": entry.get("caller_agent"),
                         })
+                    existing["shutdown_provenance"] = shutdown_provenance
                     with open(RESTART_CONTINUATION_FILE, "w") as f:
                         json.dump(existing, f, indent=2)
                     logger.info(
@@ -651,6 +697,7 @@ def save_continuation_on_shutdown():
             source="shutdown_handler",
             all_active_sessions=all_active,
             running_invocations=resumable_running,
+            shutdown_provenance=shutdown_provenance,
         )
         logger.info(
             f"Shutdown: saved continuation state for {len(all_active)} active session(s) "
@@ -677,7 +724,7 @@ def setup_signal_handlers():
         for handler in logging.getLogger().handlers:
             handler.flush()
         save_server_state()
-        save_continuation_on_shutdown()
+        save_continuation_on_shutdown(signum)
         # Flush again after continuation save
         for handler in logger.handlers:
             handler.flush()
@@ -731,10 +778,23 @@ def load_restart_continuation() -> Optional[Dict]:
 
         session_count = len(continuation.get("sessions", []))
         marker_id = continuation.get("continuation_id", "legacy")
+        provenance = continuation.get("restart_provenance") or {}
+        shutdown_provenance = continuation.get("shutdown_provenance") or {}
+        attempt_id = (
+            provenance.get("restart_attempt_id")
+            or (shutdown_provenance.get("recent_intent") or {}).get("restart_attempt_id")
+            or "none"
+        )
+        provenance_classification = (
+            provenance.get("source")
+            or shutdown_provenance.get("classification")
+            or "none"
+        )
         logger.info(
             f"Loaded restart continuation: {session_count} session(s) to resume, "
             f"source={continuation.get('source')}, reason={continuation.get('reason')}, "
-            f"marker_id={marker_id}"
+            f"marker_id={marker_id}, restart_attempt_id={attempt_id}, "
+            f"provenance={provenance_classification}"
         )
         return continuation
     except Exception as e:
@@ -1376,7 +1436,7 @@ class RegenerateRequest(BaseModel):
 
 DEFAULT_HELPER_SETTINGS = {
     "titler": {"paused": False},
-    "contextual_memory": {"mode": "auto", "manual_query": ""},
+    "contextual_memory": {"mode": "auto", "manual_query": "", "last_auto_query": ""},
 }
 
 
@@ -1395,6 +1455,9 @@ def _normalize_helper_settings(value: Optional[Dict[str, Any]]) -> Dict[str, Any
     manual_query = raw_memory.get("manual_query")
     if manual_query is None:
         manual_query = raw_memory.get("manualQuery", "")
+    last_auto_query = raw_memory.get("last_auto_query")
+    if last_auto_query is None:
+        last_auto_query = raw_memory.get("lastAutoQuery", "")
 
     return {
         "titler": {
@@ -1403,6 +1466,7 @@ def _normalize_helper_settings(value: Optional[Dict[str, Any]]) -> Dict[str, Any
         "contextual_memory": {
             "mode": mode,
             "manual_query": str(manual_query or ""),
+            "last_auto_query": str(last_auto_query or ""),
         },
     }
 
@@ -1431,7 +1495,25 @@ def _merge_helper_settings(
         if "manual_query" in memory or "manualQuery" in memory:
             manual_query = memory.get("manual_query", memory.get("manualQuery", ""))
             merged["contextual_memory"]["manual_query"] = str(manual_query or "")
+        if "last_auto_query" in memory or "lastAutoQuery" in memory:
+            last_auto_query = memory.get("last_auto_query", memory.get("lastAutoQuery", ""))
+            merged["contextual_memory"]["last_auto_query"] = str(last_auto_query or "")
 
+    return _normalize_helper_settings(merged)
+
+
+def _merge_final_helper_settings(
+    persisted_settings: Optional[Dict[str, Any]],
+    turn_settings: Optional[Dict[str, Any]],
+    *,
+    has_existing_chat: bool,
+) -> Dict[str, Any]:
+    if not has_existing_chat:
+        return _normalize_helper_settings(turn_settings)
+
+    merged = _normalize_helper_settings(persisted_settings)
+    turn_memory = _normalize_helper_settings(turn_settings)["contextual_memory"]
+    merged["contextual_memory"]["last_auto_query"] = turn_memory["last_auto_query"]
     return _normalize_helper_settings(merged)
 
 
@@ -2602,7 +2684,7 @@ async def app_bridge_ask_claude(req: AskClaudeRequest):
 
         result = await run_codex(
             CodexRunOptions(
-                model="gpt-5.4-mini",
+                model="gpt-5.6-luna",
                 cwd=str(ROOT_DIR),
                 identity_instructions=system_prompt,
                 prompt=req.prompt,
@@ -3487,7 +3569,7 @@ def list_native_tools():
 
 @app.get("/api/system-models")
 def get_system_models():
-    """Return the current system_models config (convener, salon_titler, chat_titler).
+    """Return the current config for all known system-model routes.
 
     Always includes all known system models — missing keys fall back to
     defaults defined in `interface/server/system_models.py`.
@@ -4876,7 +4958,8 @@ async def _load_fresh_pending_restart_config(trigger_time: float) -> Dict[str, A
                     if config.get("restart_script"):
                         logger.info(
                             "RESTART: accepted pending_restart.json "
-                            f"(mtime={file_mtime:.6f}, trigger_time={trigger_time:.6f}, "
+                            f"(attempt_id={config.get('restart_attempt_id', 'unknown')}, "
+                            f"mtime={file_mtime:.6f}, trigger_time={trigger_time:.6f}, "
                             f"mtime_before_trigger={mtime_before_trigger:.3f}s, "
                             f"file_age={file_age:.3f}s, "
                             f"grace={_PENDING_RESTART_MTIME_GRACE_SECONDS:.3f}s)"
@@ -7583,7 +7666,6 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
         "sessionId": chat_id_for_storage,
         "messages": conv.messages,
         "cumulative_usage": conv.cumulative_usage,
-        "helper_settings": helper_settings
     }
     if agent_name:
         final_save_data["agent"] = agent_name
@@ -7687,6 +7769,14 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
             chat_id_for_storage,
         )
 
+    latest_existing_for_helpers = chat_manager.load_chat(chat_id_for_storage)
+    final_helper_settings = _merge_final_helper_settings(
+        latest_existing_for_helpers.get("helper_settings") if latest_existing_for_helpers else None,
+        helper_settings,
+        has_existing_chat=latest_existing_for_helpers is not None,
+    )
+    final_save_data["helper_settings"] = final_helper_settings
+
     chat_manager.save_chat(chat_id_for_storage, final_save_data)
 
     # ========== @MENTION DISPATCH: Scan assistant response for @agent mentions ==========
@@ -7776,6 +7866,7 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
     done_payload = {"type": "done", "sessionId": chat_id_for_storage}
     if _done_turn_id:
         done_payload["turnId"] = _done_turn_id
+    done_payload["helper_settings"] = final_helper_settings
     if len(conv.messages) <= 500:
         done_payload["messages"] = conv.messages
     await broadcast_to_session(chat_id_for_storage, done_payload)
@@ -7812,18 +7903,33 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
             restart_config = await _load_fresh_pending_restart_config(restart_trigger_time)
             restart_script = restart_config.get("restart_script", "")
             log_file = restart_config.get("log_file", "/tmp/restart.log")
+            restart_attempt_id = restart_config.get("restart_attempt_id") or "unknown"
+            provenance_env = restart_config.get("restart_provenance_env") or {}
+            restart_env = os.environ.copy()
+            if isinstance(provenance_env, dict):
+                restart_env.update(
+                    {
+                        str(key): str(value)
+                        for key, value in provenance_env.items()
+                        if key and value is not None
+                    }
+                )
             if restart_script:
                 try:
                     os.remove(_PENDING_RESTART_FILE)
                 except FileNotFoundError:
                     pass
-                logger.info(f"RESTART: Spawning restart subprocess (script={restart_script})")
+                logger.info(
+                    "RESTART: Spawning restart subprocess "
+                    f"(attempt_id={restart_attempt_id}, script={restart_script})"
+                )
                 _restart_sp.Popen(
                     f"sleep 1 && bash {restart_script} > {log_file} 2>&1",
                     shell=True,
                     start_new_session=True,
                     stdout=_restart_sp.DEVNULL,
                     stderr=_restart_sp.DEVNULL,
+                    env=restart_env,
                 )
             else:
                 logger.error("RESTART: No fresh restart_script in pending_restart.json — cannot spawn subprocess")
@@ -9311,6 +9417,154 @@ def _restart_agent_resume_prompt(reason: str, source: str, role_note: str = "") 
     )
 
 
+def _materialize_ping_notification_obligation(manager, payload: Dict[str, Any]) -> bool:
+    """Idempotently turn one thread-owned obligation into one queue row."""
+    try:
+        agents_dir = Path(ROOT_DIR) / ".claude" / "agents"
+        if str(agents_dir) not in sys.path:
+            sys.path.insert(0, str(agents_dir))
+        from agent_notifications import get_notification_queue
+
+        source_chat_id = payload.get("source_chat_id")
+        if not source_chat_id:
+            raise RuntimeError("durable ping notification has no source_chat_id")
+        note = get_notification_queue().add(
+            agent=str(payload.get("agent") or "unknown"),
+            agent_response=str(payload.get("agent_response") or ""),
+            source_chat_id=str(source_chat_id),
+            invoked_at=datetime.fromtimestamp(
+                float(payload["invoked_at"]), tz=timezone.utc
+            ).replace(tzinfo=None),
+            completed_at=datetime.fromtimestamp(
+                float(payload["completed_at"]), tz=timezone.utc
+            ).replace(tzinfo=None),
+            dedupe_key=str(payload.get("dedupe_key") or "") or None,
+        )
+        if not manager.mark_ping_notification_queued(
+            str(payload["conversation_id"]),
+            str(payload["invocation_id"]),
+            note.id,
+        ):
+            raise RuntimeError(
+                f"failed to mark ping notification {note.id} queued"
+            )
+        return True
+    except Exception as exc:
+        logger.error(
+            "Ping reconciliation could not materialize notification %s: %s",
+            payload.get("invocation_id"),
+            exc,
+            exc_info=True,
+        )
+        return False
+
+
+def _bind_ping_continuation_claims(
+    agent_invocations: List[Dict[str, Any]],
+    reconciliation: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """Bind valid restart claims to original ping ids and drop stale duplicates."""
+    consumed_claims = {
+        (
+            claim.get("conversation_id"),
+            claim.get("target_agent"),
+            claim.get("claim_id"),
+        )
+        for claim in reconciliation.get("consumed_continuation_claims", [])
+        if isinstance(claim, dict) and claim.get("claim_id")
+    }
+    managed_keys = {
+        tuple(key)
+        for key in reconciliation.get("managed_continuation_keys", [])
+        if isinstance(key, (list, tuple)) and len(key) == 2
+    }
+    bindings = list(reconciliation.get("continuations") or [])
+    used_invocation_ids: Set[str] = set()
+    bound: List[Dict[str, Any]] = []
+
+    for raw_entry in agent_invocations:
+        entry = dict(raw_entry)
+        key = (entry.get("conversation_id"), entry.get("agent"))
+        if entry.get("kind") == "invoke_ping" and (
+            key[0], key[1], entry.get("id")
+        ) in consumed_claims:
+            logger.warning(
+                "Restart continuation: dropping consumed terminal ping claim "
+                "agent=%s thread=%s claim=%s",
+                entry.get("agent"),
+                entry.get("conversation_id"),
+                entry.get("id"),
+            )
+            continue
+        if key not in managed_keys:
+            bound.append(entry)
+            continue
+
+        match = next(
+            (
+                binding
+                for binding in bindings
+                if binding.get("conversation_id") == key[0]
+                and binding.get("target_agent") == key[1]
+                and binding.get("invocation_id") not in used_invocation_ids
+                and (
+                    binding.get("claim_id") is None
+                    or binding.get("claim_id") == entry.get("id")
+                )
+            ),
+            None,
+        )
+        if match is None:
+            logger.warning(
+                "Restart continuation: dropping stale/duplicate ping claim "
+                "agent=%s thread=%s claim=%s",
+                entry.get("agent"),
+                entry.get("conversation_id"),
+                entry.get("id"),
+            )
+            continue
+        invocation_id = str(match["invocation_id"])
+        used_invocation_ids.add(invocation_id)
+        entry["_ping_invocation_id"] = invocation_id
+        bound.append(entry)
+
+    return bound
+
+
+def _terminalize_unrecoverable_ping_continuation(entry: Dict[str, Any]) -> bool:
+    invocation_id = entry.get("_ping_invocation_id")
+    conversation_id = entry.get("conversation_id")
+    if not invocation_id or not conversation_id:
+        return False
+    try:
+        from agent_conversation_manager import get_manager
+
+        manager = get_manager()
+        finalized = manager.interrupt_ping_invocation(
+            str(conversation_id), str(invocation_id)
+        )
+        payload = finalized.get("notification")
+        if payload is None:
+            return finalized.get("lifecycle_state") in {
+                "succeeded",
+                "error",
+                "timeout",
+                "cancelled",
+                "interrupted_uncertain",
+            }
+        return _materialize_ping_notification_obligation(manager, payload)
+    except Exception as exc:
+        logger.error(
+            "Restart continuation: failed to terminalize unrecoverable ping "
+            "%s on %s: %s",
+            invocation_id,
+            conversation_id,
+            exc,
+            exc_info=True,
+        )
+        return False
+
+
 def _resume_mode_for_running_kind(kind: Optional[str]) -> str:
     # Foreground callers died with the backend, so resume them as ping work when
     # possible: the thread continues and completion is still delivered to the
@@ -9364,6 +9618,7 @@ async def _resume_agent_invocation_after_restart(entry: Dict[str, Any], reason: 
             caller_agent=entry.get("caller_agent") or "restart_continuation",
             scheduled_task_id=entry.get("scheduled_task_id"),
             is_background_processing=(kind == "background_processing"),
+            resume_ping_invocation_id=entry.get("_ping_invocation_id"),
         )
         if isinstance(result, dict) and result.get("error"):
             logger.error(
@@ -9543,7 +9798,18 @@ async def restart_continuation_wakeup():
         if ok:
             resumed_agents += 1
         else:
-            failed_agent_invocations.append(entry.get("id") or entry.get("conversation_id") or entry.get("agent"))
+            if entry.get("_ping_invocation_id") and _terminalize_unrecoverable_ping_continuation(entry):
+                logger.warning(
+                    "Restart continuation: ping %s could not resume and was "
+                    "terminalized as interrupted_uncertain",
+                    entry.get("_ping_invocation_id"),
+                )
+            else:
+                failed_agent_invocations.append(
+                    entry.get("id")
+                    or entry.get("conversation_id")
+                    or entry.get("agent")
+                )
 
     mode = "headless" if headless_continuation else "websocket"
     logger.info(
@@ -10043,10 +10309,20 @@ You are being re-invoked because you requested ping mode from a silent or schedu
             caller_agent="agent_notification_wakeup",
         )
 
-        if isinstance(result, dict) and result.get("error"):
+        result_status = (
+            result.get("status")
+            if isinstance(result, dict)
+            else getattr(result, "status", None)
+        )
+        result_error = (
+            result.get("error")
+            if isinstance(result, dict)
+            else getattr(result, "error", None)
+        )
+        if result_error or result_status in {"error", "timeout"}:
             logger.error(
                 f"Failed to resume caller agent '{caller_agent}' for ping "
-                f"thread {conversation_id}: {result.get('error')}"
+                f"thread {conversation_id}: {result_error or result_status}"
             )
             queue.release_delivery(claimed_ids)
             return
@@ -10511,9 +10787,22 @@ async def startup_event():
     restart_continuation = load_restart_continuation()
     if restart_continuation:
         sessions = restart_continuation.get("sessions", [])
+        provenance = restart_continuation.get("restart_provenance") or {}
+        shutdown_provenance = restart_continuation.get("shutdown_provenance") or {}
+        attempt_id = (
+            provenance.get("restart_attempt_id")
+            or (shutdown_provenance.get("recent_intent") or {}).get("restart_attempt_id")
+            or "none"
+        )
+        provenance_classification = (
+            provenance.get("source")
+            or shutdown_provenance.get("classification")
+            or "none"
+        )
         logger.info(
             f"Restart continuation pending: {len(sessions)} session(s) to resume "
-            f"(source={restart_continuation.get('source')}, reason={restart_continuation.get('reason')})"
+            f"(source={restart_continuation.get('source')}, reason={restart_continuation.get('reason')}, "
+            f"restart_attempt_id={attempt_id}, provenance={provenance_classification})"
         )
 
     # Clear stale entries and register primary_claude in process registry
@@ -10529,20 +10818,39 @@ async def startup_event():
     asyncio.create_task(_background_processing_idle_watcher())
     asyncio.create_task(_salon_background_processing_watcher())
 
-    # Clear any stale locks on agent-to-agent conversations left by a crash
-    # or an unclean restart. Server just came up — nothing's legitimately
-    # in-flight yet, so anything with a lock is stale.
+    # Reconcile receipt-bearing pings before releasing startup-stale locks.
+    # Managed-restart claims keep their original lifecycle identity; every
+    # other accepted nonterminal ping becomes honest uncertainty with no replay.
+    # Legacy threads still receive only the historical stale-lock cleanup.
     try:
         from agent_conversation_manager import get_manager as _get_agent_conv_mgr
-        # max_age_minutes=0 → clear ALL locks. Server just came up; nothing
-        # legitimate can be in-flight, so any lock is stale by definition.
-        # (Previously 5min, which left locks acquired right before shutdown
-        # un-cleared and blocked the next dispatch.)
-        cleared = _get_agent_conv_mgr().sweep_stale_locks(max_age_minutes=0)
-        if cleared:
-            logger.info(f"Agent conversations: cleared {cleared} stale lock(s) on startup")
+
+        manager = _get_agent_conv_mgr()
+        continuation_claims = (
+            list(restart_continuation.get("agent_invocations") or [])
+            if restart_continuation
+            else []
+        )
+        reconciliation = manager.reconcile_ping_invocations(
+            continuation_claims=continuation_claims,
+            max_age_minutes=0,
+        )
+        if restart_continuation is not None:
+            restart_continuation["agent_invocations"] = _bind_ping_continuation_claims(
+                continuation_claims, reconciliation
+            )
+        for payload in reconciliation.get("notification_obligations", []):
+            _materialize_ping_notification_obligation(manager, payload)
+        if reconciliation.get("cleared_locks"):
+            logger.info(
+                "Agent conversations: cleared %s stale lock(s) on startup",
+                reconciliation["cleared_locks"],
+            )
     except Exception as e:
-        logger.warning(f"Agent conversations: startup lock sweep failed: {e}")
+        logger.warning(
+            f"Agent conversations: startup ping reconciliation failed: {e}",
+            exc_info=True,
+        )
 
     # Salon (group chat) startup: clear stale locks + wire the dispatcher
     # into the salon_events bus. Dispatcher uses broadcast_to_all_clients to

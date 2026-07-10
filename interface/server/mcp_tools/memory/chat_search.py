@@ -4,12 +4,12 @@ Chat History Search MCP Tool
 Provides semantic search over raw conversation archives.
 Two-layer pipeline:
   1. Qwen3 embedding search → top message-level hits grouped by conversation
-  2. Haiku LLM extraction → structured selections (window/message index ranges)
+  2. Configured LLM extraction → structured selections (window/message index ranges)
 
-Haiku returns message indices, not quoted text. The formatter splices verbatim
+The extractor returns message indices, not quoted text. The formatter splices verbatim
 messages from the already-loaded context windows — zero paraphrasing, zero hallucination.
 
-Falls back to raw embedding snippets if Haiku extraction fails.
+Falls back to raw embedding snippets if structured extraction fails.
 """
 
 import calendar
@@ -46,13 +46,13 @@ PROJECTS_DIR = os.path.join(os.path.expanduser("~"), ".claude", "projects")
 
 TOKENS_PER_CHAR = 0.25
 DEFAULT_WINDOW_SIZE = 5       # Messages before/after match
-MAX_CONVERSATIONS = 10        # Max conversations in Haiku call
+MAX_CONVERSATIONS = 10        # Max conversations in extractor call
 MAX_TOKENS_PER_WINDOW = 4000  # Token budget per conversation window
 MAX_TOTAL_TOKENS = 30000      # Total token budget for all windows
-HAIKU_MAX_TURNS = 50          # Safety valve only — effectively unlimited
+EXTRACTOR_MAX_TURNS = 50      # Safety valve only — effectively unlimited
 
 
-# ── Pydantic models for Haiku structured output ──────────────────────────────
+# ── Pydantic models for structured extraction ───────────────────────────────
 
 class Selection(BaseModel):
     """A message range selection from a context window."""
@@ -75,7 +75,7 @@ class ConversationResult(BaseModel):
 
 
 class ExtractionResponse(BaseModel):
-    """Structured response from Haiku extraction."""
+    """Structured response from the configured extraction model."""
     model_config = {"extra": "ignore"}
 
     results: List[ConversationResult] = Field(
@@ -327,7 +327,7 @@ def build_context_windows(
 # ── JSON repair ───────────────────────────────────────────────────────────────
 
 def _repair_truncated_json(json_str: str) -> Optional[str]:
-    """Attempt to repair truncated JSON from Haiku by closing open structures.
+    """Attempt to repair truncated extractor JSON by closing open structures.
 
     Works by tracking open brackets/braces/strings and closing them.
     Returns None if the input is too broken to repair.
@@ -520,7 +520,7 @@ def _parse_date_query(date_query: str) -> Optional[Dict[str, float]]:
     return None
 
 
-# ── Haiku extraction ──────────────────────────────────────────────────────────
+# ── Structured extraction ────────────────────────────────────────────────────
 
 EXTRACTION_SYSTEM_PROMPT = """You are a conversation search tool. Given a user's search query and excerpts from past conversations (with indexed headers), identify relevant message ranges.
 
@@ -556,7 +556,7 @@ Never mix non-empty results with tool_calls."""
 
 
 def _build_window_blocks(windows: List[Dict[str, Any]]) -> str:
-    """Build indexed window blocks for the Haiku prompt."""
+    """Build indexed window blocks for the extractor prompt."""
     blocks = []
     for w_idx, w in enumerate(windows):
         lines = [f"[window_idx={w_idx}] ### Conversation: {w['title']} (ID: {w['chat_id']})"]
@@ -587,7 +587,7 @@ def _build_extraction_prompt(
     keyword_hint: Optional[str] = None,
     has_tools: bool = False,
 ) -> str:
-    """Build the extraction prompt for Haiku."""
+    """Build the structured extraction prompt."""
     keyword_note = ""
     if keyword_hint:
         keyword_note = f'\nNote: The user is specifically searching for the keyword "{keyword_hint}". Prioritize selections containing this exact term.\n'
@@ -627,18 +627,22 @@ Return ONLY a JSON object with this exact structure (no markdown, no explanation
 }}"""
 
 
-async def _call_haiku(prompt: str, system_prompt: str) -> Optional[str]:
+async def _call_extractor(prompt: str, system_prompt: str) -> Optional[str]:
     """Make a single small-model Codex call and return the result text."""
     try:
         from codex_backend import CodexRunOptions, ROOT_DIR, run_codex
+        import system_models
     except Exception as import_err:
         logger.error(f"Codex backend import failed: {import_err}")
         return None
 
+    model_cfg = system_models.get("chat_search_extractor")
+
     try:
         result = await run_codex(
             CodexRunOptions(
-                model="haiku",
+                model=model_cfg["model"],
+                effort=model_cfg.get("effort") or None,
                 cwd=str(ROOT_DIR),
                 identity_instructions=system_prompt,
                 prompt=prompt,
@@ -655,8 +659,8 @@ async def _call_haiku(prompt: str, system_prompt: str) -> Optional[str]:
         return None
 
 
-def _parse_haiku_json(result_text: str) -> Optional[Dict]:
-    """Parse JSON from Haiku's text response, with repair for truncation."""
+def _parse_extractor_json(result_text: str) -> Optional[Dict]:
+    """Parse the extractor's JSON response, with repair for truncation."""
     if not result_text:
         return None
 
@@ -681,12 +685,12 @@ def _parse_haiku_json(result_text: str) -> Optional[Dict]:
         if repaired:
             try:
                 data = json.loads(repaired)
-                logger.info("Repaired truncated JSON from Haiku response")
+                logger.info("Repaired truncated JSON from extractor response")
                 return data
             except json.JSONDecodeError:
                 pass
 
-        logger.warning(f"Haiku returned invalid JSON. Response: {result_text[:500]}")
+        logger.warning(f"Extractor returned invalid JSON. Response: {result_text[:500]}")
         return None
 
 
@@ -725,16 +729,16 @@ def _validate_selections(results: List[Dict], windows: List[Dict[str, Any]]) -> 
     return results
 
 
-# ── Haiku inner tools (closures for multi-turn extraction) ───────────────────
+# ── Extractor inner tools (closures for multi-turn extraction) ───────────────
 
-def _execute_haiku_tool(
+def _execute_extractor_tool(
     tool_call: Dict,
     current_windows: List[Dict[str, Any]],
     index,
     date_range: Optional[Dict],
     agent_filter: Optional[set],
 ) -> List[Dict[str, Any]]:
-    """Execute a Haiku inner tool and return new context windows (may be empty)."""
+    """Execute an extractor inner tool and return new context windows (may be empty)."""
     tool_name = tool_call.get("tool", "")
     args = tool_call.get("args", {})
 
@@ -746,10 +750,10 @@ def _execute_haiku_tool(
         elif tool_name == "list_conversations":
             return _tool_list_conversations(args, index, agent_filter)
         else:
-            logger.warning(f"Unknown Haiku tool: {tool_name}")
+            logger.warning(f"Unknown extractor tool: {tool_name}")
             return []
     except Exception as e:
-        logger.warning(f"Haiku tool '{tool_name}' failed: {e}")
+        logger.warning(f"Extractor tool '{tool_name}' failed: {e}")
         return []
 
 
@@ -960,7 +964,7 @@ def _tool_list_conversations(
         reverse=True,
     )[:30]
 
-    # Format as a pseudo-window for Haiku to read
+    # Format as a pseudo-window for the extractor to read
     listing_lines = ["Available conversations:"]
     for c in sorted_convos:
         listing_lines.append(
@@ -978,7 +982,7 @@ def _tool_list_conversations(
 
 # ── Multi-turn extraction orchestrator ───────────────────────────────────────
 
-async def extract_with_haiku(
+async def extract_structured_results(
     query: str,
     windows: List[Dict[str, Any]],
     keyword_hint: Optional[str] = None,
@@ -987,21 +991,21 @@ async def extract_with_haiku(
     agent_filter: Optional[set] = None,
 ) -> Tuple[Optional[ExtractionResponse], List[Dict[str, Any]]]:
     """
-    Call Haiku to extract structured results from context windows.
+    Call the configured model to extract structured results from context windows.
 
     Supports multi-turn with inner tools (refine_search, expand_context,
     list_conversations) when index is provided.
 
     Returns (extraction_response, final_windows) tuple.
-    final_windows may be larger than input if Haiku tools added more context.
+    final_windows may be larger than input if extractor tools added more context.
     """
     logger.info(
-        f"[DIAG] extract_with_haiku ENTERED: query={query[:80]!r}, "
+        f"[DIAG] extract_structured_results ENTERED: query={query[:80]!r}, "
         f"windows={len(windows)}, keyword_hint={keyword_hint!r}"
     )
 
     has_tools = index is not None
-    max_turns = HAIKU_MAX_TURNS if has_tools else 1
+    max_turns = EXTRACTOR_MAX_TURNS if has_tools else 1
     system_prompt = EXTRACTION_SYSTEM_PROMPT_WITH_TOOLS if has_tools else EXTRACTION_SYSTEM_PROMPT
 
     all_windows = list(windows)  # Mutable copy — may grow with tool results
@@ -1012,12 +1016,12 @@ async def extract_with_haiku(
             has_tools=has_tools,
         )
 
-        result_text = await _call_haiku(prompt, system_prompt)
+        result_text = await _call_extractor(prompt, system_prompt)
         if not result_text:
-            logger.warning(f"Haiku extraction returned empty on turn {turn}")
+            logger.warning(f"Structured extraction returned empty on turn {turn}")
             return None, all_windows
 
-        data = _parse_haiku_json(result_text)
+        data = _parse_extractor_json(result_text)
         if data is None:
             return None, all_windows
 
@@ -1025,9 +1029,9 @@ async def extract_with_haiku(
         tool_calls = data.get("tool_calls", [])
 
         if tool_calls and has_tools:
-            logger.info(f"Haiku requested {len(tool_calls)} tool call(s) on turn {turn}")
+            logger.info(f"Extractor requested {len(tool_calls)} tool call(s) on turn {turn}")
             for tc in tool_calls:
-                new_windows = _execute_haiku_tool(tc, all_windows, index, date_range, agent_filter)
+                new_windows = _execute_extractor_tool(tc, all_windows, index, date_range, agent_filter)
                 if new_windows:
                     all_windows.extend(new_windows)
                     logger.info(
@@ -1051,13 +1055,13 @@ async def extract_with_haiku(
                 extraction = ExtractionResponse.model_validate(data)
                 return extraction, all_windows
             except Exception as e:
-                logger.warning(f"Haiku extraction validation failed: {e}. Data: {json.dumps(data)[:500]}")
+                logger.warning(f"Structured extraction validation failed: {e}. Data: {json.dumps(data)[:500]}")
                 return None, all_windows
 
         return None, all_windows
 
     # Exhausted all turns without final results
-    logger.warning("Haiku exhausted all turns without returning final results")
+    logger.warning("Extractor exhausted all turns without returning final results")
     return None, all_windows
 
 
@@ -1305,7 +1309,7 @@ async def search_conversation_history(args: Dict[str, Any]) -> Dict[str, Any]:
 
         search_time = time.time() - start_time
 
-        # Layer 2: Build context windows and extract with Haiku
+        # Layer 2: Build context windows and extract structured results
         windows = build_context_windows(hits, max_conversations=max_results)
 
         if not windows:
@@ -1313,14 +1317,14 @@ async def search_conversation_history(args: Dict[str, Any]) -> Dict[str, Any]:
             fallback = format_embedding_fallback(hits, max_results)
             return {"content": [{"type": "text", "text": fallback}]}
 
-        # Build Haiku extraction query — hint about keyword if present
-        haiku_query = search_query or keyword
+        # Build extraction query — hint about keyword if present
+        extraction_query = search_query or keyword
         if keyword and search_query:
-            haiku_query = f'{search_query} (keyword: "{keyword}")'
+            extraction_query = f'{search_query} (keyword: "{keyword}")'
 
-        # Try Haiku extraction (multi-turn if index available)
-        extraction, final_windows = await extract_with_haiku(
-            haiku_query, windows,
+        # Try structured extraction (multi-turn if index available)
+        extraction, final_windows = await extract_structured_results(
+            extraction_query, windows,
             keyword_hint=keyword if keyword else None,
             index=index,
             date_range=date_range,
@@ -1337,7 +1341,7 @@ async def search_conversation_history(args: Dict[str, Any]) -> Dict[str, Any]:
             )
         else:
             # Fallback to raw embedding results
-            logger.info("Haiku extraction returned no results, using fallback")
+            logger.info("Structured extraction returned no results, using fallback")
             fallback = format_embedding_fallback(hits, max_results)
             fallback += f"\n\n*{search_mode.title()} search completed in {total_time:.1f}s across {len(index.metadata)} indexed messages*"
             return {"content": [{"type": "text", "text": fallback}]}
@@ -1359,10 +1363,10 @@ def _format_extraction_response(
     index_size: int,
     search_mode: str = "semantic",
 ) -> Dict[str, Any]:
-    """Format the Haiku extraction response as readable markdown.
+    """Format the structured extraction response as readable markdown.
 
     Splices verbatim messages from windows based on selection indices —
-    no paraphrasing, no Haiku-generated quotes.
+    no paraphrasing, no model-generated quotes.
     """
     mode_label = {"semantic": "🔍 Semantic", "keyword": "🔑 Keyword", "hybrid": "🔀 Hybrid"}
     mode_str = mode_label.get(search_mode, search_mode.title())

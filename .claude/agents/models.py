@@ -324,6 +324,7 @@ class PendingNotification:
         status: pending, delivering, delivered, or expired
         delivery_started_at: When the current delivery attempt was claimed
         delivery_attempts: Number of delivery attempts claimed
+        dedupe_key: Optional stable logical-obligation key. Legacy rows omit it.
     """
     id: str
     agent: str
@@ -334,6 +335,7 @@ class PendingNotification:
     status: Literal["pending", "delivering", "delivered", "injected", "expired"] = "pending"
     delivery_started_at: Optional[datetime] = None
     delivery_attempts: int = 0
+    dedupe_key: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""
@@ -351,6 +353,7 @@ class PendingNotification:
                 else None
             ),
             "delivery_attempts": int(self.delivery_attempts or 0),
+            "dedupe_key": self.dedupe_key,
         }
 
     @classmethod
@@ -366,6 +369,7 @@ class PendingNotification:
             status="delivered" if data.get("status") == "injected" else data.get("status", "pending"),
             delivery_started_at=_parse_optional_datetime(data.get("delivery_started_at")),
             delivery_attempts=_parse_nonnegative_int(data.get("delivery_attempts")),
+            dedupe_key=data.get("dedupe_key"),
         )
 
     def is_stale(self, threshold_minutes: int = 5, threshold_seconds: Optional[int] = None) -> bool:

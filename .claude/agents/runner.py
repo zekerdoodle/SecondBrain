@@ -20,7 +20,7 @@ import os
 import sys
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional, Set, Union
 
@@ -564,6 +564,7 @@ async def invoke_agent(
     stream_callback: Optional[Callable[[list], Awaitable[None]]] = None,
     history_messages: Optional[List[Dict[str, Any]]] = None,
     running_entry_id: Optional[str] = None,
+    resume_ping_invocation_id: Optional[str] = None,
 ) -> Union[AgentResult, Dict[str, str]]:
     """
     Invoke an agent with the specified mode.
@@ -598,6 +599,8 @@ async def invoke_agent(
             owns the lifecycle.
         running_entry_id: Internal handoff for backend-owned foreground relays.
             External callers should leave this unset.
+        resume_ping_invocation_id: Internal managed-restart handoff that binds
+            a resumed ping to its original durable lifecycle identity.
 
     Returns:
         For foreground: AgentResult (with ``conversation_id`` set)
@@ -613,6 +616,9 @@ async def invoke_agent(
     # Normalize mode
     if isinstance(mode, str):
         mode = InvocationMode(mode)
+
+    if resume_ping_invocation_id and mode != InvocationMode.PING:
+        return {"error": "resume_ping_invocation_id requires ping mode"}
 
     if project_output_contract not in PROJECT_OUTPUT_CONTRACT_VALUES:
         return _invalid_project_output_contract_result(
@@ -744,6 +750,7 @@ async def invoke_agent(
     conv_id = thread_ctx["conversation_id"]
     lock_id = thread_ctx["lock_id"]
     prompt_for_agent = thread_ctx["prompt_for_agent"]
+    prompt_message_id = thread_ctx.get("prompt_message_id")
 
     # Create invocation record — the prompt sent to the SDK is the one with
     # history injected (so the agent sees the full thread context).
@@ -832,16 +839,48 @@ async def invoke_agent(
                     "conversation_id": conv_id,
                 }
 
-        running_entry_id = await _register_running_agent_entry(config, invocation)
-        ping_coro = _run_ping_agent(
-            config,
-            invocation,
-            conversation_id=conv_id,
-            lock_id=lock_id,
-            notification_source_id=notification_source_id,
-            running_entry_id=running_entry_id,
-        )
         try:
+            from agent_conversation_manager import get_manager
+
+            lifecycle = get_manager().begin_ping_invocation(
+                conv_id,
+                lock_id=lock_id,
+                caller_agent=effective_caller,
+                target_agent=config.name,
+                notification_source_id=notification_source_id,
+                prompt_message_id=prompt_message_id,
+                invocation_id=resume_ping_invocation_id,
+            )
+            ping_invocation_id = str(lifecycle["invocation_id"])
+        except Exception as e:
+            logger.error(
+                f"Failed to persist ping lifecycle for agent '{name}' "
+                f"on thread {conv_id}: {e}",
+                exc_info=True,
+            )
+            _release_thread_lock(conv_id, lock_id)
+            return {
+                "error": f"Failed to durably accept ping before launch: {e}",
+                "conversation_id": conv_id,
+            }
+
+        running_entry_id = None
+        ping_coro = None
+        try:
+            running_entry_id = await _register_running_agent_entry(config, invocation)
+            if not get_manager().mark_ping_running(
+                conv_id, ping_invocation_id, running_entry_id
+            ):
+                raise RuntimeError("durable ping lifecycle could not enter running")
+            ping_coro = _run_ping_agent(
+                config,
+                invocation,
+                conversation_id=conv_id,
+                lock_id=lock_id,
+                notification_source_id=notification_source_id,
+                running_entry_id=running_entry_id,
+                ping_invocation_id=ping_invocation_id,
+            )
             _create_background_invocation_task(
                 ping_coro,
                 agent=name,
@@ -851,12 +890,15 @@ async def invoke_agent(
                 source_chat_id=notification_source_id,
                 invoked_at=invocation.invoked_at,
                 running_entry_id=running_entry_id,
+                ping_invocation_id=ping_invocation_id,
             )
         except Exception as e:
-            close = getattr(ping_coro, "close", None)
-            if close is not None:
-                close()
-            await running_agents.unregister(running_entry_id)
+            if ping_coro is not None:
+                close = getattr(ping_coro, "close", None)
+                if close is not None:
+                    close()
+            if running_entry_id is not None:
+                await running_agents.unregister(running_entry_id)
             logger.error(
                 f"Failed to launch ping task for agent '{name}' on thread {conv_id}: {e}",
                 exc_info=True,
@@ -870,24 +912,34 @@ async def invoke_agent(
                 error=f"Ping task launch failed before ack: {e}",
                 conversation_id=conv_id,
             )
-            await _finalize_thread_turn(conv_id, lock_id, name, failure)
-            response_text = (
-                f"Error: Agent '{name}' ping task failed to launch before ack: {e}"
-                f"\n\n---\n[conversation_id: {conv_id}]"
-            )
             try:
-                get_notification_queue().add(
-                    agent=name,
-                    agent_response=response_text,
-                    source_chat_id=notification_source_id,
-                    invoked_at=invocation.invoked_at,
-                    completed_at=datetime.utcnow(),
+                if resume_ping_invocation_id:
+                    finalized = get_manager().interrupt_ping_invocation(
+                        conv_id,
+                        ping_invocation_id,
+                        lock_id=lock_id,
+                    )
+                else:
+                    finalized = await _finalize_thread_turn(
+                        conv_id,
+                        lock_id,
+                        name,
+                        failure,
+                        ping_invocation_id=ping_invocation_id,
+                        ping_terminal_state="error",
+                    )
+                _queue_ping_notification_obligation(
+                    conv_id,
+                    ping_invocation_id,
+                    (finalized or {}).get("notification"),
                 )
-            except Exception as notify_error:
+            except Exception as finalize_error:
                 logger.error(
-                    f"Failed to queue ping launch-failure notification for agent "
-                    f"'{name}': {notify_error}"
+                    f"Failed to finalize ping launch failure for agent "
+                    f"'{name}': {finalize_error}",
+                    exc_info=True,
                 )
+                _release_thread_lock(conv_id, lock_id)
             return {
                 "error": f"Ping task launch failed before ack: {e}",
                 "conversation_id": conv_id,
@@ -898,6 +950,7 @@ async def invoke_agent(
             "agent": name,
             "mode": "ping",
             "conversation_id": conv_id,
+            "invocation_id": ping_invocation_id,
             "message": (
                 f"Agent '{name}' is working on your task. "
                 f"You'll be notified when done."
@@ -1033,7 +1086,7 @@ async def _setup_conversation(
     # Append caller's prompt BEFORE running the agent — if the agent crashes,
     # the question is still preserved in the thread.
     try:
-        manager.append_message(
+        prompt_message_id = manager.append_message(
             resolved_id,
             from_agent=caller_agent,
             content=prompt,
@@ -1069,6 +1122,7 @@ async def _setup_conversation(
         "conversation_id": resolved_id,
         "lock_id": lock_id,
         "prompt_for_agent": prompt_for_agent,
+        "prompt_message_id": prompt_message_id,
     }
 
 
@@ -1084,6 +1138,55 @@ def _release_thread_lock(conversation_id: str, lock_id: str) -> None:
         )
 
 
+def _ping_terminal_state(result: AgentResult) -> str:
+    if result.status == "success":
+        return "succeeded"
+    if result.status == "timeout":
+        return "timeout"
+    return "error"
+
+
+def _queue_ping_notification_obligation(
+    conversation_id: str,
+    invocation_id: str,
+    payload: Optional[Dict[str, Any]],
+) -> bool:
+    """Idempotently materialize one durable ping notification obligation."""
+    if not payload:
+        return False
+    try:
+        from agent_conversation_manager import get_manager
+
+        source_chat_id = payload.get("source_chat_id")
+        if not source_chat_id:
+            raise RuntimeError("durable ping notification has no source_chat_id")
+        note = get_notification_queue().add(
+            agent=str(payload.get("agent") or "unknown"),
+            agent_response=str(payload.get("agent_response") or ""),
+            source_chat_id=str(source_chat_id),
+            invoked_at=datetime.utcfromtimestamp(float(payload["invoked_at"])),
+            completed_at=datetime.utcfromtimestamp(float(payload["completed_at"])),
+            dedupe_key=str(payload.get("dedupe_key") or "") or None,
+        )
+        if not get_manager().mark_ping_notification_queued(
+            conversation_id, invocation_id, note.id
+        ):
+            raise RuntimeError(
+                f"failed to mark ping notification {note.id} queued"
+            )
+        return True
+    except Exception as e:
+        # The thread lifecycle remains pending_enqueue. A fresh-start
+        # reconciliation can safely retry because NotificationQueue.add uses
+        # the stable lifecycle dedupe key.
+        logger.error(
+            f"Failed to materialize durable ping notification "
+            f"{invocation_id} on {conversation_id}: {e}",
+            exc_info=True,
+        )
+        return False
+
+
 def _create_background_invocation_task(
     coro: Awaitable[None],
     *,
@@ -1094,6 +1197,7 @@ def _create_background_invocation_task(
     source_chat_id: Optional[str],
     invoked_at: Optional[datetime],
     running_entry_id: Optional[str] = None,
+    ping_invocation_id: Optional[str] = None,
 ) -> asyncio.Task:
     """Create a detached invocation task with durable cleanup on failure.
 
@@ -1105,7 +1209,7 @@ def _create_background_invocation_task(
     """
     failure_state = {"recorded": False}
 
-    async def record_failure(reason: str) -> None:
+    async def record_failure(reason: str, terminal_state: str = "error") -> None:
         if failure_state["recorded"]:
             return
         failure_state["recorded"] = True
@@ -1120,10 +1224,6 @@ def _create_background_invocation_task(
                     exc_info=True,
                 )
 
-        response_text = f"Error: Agent '{agent}' ping task ended before completion ({reason})."
-        if conversation_id:
-            response_text = f"{response_text}\n\n---\n[conversation_id: {conversation_id}]"
-
         if mode == InvocationMode.PING.value and conversation_id and lock_id:
             failure = AgentResult(
                 agent=agent,
@@ -1135,7 +1235,20 @@ def _create_background_invocation_task(
                 conversation_id=conversation_id,
             )
             try:
-                await _finalize_thread_turn(conversation_id, lock_id, agent, failure)
+                finalized = await _finalize_thread_turn(
+                    conversation_id,
+                    lock_id,
+                    agent,
+                    failure,
+                    ping_invocation_id=ping_invocation_id,
+                    ping_terminal_state=terminal_state,
+                )
+                if ping_invocation_id:
+                    _queue_ping_notification_obligation(
+                        conversation_id,
+                        ping_invocation_id,
+                        (finalized or {}).get("notification"),
+                    )
             except Exception as finalize_error:
                 logger.error(
                     f"Failed to finalize ping failure for agent '{agent}' "
@@ -1150,7 +1263,18 @@ def _create_background_invocation_task(
             )
             _release_thread_lock(conversation_id, lock_id)
 
-        if mode == InvocationMode.PING.value and source_chat_id:
+        if (
+            mode == InvocationMode.PING.value
+            and source_chat_id
+            and not ping_invocation_id
+        ):
+            response_text = (
+                f"Error: Agent '{agent}' ping task ended before completion ({reason})."
+            )
+            if conversation_id:
+                response_text = (
+                    f"{response_text}\n\n---\n[conversation_id: {conversation_id}]"
+                )
             try:
                 get_notification_queue().add(
                     agent=agent,
@@ -1169,10 +1293,10 @@ def _create_background_invocation_task(
         try:
             await coro
         except asyncio.CancelledError:
-            await record_failure("cancelled")
+            await record_failure("cancelled", terminal_state="cancelled")
             raise
         except Exception:
-            await record_failure("uncaught exception")
+            await record_failure("uncaught exception", terminal_state="error")
             raise
 
     task = asyncio.create_task(guarded())
@@ -1187,7 +1311,14 @@ def _create_background_invocation_task(
             try:
                 loop = done_task.get_loop()
                 if not loop.is_closed():
-                    loop.create_task(record_failure(reason))
+                    loop.create_task(
+                        record_failure(
+                            reason,
+                            terminal_state=(
+                                "cancelled" if "cancel" in reason else "error"
+                            ),
+                        )
+                    )
                     return
             except Exception as schedule_error:
                 logger.error(
@@ -1234,7 +1365,10 @@ async def _finalize_thread_turn(
     lock_id: str,
     target_agent: str,
     result: AgentResult,
-) -> None:
+    *,
+    ping_invocation_id: Optional[str] = None,
+    ping_terminal_state: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
     """Append the agent's response to the thread, release the lock, and kick
     off the chat titler in the background when appropriate.
     """
@@ -1248,6 +1382,19 @@ async def _finalize_thread_turn(
 
     # Append response even on error — preserves the failure text for debugging.
     content = result.response or result.error or ""
+    if ping_invocation_id:
+        finalized = manager.finalize_ping_invocation(
+            conversation_id,
+            ping_invocation_id,
+            terminal_state=ping_terminal_state or _ping_terminal_state(result),
+            content=content,
+            transcript=getattr(result, "transcript", None),
+            completed_at=result.completed_at.replace(tzinfo=timezone.utc).timestamp(),
+            lock_id=lock_id,
+        )
+        asyncio.create_task(_maybe_retitle_thread(conversation_id))
+        return finalized
+
     try:
         manager.append_message(
             conversation_id,
@@ -1264,6 +1411,7 @@ async def _finalize_thread_turn(
 
     # Titler runs asynchronously — never block the caller on it.
     asyncio.create_task(_maybe_retitle_thread(conversation_id))
+    return None
 
 
 async def _maybe_retitle_thread(conversation_id: str) -> None:
@@ -1465,6 +1613,7 @@ async def _run_ping_agent(
     lock_id: Optional[str] = None,
     notification_source_id: Optional[str] = None,
     running_entry_id: Optional[str] = None,
+    ping_invocation_id: Optional[str] = None,
 ) -> None:
     """Run agent and add notification when done.
 
@@ -1472,34 +1621,11 @@ async def _run_ping_agent(
     (append response + release lock + kick off titler) exactly like foreground.
     """
     try:
-        result = await _run_agent(config, invocation, running_entry_id=running_entry_id)
-
-        # Finalize thread turn (append response, release lock, trigger titler).
-        if conversation_id and lock_id:
-            result.conversation_id = conversation_id
-            await _finalize_thread_turn(conversation_id, lock_id, config.name, result)
-
-        # Add to notification queue — include conversation_id footer so the
-        # caller can continue threading with the response.
-        response_text = (
-            result.response if result.status == "success"
-            else f"Error: {result.error}"
+        result = await _run_agent(
+            config, invocation, running_entry_id=running_entry_id
         )
-        if conversation_id:
-            response_text = (
-                f"{response_text}\n\n---\n[conversation_id: {conversation_id}]"
-            )
-
-        queue = get_notification_queue()
-        queue.add(
-            agent=config.name,
-            agent_response=response_text,
-            source_chat_id=notification_source_id or invocation.source_chat_id,
-            invoked_at=invocation.invoked_at,
-            completed_at=result.completed_at,
-        )
-
-        _log_execution(invocation, result)
+    except asyncio.CancelledError:
+        raise
     except Exception as e:
         logger.error(
             f"Background ping task for agent '{config.name}' failed: {e}",
@@ -1515,17 +1641,32 @@ async def _run_ping_agent(
             error=f"Ping task failed before completion: {e}",
             conversation_id=conversation_id,
         )
-        if conversation_id and lock_id:
-            try:
-                await _finalize_thread_turn(conversation_id, lock_id, config.name, failure)
-            except Exception as finalize_error:
-                logger.error(
-                    f"Failed to finalize ping failure for agent '{config.name}' "
-                    f"on thread {conversation_id}: {finalize_error}",
-                    exc_info=True,
-                )
-                _release_thread_lock(conversation_id, lock_id)
-        response_text = f"Error: Agent '{config.name}' ping task failed before completion: {e}"
+        result = failure
+
+    finalized: Optional[Dict[str, Any]] = None
+    if conversation_id and lock_id:
+        result.conversation_id = conversation_id
+        finalized = await _finalize_thread_turn(
+            conversation_id,
+            lock_id,
+            config.name,
+            result,
+            ping_invocation_id=ping_invocation_id,
+        )
+
+    if conversation_id and ping_invocation_id:
+        _queue_ping_notification_obligation(
+            conversation_id,
+            ping_invocation_id,
+            (finalized or {}).get("notification"),
+        )
+    else:
+        # Compatibility fallback for direct internal tests/legacy callers that
+        # do not carry lifecycle metadata.
+        response_text = (
+            result.response if result.status == "success"
+            else f"Error: {result.error}"
+        )
         if conversation_id:
             response_text = f"{response_text}\n\n---\n[conversation_id: {conversation_id}]"
         try:
@@ -1534,13 +1675,15 @@ async def _run_ping_agent(
                 agent_response=response_text,
                 source_chat_id=notification_source_id or invocation.source_chat_id,
                 invoked_at=invocation.invoked_at,
-                completed_at=completed_at,
+                completed_at=result.completed_at,
             )
         except Exception as notify_error:
             logger.error(
-                f"Failed to queue ping failure notification for agent "
+                f"Failed to queue ping notification for agent "
                 f"'{config.name}': {notify_error}"
             )
+
+    _log_execution(invocation, result)
 
 
 
