@@ -40,7 +40,8 @@ Schedule formats:
 - "every X hours" - Run every X hours
 - "daily at HH:MM" - Run daily at specific time (24h format)
 - "daily at HH:MMam/pm" - Run daily at specific time (12h format)
-- "once at YYYY-MM-DDTHH:MM:SS" - Run once at specific datetime
+- "once at YYYY-MM-DDTHH:MM:SS" - Run once at an America/Chicago wall time
+- "once at YYYY-MM-DDTHH:MM:SS-05:00" or uppercase "Z" - Run once at that exact instant
 - Cron syntax: "minute hour day-of-month month day-of-week" (e.g., "30 2 * * *" for daily at 2:30am)
 
 Visibility (silent parameter):
@@ -65,7 +66,7 @@ Output routing: If room_id is specified, agent output is delivered directly to t
             },
             "schedule": {
                 "type": "string",
-                "description": "When to run: 'every X minutes', 'daily at HH:MM', 'once at DATETIME', or cron syntax"
+                "description": "When to run. Offsetless 'once at' values are America/Chicago wall time; explicit ISO numeric offsets and uppercase Z are accepted as exact instants. Also accepts 'every X minutes', 'daily at HH:MM', or cron syntax."
             },
             "room_id": {
                 "type": "string",

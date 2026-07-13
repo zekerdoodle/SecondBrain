@@ -16,6 +16,7 @@ import os
 import sys
 import json
 import asyncio
+import copy
 import functools
 import logging
 import time
@@ -27,7 +28,11 @@ from typing import Optional, AsyncIterator, Dict, Any, List, Callable
 from filelock import FileLock
 
 from codex_backend import CodexRunOptions, run_codex
-from codex_app_server_backend import CodexAppServerSteeringBridge, run_codex_app_server
+from codex_app_server_backend import (
+    APP_SERVER_TURN_RECEIPT_EVENT_TYPE,
+    CodexAppServerSteeringBridge,
+    run_codex_app_server,
+)
 from codex_app_server_canary import (
     CODEX_APP_SERVER_AGENTS_ENV,
     CODEX_APP_SERVER_ENV,
@@ -1311,6 +1316,7 @@ class ClaudeWrapper:
                     identity_instructions=identity_instructions,
                     prompt=current_prompt,
                     tools=effective_tools,
+                    direct_tools=list(getattr(agent_config, "direct_tools", []) or []),
                     timeout_seconds=getattr(agent_config, "timeout_seconds", 14400),
                     max_turns=getattr(agent_config, "max_turns", 200),
                     effort=getattr(agent_config, "effort", None),
@@ -1366,12 +1372,22 @@ class ClaudeWrapper:
                 app_visible_work = False
                 app_tool_started = False
                 app_active_tools: List[Dict[str, Any]] = []
+                app_turn_receipt_snapshot: Optional[Dict[str, Any]] = None
                 steering_bridge = CodexAppServerSteeringBridge()
                 self._injection_queue = steering_bridge
 
                 async def _app_event(event: Dict[str, Any]) -> None:
-                    nonlocal app_visible_work, app_tool_started, app_active_tools
+                    nonlocal app_visible_work, app_tool_started, app_active_tools, app_turn_receipt_snapshot
                     event_type = event.get("type")
+                    if event_type == APP_SERVER_TURN_RECEIPT_EVENT_TYPE:
+                        snapshot = event.get("snapshot")
+                        if isinstance(snapshot, dict):
+                            app_turn_receipt_snapshot = copy.deepcopy(snapshot)
+                            await event_queue.put({
+                                "type": APP_SERVER_TURN_RECEIPT_EVENT_TYPE,
+                                "snapshot": copy.deepcopy(app_turn_receipt_snapshot),
+                            })
+                        return
                     if event_type in _CODEX_APP_SERVER_VISIBLE_EVENT_TYPES:
                         app_visible_work = True
                     if event_type in _CODEX_APP_SERVER_TOOL_EVENT_TYPES:
@@ -1423,6 +1439,18 @@ class ClaudeWrapper:
                         "Agent chat '%s': Codex App Server failed before visible work; falling back to codex exec",
                         agent_config.name,
                     )
+                    if app_turn_receipt_snapshot is not None:
+                        fallback_snapshot = copy.deepcopy(app_turn_receipt_snapshot)
+                        fallback_snapshot.update({
+                            "terminal_event": "pre_visible_fallback",
+                            "terminal_status": "fallback",
+                            "fallback_used": True,
+                        })
+                        app_turn_receipt_snapshot = fallback_snapshot
+                        await event_queue.put({
+                            "type": APP_SERVER_TURN_RECEIPT_EVENT_TYPE,
+                            "snapshot": copy.deepcopy(fallback_snapshot),
+                        })
                     await _run_exec_path(run_options)
                     return
 

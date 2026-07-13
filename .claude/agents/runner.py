@@ -144,8 +144,91 @@ except Exception:
 
 logger = logging.getLogger("agents.runner")
 
+_CONTEXTUAL_MEMORY_LOG_PATHS = frozenset({"codex", "sdk"})
+_CONTEXTUAL_MEMORY_LOG_OUTCOMES = frozenset({
+    "rewrite_accepted",
+    "rewrite_timeout_fallback",
+    "contextual_memory_failed",
+})
+
+
+def _log_contextual_memory_outcome(
+    *,
+    agent_name: str,
+    accepted_count: int,
+    fallback: bool,
+    timeout: bool,
+    path: str,
+    outcome: str,
+    level: int = logging.INFO,
+) -> None:
+    """Log contextual-memory operation state without accepting content fields."""
+    safe_count = accepted_count if type(accepted_count) is int and accepted_count >= 0 else 0
+    safe_path = path if path in _CONTEXTUAL_MEMORY_LOG_PATHS else "unknown"
+    safe_outcome = outcome if outcome in _CONTEXTUAL_MEMORY_LOG_OUTCOMES else "contextual_memory_failed"
+    logger.log(
+        level,
+        "Agent '%s': contextual memory outcome path=%s outcome=%s "
+        "accepted_count=%d fallback=%s timeout=%s",
+        agent_name,
+        safe_path,
+        safe_outcome,
+        safe_count,
+        fallback is True,
+        timeout is True,
+    )
+
 # Keep strong references to detached ping/trust tasks until they finish.
 _BACKGROUND_INVOCATION_TASKS: Set[asyncio.Task] = set()
+
+
+def _load_scheduler_tool():
+    scripts_dir = Path(__file__).resolve().parents[1] / "scripts"
+    if str(scripts_dir) not in sys.path:
+        sys.path.insert(0, str(scripts_dir))
+    import scheduler_tool
+
+    return scheduler_tool
+
+
+def _finalize_scheduler_attempt(
+    task_id: Optional[str],
+    attempt_id: Optional[str],
+    state: str,
+    *,
+    error_class: Optional[str] = None,
+    error_code: Optional[str] = None,
+    conversation_id: Optional[str] = None,
+) -> bool:
+    if not task_id or not attempt_id:
+        return False
+    scheduler_tool = _load_scheduler_tool()
+    scheduler_tool.finalize_attempt(
+        task_id,
+        attempt_id,
+        state,
+        error_class=error_class,
+        error_code=error_code,
+        conversation_id=conversation_id,
+    )
+    return True
+
+
+def _finalize_invocation_attempt(
+    invocation: AgentInvocation,
+    state: str,
+    *,
+    error_class: Optional[str] = None,
+    error_code: Optional[str] = None,
+) -> bool:
+    return _finalize_scheduler_attempt(
+        invocation.scheduled_task_id,
+        invocation.scheduled_attempt_id,
+        state,
+        error_class=error_class,
+        error_code=error_code,
+        conversation_id=invocation.conversation_id,
+    )
 
 # Synthetic source used when ping mode is requested by an agent that has no
 # foreground chat to wake. main.py consumes these durable notifications and
@@ -560,6 +643,8 @@ async def invoke_agent(
     worktree_path: Optional[str] = None,
     salon_id: Optional[str] = None,
     scheduled_task_id: Optional[str] = None,
+    scheduled_attempt_id: Optional[str] = None,
+    scheduled_resume_claim_id: Optional[str] = None,
     is_background_processing: bool = False,
     stream_callback: Optional[Callable[[list], Awaitable[None]]] = None,
     history_messages: Optional[List[Dict[str, Any]]] = None,
@@ -601,6 +686,10 @@ async def invoke_agent(
             External callers should leave this unset.
         resume_ping_invocation_id: Internal managed-restart handoff that binds
             a resumed ping to its original durable lifecycle identity.
+        scheduled_attempt_id: Immutable scheduler firing identity. When set,
+            lifecycle transitions are persisted by scheduler_tool.
+        scheduled_resume_claim_id: Internal managed-restart claim that permits
+            the current live-row identity to advance on the same attempt.
 
     Returns:
         For foreground: AgentResult (with ``conversation_id`` set)
@@ -619,6 +708,8 @@ async def invoke_agent(
 
     if resume_ping_invocation_id and mode != InvocationMode.PING:
         return {"error": "resume_ping_invocation_id requires ping mode"}
+    if scheduled_attempt_id and not scheduled_task_id:
+        return {"error": "scheduled_attempt_id requires scheduled_task_id"}
 
     if project_output_contract not in PROJECT_OUTPUT_CONTRACT_VALUES:
         return _invalid_project_output_contract_result(
@@ -652,6 +743,14 @@ async def invoke_agent(
             completed_at=datetime.utcnow(),
             error=f"Unknown agent: {name}"
         )
+        if scheduled_attempt_id:
+            _finalize_scheduler_attempt(
+                scheduled_task_id,
+                scheduled_attempt_id,
+                "failed",
+                error_class="validation",
+                error_code="missing_agent",
+            )
         if mode == InvocationMode.FOREGROUND:
             return error_result
         return {"error": f"Unknown agent: {name}"}
@@ -707,6 +806,8 @@ async def invoke_agent(
             caller_agent=caller_agent,
             **worktree_metadata,
             scheduled_task_id=scheduled_task_id,
+            scheduled_attempt_id=scheduled_attempt_id,
+            scheduled_resume_claim_id=scheduled_resume_claim_id,
             is_background_processing=is_background_processing,
         )
         logger.info(f"Invoking agent '{name}' for salon {salon_id} (no thread)")
@@ -732,6 +833,15 @@ async def invoke_agent(
         project=project,
     )
     if "error" in thread_ctx:
+        if scheduled_attempt_id:
+            _finalize_scheduler_attempt(
+                scheduled_task_id,
+                scheduled_attempt_id,
+                "failed",
+                error_class="launch",
+                error_code="inner_setup_rejected",
+                conversation_id=thread_ctx.get("conversation_id"),
+            )
         if mode == InvocationMode.FOREGROUND:
             return AgentResult(
                 agent=name,
@@ -767,6 +877,8 @@ async def invoke_agent(
         caller_agent=caller_agent,
         **worktree_metadata,
         scheduled_task_id=scheduled_task_id,
+        scheduled_attempt_id=scheduled_attempt_id,
+        scheduled_resume_claim_id=scheduled_resume_claim_id,
         is_background_processing=is_background_processing,
     )
 
@@ -784,6 +896,15 @@ async def invoke_agent(
             conversation_id=conv_id,
         )
         await _finalize_thread_turn(conv_id, lock_id, name, failure)
+        if scheduled_attempt_id:
+            _finalize_scheduler_attempt(
+                scheduled_task_id,
+                scheduled_attempt_id,
+                "failed",
+                error_class="launch",
+                error_code="inner_setup_rejected",
+                conversation_id=conv_id,
+            )
         return _worktree_preparation_error_result(name, mode, error, conv_id)
 
     logger.info(
@@ -958,7 +1079,23 @@ async def invoke_agent(
         }
 
     elif mode in (InvocationMode.TRUST, InvocationMode.SCHEDULED):
-        running_entry_id = await _register_running_agent_entry(config, invocation)
+        try:
+            running_entry_id = await _register_running_agent_entry(config, invocation)
+        except Exception:
+            if scheduled_attempt_id:
+                _finalize_scheduler_attempt(
+                    scheduled_task_id,
+                    scheduled_attempt_id,
+                    "failed",
+                    error_class="launch",
+                    error_code="inner_launch_failed",
+                    conversation_id=conv_id,
+                )
+            _release_thread_lock(conv_id, lock_id)
+            return {
+                "error": f"{mode.value.title()} task launch failed before ack",
+                "conversation_id": conv_id,
+            }
         bg_coro = _run_background_agent(
             config,
             invocation,
@@ -976,6 +1113,8 @@ async def invoke_agent(
                 source_chat_id=None,
                 invoked_at=invocation.invoked_at,
                 running_entry_id=running_entry_id,
+                scheduled_task_id=scheduled_task_id,
+                scheduled_attempt_id=scheduled_attempt_id,
             )
         except Exception as e:
             close = getattr(bg_coro, "close", None)
@@ -996,6 +1135,15 @@ async def invoke_agent(
                 conversation_id=conv_id,
             )
             await _finalize_thread_turn(conv_id, lock_id, name, failure)
+            if scheduled_attempt_id:
+                _finalize_scheduler_attempt(
+                    scheduled_task_id,
+                    scheduled_attempt_id,
+                    "failed",
+                    error_class="launch",
+                    error_code="inner_launch_failed",
+                    conversation_id=conv_id,
+                )
             return {
                 "error": f"{mode.value.title()} task launch failed before ack: {e}",
                 "conversation_id": conv_id,
@@ -1198,6 +1346,8 @@ def _create_background_invocation_task(
     invoked_at: Optional[datetime],
     running_entry_id: Optional[str] = None,
     ping_invocation_id: Optional[str] = None,
+    scheduled_task_id: Optional[str] = None,
+    scheduled_attempt_id: Optional[str] = None,
 ) -> asyncio.Task:
     """Create a detached invocation task with durable cleanup on failure.
 
@@ -1213,6 +1363,24 @@ def _create_background_invocation_task(
         if failure_state["recorded"]:
             return
         failure_state["recorded"] = True
+
+        if scheduled_task_id and scheduled_attempt_id:
+            try:
+                is_cancelled = terminal_state == "cancelled" or "cancel" in reason
+                _finalize_scheduler_attempt(
+                    scheduled_task_id,
+                    scheduled_attempt_id,
+                    "failed",
+                    error_class="cancelled" if is_cancelled else "execution",
+                    error_code="runner_cancelled" if is_cancelled else "runner_error",
+                    conversation_id=conversation_id,
+                )
+            except Exception:
+                logger.error(
+                    "Failed to terminalize scheduled background guard "
+                    f"task={scheduled_task_id} attempt={scheduled_attempt_id}",
+                    exc_info=True,
+                )
 
         if running_entry_id:
             try:
@@ -1368,6 +1536,7 @@ async def _finalize_thread_turn(
     *,
     ping_invocation_id: Optional[str] = None,
     ping_terminal_state: Optional[str] = None,
+    require_persistence: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """Append the agent's response to the thread, release the lock, and kick
     off the chat titler in the background when appropriate.
@@ -1376,6 +1545,8 @@ async def _finalize_thread_turn(
         from agent_conversation_manager import get_manager
     except ImportError as e:
         logger.error(f"finalize_thread_turn: manager import failed: {e}")
+        if require_persistence:
+            raise RuntimeError("thread persistence manager unavailable") from e
         return
 
     manager = get_manager()
@@ -1395,6 +1566,7 @@ async def _finalize_thread_turn(
         asyncio.create_task(_maybe_retitle_thread(conversation_id))
         return finalized
 
+    persisted = False
     try:
         manager.append_message(
             conversation_id,
@@ -1402,16 +1574,20 @@ async def _finalize_thread_turn(
             content=content,
             transcript=getattr(result, "transcript", None),
         )
+        persisted = True
     except Exception as e:
         logger.error(
             f"Failed to append agent response to {conversation_id}: {e}"
         )
+        if require_persistence:
+            raise
     finally:
         _release_thread_lock(conversation_id, lock_id)
 
     # Titler runs asynchronously — never block the caller on it.
-    asyncio.create_task(_maybe_retitle_thread(conversation_id))
-    return None
+    if persisted:
+        asyncio.create_task(_maybe_retitle_thread(conversation_id))
+    return {"persisted": persisted}
 
 
 async def _maybe_retitle_thread(conversation_id: str) -> None:
@@ -1504,11 +1680,12 @@ async def _register_running_agent_entry(config: AgentConfig, invocation: AgentIn
     return await running_agents.register(
         agent=config.name,
         kind=_infer_kind(invocation),
-        task_summary=invocation.prompt or "",
+        task_summary="" if invocation.scheduled_attempt_id else (invocation.prompt or ""),
         source_chat_id=invocation.source_chat_id,
         conversation_id=invocation.conversation_id,
         salon_id=invocation.salon_id,
         scheduled_task_id=invocation.scheduled_task_id,
+        scheduled_attempt_id=invocation.scheduled_attempt_id,
         caller_agent=invocation.caller_agent,
         worktree_branch=invocation.worktree_branch,
         worktree_slug=invocation.worktree_slug,
@@ -1526,12 +1703,37 @@ async def _running_agent_scope(
     """Own the running_agents entry for the duration of actual execution."""
     if running_entry_id is None:
         running_entry_id = await _register_running_agent_entry(config, invocation)
-    else:
-        await running_agents.update(
-            running_entry_id,
-            timeout_seconds=config.timeout_seconds,
-        )
     try:
+        if running_entry_id is not None:
+            await running_agents.update(
+                running_entry_id,
+                timeout_seconds=config.timeout_seconds,
+            )
+        if invocation.scheduled_attempt_id:
+            try:
+                _load_scheduler_tool().mark_attempt_running(
+                    invocation.scheduled_task_id,
+                    invocation.scheduled_attempt_id,
+                    current_inner_invocation_id=running_entry_id,
+                    conversation_id=invocation.conversation_id,
+                    continuation_claim_id=invocation.scheduled_resume_claim_id,
+                )
+            except Exception:
+                try:
+                    _finalize_invocation_attempt(
+                        invocation,
+                        "failed",
+                        error_class="launch",
+                        error_code="running_gate_failed",
+                    )
+                except Exception:
+                    logger.error(
+                        "Failed to terminalize scheduled running-gate rejection "
+                        f"task={invocation.scheduled_task_id} "
+                        f"attempt={invocation.scheduled_attempt_id}",
+                        exc_info=True,
+                    )
+                raise
         yield running_entry_id
     finally:
         await running_agents.unregister(running_entry_id)
@@ -2176,17 +2378,98 @@ async def _run_background_agent(
     """
     try:
         result = await _run_agent(config, invocation, running_entry_id=running_entry_id)
-        if conversation_id and lock_id:
-            result.conversation_id = conversation_id
-            await _finalize_thread_turn(conversation_id, lock_id, config.name, result)
-        _log_execution(invocation, result)
-    except Exception as e:
-        logger.error(
-            f"Background task for agent '{config.name}' failed: {e}",
-            exc_info=True,
-        )
+    except asyncio.CancelledError:
+        if invocation.scheduled_attempt_id:
+            try:
+                _finalize_invocation_attempt(
+                    invocation,
+                    "failed",
+                    error_class="cancelled",
+                    error_code="runner_cancelled",
+                )
+            except Exception:
+                logger.error(
+                    "Failed to terminalize cancelled scheduled invocation "
+                    f"task={invocation.scheduled_task_id} "
+                    f"attempt={invocation.scheduled_attempt_id}",
+                    exc_info=True,
+                )
         if conversation_id and lock_id:
             _release_thread_lock(conversation_id, lock_id)
+        raise
+    except Exception:
+        logger.error(
+            f"Background task for agent '{config.name}' failed before result",
+            exc_info=True,
+        )
+        if invocation.scheduled_attempt_id:
+            try:
+                _finalize_invocation_attempt(
+                    invocation,
+                    "failed",
+                    error_class="execution",
+                    error_code="runner_error",
+                )
+            except Exception:
+                logger.warning(
+                    "Scheduled invocation failure was already terminal or could not "
+                    f"be persisted task={invocation.scheduled_task_id} "
+                    f"attempt={invocation.scheduled_attempt_id}"
+                )
+        if conversation_id and lock_id:
+            _release_thread_lock(conversation_id, lock_id)
+        return
+
+    if conversation_id and lock_id:
+        result.conversation_id = conversation_id
+        try:
+            await _finalize_thread_turn(
+                conversation_id,
+                lock_id,
+                config.name,
+                result,
+                require_persistence=bool(invocation.scheduled_attempt_id),
+            )
+        except Exception:
+            logger.error(
+                f"Background task for agent '{config.name}' could not finalize its thread",
+                exc_info=True,
+            )
+            if invocation.scheduled_attempt_id:
+                _finalize_invocation_attempt(
+                    invocation,
+                    "failed",
+                    error_class="delivery",
+                    error_code="thread_finalization_failed",
+                )
+            return
+    elif invocation.scheduled_attempt_id:
+        _finalize_invocation_attempt(
+            invocation,
+            "failed",
+            error_class="delivery",
+            error_code="thread_finalization_failed",
+        )
+        return
+
+    if invocation.scheduled_attempt_id:
+        if result.status == "success":
+            _finalize_invocation_attempt(invocation, "succeeded")
+        elif result.status == "timeout":
+            _finalize_invocation_attempt(
+                invocation,
+                "failed",
+                error_class="timeout",
+                error_code="runner_timeout",
+            )
+        else:
+            _finalize_invocation_attempt(
+                invocation,
+                "failed",
+                error_class="execution",
+                error_code="runner_error",
+            )
+    _log_execution(invocation, result)
 
 
 async def _run_codex_agent(
@@ -2304,6 +2587,9 @@ async def _run_codex_agent(
         )
 
     # Auto-retrieve contextual memories relevant to the agent's task prompt
+    accepted_query_count = 0
+    rewrite_fallback = False
+    rewrite_timed_out = False
     try:
         scripts_dir = str(Path(__file__).parent.parent / "scripts")
         if scripts_dir not in sys.path:
@@ -2325,12 +2611,23 @@ async def _run_codex_agent(
                 timeout=20.0,
             )
         except asyncio.TimeoutError:
-            logger.warning(
-                f"Agent '{config.name}': query rewriter timed out after 20s "
-                f"— falling back to raw prompt."
-            )
+            rewrite_fallback = True
+            rewrite_timed_out = True
             retrieval_queries = [(raw_query, 1.0)]
-        logger.info(f"Agent '{config.name}': query rewrite: '{raw_query[:80]}' -> {retrieval_queries}")
+        accepted_query_count = (
+            len(retrieval_queries) if isinstance(retrieval_queries, (list, tuple)) else 0
+        )
+        _log_contextual_memory_outcome(
+            agent_name=config.name,
+            accepted_count=accepted_query_count,
+            fallback=rewrite_fallback,
+            timeout=rewrite_timed_out,
+            path="codex",
+            outcome=(
+                "rewrite_timeout_fallback" if rewrite_timed_out else "rewrite_accepted"
+            ),
+            level=logging.WARNING if rewrite_timed_out else logging.INFO,
+        )
         # Run CPU-bound retrieval in a thread to avoid blocking the event loop
         import functools
         loop = asyncio.get_event_loop()
@@ -2348,8 +2645,16 @@ async def _run_codex_agent(
         if ctx_block:
             context_parts.append(ctx_block)
             logger.info(f"Agent '{config.name}': appended contextual memory to user-prefix context block")
-    except Exception as e:
-        logger.warning(f"Agent '{config.name}': contextual memory auto-retrieve failed: {e}")
+    except Exception:
+        _log_contextual_memory_outcome(
+            agent_name=config.name,
+            accepted_count=accepted_query_count,
+            fallback=rewrite_fallback,
+            timeout=rewrite_timed_out,
+            path="codex",
+            outcome="contextual_memory_failed",
+            level=logging.WARNING,
+        )
 
     # Build the <system-injected> envelope and prepend to the user message.
     # For salon dispatch (history_messages provided), the envelope is prepended
@@ -2391,6 +2696,7 @@ async def _run_codex_agent(
                 identity_instructions=identity_content,
                 prompt=effective_prompt,
                 tools=effective_tools,
+                direct_tools=list(config.direct_tools),
                 timeout_seconds=config.timeout_seconds,
                 max_turns=config.max_turns,
                 effort=config.effort,
@@ -2786,6 +3092,9 @@ async def _run_anthropic_sdk_agent(
         options.output_format = config.output_format
 
     # Auto-retrieve contextual memories relevant to the agent's task prompt
+    accepted_query_count = 0
+    rewrite_fallback = False
+    rewrite_timed_out = False
     try:
         scripts_dir = str(Path(__file__).parent.parent / "scripts")
         if scripts_dir not in sys.path:
@@ -2807,12 +3116,23 @@ async def _run_anthropic_sdk_agent(
                 timeout=20.0,
             )
         except asyncio.TimeoutError:
-            logger.warning(
-                f"Agent '{config.name}': query rewriter timed out after 20s "
-                f"— falling back to raw prompt."
-            )
+            rewrite_fallback = True
+            rewrite_timed_out = True
             retrieval_queries = [(raw_query, 1.0)]
-        logger.info(f"Agent '{config.name}': query rewrite: '{raw_query[:80]}' -> {retrieval_queries}")
+        accepted_query_count = (
+            len(retrieval_queries) if isinstance(retrieval_queries, (list, tuple)) else 0
+        )
+        _log_contextual_memory_outcome(
+            agent_name=config.name,
+            accepted_count=accepted_query_count,
+            fallback=rewrite_fallback,
+            timeout=rewrite_timed_out,
+            path="sdk",
+            outcome=(
+                "rewrite_timeout_fallback" if rewrite_timed_out else "rewrite_accepted"
+            ),
+            level=logging.WARNING if rewrite_timed_out else logging.INFO,
+        )
         # Run CPU-bound retrieval in a thread to avoid blocking the event loop
         import functools
         loop = asyncio.get_event_loop()
@@ -2830,8 +3150,16 @@ async def _run_anthropic_sdk_agent(
         if ctx_block:
             context_parts.append(ctx_block)
             logger.info(f"Agent '{config.name}': appended contextual memory to user-prefix context block")
-    except Exception as e:
-        logger.warning(f"Agent '{config.name}': contextual memory auto-retrieve failed: {e}")
+    except Exception:
+        _log_contextual_memory_outcome(
+            agent_name=config.name,
+            accepted_count=accepted_query_count,
+            fallback=rewrite_fallback,
+            timeout=rewrite_timed_out,
+            path="sdk",
+            outcome="contextual_memory_failed",
+            level=logging.WARNING,
+        )
 
     # Build the <system-injected> envelope and prepend to the user message.
     # For salon dispatch (history_messages provided), the envelope is prepended

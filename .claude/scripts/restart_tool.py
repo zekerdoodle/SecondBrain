@@ -60,6 +60,24 @@ def is_resumable_agent_invocation(entry):
     return True
 
 
+def agent_invocation_dedupe_key(entry):
+    """Return the stable restart-marker key for one resumable live row."""
+    scheduled_attempt_id = entry.get("scheduled_attempt_id")
+    if scheduled_attempt_id:
+        return (
+            entry.get("agent"),
+            "scheduled_attempt",
+            entry.get("conversation_id"),
+            scheduled_attempt_id,
+        )
+    return (
+        entry.get("agent"),
+        entry.get("kind"),
+        entry.get("conversation_id"),
+        entry.get("started_at"),
+    )
+
+
 def filter_resumable_agent_invocations(running_invocations):
     """Return deduped restart-continuation snapshots for durable agent work.
 
@@ -69,26 +87,33 @@ def filter_resumable_agent_invocations(running_invocations):
     their inner invoke_* entry is the unit restart continuation can resume.
     """
     agent_invocations = []
-    seen_invocation_keys = set()
+    seen_invocation_keys = {}
     for entry in running_invocations or []:
         if not is_resumable_agent_invocation(entry):
             continue
-        key = (entry.get("agent"), entry.get("kind"), entry.get("conversation_id"), entry.get("started_at"))
-        if key in seen_invocation_keys:
-            continue
-        seen_invocation_keys.add(key)
-        agent_invocations.append({
+        key = agent_invocation_dedupe_key(entry)
+        candidate = {
             "id": entry.get("id"),
             "agent": entry.get("agent"),
             "kind": entry.get("kind"),
             "started_at": entry.get("started_at"),
-            "task_summary": entry.get("task_summary"),
+            "task_summary": "" if entry.get("scheduled_attempt_id") else entry.get("task_summary"),
             "source_chat_id": entry.get("source_chat_id"),
             "conversation_id": entry.get("conversation_id"),
             "salon_id": entry.get("salon_id"),
             "scheduled_task_id": entry.get("scheduled_task_id"),
+            "scheduled_attempt_id": entry.get("scheduled_attempt_id"),
             "caller_agent": entry.get("caller_agent"),
-        })
+        }
+        existing_index = seen_invocation_keys.get(key)
+        if existing_index is not None:
+            if entry.get("scheduled_attempt_id"):
+                existing = agent_invocations[existing_index]
+                if (candidate.get("started_at") or 0) >= (existing.get("started_at") or 0):
+                    agent_invocations[existing_index] = candidate
+            continue
+        seen_invocation_keys[key] = len(agent_invocations)
+        agent_invocations.append(candidate)
     return agent_invocations
 
 

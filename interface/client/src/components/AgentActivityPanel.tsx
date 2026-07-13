@@ -1,7 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Activity, AlertTriangle, CalendarClock, Clock, RefreshCw } from 'lucide-react';
+import { Activity, AlertTriangle, CalendarClock, Clock, History, RefreshCw } from 'lucide-react';
 import { API_URL } from '../config';
-import type { AgentActivityResponse, RunningAgentEntry, UpcomingScheduledRun } from '../types';
+import type {
+  AgentActivityResponse,
+  RunningAgentEntry,
+  ScheduledExecutionAttempt,
+  UpcomingScheduledRun,
+} from '../types';
 
 const POLL_MS = 15000;
 
@@ -35,7 +40,15 @@ function formatKind(kind: string): string {
     .join(' ');
 }
 
+function shortId(value?: string | null): string {
+  if (!value) return 'unknown';
+  return value.length > 12 ? `${value.slice(0, 8)}…` : value;
+}
+
 function sourceLabel(entry: RunningAgentEntry): string {
+  if (entry.scheduled_attempt_id) {
+    return `task ${entry.scheduled_task_id || 'unknown'} · attempt ${entry.scheduled_attempt_id}`;
+  }
   if (entry.scheduled_task_id) return `task ${entry.scheduled_task_id}`;
   if (entry.conversation_id) return `thread ${entry.conversation_id.slice(0, 8)}`;
   if (entry.source_chat_id) return `chat ${entry.source_chat_id.slice(0, 8)}`;
@@ -43,10 +56,65 @@ function sourceLabel(entry: RunningAgentEntry): string {
   return formatKind(entry.kind);
 }
 
+function runningSummary(entry: RunningAgentEntry): string {
+  if (entry.scheduled_attempt_id) {
+    return `Scheduled task ${shortId(entry.scheduled_task_id)} · attempt ${shortId(entry.scheduled_attempt_id)}`;
+  }
+  return entry.task_summary || 'No summary available';
+}
+
 function scheduleName(run: UpcomingScheduledRun): string {
   if (run.agent) return run.agent;
   if (run.name && run.name !== 'prompt') return run.name;
   return run.type === 'agent' ? 'agent' : 'prompt';
+}
+
+function attemptName(attempt: ScheduledExecutionAttempt): string {
+  if (attempt.agent) return attempt.agent;
+  if (attempt.task_type) return formatKind(attempt.task_type);
+  return 'Unknown task';
+}
+
+function attemptStateLabel(attempt: ScheduledExecutionAttempt): string {
+  if (attempt.receipt_error === 'legacy_no_execution_receipt' || attempt.state === 'legacy') {
+    return 'Legacy / no receipt';
+  }
+  if (attempt.receipt_error === 'malformed_receipt' || attempt.state === 'malformed') {
+    return 'Malformed / unavailable';
+  }
+  switch (attempt.state) {
+    case 'claimed': return 'Claimed';
+    case 'running': return 'Running';
+    case 'succeeded': return 'Succeeded';
+    case 'failed': return 'Failed';
+    default: return 'Unavailable';
+  }
+}
+
+function attemptStateClass(attempt: ScheduledExecutionAttempt): string {
+  if (attempt.receipt_error || attempt.state === 'legacy' || attempt.state === 'malformed') {
+    return 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] border-[var(--border-color)]';
+  }
+  switch (attempt.state) {
+    case 'claimed':
+      return 'bg-amber-500/10 text-amber-500 border-amber-500/20';
+    case 'running':
+      return 'bg-blue-500/10 text-blue-500 border-blue-500/20';
+    case 'succeeded':
+      return 'bg-green-500/10 text-green-500 border-green-500/20';
+    case 'failed':
+      return 'bg-red-500/10 text-red-500 border-red-500/20';
+    default:
+      return 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] border-[var(--border-color)]';
+  }
+}
+
+function attemptTimestamp(attempt: ScheduledExecutionAttempt): { label: string; value: string } | null {
+  if (attempt.terminal_at) return { label: 'terminal', value: attempt.terminal_at };
+  if (attempt.running_at) return { label: 'running', value: attempt.running_at };
+  if (attempt.claimed_at) return { label: 'claimed', value: attempt.claimed_at };
+  if (attempt.updated_at) return { label: 'updated', value: attempt.updated_at };
+  return null;
 }
 
 interface AgentActivityPanelProps {
@@ -96,8 +164,10 @@ export const AgentActivityPanel: React.FC<AgentActivityPanelProps> = ({ accentCo
 
   const runningEntries = data?.running_agents.entries;
   const scheduledEntries = data?.upcoming_scheduled_runs.entries;
+  const attemptEntries = data?.scheduled_execution_attempts?.entries;
   const runningCount = runningEntries?.length ?? 0;
   const scheduledCount = scheduledEntries?.length ?? 0;
+  const attemptCount = attemptEntries?.length ?? 0;
 
   const generatedLabel = useMemo(() => {
     if (!data?.generated_at) return null;
@@ -116,6 +186,8 @@ export const AgentActivityPanel: React.FC<AgentActivityPanelProps> = ({ accentCo
             <span>{runningCount} running</span>
             <span>•</span>
             <span>{scheduledCount} scheduled</span>
+            <span>•</span>
+            <span>{attemptCount} attempts</span>
             {generatedLabel && (
               <>
                 <span>•</span>
@@ -166,7 +238,7 @@ export const AgentActivityPanel: React.FC<AgentActivityPanelProps> = ({ accentCo
                       </span>
                     </div>
                     <div className="mt-1 text-sm text-[var(--text-secondary)] break-words">
-                      {entry.task_summary || 'No summary available'}
+                      {runningSummary(entry)}
                     </div>
                     <div className="mt-2 text-xs text-[var(--text-muted)] font-mono break-all">
                       {sourceLabel(entry)}
@@ -181,6 +253,68 @@ export const AgentActivityPanel: React.FC<AgentActivityPanelProps> = ({ accentCo
           </div>
         ) : (
           <div className="text-sm text-[var(--text-secondary)] py-3">No invocations running.</div>
+        )}
+      </section>
+
+      <section className="space-y-3">
+        <div className="flex items-center gap-2 text-sm font-medium text-[var(--text-primary)]">
+          <History size={15} />
+          Scheduled Attempts
+        </div>
+
+        {loading && !data ? (
+          <div className="text-sm text-[var(--text-secondary)] py-3">Loading scheduled attempts...</div>
+        ) : !data?.scheduled_execution_attempts ? (
+          <div className="text-sm text-[var(--text-secondary)] py-3">
+            Scheduled attempts are unavailable until the backend projection is loaded.
+          </div>
+        ) : data.scheduled_execution_attempts.error ? (
+          <div className="p-3 rounded-lg bg-red-500/10 border border-red-500/20 text-red-500 text-sm break-words">
+            Could not load scheduled attempts: {data.scheduled_execution_attempts.error}
+          </div>
+        ) : attemptEntries && attemptEntries.length > 0 ? (
+          <div className="space-y-2">
+            {attemptEntries.map((attempt, index) => {
+              const timestamp = attemptTimestamp(attempt);
+              return (
+                <div
+                  key={attempt.attempt_id || `${attempt.receipt_error || attempt.state}-${attempt.task_id || index}`}
+                  className="rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] p-3 overflow-hidden"
+                >
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-3">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-sm font-semibold text-[var(--text-primary)] break-words">
+                          {attemptName(attempt)}
+                        </span>
+                        <span className={`text-[11px] px-2 py-0.5 rounded-full border ${attemptStateClass(attempt)}`}>
+                          {attemptStateLabel(attempt)}
+                        </span>
+                      </div>
+                      <div className="mt-2 text-xs text-[var(--text-muted)] font-mono break-all">
+                        task {shortId(attempt.task_id)} · {attempt.attempt_id ? `attempt ${shortId(attempt.attempt_id)}` : 'no attempt ID'}
+                      </div>
+                      <div className="mt-2 flex min-w-0 flex-wrap gap-x-3 gap-y-1 text-xs text-[var(--text-muted)]">
+                        {attempt.resume_count > 0 && <span>resumed {attempt.resume_count}×</span>}
+                        {(attempt.error_class || attempt.error_code) && (
+                          <span className={`${attempt.state === 'failed' ? 'text-red-500' : 'text-[var(--text-muted)]'} font-mono break-all`}>
+                            {attempt.error_class || 'error'}/{attempt.error_code || 'unknown'}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="min-w-0 text-xs font-medium text-[var(--text-primary)] sm:shrink-0 sm:text-right break-words">
+                      {timestamp
+                        ? `${timestamp.label} ${formatDateTime(timestamp.value)}`
+                        : 'No receipt timestamp'}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="text-sm text-[var(--text-secondary)] py-3">No scheduled attempts recorded.</div>
         )}
       </section>
 

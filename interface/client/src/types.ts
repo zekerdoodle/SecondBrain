@@ -136,7 +136,7 @@ export interface ChatMessage {
 
 
 // ---------------------------------------------------------------------------
-// Agent activity (running invocations + scheduled tasks)
+// Agent activity (running invocations + scheduled definitions + execution attempts)
 // ---------------------------------------------------------------------------
 
 export interface RunningAgentEntry {
@@ -144,11 +144,12 @@ export interface RunningAgentEntry {
   agent: string;
   kind: string;
   started_at: number;
-  task_summary: string;
+  task_summary: string | null;
   source_chat_id?: string | null;
   conversation_id?: string | null;
   salon_id?: string | null;
   scheduled_task_id?: string | null;
+  scheduled_attempt_id?: string | null;
   caller_agent?: string | null;
 }
 
@@ -170,6 +171,27 @@ export interface UpcomingScheduledRun {
   error?: string | null;
 }
 
+export interface ScheduledExecutionAttempt {
+  schema: string | null;
+  task_id: string | null;
+  attempt_id: string | null;
+  task_type: 'agent' | 'prompt' | null;
+  agent: string | null;
+  state: 'claimed' | 'running' | 'succeeded' | 'failed' | 'legacy' | 'malformed';
+  claimed_at: string | null;
+  running_at: string | null;
+  terminal_at: string | null;
+  updated_at: string | null;
+  outer_invocation_id: string | null;
+  current_inner_invocation_id: string | null;
+  conversation_id: string | null;
+  continuation_claim_id: string | null;
+  resume_count: number;
+  error_class: string | null;
+  error_code: string | null;
+  receipt_error: string | null;
+}
+
 export interface AgentActivityResponse {
   generated_at: string;
   running_agents: {
@@ -180,6 +202,11 @@ export interface AgentActivityResponse {
   };
   upcoming_scheduled_runs: {
     entries: UpcomingScheduledRun[] | null;
+    error?: string | null;
+    source?: string;
+  };
+  scheduled_execution_attempts?: {
+    entries: ScheduledExecutionAttempt[] | null;
     error?: string | null;
     source?: string;
   };

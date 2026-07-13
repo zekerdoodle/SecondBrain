@@ -69,6 +69,14 @@ STARTUP_ENV_FILE = REPO_ROOT / ".env"
 STARTUP_ENV_KEYS, STARTUP_ENV_ERROR = _load_startup_env_file(STARTUP_ENV_FILE)
 
 from claude_wrapper import ClaudeWrapper, ChatManager, ConversationState
+from codex_app_server_backend import APP_SERVER_TURN_RECEIPT_EVENT_TYPE
+from app_server_turn_receipts import (
+    AppServerTurnReceiptStore,
+    apply_lifecycle_snapshot,
+    build_receipt,
+    mark_chat_save,
+)
+from performance_timing import TurnTimingTracker
 from notifications import should_notify, send_notification, NotificationDecision
 from message_wal import init_wal, get_wal, MessageWAL
 from tool_serializers import serialize_tool_call, format_tool_for_history, recover_tool_args_from_output
@@ -497,6 +505,293 @@ def load_ui_config():
 
 # Initialize chat manager
 chat_manager = ChatManager(CHATS_DIR)
+app_server_turn_receipt_store = AppServerTurnReceiptStore(CHATS_DIR)
+_app_server_turn_receipt_write_tails: Dict[str, asyncio.Task] = {}
+_performance_timing_write_tasks: Set[asyncio.Task] = set()
+_performance_timing_write_tail: Optional[asyncio.Task] = None
+
+
+def _warn_performance_timing(message: str, *args: Any) -> None:
+    """Keep even the coarse failure signal from entering the chat path."""
+
+    try:
+        logger.warning(message, *args)
+    except Exception:
+        pass
+
+
+def _emit_performance_timing_lines(lines: Tuple[str, ...]) -> None:
+    """Blocking logger boundary; called only from a worker thread."""
+
+    for line in lines:
+        logger.info("PERF_TIMING %s", line)
+
+
+def _schedule_performance_timing_write(lines: Tuple[str, ...]) -> None:
+    """Serialize terminal timing writes off-loop and isolate logger failures."""
+
+    global _performance_timing_write_tail
+    if not lines or any(not isinstance(line, str) or not line for line in lines):
+        _warn_performance_timing(
+            "Performance timing log write dropped: invalid terminal payload"
+        )
+        return
+    previous = _performance_timing_write_tail
+
+    async def _write_after_previous() -> None:
+        global _performance_timing_write_tail
+        if previous is not None:
+            try:
+                await previous
+            except Exception:
+                pass
+        try:
+            await asyncio.to_thread(_emit_performance_timing_lines, lines)
+        except Exception as exc:
+            _warn_performance_timing(
+                "Performance timing log write failed error_class=%s",
+                type(exc).__name__,
+            )
+        finally:
+            current = asyncio.current_task()
+            if current is not None:
+                _performance_timing_write_tasks.discard(current)
+            if _performance_timing_write_tail is current:
+                _performance_timing_write_tail = None
+
+    task = asyncio.create_task(_write_after_previous())
+    _performance_timing_write_tasks.add(task)
+    _performance_timing_write_tail = task
+
+
+async def _drain_performance_timing_writes() -> None:
+    """Test/shutdown helper: wait for currently scheduled terminal log writes."""
+
+    while _performance_timing_write_tasks:
+        await asyncio.gather(
+            *list(_performance_timing_write_tasks),
+            return_exceptions=True,
+        )
+
+
+def _finish_performance_timing(
+    tracker: Optional[TurnTimingTracker],
+    outcome: str,
+    *,
+    error_class: Optional[str] = None,
+    timeout_stage: Optional[str] = None,
+) -> None:
+    """Freeze and schedule one attempt without allowing timing to affect chat."""
+
+    if tracker is None:
+        return
+    try:
+        if not tracker.finalize(
+            outcome,
+            error_class=error_class,
+            timeout_stage=timeout_stage,
+        ):
+            return
+        lines = tracker.claim_terminal_lines()
+        if lines:
+            _schedule_performance_timing_write(lines)
+    except Exception as exc:
+        _warn_performance_timing(
+            "Performance timing finalization failed error_class=%s",
+            type(exc).__name__,
+        )
+
+
+@dataclass
+class _PerformanceTimingTerminalState:
+    """Resolve wrapper-ordered timing outcomes without preempting fallback."""
+
+    pending_outcome: Optional[str] = None
+    pending_error_class: Optional[str] = None
+    pending_timeout_stage: Optional[str] = None
+    backend_error_seen: bool = False
+
+    def _clear_pending(self) -> None:
+        self.pending_outcome = None
+        self.pending_error_class = None
+        self.pending_timeout_stage = None
+
+    def observe_lifecycle(
+        self,
+        tracker: Optional[TurnTimingTracker],
+        terminal_status: Any,
+        error_class: Any,
+    ) -> None:
+        """Keep failures provisional until the wrapper resolves the attempt."""
+
+        if tracker is None or not tracker.active or tracker.finalized:
+            return
+        if terminal_status == "failed":
+            if error_class == "timeout":
+                self.pending_outcome = "timeout"
+                self.pending_timeout_stage = "model_turn"
+            else:
+                self.pending_outcome = "error"
+                self.pending_timeout_stage = None
+            self.pending_error_class = error_class
+            return
+
+        resolved_outcome = {
+            "fallback": "fallback",
+            "completed": "success",
+            "interrupted": "interrupted",
+        }.get(terminal_status)
+        if resolved_outcome is None:
+            return
+        self._clear_pending()
+        _finish_performance_timing(
+            tracker,
+            resolved_outcome,
+            error_class=error_class if resolved_outcome == "fallback" else None,
+        )
+
+    def observe_backend_error(self) -> None:
+        """Record the event without resolving a provisional App Server failure."""
+
+        self.backend_error_seen = True
+
+    def resolve_after_generator(
+        self,
+        tracker: Optional[TurnTimingTracker],
+        *,
+        interrupted: bool,
+        had_error: bool,
+    ) -> None:
+        """Finalize only after generator exhaustion proves no later fallback."""
+
+        if tracker is None or not tracker.active or tracker.finalized:
+            return
+        if self.pending_outcome is not None:
+            outcome = self.pending_outcome
+            error_class = self.pending_error_class
+            timeout_stage = self.pending_timeout_stage
+        elif interrupted:
+            outcome = "interrupted"
+            error_class = None
+            timeout_stage = None
+        elif self.backend_error_seen or had_error:
+            outcome = "error"
+            error_class = "server_processing"
+            timeout_stage = None
+        else:
+            outcome = "process_lost"
+            error_class = None
+            timeout_stage = None
+        self._clear_pending()
+        _finish_performance_timing(
+            tracker,
+            outcome,
+            error_class=error_class,
+            timeout_stage=timeout_stage,
+        )
+
+
+def _performance_known_tools(agent_config: Any) -> Set[str]:
+    """Extract only configured canonical tool labels, never event arguments."""
+
+    known: Set[str] = set()
+    for tool in getattr(agent_config, "tools", None) or ():
+        if isinstance(tool, str):
+            known.add(tool)
+        elif isinstance(tool, dict) and isinstance(tool.get("name"), str):
+            known.add(tool["name"])
+    return known
+
+
+def _activate_performance_timing(
+    tracker: TurnTimingTracker,
+    lifecycle_snapshot: Dict[str, Any],
+    agent_config: Any,
+) -> None:
+    """Activate only after a typed App Server lifecycle event proves selection."""
+
+    if (
+        lifecycle_snapshot.get("backend") != "codex_app_server"
+        or lifecycle_snapshot.get("route") != "chatgpt_subscription_app_server"
+    ):
+        return
+    config_agent = getattr(agent_config, "name", None)
+    config_model = getattr(agent_config, "model", None)
+    tracker.activate_app_server(
+        agent=config_agent,
+        model=lifecycle_snapshot.get("requested_model"),
+        known_agents={config_agent} if isinstance(config_agent, str) else set(),
+        known_models={config_model} if isinstance(config_model, str) else set(),
+        known_tools=_performance_known_tools(agent_config),
+    )
+
+
+def _mark_performance_visible(
+    tracker: Optional[TurnTimingTracker],
+    kind: str,
+) -> None:
+    if tracker is None:
+        return
+    try:
+        tracker.mark_first_visible_output(kind)
+    except Exception as exc:
+        _warn_performance_timing(
+            "Performance timing visible mark failed error_class=%s",
+            type(exc).__name__,
+        )
+
+
+def _schedule_app_server_turn_receipt_write(snapshot: Dict[str, Any]) -> None:
+    """Serialize receipt writes off-loop; telemetry failure cannot fail a turn."""
+
+    receipt_id = snapshot.get("receipt_id")
+    if not isinstance(receipt_id, str):
+        logger.warning("App Server turn receipt write dropped: invalid receipt id")
+        return
+    previous = _app_server_turn_receipt_write_tails.get(receipt_id)
+
+    async def _write_after_previous() -> None:
+        if previous is not None:
+            try:
+                await previous
+            except Exception:
+                pass
+        try:
+            await asyncio.to_thread(app_server_turn_receipt_store.write, snapshot)
+        except Exception as exc:
+            logger.warning(
+                "App Server turn receipt write failed receipt_id=%s phase=%s error_class=%s",
+                receipt_id,
+                snapshot.get("terminal_status", "unknown"),
+                type(exc).__name__,
+            )
+        finally:
+            if _app_server_turn_receipt_write_tails.get(receipt_id) is asyncio.current_task():
+                _app_server_turn_receipt_write_tails.pop(receipt_id, None)
+
+    task = asyncio.create_task(_write_after_previous())
+    _app_server_turn_receipt_write_tails[receipt_id] = task
+
+
+async def _drain_app_server_turn_receipt_writes() -> None:
+    """Test/shutdown helper: wait for currently scheduled private writes."""
+
+    while _app_server_turn_receipt_write_tails:
+        await asyncio.gather(
+            *list(_app_server_turn_receipt_write_tails.values()),
+            return_exceptions=True,
+        )
+
+
+def _delete_app_server_turn_receipts(room_id: str) -> None:
+    try:
+        app_server_turn_receipt_store.delete_room(room_id)
+    except Exception as exc:
+        logger.warning(
+            "App Server turn receipt room cleanup failed room_id=%s error_class=%s",
+            room_id,
+            type(exc).__name__,
+        )
 
 
 # --- Server State Management (for restart continuity) ---
@@ -657,15 +952,20 @@ def save_continuation_on_shutdown(signal_number: int | None = None):
 
                     existing_invocations = existing.setdefault("agent_invocations", [])
                     existing_invocations[:] = rt.filter_resumable_agent_invocations(existing_invocations)
-                    seen = {
-                        (e.get("agent"), e.get("kind"), e.get("conversation_id"), e.get("started_at"))
-                        for e in existing_invocations
+                    existing_by_key = {
+                        rt.agent_invocation_dedupe_key(entry): index
+                        for index, entry in enumerate(existing_invocations)
                     }
                     for entry in resumable_running:
-                        key = (entry.get("agent"), entry.get("kind"), entry.get("conversation_id"), entry.get("started_at"))
-                        if key in seen:
+                        key = rt.agent_invocation_dedupe_key(entry)
+                        if key in existing_by_key:
+                            # A managed same-attempt resume owns a newer current
+                            # live-row id. Replace the older marker claim instead
+                            # of deduping away the only valid next-restart claim.
+                            if entry.get("scheduled_attempt_id"):
+                                existing_invocations[existing_by_key[key]] = dict(entry)
                             continue
-                        seen.add(key)
+                        existing_by_key[key] = len(existing_invocations)
                         existing_invocations.append({
                             "id": entry.get("id"),
                             "agent": entry.get("agent"),
@@ -676,6 +976,7 @@ def save_continuation_on_shutdown(signal_number: int | None = None):
                             "conversation_id": entry.get("conversation_id"),
                             "salon_id": entry.get("salon_id"),
                             "scheduled_task_id": entry.get("scheduled_task_id"),
+                            "scheduled_attempt_id": entry.get("scheduled_attempt_id"),
                             "caller_agent": entry.get("caller_agent"),
                         })
                     existing["shutdown_provenance"] = shutdown_provenance
@@ -2898,12 +3199,14 @@ def _validate_internal_salon_event_payload(event_type: str, payload: Dict[str, A
 
 
 @app.get("/api/agent-activity")
-async def get_agent_activity(upcoming_limit: int = 20):
+async def get_agent_activity(upcoming_limit: int = 20, attempt_limit: int = 20):
     """Public read-only agent activity surface for the Settings UI."""
     running_entries = None
     running_error = None
     scheduled_entries = None
     scheduled_error = None
+    attempt_entries = None
+    attempt_error = None
 
     try:
         # This public endpoint runs in the backend process, so list_all() is the
@@ -2927,6 +3230,22 @@ async def get_agent_activity(upcoming_limit: int = 20):
         logger.warning(f"Failed to read upcoming scheduled runs for UI activity: {e}")
         scheduled_error = str(e)
 
+    try:
+        if not scheduler_tool or not hasattr(scheduler_tool, "list_execution_attempts"):
+            attempt_error = "Scheduled attempt reader unavailable"
+        else:
+            limit = max(1, min(int(attempt_limit), 50))
+            attempt_entries = await asyncio.to_thread(
+                scheduler_tool.list_execution_attempts,
+                limit=limit,
+            )
+    except Exception as e:
+        logger.warning(
+            "Failed to read scheduled execution attempts for UI activity (%s)",
+            type(e).__name__,
+        )
+        attempt_error = "Scheduled attempt reader failed"
+
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "running_agents": {
@@ -2939,6 +3258,11 @@ async def get_agent_activity(upcoming_limit: int = 20):
             "entries": scheduled_entries,
             "error": scheduled_error,
             "source": "scheduler_tool",
+        },
+        "scheduled_execution_attempts": {
+            "entries": attempt_entries,
+            "error": attempt_error,
+            "source": "scheduler_tool.list_execution_attempts",
         },
     }
 
@@ -3754,6 +4078,7 @@ def save_chat_history(session_id: str, data: dict):
 @app.delete("/api/chat/history/{session_id}")
 def delete_chat_history(session_id: str):
     if chat_manager.delete_chat(session_id):
+        _delete_app_server_turn_receipts(session_id)
         return {"status": "ok"}
     raise HTTPException(status_code=404, detail="Chat not found")
 
@@ -6433,8 +6758,10 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
     # This is CRITICAL: Write the message to the WAL BEFORE any other processing
     # If the server crashes after this point, the message can be recovered
     wal = get_wal()
+    performance_tracker: Optional[TurnTimingTracker] = None
     if not is_system_continuation:
         wal.write_message(msg_id, session_id, prompt)
+        performance_tracker = TurnTimingTracker()
         logger.info(f"WAL: Message {msg_id} written to WAL before processing")
 
     # Immediately acknowledge message receipt so frontend knows it arrived
@@ -6848,6 +7175,8 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
     new_session_id = None
     current_tool_name = None
     had_error = False
+    app_server_turn_receipt: Optional[Dict[str, Any]] = None
+    performance_terminal_state = _PerformanceTimingTerminalState()
     restart_after_save = False  # Set when restart_server tool completes — halts stream
     restart_trigger_time = 0.0
     # Tool call history tracking
@@ -6957,7 +7286,107 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
 
         async for event in prompt_gen:
             event_type = event.get("type")
+            if event_type == APP_SERVER_TURN_RECEIPT_EVENT_TYPE:
+                lifecycle_snapshot = event.get("snapshot")
+                if performance_tracker is not None and isinstance(lifecycle_snapshot, dict):
+                    try:
+                        _activate_performance_timing(
+                            performance_tracker,
+                            lifecycle_snapshot,
+                            agent_config,
+                        )
+                        markers = lifecycle_snapshot.get("event_markers")
+                        if (
+                            isinstance(markers, dict)
+                            and markers.get("turn_started") is True
+                        ):
+                            performance_tracker.mark_model_start()
+
+                        terminal_status = lifecycle_snapshot.get("terminal_status")
+                        lifecycle_error_class = lifecycle_snapshot.get("error_class")
+                        performance_terminal_state.observe_lifecycle(
+                            performance_tracker,
+                            terminal_status,
+                            lifecycle_error_class,
+                        )
+                    except Exception as exc:
+                        _warn_performance_timing(
+                            "Performance timing lifecycle mark failed error_class=%s",
+                            type(exc).__name__,
+                        )
+                receipt_room_id = preserve_chat_id or new_session_id or (
+                    session_id if session_id != "new" else streaming_state_key
+                )
+                receipt_state_key = preserve_chat_id or new_session_id or streaming_state_key
+                receipt_streaming_state = session_streaming_states.get(receipt_state_key)
+                assistant_message_id = (
+                    receipt_streaming_state._current_msg_id
+                    if receipt_streaming_state else None
+                )
+                try:
+                    if app_server_turn_receipt is None:
+                        app_server_turn_receipt = build_receipt(
+                            room_id=receipt_room_id,
+                            user_message_id=msg_id,
+                            lifecycle=lifecycle_snapshot,
+                            assistant_message_id=assistant_message_id,
+                        )
+                    else:
+                        app_server_turn_receipt = apply_lifecycle_snapshot(
+                            app_server_turn_receipt,
+                            lifecycle_snapshot,
+                            assistant_message_id=assistant_message_id,
+                        )
+                    _schedule_app_server_turn_receipt_write(dict(app_server_turn_receipt))
+                except Exception as exc:
+                    logger.warning(
+                        "App Server turn receipt event dropped receipt_id=%s phase=%s error_class=%s",
+                        (app_server_turn_receipt or {}).get("receipt_id", "unavailable"),
+                        (app_server_turn_receipt or {}).get("terminal_status", "unavailable"),
+                        type(exc).__name__,
+                    )
+                continue
             logger.info(f"EVENT: {event_type}")
+
+            if (
+                performance_tracker is not None
+                and performance_tracker.active
+                and not performance_tracker.finalized
+            ):
+                try:
+                    if (
+                        event_type == "content_delta"
+                        and isinstance(event.get("text"), str)
+                        and event.get("text")
+                    ):
+                        performance_tracker.mark_first_any_output("text")
+                        performance_tracker.mark_text_output()
+                    elif (
+                        event_type == "thinking_delta"
+                        and isinstance(event.get("text"), str)
+                        and event.get("text")
+                    ):
+                        performance_tracker.mark_first_any_output("thinking")
+                    elif event_type == "tool_start":
+                        performance_tracker.mark_first_any_output("tool")
+                        performance_tracker.mark_tool_start(
+                            event.get("id"),
+                            event.get("name"),
+                        )
+                    elif event_type == "tool_end":
+                        terminal_source = event.get("terminal_source")
+                        if terminal_source != "explicit_result":
+                            terminal_source = "turn_close_synthesized"
+                        performance_tracker.mark_tool_end(
+                            event.get("id"),
+                            is_error=bool(event.get("is_error")),
+                            terminal_source=terminal_source,
+                        )
+                except Exception as exc:
+                    _warn_performance_timing(
+                        "Performance timing normalized-event mark failed error_class=%s",
+                        type(exc).__name__,
+                    )
 
             if event_type == "session_init":
                 new_session_id = event.get("id")
@@ -7034,6 +7463,7 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
                     state_key = preserve_chat_id or new_session_id or streaming_state_key
                     ss = session_streaming_states.get(state_key)
                     if ss:
+                        _mark_performance_visible(performance_tracker, "text")
                         msg_id_blk, msg_is_new = ss.get_or_create_assistant_message()
                         events_to_broadcast = []
                         if msg_is_new:
@@ -7088,6 +7518,7 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
                     state_key = preserve_chat_id or new_session_id or streaming_state_key
                     ss = session_streaming_states.get(state_key)
                     if ss:
+                        _mark_performance_visible(performance_tracker, "thinking")
                         msg_id_blk, msg_is_new = ss.get_or_create_assistant_message()
                         events_to_broadcast = []
                         if msg_is_new:
@@ -7135,6 +7566,7 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
                 state_key = preserve_chat_id or new_session_id or streaming_state_key
                 ss = session_streaming_states.get(state_key)
                 if ss:
+                    _mark_performance_visible(performance_tracker, "tool")
                     msg_id_blk, msg_is_new = ss.get_or_create_assistant_message()
                     events_to_broadcast = []
                     if msg_is_new:
@@ -7500,6 +7932,7 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
 
             elif event_type == "error":
                 had_error = True
+                performance_terminal_state.observe_backend_error()
                 state_key = preserve_chat_id or new_session_id or streaming_state_key
                 if _is_codex_app_server_post_side_effect_error(event):
                     ss = session_streaming_states.get(state_key)
@@ -7584,6 +8017,12 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
         if wrapper_key in active_claude_wrappers:
             del active_claude_wrappers[wrapper_key]
             logger.info(f"Cleaned up wrapper for {wrapper_key}")
+
+    performance_terminal_state.resolve_after_generator(
+        performance_tracker,
+        interrupted=restart_after_save or getattr(claude, "_interrupted", False),
+        had_error=had_error,
+    )
 
     # Finalize any remaining content (for disk persistence)
     finalize_segment()
@@ -7777,7 +8216,49 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
     )
     final_save_data["helper_settings"] = final_helper_settings
 
-    chat_manager.save_chat(chat_id_for_storage, final_save_data)
+    receipt_assistant_message_id = None
+    if _save_ss and _save_ss.messages:
+        receipt_assistant_message_id = next(
+            (
+                message.get("id")
+                for message in reversed(_save_ss.messages)
+                if message.get("role") == "assistant" and message.get("id")
+            ),
+            None,
+        )
+    try:
+        chat_manager.save_chat(chat_id_for_storage, final_save_data)
+    except Exception:
+        if app_server_turn_receipt is not None:
+            try:
+                app_server_turn_receipt = mark_chat_save(
+                    app_server_turn_receipt,
+                    "failed",
+                    assistant_message_id=receipt_assistant_message_id,
+                )
+                _schedule_app_server_turn_receipt_write(dict(app_server_turn_receipt))
+            except Exception as exc:
+                logger.warning(
+                    "App Server turn receipt chat-save failure mark dropped receipt_id=%s error_class=%s",
+                    app_server_turn_receipt.get("receipt_id", "unavailable"),
+                    type(exc).__name__,
+                )
+        raise
+    else:
+        if app_server_turn_receipt is not None:
+            try:
+                app_server_turn_receipt = mark_chat_save(
+                    app_server_turn_receipt,
+                    "saved",
+                    assistant_message_id=receipt_assistant_message_id,
+                )
+                _schedule_app_server_turn_receipt_write(dict(app_server_turn_receipt))
+            except Exception as exc:
+                logger.warning(
+                    "App Server turn receipt chat-save success mark dropped receipt_id=%s error_class=%s",
+                    app_server_turn_receipt.get("receipt_id", "unavailable"),
+                    type(exc).__name__,
+                )
 
     # ========== @MENTION DISPATCH: Scan assistant response for @agent mentions ==========
     if all_segments:
@@ -8886,6 +9367,59 @@ def _build_agent_display_messages(prompt: str, result, agent_name: str) -> list:
     return [user_msg, assistant_msg]
 
 
+def _scheduled_attempt_ids(task_info: Any) -> Tuple[Optional[str], Optional[str]]:
+    if not isinstance(task_info, dict):
+        return None, None
+    return task_info.get("id"), task_info.get("attempt_id")
+
+
+def _finalize_scheduled_attempt(
+    task_info: Any,
+    state: str,
+    *,
+    error_class: Optional[str] = None,
+    error_code: Optional[str] = None,
+    conversation_id: Optional[str] = None,
+) -> bool:
+    task_id, attempt_id = _scheduled_attempt_ids(task_info)
+    if not scheduler_tool or not task_id or not attempt_id:
+        return False
+    scheduler_tool.finalize_attempt(
+        task_id,
+        attempt_id,
+        state,
+        error_class=error_class,
+        error_code=error_code,
+        conversation_id=conversation_id,
+    )
+    return True
+
+
+def _scheduled_result_failure(result: Any) -> Optional[Tuple[str, str]]:
+    status = getattr(result, "status", None)
+    if status == "success":
+        return None
+    if status == "timeout":
+        return "timeout", "runner_timeout"
+    if status == "cancelled":
+        return "cancelled", "runner_cancelled"
+    return "execution", "runner_error"
+
+
+def _terminalize_stale_scheduled_entry(entry: Dict[str, Any]) -> bool:
+    if not scheduler_tool or not entry.get("scheduled_attempt_id"):
+        return False
+    scheduler_tool.finalize_attempt(
+        entry.get("scheduled_task_id"),
+        entry.get("scheduled_attempt_id"),
+        "failed",
+        error_class="timeout",
+        error_code="stale_live_row",
+        conversation_id=entry.get("conversation_id"),
+    )
+    return True
+
+
 async def _execute_scheduled_task(task_info):
     """Execute a single scheduled task. Wraps the body in running_agents.track()
     so the firing shows up in running_agents() while it's in flight. The inner
@@ -8895,29 +9429,100 @@ async def _execute_scheduled_task(task_info):
     if isinstance(task_info, dict):
         _t_prompt = task_info.get("prompt", "") or ""
         _t_id = task_info.get("id")
+        _t_attempt_id = task_info.get("attempt_id")
         _t_agent = task_info.get("agent")
     else:
         _t_prompt = task_info if isinstance(task_info, str) else ""
         _t_id = None
+        _t_attempt_id = None
         _t_agent = None
 
-    async with running_agents.track(
-        agent=_t_agent or "system",
-        kind="scheduled",
-        task_summary=_t_prompt,
-        scheduled_task_id=_t_id,
-    ):
-        await _execute_scheduled_task_body(task_info)
+    try:
+        outer_entry_id = await running_agents.register(
+            agent=_t_agent or "system",
+            kind="scheduled",
+            task_summary="" if _t_attempt_id else _t_prompt,
+            scheduled_task_id=_t_id,
+            scheduled_attempt_id=_t_attempt_id,
+            timeout_seconds=SCHEDULED_TASK_TIMEOUT,
+        )
+    except Exception:
+        if _t_attempt_id:
+            _finalize_scheduled_attempt(
+                task_info,
+                "failed",
+                error_class="launch",
+                error_code="outer_correlation_failed",
+            )
+        return
+    try:
+        if _t_attempt_id:
+            try:
+                scheduler_tool.bind_attempt_outer(
+                    _t_id,
+                    _t_attempt_id,
+                    outer_entry_id,
+                )
+            except Exception:
+                logger.error(
+                    "Scheduled task could not persist outer correlation "
+                    f"task={_t_id} attempt={_t_attempt_id}",
+                    exc_info=True,
+                )
+                try:
+                    _finalize_scheduled_attempt(
+                        task_info,
+                        "failed",
+                        error_class="launch",
+                        error_code="outer_correlation_failed",
+                    )
+                except Exception:
+                    logger.error(
+                        "Scheduled task could not terminalize outer-correlation failure "
+                        f"task={_t_id} attempt={_t_attempt_id}",
+                        exc_info=True,
+                    )
+                return
+        await _execute_scheduled_task_body(
+            task_info,
+            outer_invocation_id=outer_entry_id,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.error(
+            f"Scheduled task wrapper failed task={_t_id} attempt={_t_attempt_id}",
+            exc_info=True,
+        )
+        if _t_attempt_id:
+            try:
+                _finalize_scheduled_attempt(
+                    task_info,
+                    "failed",
+                    error_class="unknown",
+                    error_code="unknown",
+                )
+            except Exception:
+                logger.error(
+                    "Scheduled task wrapper failure could not terminalize "
+                    f"task={_t_id} attempt={_t_attempt_id}",
+                    exc_info=True,
+                )
+        raise
+    finally:
+        await running_agents.unregister(outer_entry_id)
 
 
-async def _execute_scheduled_task_body(task_info):
+async def _execute_scheduled_task_body(task_info, *, outer_invocation_id=None):
     """Execute a single scheduled task. Extracted from scheduler_loop to allow concurrent dispatch."""
+    phase = "setup"
     try:
         # Handle both old format (string) and new format (dict with metadata)
         if isinstance(task_info, str):
             prompt = task_info
             is_silent = False
             task_id = None
+            attempt_id = None
             task_type = "prompt"
             agent_name = None
             task_project = None
@@ -8925,6 +9530,7 @@ async def _execute_scheduled_task_body(task_info):
             prompt = task_info.get("prompt", "")
             is_silent = task_info.get("silent", False)
             task_id = task_info.get("id")
+            attempt_id = task_info.get("attempt_id")
             task_type = task_info.get("type", "prompt")
             agent_name = task_info.get("agent")
             task_project = task_info.get("project")
@@ -8937,6 +9543,12 @@ async def _execute_scheduled_task_body(task_info):
         # Guard: agent tasks require agent_name
         if task_type == "agent" and not agent_name:
             logger.warning(f"Scheduled agent task has no agent name (task_id={task_id}). Skipping.")
+            _finalize_scheduled_attempt(
+                task_info,
+                "failed",
+                error_class="validation",
+                error_code="missing_agent",
+            )
             return
 
         # Handle agent tasks
@@ -8982,6 +9594,7 @@ You are running as a scheduled task. Your output will be delivered directly to r
 """
                             augmented_prompt = f"{history_context}{prompt}{routing_instructions}"
 
+                            phase = "inner_execution"
                             result = await invoke_agent(
                                 name=agent_name,
                                 prompt=augmented_prompt,
@@ -8990,10 +9603,29 @@ You are running as a scheduled task. Your output will be delivered directly to r
                                 project=task_project,
                                 is_visible=False,
                                 scheduled_task_id=task_id,
+                                scheduled_attempt_id=attempt_id,
                                 caller_agent="scheduler",
                             )
 
+                            failure = _scheduled_result_failure(result)
+                            if failure:
+                                _finalize_scheduled_attempt(
+                                    task_info,
+                                    "failed",
+                                    error_class=failure[0],
+                                    error_code=failure[1],
+                                )
+                                return
+
                             new_msgs = _build_agent_display_messages(prompt, result, agent_name)
+                            if not new_msgs:
+                                _finalize_scheduled_attempt(
+                                    task_info,
+                                    "failed",
+                                    error_class="delivery",
+                                    error_code="output_save_failed",
+                                )
+                                return
                             if new_msgs:
                                 existing_messages.extend(new_msgs)
                                 existing_chat["messages"] = existing_messages
@@ -9003,12 +9635,22 @@ You are running as a scheduled task. Your output will be delivered directly to r
                                     dm.extend(new_msgs)
                                 else:
                                     existing_chat["display_messages"] = list(existing_messages)
+                                phase = "primary_persistence"
                                 chat_manager.save_chat(agent_room_id, existing_chat)
+                                _finalize_scheduled_attempt(task_info, "succeeded")
+                                phase = "terminal_success"
                                 if rooms_meta:
                                     rooms_meta.bump(agent_room_id)
                                 logger.info(f"Delivered silent agent task output to room {agent_room_id}")
                         else:
                             logger.warning(f"Target room {agent_room_id} not found for agent task")
+                            _finalize_scheduled_attempt(
+                                task_info,
+                                "failed",
+                                error_class="validation",
+                                error_code="target_room_missing",
+                            )
+                            return
 
                     else:
                         # Default silent: fire-and-forget, agent writes to agent_outputs
@@ -9040,6 +9682,7 @@ You are running as a scheduled task, not a live invocation. Your output will be 
 """
                         augmented_prompt = prompt + routing_instructions
 
+                        phase = "inner_launch"
                         result = await invoke_agent(
                             name=agent_name,
                             prompt=augmented_prompt,
@@ -9048,10 +9691,22 @@ You are running as a scheduled task, not a live invocation. Your output will be 
                             project=task_project,
                             is_visible=False,
                             scheduled_task_id=task_id,
+                            scheduled_attempt_id=attempt_id,
                             caller_agent="scheduler",
                         )
 
-                    logger.info(f"Silent agent task completed: {agent_name}")
+                        if isinstance(result, dict) and result.get("error"):
+                            _finalize_scheduled_attempt(
+                                task_info,
+                                "failed",
+                                error_class="launch",
+                                error_code="inner_launch_failed",
+                                conversation_id=result.get("conversation_id"),
+                            )
+                            return
+                        phase = "detached_running"
+
+                    logger.info(f"Silent agent task accepted by runner: {agent_name}")
                     return  # Skip notification for silent agents
 
                 else:
@@ -9084,6 +9739,7 @@ You are running as a scheduled task. Your output will be shown to the user.
 """
                             augmented_prompt = f"{history_context}{prompt}{routing_instructions}"
 
+                            phase = "inner_execution"
                             result = await invoke_agent(
                                 name=agent_name,
                                 prompt=augmented_prompt,
@@ -9092,11 +9748,30 @@ You are running as a scheduled task. Your output will be shown to the user.
                                 project=task_project,
                                 is_visible=True,
                                 scheduled_task_id=task_id,
+                                scheduled_attempt_id=attempt_id,
                                 caller_agent="scheduler",
                             )
 
+                            failure = _scheduled_result_failure(result)
+                            if failure:
+                                _finalize_scheduled_attempt(
+                                    task_info,
+                                    "failed",
+                                    error_class=failure[0],
+                                    error_code=failure[1],
+                                )
+                                return
+
                             new_msgs = _build_agent_display_messages(prompt, result, agent_name)
                             agent_output = (result.transcript or result.response) if result.status == "success" else f"Error: {result.error}"
+                            if not new_msgs:
+                                _finalize_scheduled_attempt(
+                                    task_info,
+                                    "failed",
+                                    error_class="delivery",
+                                    error_code="output_save_failed",
+                                )
+                                return
                             if new_msgs:
                                 existing_messages.extend(new_msgs)
                                 existing_chat["messages"] = existing_messages
@@ -9105,7 +9780,10 @@ You are running as a scheduled task. Your output will be shown to the user.
                                     dm.extend(new_msgs)
                                 else:
                                     existing_chat["display_messages"] = list(existing_messages)
+                                phase = "primary_persistence"
                                 chat_manager.save_chat(agent_room_id, existing_chat)
+                                _finalize_scheduled_attempt(task_info, "succeeded")
+                                phase = "terminal_success"
                                 if rooms_meta:
                                     rooms_meta.bump(agent_room_id)
 
@@ -9115,6 +9793,12 @@ You are running as a scheduled task. Your output will be shown to the user.
                             # Fall through to notification block
                         else:
                             logger.warning(f"Target room {agent_room_id} not found for agent task")
+                            _finalize_scheduled_attempt(
+                                task_info,
+                                "failed",
+                                error_class="validation",
+                                error_code="target_room_missing",
+                            )
                             return
 
                     else:
@@ -9127,6 +9811,7 @@ You are running as a scheduled task. Your output will be shown to the user in a 
 """
                         augmented_prompt = prompt + routing_instructions
 
+                        phase = "inner_execution"
                         result = await invoke_agent(
                             name=agent_name,
                             prompt=augmented_prompt,
@@ -9135,8 +9820,19 @@ You are running as a scheduled task. Your output will be shown to the user in a 
                             project=task_project,
                             is_visible=True,
                             scheduled_task_id=task_id,
+                            scheduled_attempt_id=attempt_id,
                             caller_agent="scheduler",
                         )
+
+                        failure = _scheduled_result_failure(result)
+                        if failure:
+                            _finalize_scheduled_attempt(
+                                task_info,
+                                "failed",
+                                error_class=failure[0],
+                                error_code=failure[1],
+                            )
+                            return
 
                         display_msgs = _build_agent_display_messages(prompt, result, agent_name)
                         agent_output = (result.transcript or result.response) if result.status == "success" else f"Error: {result.error}"
@@ -9156,7 +9852,10 @@ You are running as a scheduled task. Your output will be shown to the user in a 
                             "messages": display_msgs,
                             "display_messages": display_msgs,
                         }
+                        phase = "primary_persistence"
                         chat_manager.save_chat(actual_session_id, chat_data)
+                        _finalize_scheduled_attempt(task_info, "succeeded")
+                        phase = "terminal_success"
                         await broadcast_chat_created(actual_session_id, title, agent_name, scheduled=True)
                         assistant_content = [agent_output] if agent_output else []
                         logger.info(f"Saved non-silent agent task result: {actual_session_id}")
@@ -9165,7 +9864,7 @@ You are running as a scheduled task. Your output will be shown to the user in a 
 
             except Exception as e:
                 logger.error(f"Scheduled agent task failed: {agent_name} - {e}")
-                return
+                raise
 
         # === Prompt task handling (skip for agent tasks — they're handled above) ===
         # Prompt tasks use the legacy wrapper, which shares a single runtime session,
@@ -9187,6 +9886,24 @@ You are running as a scheduled task. Your output will be shown to the user in a 
                     claude = ClaudeWrapper(session_id="new", cwd=ROOT_DIR, chat_id=target_room_id, chat_messages=existing_messages)
                     logger.info(f"Starting fresh runtime session for room {target_room_id}")
 
+                    phase = "running_gate"
+                    if attempt_id:
+                        try:
+                            scheduler_tool.mark_attempt_running(
+                                task_id,
+                                attempt_id,
+                                current_inner_invocation_id=outer_invocation_id,
+                                conversation_id=target_room_id,
+                            )
+                        except Exception:
+                            _finalize_scheduled_attempt(
+                                task_info,
+                                "failed",
+                                error_class="launch",
+                                error_code="running_gate_failed",
+                            )
+                            return
+                    phase = "inner_execution"
                     all_segments, completed_tool_calls, _ = await _collect_structured_output(claude, augmented_prompt)
 
                     raw_prompt = prompt.replace("\U0001f447 [SCHEDULED AUTOMATION] \U0001f447\n", "")
@@ -9203,7 +9920,14 @@ You are running as a scheduled task. Your output will be shown to the user in a 
                     assistant_content = [strip_tool_markers(s) for s in all_segments]
 
                     existing_chat["messages"] = existing_messages
+                    phase = "primary_persistence"
                     chat_manager.save_chat(target_room_id, existing_chat)
+                    _finalize_scheduled_attempt(
+                        task_info,
+                        "succeeded",
+                        conversation_id=target_room_id,
+                    )
+                    phase = "terminal_success"
 
                     try:
                         if rooms_meta:
@@ -9215,14 +9939,38 @@ You are running as a scheduled task. Your output will be shown to the user in a 
                     logger.info(f"Delivered scheduled task to room {target_room_id}")
 
                 else:
-                    logger.warning(f"Target room {target_room_id} not found, creating new chat")
-                    target_room_id = None  # Fall through to normal handling
+                    logger.warning(f"Target room {target_room_id} not found for scheduled task")
+                    _finalize_scheduled_attempt(
+                        task_info,
+                        "failed",
+                        error_class="validation",
+                        error_code="target_room_missing",
+                    )
+                    return
 
             # === Normal (non-room-targeted) prompt task ===
             if not target_room_id:
                 session_id = str(uuid.uuid4())
                 claude = ClaudeWrapper(session_id="new", cwd=ROOT_DIR)
 
+                phase = "running_gate"
+                if attempt_id:
+                    try:
+                        scheduler_tool.mark_attempt_running(
+                            task_id,
+                            attempt_id,
+                            current_inner_invocation_id=outer_invocation_id,
+                            conversation_id=None,
+                        )
+                    except Exception:
+                        _finalize_scheduled_attempt(
+                            task_info,
+                            "failed",
+                            error_class="launch",
+                            error_code="running_gate_failed",
+                        )
+                        return
+                phase = "inner_execution"
                 all_segments, completed_tool_calls, sdk_session_id = await _collect_structured_output(claude, prompt)
                 actual_session_id = sdk_session_id or session_id
 
@@ -9246,13 +9994,27 @@ You are running as a scheduled task. Your output will be shown to the user in a 
                 # Keep assistant_content for notification preview
                 assistant_content = [strip_tool_markers(s) for s in all_segments]
 
+                phase = "primary_persistence"
                 chat_manager.save_chat(actual_session_id, chat_data)
+                _finalize_scheduled_attempt(
+                    task_info,
+                    "succeeded",
+                    conversation_id=actual_session_id,
+                )
+                phase = "terminal_success"
                 await broadcast_chat_created(actual_session_id, title, is_system=is_silent, scheduled=True)
                 logger.info(f"Saved scheduled task result: {actual_session_id} (is_system={is_silent})")
 
         # Guard: skip notification if no session was created (defensive)
         if actual_session_id is None:
             logger.warning(f"Scheduled task produced no session_id (task_type={task_type}). Skipping notification.")
+            if phase != "terminal_success":
+                _finalize_scheduled_attempt(
+                    task_info,
+                    "failed",
+                    error_class="delivery",
+                    error_code="output_save_failed",
+                )
             return
 
         # Determine notification channels based on visibility
@@ -9299,6 +10061,35 @@ You are running as a scheduled task. Your output will be shown to the user in a 
 
     except Exception as e:
         logger.error(f"Scheduled task execution error: {e}")
+        if phase == "terminal_success":
+            logger.warning(
+                "Scheduled task primary persistence succeeded; ignoring best-effort "
+                "post-persistence notification failure"
+            )
+            return
+        if phase == "detached_running":
+            return
+        if phase == "primary_persistence":
+            error_class, error_code = "delivery", "output_save_failed"
+        elif phase in {"running_gate", "inner_launch"}:
+            error_class, error_code = "launch", "inner_launch_failed"
+        elif phase == "inner_execution":
+            error_class, error_code = "execution", "runner_error"
+        else:
+            error_class, error_code = "unknown", "unknown"
+        try:
+            _finalize_scheduled_attempt(
+                task_info,
+                "failed",
+                error_class=error_class,
+                error_code=error_code,
+            )
+        except Exception:
+            logger.error(
+                "Scheduled task failure could not terminalize "
+                f"task={task_id} attempt={attempt_id}",
+                exc_info=True,
+            )
 
 
 async def _execute_scheduled_task_with_timeout(task_info):
@@ -9310,6 +10101,49 @@ async def _execute_scheduled_task_with_timeout(task_info):
             await _execute_scheduled_task(task_info)
     except TimeoutError:
         logger.error(f"Scheduled task timed out after {SCHEDULED_TASK_TIMEOUT}s (task_id={task_id}): {task_desc}")
+        try:
+            _finalize_scheduled_attempt(
+                task_info,
+                "failed",
+                error_class="timeout",
+                error_code="wrapper_timeout",
+            )
+        except Exception:
+            logger.error(
+                f"Scheduled timeout could not terminalize task={task_id}",
+                exc_info=True,
+            )
+    except asyncio.CancelledError:
+        try:
+            _finalize_scheduled_attempt(
+                task_info,
+                "failed",
+                error_class="cancelled",
+                error_code="wrapper_cancelled",
+            )
+        except Exception:
+            logger.error(
+                f"Scheduled cancellation could not terminalize task={task_id}",
+                exc_info=True,
+            )
+        raise
+    except Exception:
+        logger.error(
+            f"Scheduled task ended with an uncaught wrapper failure task={task_id}",
+            exc_info=True,
+        )
+        try:
+            _finalize_scheduled_attempt(
+                task_info,
+                "failed",
+                error_class="unknown",
+                error_code="unknown",
+            )
+        except Exception:
+            logger.error(
+                f"Scheduled uncaught failure could not terminalize task={task_id}",
+                exc_info=True,
+            )
 
 
 async def scheduler_loop():
@@ -9330,7 +10164,20 @@ async def scheduler_loop():
             due_tasks = scheduler_tool.check_due_tasks()
 
             for task_info in due_tasks:
-                asyncio.create_task(_execute_scheduled_task_with_timeout(task_info))
+                try:
+                    asyncio.create_task(_execute_scheduled_task_with_timeout(task_info))
+                except Exception:
+                    logger.error(
+                        "Scheduler could not launch claimed wrapper "
+                        f"task={task_info.get('id')} attempt={task_info.get('attempt_id')}",
+                        exc_info=True,
+                    )
+                    _finalize_scheduled_attempt(
+                        task_info,
+                        "failed",
+                        error_class="launch",
+                        error_code="inner_launch_failed",
+                    )
 
             # Periodic maintenance: clean up stale chat locks
             _cleanup_chat_locks()
@@ -9359,11 +10206,22 @@ async def scheduler_loop():
                         f"conversation_id={entry.get('conversation_id') or '-'} "
                         f"salon_id={entry.get('salon_id') or '-'} "
                         f"scheduled_task_id={entry.get('scheduled_task_id') or '-'} "
+                        f"scheduled_attempt_id={entry.get('scheduled_attempt_id') or '-'} "
                         f"caller_agent={entry.get('caller_agent') or '-'} "
                         f"source_chat_id={entry.get('source_chat_id') or '-'} "
                         f"process_id={entry.get('process_id') or '-'} "
                         f"reason={entry.get('stale_reason') or 'deadline_exceeded'}"
                     )
+                    if entry.get("scheduled_attempt_id"):
+                        try:
+                            _terminalize_stale_scheduled_entry(entry)
+                        except Exception:
+                            logger.error(
+                                "Failed to terminalize stale scheduled live row "
+                                f"task={entry.get('scheduled_task_id')} "
+                                f"attempt={entry.get('scheduled_attempt_id')}",
+                                exc_info=True,
+                            )
             except Exception as e:
                 logger.warning(f"running_agents: periodic sweep failed: {e}")
 
@@ -9531,6 +10389,51 @@ def _bind_ping_continuation_claims(
     return bound
 
 
+def _bind_scheduler_continuation_claims(
+    agent_invocations: List[Dict[str, Any]],
+    reconciliation: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """Keep only scheduler claims atomically bound to their immutable attempt."""
+    bindings = {
+        (
+            item.get("task_id"),
+            item.get("attempt_id"),
+            item.get("conversation_id"),
+            item.get("current_inner_invocation_id"),
+        ): item
+        for item in reconciliation.get("continuations", [])
+        if isinstance(item, dict)
+    }
+    bound = []
+    for raw_entry in agent_invocations:
+        entry = dict(raw_entry)
+        task_id = entry.get("scheduled_task_id")
+        attempt_id = entry.get("scheduled_attempt_id")
+        if task_id is None and attempt_id is None:
+            bound.append(entry)
+            continue
+        key = (
+            task_id,
+            attempt_id,
+            entry.get("conversation_id"),
+            entry.get("id"),
+        )
+        binding = bindings.get(key)
+        if binding is None:
+            logger.warning(
+                "Restart continuation: dropping stale/unreceipted scheduled claim "
+                "task=%s attempt=%s thread=%s live=%s",
+                task_id,
+                attempt_id,
+                entry.get("conversation_id"),
+                entry.get("id"),
+            )
+            continue
+        entry["_scheduled_resume_claim_id"] = binding.get("continuation_claim_id")
+        bound.append(entry)
+    return bound
+
+
 def _terminalize_unrecoverable_ping_continuation(entry: Dict[str, Any]) -> bool:
     invocation_id = entry.get("_ping_invocation_id")
     conversation_id = entry.get("conversation_id")
@@ -9565,11 +10468,15 @@ def _terminalize_unrecoverable_ping_continuation(entry: Dict[str, Any]) -> bool:
         return False
 
 
-def _resume_mode_for_running_kind(kind: Optional[str]) -> str:
+def _resume_mode_for_running_kind(
+    kind: Optional[str],
+    *,
+    scheduled_attempt_id: Optional[str] = None,
+) -> str:
     # Foreground callers died with the backend, so resume them as ping work when
     # possible: the thread continues and completion is still delivered to the
     # original chat/agent-thread target. Trust/scheduled work remains scheduled.
-    if kind in {"invoke_trust", "scheduled", "background_processing"}:
+    if scheduled_attempt_id or kind in {"invoke_trust", "scheduled", "background_processing"}:
         return "scheduled"
     return "ping"
 
@@ -9600,7 +10507,10 @@ async def _resume_agent_invocation_after_restart(entry: Dict[str, Any], reason: 
             sys.path.insert(0, str(agents_dir))
         from runner import invoke_agent as _invoke_agent
 
-        mode = _resume_mode_for_running_kind(kind)
+        mode = _resume_mode_for_running_kind(
+            kind,
+            scheduled_attempt_id=entry.get("scheduled_attempt_id"),
+        )
         prompt = _restart_agent_resume_prompt(
             reason=reason,
             source=source,
@@ -9617,6 +10527,8 @@ async def _resume_agent_invocation_after_restart(entry: Dict[str, Any], reason: 
             conversation_id=conversation_id,
             caller_agent=entry.get("caller_agent") or "restart_continuation",
             scheduled_task_id=entry.get("scheduled_task_id"),
+            scheduled_attempt_id=entry.get("scheduled_attempt_id"),
+            scheduled_resume_claim_id=entry.get("_scheduled_resume_claim_id"),
             is_background_processing=(kind == "background_processing"),
             resume_ping_invocation_id=entry.get("_ping_invocation_id"),
         )
@@ -9625,6 +10537,23 @@ async def _resume_agent_invocation_after_restart(entry: Dict[str, Any], reason: 
                 f"Restart continuation: failed to resume agent '{agent}' "
                 f"thread {conversation_id}: {result.get('error')}"
             )
+            if entry.get("scheduled_attempt_id"):
+                try:
+                    scheduler_tool.finalize_attempt(
+                        entry.get("scheduled_task_id"),
+                        entry.get("scheduled_attempt_id"),
+                        "failed",
+                        error_class="launch",
+                        error_code="inner_launch_failed",
+                        conversation_id=conversation_id,
+                    )
+                except Exception:
+                    logger.warning(
+                        "Restart continuation launch failure was already terminal or "
+                        "could not be persisted task=%s attempt=%s",
+                        entry.get("scheduled_task_id"),
+                        entry.get("scheduled_attempt_id"),
+                    )
             return False
         logger.info(
             f"Restart continuation: resumed agent '{agent}' kind={kind} "
@@ -9637,6 +10566,23 @@ async def _resume_agent_invocation_after_restart(entry: Dict[str, Any], reason: 
             f"thread {conversation_id}: {e}",
             exc_info=True,
         )
+        if entry.get("scheduled_attempt_id"):
+            try:
+                scheduler_tool.finalize_attempt(
+                    entry.get("scheduled_task_id"),
+                    entry.get("scheduled_attempt_id"),
+                    "failed",
+                    error_class="launch",
+                    error_code="inner_launch_failed",
+                    conversation_id=conversation_id,
+                )
+            except Exception:
+                logger.warning(
+                    "Restart continuation exception was already terminal or could not "
+                    "be persisted task=%s attempt=%s",
+                    entry.get("scheduled_task_id"),
+                    entry.get("scheduled_attempt_id"),
+                )
         return False
 
 
@@ -9663,6 +10609,20 @@ async def restart_continuation_wakeup():
 
     if not sessions and not agent_invocations:
         logger.warning("Restart continuation has no sessions or agent invocations to resume")
+        try:
+            if os.path.exists(RESTART_CONTINUATION_FILE):
+                with open(RESTART_CONTINUATION_FILE, "r") as f:
+                    current_marker = json.load(f)
+                if _restart_continuation_marker_matches(current_marker, continuation):
+                    os.remove(RESTART_CONTINUATION_FILE)
+                    logger.info(
+                        "Restart continuation: removed fully consumed marker with no "
+                        "remaining continuation work"
+                    )
+        except Exception as e:
+            logger.warning(
+                f"Restart continuation: could not clean consumed empty marker: {e}"
+            )
         return
 
     logger.info(
@@ -10813,10 +11773,50 @@ async def startup_event():
     except Exception as e:
         logger.warning(f"Failed to register primary_claude in process registry: {e}")
 
-    asyncio.create_task(scheduler_loop())
     asyncio.create_task(agent_notification_wakeup_loop())
     asyncio.create_task(_background_processing_idle_watcher())
     asyncio.create_task(_salon_background_processing_watcher())
+
+    continuation_claims = (
+        list(restart_continuation.get("agent_invocations") or [])
+        if restart_continuation
+        else []
+    )
+    scheduler_reconciliation_ok = False
+    try:
+        if not scheduler_tool or not hasattr(scheduler_tool, "reconcile_execution_attempts"):
+            raise RuntimeError("scheduler attempt reconciler unavailable")
+        scheduler_reconciliation = scheduler_tool.reconcile_execution_attempts(
+            continuation_claims=continuation_claims,
+        )
+        continuation_claims = _bind_scheduler_continuation_claims(
+            continuation_claims,
+            scheduler_reconciliation,
+        )
+        if restart_continuation is not None:
+            restart_continuation["agent_invocations"] = continuation_claims
+        scheduler_reconciliation_ok = True
+        if scheduler_reconciliation.get("terminalized"):
+            logger.warning(
+                "Scheduler attempts: terminalized %s unmatched startup attempt(s) "
+                "without replay",
+                len(scheduler_reconciliation["terminalized"]),
+            )
+    except Exception as e:
+        # Fail closed: do not resume unbound scheduled rows or claim more work
+        # until a managed load can complete reconciliation successfully.
+        continuation_claims = [
+            entry for entry in continuation_claims
+            if not entry.get("scheduled_task_id")
+            and not entry.get("scheduled_attempt_id")
+        ]
+        if restart_continuation is not None:
+            restart_continuation["agent_invocations"] = continuation_claims
+        logger.error(
+            f"Scheduler attempt startup reconciliation failed: {e}; "
+            "scheduler loop will remain stopped",
+            exc_info=True,
+        )
 
     # Reconcile receipt-bearing pings before releasing startup-stale locks.
     # Managed-restart claims keep their original lifecycle identity; every
@@ -10826,11 +11826,6 @@ async def startup_event():
         from agent_conversation_manager import get_manager as _get_agent_conv_mgr
 
         manager = _get_agent_conv_mgr()
-        continuation_claims = (
-            list(restart_continuation.get("agent_invocations") or [])
-            if restart_continuation
-            else []
-        )
         reconciliation = manager.reconcile_ping_invocations(
             continuation_claims=continuation_claims,
             max_age_minutes=0,
@@ -10851,6 +11846,9 @@ async def startup_event():
             f"Agent conversations: startup ping reconciliation failed: {e}",
             exc_info=True,
         )
+
+    if scheduler_reconciliation_ok:
+        asyncio.create_task(scheduler_loop())
 
     # Salon (group chat) startup: clear stale locks + wire the dispatcher
     # into the salon_events bus. Dispatcher uses broadcast_to_all_clients to
@@ -10894,6 +11892,8 @@ async def shutdown_event():
     """Save state on graceful shutdown."""
     logger.info("Server shutting down, saving state...")
     await _stop_backend_health_heartbeat()
+    await _drain_app_server_turn_receipt_writes()
+    await _drain_performance_timing_writes()
     save_server_state()
     save_continuation_on_shutdown()
 

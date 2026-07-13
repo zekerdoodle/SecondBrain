@@ -80,6 +80,7 @@ class AgentConfig:
         model: Model to use (OpenAI model id, or legacy sonnet/opus/haiku alias)
         description: Human-readable description for the agent
         tools: List of allowed tools
+        direct_tools: App Server-only initial-context subset of ``tools``
         timeout_seconds: Maximum execution time
         output_format: Structured output schema
         prompt: System prompt content (loaded from prompt.md)
@@ -107,6 +108,7 @@ class AgentConfig:
     background_processing: Optional[Dict[str, Any]] = None  # Background processing config (enabled, trigger_exchanges, idle_timeout_minutes)
     background_prompt: Optional[str] = None  # Content of background_processing.md
     runtime: Dict[str, AgentRuntimeConfig] = field(default_factory=dict)  # Optional chattable/non_chattable runtime overrides
+    direct_tools: List[str] = field(default_factory=list)  # App Server-only initial-context subset of tools
 
     def resolve_runtime(self, path: str) -> "AgentConfig":
         """Return an effective config for a runtime path with top-level fallback."""
@@ -150,6 +152,7 @@ class AgentConfig:
             description=data.get("description", f"Agent: {data['name']}"),
             display_name=data.get("display_name"),
             tools=data.get("tools", []),
+            direct_tools=data.get("direct_tools", []),
             timeout_seconds=data.get("timeout_seconds") or data.get("timeout") or 14400,
             max_turns=data.get("max_turns", 200),
             output_format=data.get("output_format"),
@@ -208,6 +211,8 @@ class AgentInvocation:
     worktree_base_ref: Optional[str] = None
     worktree_path: Optional[str] = None
     scheduled_task_id: Optional[str] = None  # Set when launched via a scheduled-task firing
+    scheduled_attempt_id: Optional[str] = None  # Immutable scheduler firing identity
+    scheduled_resume_claim_id: Optional[str] = None  # Managed-restart gate; runtime-only
     is_background_processing: bool = False  # Set when launched by the bg-processing idle hook
 
     def to_dict(self) -> Dict[str, Any]:

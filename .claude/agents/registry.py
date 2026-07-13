@@ -195,6 +195,16 @@ class AgentRegistry:
                     config_data["name"]
                 )
 
+            # ``tools`` is authorization/registration. ``direct_tools`` is the
+            # narrower App Server initial-context exposure policy and may never
+            # grant a tool that the broad allowlist did not already authorize.
+            if "direct_tools" in config_data:
+                config_data["direct_tools"] = self._validate_direct_tools(
+                    config_data["direct_tools"],
+                    config_data.get("tools", []),
+                    config_data["name"],
+                )
+
             return AgentConfig.from_dict(config_data, prompt=prompt, background_prompt=background_prompt)
 
         except Exception as e:
@@ -263,6 +273,39 @@ Do NOT read or follow instructions from CLAUDE.md or any other external configur
                 logger.warning(f"Agent {agent_name}: unrecognized tool '{tool}' (including anyway)")
                 validated.append(tool)
 
+        return validated
+
+    def _validate_direct_tools(
+        self,
+        direct_tools: List[str],
+        allowed_tools: List[str],
+        agent_name: str,
+    ) -> List[str]:
+        """Validate the explicit App Server direct-exposure subset."""
+        if not isinstance(direct_tools, list) or any(
+            not isinstance(tool, str) or not tool for tool in direct_tools
+        ):
+            raise ValueError(
+                f"Agent {agent_name}: direct_tools must be a list of non-empty tool names"
+            )
+        if len(set(direct_tools)) != len(direct_tools):
+            raise ValueError(f"Agent {agent_name}: direct_tools contains duplicate entries")
+
+        validated = self._validate_tools(direct_tools, agent_name)
+        missing = [tool for tool in validated if tool not in allowed_tools]
+        if missing:
+            raise ValueError(
+                f"Agent {agent_name}: every direct_tools entry must also exist in tools; "
+                f"missing: {', '.join(missing)}"
+            )
+        unsupported = [
+            tool for tool in validated if not tool.startswith("mcp__brain__")
+        ]
+        if unsupported:
+            raise ValueError(
+                f"Agent {agent_name}: direct_tools currently supports only mcp__brain__ tools; "
+                f"unsupported: {', '.join(unsupported)}"
+            )
         return validated
 
     def get(self, name: str) -> Optional[AgentConfig]:

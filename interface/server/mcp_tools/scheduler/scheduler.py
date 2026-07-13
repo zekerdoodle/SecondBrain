@@ -41,7 +41,7 @@ substitute the actual room ID automatically.""",
         "type": "object",
         "properties": {
             "prompt": {"type": "string", "description": "The prompt to execute"},
-            "schedule": {"type": "string", "description": "Schedule: 'every X minutes/hours', 'daily at HH:MM', or 'once at YYYY-MM-DDTHH:MM:SS'"},
+            "schedule": {"type": "string", "description": "Schedule: 'every X minutes/hours', 'daily at HH:MM', or 'once at YYYY-MM-DDTHH:MM:SS'. Offsetless one-time values are America/Chicago wall time; explicit ISO numeric offsets and uppercase Z are exact instants."},
             "silent": {"type": "boolean", "description": "If true: the user does NOT see this — no chat history, no notifications. If false (default): the user WILL see this — appears in chat with notifications.", "default": False},
             "room_id": {"type": "string", "description": "Optional: Target room ID. Pass \"current\" to target the room you're currently running in (auto-resolved to the actual ID). Pass a specific room ID to target that room. Omit to use active room or create new chat."}
         },
@@ -94,7 +94,7 @@ async def schedule_self(args: Dict[str, Any]) -> Dict[str, Any]:
 @register_tool("scheduler")
 @tool(
     name="scheduler_list",
-    description="List scheduled automated tasks. By default shows only active tasks.",
+    description="List scheduled task definitions plus recent content-free execution receipts. By default definitions are limited to active tasks, while recent/nonterminal receipts remain visible for inactive one-time firings.",
     input_schema={
         "type": "object",
         "properties": {
@@ -129,7 +129,7 @@ Pass room_id="current" to retarget the task to the room you're currently running
             "task_id": {"type": "string", "description": "The ID of the scheduled task to update"},
             "silent": {"type": "boolean", "description": "Set silent mode. true: the user does NOT see this — no chat history/notifications. false: the user WILL see this."},
             "active": {"type": "boolean", "description": "Enable (true) or disable (false) the task"},
-            "schedule": {"type": "string", "description": "New schedule string"},
+            "schedule": {"type": "string", "description": "New schedule string. Offsetless 'once at' values are America/Chicago wall time; explicit ISO numeric offsets and uppercase Z are exact instants."},
             "prompt": {"type": "string", "description": "New prompt text"},
             "room_id": {"type": "string", "description": "Set target room ID. Pass \"current\" to target the room you're currently running in (auto-resolved). Use empty string to clear room targeting."}
         },
