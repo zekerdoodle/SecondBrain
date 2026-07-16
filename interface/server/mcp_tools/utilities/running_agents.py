@@ -49,7 +49,7 @@ Returns one entry per live invocation. Filter by agent or kind. Kinds:
 - background_processing: an agent's idle-time background-processing hook fired.
 - agent_conversation_join: an invocation that joined an existing agent-to-agent thread.
 
-Each entry has: id, agent, kind, started_at (UNIX seconds), elapsed_seconds, task_summary, source_chat_id, conversation_id, salon_id, scheduled_task_id, scheduled_attempt_id, caller_agent. Receipt-aware scheduled rows suppress prompt-derived task_summary and expose only content-free task/attempt/thread/live provenance. Worktree-routed coder invocations also include worktree_branch, worktree_slug, and worktree_path. Fields that don't apply are null or omitted.
+Each entry has: id, agent, kind, started_at (UNIX seconds), elapsed_seconds, task_summary, source_chat_id, conversation_id, salon_id, scheduled_task_id, scheduled_attempt_id, caller_agent. Direct invoke foreground/ping/trust/join rows render their full immutable id as invocation_id; scheduler/salon/other owners render the registry handle as live_id and retain their own receipt authority. Receipt-aware scheduled rows suppress prompt-derived task_summary and expose only content-free task/attempt/thread/live provenance. Worktree-routed coder invocations also include worktree_branch, worktree_slug, and worktree_path. Fields that don't apply are null or omitted.
 
 For restart decisions, treat this as an authoritative snapshot of the invocation paths currently wired into running_agents, not a universal proof that every possible process in the system is idle. If the source-of-truth read errors, fail closed.
 """
@@ -87,6 +87,15 @@ def _render_markdown(entries):
     lines = [f"**{len(entries)} invocation(s) in flight:**", ""]
     for e in entries:
         parts = [f"- **{e['agent']}** ({e['kind']}, {_format_elapsed(e['elapsed_seconds'])})"]
+        if e.get("kind") in {
+            "invoke_foreground",
+            "invoke_ping",
+            "invoke_trust",
+            "agent_conversation_join",
+        }:
+            parts.append(f"[invocation_id `{e['id']}`]")
+        else:
+            parts.append(f"[live_id `{e['id']}`]")
         if e.get("caller_agent"):
             parts.append(f"← from `{e['caller_agent']}`")
         if e.get("conversation_id"):

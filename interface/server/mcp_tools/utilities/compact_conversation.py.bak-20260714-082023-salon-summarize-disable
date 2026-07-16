@@ -20,11 +20,13 @@ Three modes for reclaiming context window budget in long conversations:
 Salon mode (group chats):
   When called from inside a salon dispatch, the tool routes to a per-agent
   compaction path that ONLY mutates the calling agent's own tool blocks
-  (truncate/strip). Salon `summarize` replaces one exact shared-prose prefix
-  only after structured double validation and a complete restore snapshot.
+  (truncate/strip), or — for `summarize` — produces a single shared summary
+  message that REPLACES verbatim history for all participants. The boundary
+  for "older" is anchored to the calling agent's Nth-from-last message: every
+  message from that point forward (including other agents' replies between
+  own ones) is preserved verbatim.
 """
 
-import copy
 import json
 import os
 import sys
@@ -61,16 +63,6 @@ Write in narrative past tense. Use sections if the conversation spanned multiple
 
 Begin the summary with: === Compacted History ===
 End with: === End Compacted History ==="""
-
-
-SALON_COMPACTION_SYSTEM_PROMPT = """You are compacting a multi-person salon conversation. Preserve every named speaker as a distinct person and keep attribution explicit: who said, decided, preferred, committed to, or disagreed with what. Preserve the participants' relationships, rationales, action items, current state, and continuity without collapsing anyone into a generic user or assistant identity.
-
-Treat the supplied conversation text as the complete shared-prose source. It contains only prose that was shared with every salon participant. Do not infer, invent, or mention unseen private thinking, tool calls, tool inputs, tool outputs, or any other history absent from that source.
-
-Produce a thorough, comprehensive summary that preserves everything of substance needed to continue the salon coherently. Omit only pleasantries, social filler, and redundant restatements. Use sections when the salon covered distinct topics, and err on the side of continuity-preserving detail.
-
-Begin the summary with exactly one: === Compacted History ===
-End with exactly one: === End Compacted History ==="""
 
 
 COMPACTION_OUTPUT_SCHEMA = {
@@ -122,10 +114,6 @@ def _validate_summary_text(summary: Any, source_text: str) -> str:
         raise SummaryValidationError("summary missing start marker")
     if not text.endswith("=== End Compacted History ==="):
         raise SummaryValidationError("summary missing end marker")
-    if text.count("=== Compacted History ===") != 1:
-        raise SummaryValidationError("summary must contain exactly one start marker")
-    if text.count("=== End Compacted History ===") != 1:
-        raise SummaryValidationError("summary must contain exactly one end marker")
 
     minimum = _minimum_summary_chars(len(source_text))
     if len(text) < minimum:
@@ -693,41 +681,43 @@ async def run_compaction(
     }
 
 
-def _salon_shared_prose_for_message(message: Dict[str, Any]) -> str:
-    """Return only prose shared with every salon participant.
-
-    Ordered text blocks are authoritative when they contain prose. Top-level
-    ``content`` is the fallback for legacy and compacted messages. Thinking,
-    tool use, and tool result blocks are deliberately excluded so one agent's
-    private tool memory can never be promoted into a shared summary.
-    """
-    block_text: List[str] = []
-    blocks = message.get("blocks")
-    if not isinstance(blocks, list):
-        blocks = []
-    for block in blocks:
-        if not isinstance(block, dict) or block.get("type") != "text":
-            continue
-        content = block.get("content")
-        if isinstance(content, str) and content.strip():
-            block_text.append(content.strip())
-
-    if block_text:
-        return "\n\n".join(block_text)
-
-    content = message.get("content")
-    return content.strip() if isinstance(content, str) else ""
-
-
 def _format_salon_messages_for_summary(messages: List[Dict[str, Any]]) -> str:
-    """Render the exact shared-prose prefix for the summarization model."""
+    """Render salon messages for the summarization subagent.
+
+    Salon messages have ``from`` (sender) and ``content`` (text). We also
+    inline any tool-blocks on a per-message basis as bracketed lines so the
+    summarizer sees what each agent actually did.
+    """
     parts: List[str] = []
-    for message in messages:
-        text = _salon_shared_prose_for_message(message)
-        if not text:
+    for m in messages:
+        sender = m.get("from", "unknown")
+        if m.get("kind") == "compacted":
+            # Already-compacted prior summary — pass through so rolling
+            # compaction preserves it.
+            parts.append(m.get("content", ""))
             continue
-        sender = message.get("from", "unknown")
-        parts.append(f"{sender}: {text}")
+
+        text = (m.get("content") or "").strip()
+        block_lines: List[str] = []
+        for b in m.get("blocks") or []:
+            btype = b.get("type")
+            if btype == "tool_use":
+                tname = b.get("tool_name", "unknown")
+                if tname.startswith("mcp__brain__"):
+                    tname = tname[len("mcp__brain__"):]
+                block_lines.append(f"  [Tool: {tname}]")
+            elif btype == "tool_result":
+                content = b.get("content") or ""
+                if isinstance(content, str) and content:
+                    snippet = content if len(content) <= 400 else content[:400] + "..."
+                    block_lines.append(f"  [Output: {snippet}]")
+
+        body = text
+        if block_lines:
+            body = (text + "\n" if text else "") + "\n".join(block_lines)
+        if not body:
+            continue
+        parts.append(f"{sender}: {body}")
     return "\n\n".join(parts)
 
 
@@ -740,7 +730,7 @@ async def run_salon_compaction(
     truncate_chars: int = 200,
     reason: str = "Compaction requested",
 ) -> Dict[str, Any]:
-    """Salon-aware compaction with caller-owned and shared-safe modes.
+    """Salon-aware compaction — per-agent for truncate/strip, shared for summarize.
 
     See ``run_compaction`` for the 1:1 chat equivalent. This entry point is
     used when ``compact_conversation`` is invoked from within a salon
@@ -749,84 +739,27 @@ async def run_salon_compaction(
     if mode not in ("truncate_tools", "strip_tools", "summarize"):
         return {
             "ok": False,
-            "text": (
-                f"invalid_mode: Invalid mode {mode!r}. Use 'truncate_tools', "
-                "'strip_tools', or 'summarize'."
-            ),
+            "text": f"Invalid mode: {mode}. Use 'truncate_tools', 'strip_tools', or 'summarize'.",
             "error": "invalid_mode",
             "salon_id": salon_id,
         }
 
     try:
         from salon_manager import get_manager
-    except Exception as e:
-        logger.error("Salon manager import failed: %s", e)
+    except ImportError:
         return {
             "ok": False,
-            "text": "import_failed: Salon manager unavailable.",
+            "text": "Salon manager unavailable.",
             "error": "import_failed",
             "salon_id": salon_id,
         }
 
-    try:
-        manager = get_manager()
-        salon_exists = manager.exists(salon_id)
-    except Exception as e:
-        logger.error("Failed to inspect salon %s for compaction: %s", salon_id, e)
+    manager = get_manager()
+    if not manager.exists(salon_id):
         return {
             "ok": False,
-            "text": "salon_load_failed: Failed to inspect salon for compaction.",
-            "error": "salon_load_failed",
-            "salon_id": salon_id,
-        }
-    if not salon_exists:
-        return {
-            "ok": False,
-            "text": f"salon_not_found: Salon {salon_id} not found.",
+            "text": f"Salon {salon_id} not found.",
             "error": "salon_not_found",
-            "salon_id": salon_id,
-        }
-
-    try:
-        load_result = manager.load_for_compaction(salon_id)
-    except Exception as e:
-        logger.error("Failed to load salon %s for compaction: %s", salon_id, e)
-        load_result = {"ok": False, "error": "salon_load_failed", "data": None}
-    if not load_result.get("ok"):
-        error = load_result.get("error") or "salon_load_failed"
-        return {
-            "ok": False,
-            "text": f"{error}: Failed to load salon safely for compaction.",
-            "error": error,
-            "salon_id": salon_id,
-        }
-
-    data = load_result.get("data")
-    if not isinstance(data, dict):
-        return {
-            "ok": False,
-            "text": "salon_corrupt: Salon document is not a JSON object.",
-            "error": "salon_corrupt",
-            "salon_id": salon_id,
-        }
-    participants = data.get("participants")
-    if not isinstance(participants, list) or any(
-        not isinstance(participant, str) for participant in participants
-    ):
-        return {
-            "ok": False,
-            "text": "salon_corrupt: Salon participants must be a list.",
-            "error": "salon_corrupt",
-            "salon_id": salon_id,
-        }
-    if agent_name not in participants:
-        return {
-            "ok": False,
-            "text": (
-                f"invalid_participant: {agent_name} is not a participant in "
-                f"salon {salon_id}; no history was changed."
-            ),
-            "error": "invalid_participant",
             "salon_id": salon_id,
         }
 
@@ -836,23 +769,18 @@ async def run_salon_compaction(
     )
 
     if mode in ("truncate_tools", "strip_tools"):
-        try:
-            result = manager.shrink_own_tool_blocks(
-                salon_id=salon_id,
-                agent_name=agent_name,
-                mode=mode,
-                keep_n=keep_n,
-                truncate_chars=truncate_chars,
-            )
-        except Exception as e:
-            logger.error("Salon caller-owned compaction failed: %s", e, exc_info=True)
-            result = {"ok": False, "error": "persistence_failed"}
+        result = manager.shrink_own_tool_blocks(
+            salon_id=salon_id,
+            agent_name=agent_name,
+            mode=mode,
+            keep_n=keep_n,
+            truncate_chars=truncate_chars,
+        )
         if not result["ok"]:
-            error = result.get("error") or "persistence_failed"
             return {
                 "ok": False,
-                "text": f"{error}: Caller-owned salon compaction failed; no shared prose changed.",
-                "error": error,
+                "text": f"Compaction failed: {result.get('error')}",
+                "error": result.get("error"),
                 "salon_id": salon_id,
             }
 
@@ -884,25 +812,22 @@ async def run_salon_compaction(
         }
 
     # mode == "summarize" — shared, destructive operation.
-    messages = data.get("messages") or []
-    if not isinstance(messages, list) or any(
-        not isinstance(message, dict) for message in messages
-    ):
+    data = manager.load(salon_id)
+    if not data:
         return {
-            "ok": False,
-            "text": "salon_corrupt: Salon messages must be a list.",
-            "error": "salon_corrupt",
-            "salon_id": salon_id,
+            "ok": False, "text": "Failed to load salon for summarize.",
+            "error": "load_failed", "salon_id": salon_id,
         }
 
+    messages = data.get("messages") or []
     split = manager._split_index_for_agent(messages, agent_name, keep_n)
-    older = copy.deepcopy(messages[:split])
+    older = messages[:split]
 
     if not older:
         return {
             "ok": False,
             "text": (
-                f"nothing_to_compact: Older history is empty for keep_n={keep_n} "
+                f"Nothing to compact — older history is empty for keep_n={keep_n} "
                 f"anchored on {agent_name}."
             ),
             "error": "nothing_to_compact",
@@ -913,106 +838,75 @@ async def run_salon_compaction(
     if not rendered_older.strip():
         return {
             "ok": False,
-            "text": (
-                "empty_older: Older messages contain no shared prose after "
-                "rendering; nothing was summarized."
-            ),
+            "text": "Older messages are all empty after rendering — nothing to summarize.",
             "error": "empty_older",
             "salon_id": salon_id,
         }
 
+    # Reuse the 1:1 compaction subagent, with a salon-flavored prompt.
+    from codex_backend import CodexRunOptions, ROOT_DIR, run_codex
+    import system_models
+
+    model_cfg = system_models.get("conversation_compactor")
     salon_intro = (
         f"This is a group-chat (\"salon\") between the user and multiple AI agents. "
-        f"Participants: {', '.join(participants)}.\n\n"
+        f"Participants visible in this excerpt: "
+        f"{', '.join(sorted({m.get('from','?') for m in older}))}.\n\n"
         f"Summarize the conversation history below."
     )
 
     try:
-        from codex_backend import CodexRunOptions, ROOT_DIR, run_codex
-        import system_models
-
-        model_cfg = system_models.get("conversation_compactor")
         result = await run_codex(
             CodexRunOptions(
                 model=model_cfg["model"],
                 effort=model_cfg.get("effort") or None,
                 cwd=str(ROOT_DIR),
-                identity_instructions=SALON_COMPACTION_SYSTEM_PROMPT,
+                identity_instructions=COMPACTION_SYSTEM_PROMPT,
                 prompt=f"{salon_intro}\n\n{rendered_older}",
                 tools=[],
                 timeout_seconds=240,
                 max_turns=1,
-                output_schema=COMPACTION_OUTPUT_SCHEMA,
                 ephemeral=True,
             )
         )
-        structured = getattr(result, "structured_output", None)
-        if not isinstance(structured, dict):
-            raise SummaryValidationError("summarizer returned no structured output")
-        try:
-            structured_summary = structured["summary"]
-        except KeyError as e:
-            raise SummaryValidationError("structured output missing summary") from e
-        summary_text = _validate_summary_text(structured_summary, rendered_older)
-    except SummaryValidationError as e:
-        logger.warning("Salon summarize rejected invalid structured output: %s", e)
-        return {
-            "ok": False,
-            "text": f"summarize_invalid: Salon summary was rejected: {e}",
-            "error": "summarize_invalid",
-            "salon_id": salon_id,
-        }
+        summary_text = result.response
     except Exception as e:
         logger.error(f"Salon summarize failed: {e}", exc_info=True)
         return {
             "ok": False,
-            "text": f"summarize_exception: Salon summarize subagent failed: {e}",
+            "text": f"Salon summarize subagent failed: {e}",
             "error": "summarize_exception",
             "salon_id": salon_id,
         }
 
-    try:
-        write_result = manager.replace_older_with_summary(
-            salon_id=salon_id,
-            target_agent=agent_name,
-            keep_n=keep_n,
-            expected_older=older,
-            summary_text=summary_text,
-            summary_source_text=rendered_older,
-            summary_validator=_validate_summary_text,
-            triggered_by=agent_name,
-        )
-    except Exception as e:
-        logger.error("Salon summary transaction escaped unexpectedly: %s", e, exc_info=True)
-        write_result = {
-            "ok": False,
-            "error": "persistence_failed",
-            "restore_backup_path": None,
-        }
-
-    if not write_result["ok"]:
-        error = write_result.get("error") or "persistence_failed"
-        snapshot_note = (
-            " A complete restore snapshot remains available."
-            if write_result.get("restore_backup_path")
-            else ""
-        )
+    if not summary_text:
         return {
             "ok": False,
-            "text": (
-                f"{error}: Salon shared summary was not persisted; current shared "
-                f"history remains unchanged.{snapshot_note}"
-            ),
-            "error": error,
+            "text": "Salon summarize subagent produced no output.",
+            "error": "summarize_empty",
             "salon_id": salon_id,
-            "restore_backup_path": write_result.get("restore_backup_path"),
+        }
+
+    write_result = manager.replace_older_with_summary(
+        salon_id=salon_id,
+        target_agent=agent_name,
+        keep_n=keep_n,
+        summary_text=summary_text,
+        triggered_by=agent_name,
+    )
+
+    if not write_result["ok"]:
+        return {
+            "ok": False,
+            "text": f"Failed to write summary back to salon: {write_result.get('error')}",
+            "error": write_result.get("error"),
+            "salon_id": salon_id,
         }
 
     text = (
-        f"[salon mode=summarize] A validated shared summary replaced the exact "
-        f"{write_result['older_count']}-message prose prefix the model summarized. "
-        f"Every participant will see the same compacted prose, and a complete "
-        f"restore snapshot exists."
+        f"[salon mode=summarize] Replaced {write_result['older_count']} earlier "
+        f"message(s) with a single shared summary. ALL participants will now see "
+        f"the summary instead of verbatim history when this salon is next rendered."
     )
     return {
         "ok": True,
@@ -1022,8 +916,6 @@ async def run_salon_compaction(
         "agent_name": agent_name,
         "older_count": write_result["older_count"],
         "compacted_msg_id": write_result["compacted_msg_id"],
-        "restore_backup_path": write_result["restore_backup_path"],
-        "total_messages_after": write_result["total_messages_after"],
         "error": None,
     }
 
@@ -1039,7 +931,7 @@ Three modes — pick based on WHY context is bloated:
 
 - **"strip_tools"**: More aggressive — replace tool outputs entirely with "[output stripped]", keeping only tool name + short arg hint. Dialogue still verbatim. Fast, free. Use when truncate isn't enough, or when the tool results are truly unneeded going forward.
 
-- **"summarize"**: Full-strength semantic summary of older messages. Slower (~10-30s). In a 1:1 chat it summarizes older dialogue and tool history. In a salon it summarizes only prose shared with every participant, then replaces the exact validated prefix only after creating a complete restore snapshot. Salon tool/thinking blocks remain private and are never promoted into shared prose.
+- **"summarize"**: Full-strength semantic summary of older messages. Collapses BOTH dialogue and tools into a narrative. Slower (~10-30s). ⚠️ **In a group chat (salon), this summarizes the conversation for EVERYONE — verbatim chat history is permanently lost from every other participant who may still need it.** Think carefully before using summarize in a salon. Generally prefer `truncate_tools` or `strip_tools` to avoid burdening other agents. In a 1:1 chat with the user, summarize is safe.
 
 **`keep_exchanges` semantics:**
 - In a 1:1 chat with the user: counts user→assistant exchanges (default 5).
@@ -1047,7 +939,7 @@ Three modes — pick based on WHY context is bloated:
 
 **Salon scope rules:**
 - `truncate_tools` / `strip_tools` only mutate YOUR OWN tool blocks. Other agents are unaffected — they never saw your tool blocks anyway. Safe to call freely.
-- `summarize` is a SHARED operation: every participant sees the validated compacted prose. It fails without mutation unless you are a participant, the exact summarized prefix is unchanged under lock, and a complete parse-validated restore snapshot exists.
+- `summarize` collapses ALL older messages (yours and everyone else's) into a single shared summary visible to everyone. Use sparingly.
 
 Setting `keep_exchanges=0` compacts EVERYTHING. Modifies the conversation in-place and saves to disk.
 
@@ -1058,7 +950,7 @@ Call proactively when context feels heavy, or when the user asks you to compact/
             "mode": {
                 "type": "string",
                 "enum": ["truncate_tools", "strip_tools", "summarize"],
-                "description": "Compaction strategy. Default 'truncate_tools' is fast and free — preserves all dialogue verbatim, truncates your tool outputs older than keep_exchanges. Use 'strip_tools' for aggressive removal of your old tool outputs. Use 'summarize' when old shared prose needs collapsing; in salons it is shared, restore-snapshotted, and excludes all private tool/thinking blocks.",
+                "description": "Compaction strategy. Default 'truncate_tools' is fast and free — preserves all dialogue verbatim, truncates tool outputs older than keep_exchanges. Use 'strip_tools' for aggressive removal of old tool outputs. Use 'summarize' only when old dialogue (not just tools) needs collapsing.",
                 "default": "truncate_tools",
             },
             "keep_exchanges": {
@@ -1085,8 +977,8 @@ async def compact_conversation(args: Dict[str, Any]) -> Dict[str, Any]:
 
     Routing:
       - If ``_salon_id`` is present (injected when called from a salon
-        dispatch), route to ``run_salon_compaction`` — caller-owned for
-        truncate/strip and shared/restore-safe for summarize. NEVER falls through to the
+        dispatch), route to ``run_salon_compaction`` — per-agent for
+        truncate/strip, shared for summarize. NEVER falls through to the
         1:1 path, which would otherwise risk clobbering an unrelated 1:1
         chat that happens to be processing concurrently.
       - Otherwise (1:1 chat), auto-detect the active session and run

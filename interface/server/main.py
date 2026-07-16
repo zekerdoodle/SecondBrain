@@ -90,6 +90,7 @@ import restart_provenance as restart_provenance
 from block_normalization import canonicalize_blocks
 from process_registry import register_process, deregister_by_pid, clear_registry
 import running_agents
+from agent_invocation_control import get_controller
 import zeke_activity
 from mention_parser import parse_mentions
 from anthropic_cache_proxy import router as anthropic_cache_proxy_router
@@ -3055,6 +3056,12 @@ class InternalAgentInvokeRequest(BaseModel):
     worktree_path: Optional[str] = None
 
 
+class InternalAgentCancelRequest(BaseModel):
+    invocation_id: str
+    reason: str
+    actor: str
+
+
 class InternalMessageReactionRequest(BaseModel):
     chat_id: str
     emoji: str
@@ -3277,6 +3284,48 @@ async def internal_running_agents(request: Request, agent: Optional[str] = None,
     return {"entries": entries, "source": "backend", "backend_pid": os.getpid()}
 
 
+@app.post("/api/internal/agent-invocation/cancel")
+async def internal_cancel_agent_invocation(
+    req: InternalAgentCancelRequest, request: Request
+):
+    """Cancel one exact backend-owned direct invocation as Patch manager."""
+    token = request.headers.get("X-Second-Brain-Internal-Token")
+    if not token or token != INTERNAL_AGENT_INVOKE_TOKEN:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    # The shared local internal token remains a trusted-process boundary; the
+    # actor check prevents the caller-facing tool from widening authority.
+    if req.actor != "patch":
+        raise HTTPException(status_code=404, detail="Not found or not authorized")
+
+    result = await get_controller().cancel(
+        req.invocation_id,
+        actor="patch",
+        reason=req.reason,
+    )
+    if result.get("status") == "not_found_or_not_authorized":
+        row = await running_agents.get_entry(req.invocation_id)
+        owner_kind = None
+        if row and (
+            row.get("scheduled_attempt_id") or row.get("scheduled_task_id")
+        ):
+            owner_kind = "scheduled"
+        elif row and row.get("kind") in {
+            "scheduled",
+            "salon_convener",
+            "salon_agent",
+            "background_processing",
+        }:
+            owner_kind = row.get("kind")
+        if owner_kind:
+            return {
+                "status": "unsupported_owner",
+                "invocation_id": req.invocation_id,
+                "owner_kind": owner_kind,
+            }
+        raise HTTPException(status_code=404, detail="Not found or not authorized")
+    return result
+
+
 @app.post("/api/internal/message-reaction")
 async def internal_message_reaction(req: InternalMessageReactionRequest, request: Request):
     """Apply an agent-originated message reaction in the backend-owned live state."""
@@ -3397,20 +3446,41 @@ async def internal_agent_invoke(req: InternalAgentInvokeRequest, request: Reques
         sys.path.insert(0, str(agents_dir))
     from runner import invoke_agent
 
+    invocation_id = str(uuid.uuid4())
+    controller = get_controller()
     running_entry_id = None
+    background_owns_row = False
+    pending_terminal_state = None
+    request_boundary_cancelled = False
     try:
-        if req.mode == "foreground":
-            running_entry_id = await running_agents.register(
-                agent=req.agent,
-                kind="agent_conversation_join" if req.conversation_id else "invoke_foreground",
-                task_summary=req.prompt,
-                source_chat_id=req.source_chat_id,
-                conversation_id=req.conversation_id,
-                caller_agent=req.caller_agent,
-                worktree_branch=req.worktree_branch,
-                worktree_slug=req.worktree_slug,
-                worktree_path=req.worktree_path,
-            )
+        await controller.create(
+            invocation_id=invocation_id,
+            caller_agent=req.caller_agent,
+            target_agent=req.agent,
+            mode=req.mode,
+            conversation_id=req.conversation_id,
+            live_row_id=invocation_id,
+        )
+        request_task = asyncio.current_task()
+        if request_task is None:
+            raise RuntimeError("internal agent invoke has no request task")
+        await controller.bind_task(invocation_id, request_task)
+        running_entry_id = await running_agents.register(
+            agent=req.agent,
+            kind=(
+                "agent_conversation_join"
+                if req.conversation_id
+                else f"invoke_{req.mode}"
+            ),
+            task_summary=req.prompt,
+            entry_id=invocation_id,
+            source_chat_id=req.source_chat_id,
+            conversation_id=req.conversation_id,
+            caller_agent=req.caller_agent,
+            worktree_branch=req.worktree_branch,
+            worktree_slug=req.worktree_slug,
+            worktree_path=req.worktree_path,
+        )
         result = await invoke_agent(
             name=req.agent,
             prompt=req.prompt,
@@ -3426,16 +3496,79 @@ async def internal_agent_invoke(req: InternalAgentInvokeRequest, request: Reques
             worktree_base_ref=req.worktree_base_ref,
             worktree_path=req.worktree_path,
             running_entry_id=running_entry_id,
+            control_invocation_id=invocation_id,
         )
+        if isinstance(result, dict):
+            background_owns_row = (
+                req.mode in {"ping", "trust"}
+                and result.get("status") == "accepted"
+                and result.get("invocation_id") == invocation_id
+            )
+            if not background_owns_row:
+                pending_terminal_state = "error"
+            result.setdefault("invocation_id", invocation_id)
+        elif getattr(result, "invocation_id", None) is None:
+            result.invocation_id = invocation_id
+        if not isinstance(result, dict) and req.mode == "foreground":
+            pending_terminal_state = {
+                "success": "succeeded",
+                "timeout": "timeout",
+            }.get(getattr(result, "status", None), "error")
         if hasattr(result, "__dict__"):
             return result.__dict__
         return result
+    except asyncio.CancelledError:
+        request_boundary_cancelled = True
+        raise
     except Exception as e:
+        pending_terminal_state = "error"
         logger.error("Internal agent launch failed for agent %s: %s", req.agent, e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        if running_entry_id is not None:
+        if running_entry_id is not None and not background_owns_row:
             await running_agents.unregister(running_entry_id)
+        receipt = await controller.get(invocation_id)
+        if receipt and receipt.get("state") not in {
+            "succeeded",
+            "error",
+            "timeout",
+            "cancelled",
+            "interrupted_uncertain",
+        }:
+            if request_boundary_cancelled:
+                cancellation = await controller.cancellation_details(invocation_id)
+                cleanup_proved = (
+                    receipt.get("conversation_id") is None
+                    and receipt.get("execution_started_at") is None
+                )
+                manager_requested = bool(cancellation.get("requested"))
+                await controller.finalize(
+                    invocation_id,
+                    (
+                        "cancelled"
+                        if manager_requested and cleanup_proved
+                        else "interrupted_uncertain"
+                    ),
+                    cleanup_state=(
+                        "complete"
+                        if manager_requested and cleanup_proved
+                        else "uncertain"
+                    ),
+                )
+            elif pending_terminal_state:
+                pre_thread_terminal = (
+                    receipt.get("conversation_id") is None
+                    and receipt.get("execution_started_at") is None
+                )
+                await controller.finalize(
+                    invocation_id,
+                    (
+                        pending_terminal_state
+                        if pre_thread_terminal
+                        else "interrupted_uncertain"
+                    ),
+                    cleanup_state="complete" if pre_thread_terminal else "uncertain",
+                )
 
 
 class AppBridgeDeleteRequest(BaseModel):
@@ -10481,6 +10614,75 @@ def _resume_mode_for_running_kind(
     return "ping"
 
 
+DIRECT_CONTROL_RESTART_KINDS = frozenset(
+    {
+        "invoke_foreground",
+        "invoke_ping",
+        "invoke_trust",
+        "agent_conversation_join",
+    }
+)
+STRUCTURED_RESTART_OWNER_KINDS = frozenset(
+    {"scheduled", "salon_convener", "salon_agent", "background_processing"}
+)
+
+
+def _is_structured_restart_owner(entry: Dict[str, Any]) -> bool:
+    return bool(
+        entry.get("scheduled_attempt_id")
+        or entry.get("scheduled_task_id")
+        or entry.get("kind") in STRUCTURED_RESTART_OWNER_KINDS
+    )
+
+
+def _is_direct_control_restart_claim(entry: Dict[str, Any]) -> bool:
+    return (
+        not _is_structured_restart_owner(entry)
+        and entry.get("kind") in DIRECT_CONTROL_RESTART_KINDS
+    )
+
+
+async def _reconcile_direct_invocation_claims(
+    continuation_claims: List[Dict[str, Any]],
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """Bind only proved live direct claims and leave other owners untouched."""
+    direct_ids = [
+        entry.get("id")
+        for entry in continuation_claims
+        if isinstance(entry, dict)
+        and _is_direct_control_restart_claim(entry)
+        and entry.get("id")
+    ]
+    reconciliation = await get_controller().reconcile_startup(direct_ids)
+    resumable = set(reconciliation.get("resumable") or [])
+    blocked = list(reconciliation.get("blocked") or [])
+    blocked_set = set(blocked)
+    prepared: List[Dict[str, Any]] = []
+
+    for raw_entry in continuation_claims:
+        entry = dict(raw_entry)
+        if not _is_direct_control_restart_claim(entry):
+            prepared.append(entry)
+            continue
+        invocation_id = entry.get("id")
+        if invocation_id in resumable:
+            entry["_control_invocation_id"] = invocation_id
+            prepared.append(entry)
+            continue
+        if invocation_id and invocation_id not in blocked_set:
+            blocked.append(invocation_id)
+            blocked_set.add(invocation_id)
+        logger.warning(
+            "Invocation control: refusing restart replay for direct claim %s "
+            "kind=%s because no resumable nonterminal receipt was proved",
+            invocation_id or "<missing-id>",
+            entry.get("kind"),
+        )
+
+    reconciliation["blocked"] = blocked
+    return prepared, reconciliation
+
+
 async def _resume_agent_invocation_after_restart(entry: Dict[str, Any], reason: str, source: str) -> bool:
     agent = entry.get("agent")
     kind = entry.get("kind")
@@ -10494,6 +10696,15 @@ async def _resume_agent_invocation_after_restart(entry: Dict[str, Any], reason: 
             "by the generic agent-thread path; salon dispatcher owns that lifecycle"
         )
         return True
+    if _is_direct_control_restart_claim(entry) and not entry.get(
+        "_control_invocation_id"
+    ):
+        logger.error(
+            "Restart continuation: refusing uncontrolled direct claim %s kind=%s",
+            entry.get("id") or "<missing-id>",
+            kind,
+        )
+        return False
     if not conversation_id:
         logger.error(
             f"Restart continuation: cannot resume agent '{agent}' kind={kind}; "
@@ -10501,16 +10712,41 @@ async def _resume_agent_invocation_after_restart(entry: Dict[str, Any], reason: 
         )
         return False
 
+    control_invocation_id = entry.get("_control_invocation_id")
+    direct_running_entry_id = None
+    background_owns_row = False
     try:
         agents_dir = Path(ROOT_DIR) / ".claude" / "agents"
         if str(agents_dir) not in sys.path:
             sys.path.insert(0, str(agents_dir))
         from runner import invoke_agent as _invoke_agent
 
-        mode = _resume_mode_for_running_kind(
-            kind,
-            scheduled_attempt_id=entry.get("scheduled_attempt_id"),
-        )
+        if control_invocation_id:
+            control_receipt = await get_controller().get(control_invocation_id)
+            if control_receipt is None:
+                raise RuntimeError("restart continuation lost its control receipt")
+            mode = "trust" if control_receipt.get("mode") == "trust" else "ping"
+            current_task = asyncio.current_task()
+            if current_task is None:
+                raise RuntimeError("restart continuation has no owning task")
+            await get_controller().bind_task(control_invocation_id, current_task)
+            direct_running_entry_id = await running_agents.register(
+                agent=agent,
+                kind=kind,
+                task_summary="",
+                entry_id=control_invocation_id,
+                source_chat_id=entry.get("source_chat_id"),
+                conversation_id=conversation_id,
+                caller_agent=entry.get("caller_agent"),
+                worktree_branch=entry.get("worktree_branch"),
+                worktree_slug=entry.get("worktree_slug"),
+                worktree_path=entry.get("worktree_path"),
+            )
+        else:
+            mode = _resume_mode_for_running_kind(
+                kind,
+                scheduled_attempt_id=entry.get("scheduled_attempt_id"),
+            )
         prompt = _restart_agent_resume_prompt(
             reason=reason,
             source=source,
@@ -10531,6 +10767,14 @@ async def _resume_agent_invocation_after_restart(entry: Dict[str, Any], reason: 
             scheduled_resume_claim_id=entry.get("_scheduled_resume_claim_id"),
             is_background_processing=(kind == "background_processing"),
             resume_ping_invocation_id=entry.get("_ping_invocation_id"),
+            running_entry_id=direct_running_entry_id,
+            control_invocation_id=control_invocation_id,
+        )
+        background_owns_row = bool(
+            control_invocation_id
+            and isinstance(result, dict)
+            and result.get("status") == "accepted"
+            and result.get("invocation_id") == control_invocation_id
         )
         if isinstance(result, dict) and result.get("error"):
             logger.error(
@@ -10584,6 +10828,20 @@ async def _resume_agent_invocation_after_restart(entry: Dict[str, Any], reason: 
                     entry.get("scheduled_attempt_id"),
                 )
         return False
+    finally:
+        if direct_running_entry_id and not background_owns_row:
+            await running_agents.unregister(direct_running_entry_id)
+            receipt = await get_controller().get(control_invocation_id)
+            if receipt and receipt.get("state") not in {
+                "succeeded",
+                "error",
+                "timeout",
+                "cancelled",
+                "interrupted_uncertain",
+            }:
+                await get_controller().finalize(
+                    control_invocation_id, "error", cleanup_state="complete"
+                )
 
 
 async def restart_continuation_wakeup():
@@ -11782,6 +12040,36 @@ async def startup_event():
         if restart_continuation
         else []
     )
+    control_reconciliation = {
+        "resumable": [],
+        "blocked": [],
+        "terminalized": [],
+        "missing": [],
+    }
+    try:
+        continuation_claims, control_reconciliation = (
+            await _reconcile_direct_invocation_claims(continuation_claims)
+        )
+        if restart_continuation is not None:
+            restart_continuation["agent_invocations"] = continuation_claims
+    except Exception as e:
+        # Control receipt reconciliation is a direct-owner safety gate. Drop
+        # direct rows that cannot be proved safe; scheduler and salon
+        # authorities remain with their existing reconcilers.
+        logger.error(
+            "Invocation control startup reconciliation failed: %s", e, exc_info=True
+        )
+        continuation_claims = [
+            entry
+            for entry in continuation_claims
+            if entry.get("kind")
+            in {"scheduled", "salon_convener", "salon_agent", "background_processing"}
+            or entry.get("scheduled_task_id")
+            or entry.get("scheduled_attempt_id")
+        ]
+        if restart_continuation is not None:
+            restart_continuation["agent_invocations"] = continuation_claims
+
     scheduler_reconciliation_ok = False
     try:
         if not scheduler_tool or not hasattr(scheduler_tool, "reconcile_execution_attempts"):
@@ -11850,15 +12138,24 @@ async def startup_event():
     if scheduler_reconciliation_ok:
         asyncio.create_task(scheduler_loop())
 
-    # Salon (group chat) startup: clear stale locks + wire the dispatcher
-    # into the salon_events bus. Dispatcher uses broadcast_to_all_clients to
-    # push salon updates (new messages, convener decisions, typing, state).
+    # Salon (group chat) startup order is reliability-significant: clear every
+    # old-process invocation lock, initialize the single owned dispatcher, then
+    # reconcile/schedule only explicit pre-decision pending receipts. Legacy
+    # salon files without receipts are not inferred or rewritten here.
     try:
         # max_age_minutes=0 → clear ALL locks (see rationale above).
         cleared = _salon_manager_mod.get_manager().sweep_stale_locks(max_age_minutes=0)
         if cleared:
             logger.info(f"Salons: cleared {cleared} stale lock(s) on startup")
         _salon_dispatcher_mod.init_dispatcher(broadcast_to_all_clients)
+        replay = _salon_dispatcher_mod.replay_pending_convener_deliveries()
+        if replay.get("pending_salon_ids") or replay.get("requeued_claimed"):
+            logger.info(
+                "Salons: startup scheduled %s explicit pending delivery receipt(s) "
+                "(%s recovered pre-decision claim(s))",
+                len(replay.get("pending_salon_ids") or []),
+                replay.get("requeued_claimed") or 0,
+            )
     except Exception as e:
         logger.warning(f"Salons: startup wiring failed: {e}", exc_info=True)
 
@@ -11892,6 +12189,7 @@ async def shutdown_event():
     """Save state on graceful shutdown."""
     logger.info("Server shutting down, saving state...")
     await _stop_backend_health_heartbeat()
+    await _salon_dispatcher_mod.shutdown_dispatcher()
     await _drain_app_server_turn_receipt_writes()
     await _drain_performance_timing_writes()
     save_server_state()

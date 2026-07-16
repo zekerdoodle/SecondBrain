@@ -233,6 +233,31 @@ def serialize_fal_multi_ref_image(args: dict, output: str, is_error: bool) -> di
     }
 
 
+def serialize_atlas_generate_images_parallel(args: dict, output: str, is_error: bool) -> dict:
+    jobs = args.get("jobs")
+    job_count = len(jobs) if isinstance(jobs, list) else 0
+    kept_jobs = []
+    for index, job in enumerate(jobs[:4] if isinstance(jobs, list) else []):
+        if not isinstance(job, dict):
+            kept_jobs.append({"index": index})
+            continue
+        metadata = {
+            "index": index,
+            "prompt": _one_line(job.get("prompt", ""), 240),
+            "model": _one_line(job.get("model", "default"), 160),
+            "reference_count": len(job.get("image_paths", []))
+            if isinstance(job.get("image_paths"), list)
+            else 0,
+        }
+        if isinstance(job.get("id"), str):
+            metadata["id"] = _one_line(job["id"], 64)
+        kept_jobs.append(metadata)
+    return {
+        "args": {"job_count": job_count, "jobs": kept_jobs},
+        "output_summary": output,
+    }
+
+
 # ── Tier 2: Key params + IDs from output ──
 
 def serialize_gmail_send(args: dict, output: str, is_error: bool) -> dict:
@@ -504,6 +529,7 @@ TOOL_SERIALIZERS: Dict[str, Callable[[dict, str, bool], dict]] = {
     "fal_text_to_image": serialize_fal_text_to_image,
     "fal_image_to_image": serialize_fal_image_to_image,
     "fal_multi_ref_image": serialize_fal_multi_ref_image,
+    "atlas_generate_images_parallel": serialize_atlas_generate_images_parallel,
 
     # Tier 2
     "gmail_send": serialize_gmail_send,

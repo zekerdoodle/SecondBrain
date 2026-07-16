@@ -22,7 +22,7 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional, Set, Union
+from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional, Set, Tuple, Union
 
 os.environ.setdefault("CLAUDE_CODE_STREAM_CLOSE_TIMEOUT", "14400000")
 os.environ["ENABLE_TOOL_SEARCH"] = "false"
@@ -39,6 +39,7 @@ if _server_dir not in sys.path:
 
 from process_registry import register_process, deregister_process
 import running_agents
+from agent_invocation_control import get_controller
 
 
 PROJECT_OUTPUT_CONTRACT_AGENT_OUTPUTS = "agent_outputs"
@@ -249,6 +250,148 @@ _CODEX_APP_SERVER_VISIBLE_EVENT_TYPES = {
     "tool_end",
 }
 _CODEX_APP_SERVER_TOOL_EVENT_TYPES = {"tool_output_delta", "tool_start", "tool_use", "tool_end"}
+
+
+def _control_terminal_state(result: AgentResult) -> str:
+    if result.status == "success":
+        return "succeeded"
+    if result.status == "timeout":
+        return "timeout"
+    return "error"
+
+
+async def _interruption_audit_result(
+    control_invocation_id: str,
+    agent_name: str,
+    conversation_id: Optional[str],
+    invoked_at: datetime,
+) -> Tuple[AgentResult, bool]:
+    details = await get_controller().cancellation_details(
+        str(control_invocation_id)
+    )
+    manager_requested = bool(details.get("requested"))
+    if manager_requested:
+        error = (
+            f"Invocation cancelled by {details['actor']}: {details['reason']}. "
+            "Model or tool side effects may already have occurred once execution began."
+        )
+    else:
+        error = (
+            "Invocation interrupted before completion without a durable Patch manager "
+            "cancellation request. Local cleanup or provider stop may be uncertain, "
+            "and model or tool side effects may already have occurred."
+        )
+    result = AgentResult(
+        agent=agent_name,
+        status="error",
+        response="",
+        started_at=invoked_at,
+        completed_at=datetime.utcnow(),
+        error=error,
+        conversation_id=conversation_id,
+        invocation_id=control_invocation_id,
+    )
+    return result, manager_requested
+
+
+def _thread_finalization_proved(
+    finalized: Optional[Dict[str, Any]], *, ping_terminal_state: Optional[str] = None
+) -> bool:
+    if not isinstance(finalized, dict):
+        return False
+    if ping_terminal_state is not None:
+        return finalized.get("lifecycle_state") == ping_terminal_state
+    return (
+        finalized.get("persisted") is True
+        and finalized.get("lock_released") is True
+    )
+
+
+async def _finalize_direct_interruption(
+    *,
+    control_invocation_id: str,
+    agent_name: str,
+    conversation_id: str,
+    lock_id: str,
+    invoked_at: datetime,
+    ping_invocation_id: Optional[str] = None,
+    owned_row_cleanup_proved: bool = True,
+) -> Tuple[str, Optional[Dict[str, Any]]]:
+    """Persist one honest direct interruption audit and terminal control truth."""
+    audit, manager_requested = await _interruption_audit_result(
+        control_invocation_id,
+        agent_name,
+        conversation_id,
+        invoked_at,
+    )
+    ping_terminal_state = None
+    if ping_invocation_id:
+        ping_terminal_state = (
+            "cancelled" if manager_requested else "interrupted_uncertain"
+        )
+    finalized: Optional[Dict[str, Any]] = None
+    try:
+        finalized = await _finalize_thread_turn(
+            conversation_id,
+            lock_id,
+            agent_name,
+            audit,
+            ping_invocation_id=ping_invocation_id,
+            ping_terminal_state=ping_terminal_state,
+        )
+    except Exception as finalize_error:
+        logger.error(
+            "Failed to persist direct interruption for agent '%s' on thread %s: %s",
+            agent_name,
+            conversation_id,
+            finalize_error,
+            exc_info=True,
+        )
+        _release_thread_lock(conversation_id, lock_id)
+
+    finalization_proved = _thread_finalization_proved(
+        finalized,
+        ping_terminal_state=ping_terminal_state,
+    )
+    if ping_invocation_id and not finalization_proved:
+        try:
+            from agent_conversation_manager import get_manager
+
+            finalized = get_manager().interrupt_ping_invocation(
+                conversation_id,
+                ping_invocation_id,
+                lock_id=lock_id,
+            )
+        except Exception as interrupt_error:
+            logger.error(
+                "Ping interruption %s could not persist uncertainty: %s",
+                ping_invocation_id,
+                interrupt_error,
+                exc_info=True,
+            )
+            _release_thread_lock(conversation_id, lock_id)
+
+    if ping_invocation_id:
+        _queue_ping_notification_obligation(
+            conversation_id,
+            ping_invocation_id,
+            (finalized or {}).get("notification"),
+        )
+    finalization_proved = _thread_finalization_proved(
+        finalized,
+        ping_terminal_state=ping_terminal_state,
+    )
+    state = (
+        "cancelled"
+        if manager_requested and finalization_proved and owned_row_cleanup_proved
+        else "interrupted_uncertain"
+    )
+    await get_controller().finalize(
+        control_invocation_id,
+        state,
+        cleanup_state="complete" if state == "cancelled" else "uncertain",
+    )
+    return state, finalized
 
 
 def _is_structured_codex_prompt(prompt: Any) -> bool:
@@ -650,6 +793,7 @@ async def invoke_agent(
     history_messages: Optional[List[Dict[str, Any]]] = None,
     running_entry_id: Optional[str] = None,
     resume_ping_invocation_id: Optional[str] = None,
+    control_invocation_id: Optional[str] = None,
 ) -> Union[AgentResult, Dict[str, str]]:
     """
     Invoke an agent with the specified mode.
@@ -684,6 +828,9 @@ async def invoke_agent(
             owns the lifecycle.
         running_entry_id: Internal handoff for backend-owned foreground relays.
             External callers should leave this unset.
+        control_invocation_id: Immutable backend-owned direct invocation UUID.
+            It must be identical to ``running_entry_id`` and is unsupported for
+            scheduler/salon-owned work.
         resume_ping_invocation_id: Internal managed-restart handoff that binds
             a resumed ping to its original durable lifecycle identity.
         scheduled_attempt_id: Immutable scheduler firing identity. When set,
@@ -710,6 +857,11 @@ async def invoke_agent(
         return {"error": "resume_ping_invocation_id requires ping mode"}
     if scheduled_attempt_id and not scheduled_task_id:
         return {"error": "scheduled_attempt_id requires scheduled_task_id"}
+    if control_invocation_id:
+        if mode == InvocationMode.SCHEDULED or salon_id is not None or scheduled_task_id:
+            return {"error": "direct invocation control does not own scheduled/salon work"}
+        if running_entry_id != control_invocation_id:
+            return {"error": "control_invocation_id must match running_entry_id exactly"}
 
     if project_output_contract not in PROJECT_OUTPUT_CONTRACT_VALUES:
         return _invalid_project_output_contract_result(
@@ -809,6 +961,7 @@ async def invoke_agent(
             scheduled_attempt_id=scheduled_attempt_id,
             scheduled_resume_claim_id=scheduled_resume_claim_id,
             is_background_processing=is_background_processing,
+            control_invocation_id=control_invocation_id,
         )
         logger.info(f"Invoking agent '{name}' for salon {salon_id} (no thread)")
         return await _run_agent(
@@ -842,6 +995,12 @@ async def invoke_agent(
                 error_code="inner_setup_rejected",
                 conversation_id=thread_ctx.get("conversation_id"),
             )
+        if control_invocation_id:
+            await get_controller().finalize(
+                control_invocation_id,
+                "error",
+                cleanup_state="complete",
+            )
         if mode == InvocationMode.FOREGROUND:
             return AgentResult(
                 agent=name,
@@ -862,6 +1021,40 @@ async def invoke_agent(
     prompt_for_agent = thread_ctx["prompt_for_agent"]
     prompt_message_id = thread_ctx.get("prompt_message_id")
 
+    if control_invocation_id:
+        try:
+            await get_controller().update_conversation(control_invocation_id, conv_id)
+            if running_entry_id:
+                await running_agents.update(
+                    running_entry_id, conversation_id=conv_id
+                )
+        except asyncio.CancelledError:
+            owned_row_cleanup_proved = True
+            if running_entry_id:
+                try:
+                    await running_agents.unregister(running_entry_id)
+                except Exception as unregister_error:
+                    owned_row_cleanup_proved = False
+                    logger.error(
+                        "Failed to unregister exact running agent entry %s before "
+                        "pre-execution interruption finalization: %s",
+                        running_entry_id,
+                        unregister_error,
+                        exc_info=True,
+                    )
+            await _finalize_direct_interruption(
+                control_invocation_id=control_invocation_id,
+                agent_name=name,
+                conversation_id=conv_id,
+                lock_id=lock_id,
+                invoked_at=datetime.utcnow(),
+                owned_row_cleanup_proved=owned_row_cleanup_proved,
+            )
+            raise
+        except Exception:
+            _release_thread_lock(conv_id, lock_id)
+            raise
+
     # Create invocation record — the prompt sent to the SDK is the one with
     # history injected (so the agent sees the full thread context).
     invocation = AgentInvocation(
@@ -880,6 +1073,7 @@ async def invoke_agent(
         scheduled_attempt_id=scheduled_attempt_id,
         scheduled_resume_claim_id=scheduled_resume_claim_id,
         is_background_processing=is_background_processing,
+        control_invocation_id=control_invocation_id,
     )
 
     try:
@@ -895,7 +1089,25 @@ async def invoke_agent(
             error=error,
             conversation_id=conv_id,
         )
-        await _finalize_thread_turn(conv_id, lock_id, name, failure)
+        try:
+            finalized = await _finalize_thread_turn(conv_id, lock_id, name, failure)
+        except Exception as finalize_error:
+            logger.error(
+                "Worktree setup failure for agent '%s' could not finalize thread %s: %s",
+                name,
+                conv_id,
+                finalize_error,
+                exc_info=True,
+            )
+            _release_thread_lock(conv_id, lock_id)
+            finalized = None
+        if invocation.control_invocation_id:
+            finalization_proved = _thread_finalization_proved(finalized)
+            await get_controller().finalize(
+                invocation.control_invocation_id,
+                "error" if finalization_proved else "interrupted_uncertain",
+                cleanup_state="complete" if finalization_proved else "uncertain",
+            )
         if scheduled_attempt_id:
             _finalize_scheduler_attempt(
                 scheduled_task_id,
@@ -922,11 +1134,48 @@ async def invoke_agent(
                 invocation,
                 running_entry_id=running_entry_id,
             )
+        except asyncio.CancelledError:
+            if not invocation.control_invocation_id:
+                _release_thread_lock(conv_id, lock_id)
+                raise
+            await _finalize_direct_interruption(
+                control_invocation_id=str(invocation.control_invocation_id),
+                agent_name=name,
+                conversation_id=conv_id,
+                lock_id=lock_id,
+                invoked_at=invocation.invoked_at,
+            )
+            raise
         except Exception:
             _release_thread_lock(conv_id, lock_id)
             raise
-        await _finalize_thread_turn(conv_id, lock_id, name, result)
+        try:
+            finalized = await _finalize_thread_turn(conv_id, lock_id, name, result)
+        except Exception as finalize_error:
+            logger.error(
+                "Foreground invocation for agent '%s' could not finalize thread %s: %s",
+                name,
+                conv_id,
+                finalize_error,
+                exc_info=True,
+            )
+            _release_thread_lock(conv_id, lock_id)
+            finalized = None
         result.conversation_id = conv_id
+        result.invocation_id = invocation.control_invocation_id
+        if invocation.control_invocation_id:
+            finalization_proved = _thread_finalization_proved(finalized)
+            if not finalization_proved:
+                _release_thread_lock(conv_id, lock_id)
+            await get_controller().finalize(
+                invocation.control_invocation_id,
+                (
+                    _control_terminal_state(result)
+                    if finalization_proved
+                    else "interrupted_uncertain"
+                ),
+                cleanup_state="complete" if finalization_proved else "uncertain",
+            )
         return result
 
     elif mode == InvocationMode.PING:
@@ -970,7 +1219,10 @@ async def invoke_agent(
                 target_agent=config.name,
                 notification_source_id=notification_source_id,
                 prompt_message_id=prompt_message_id,
-                invocation_id=resume_ping_invocation_id,
+                invocation_id=(
+                    resume_ping_invocation_id or invocation.control_invocation_id
+                ),
+                resume_existing=bool(resume_ping_invocation_id),
             )
             ping_invocation_id = str(lifecycle["invocation_id"])
         except Exception as e:
@@ -985,10 +1237,10 @@ async def invoke_agent(
                 "conversation_id": conv_id,
             }
 
-        running_entry_id = None
         ping_coro = None
         try:
-            running_entry_id = await _register_running_agent_entry(config, invocation)
+            if running_entry_id is None:
+                running_entry_id = await _register_running_agent_entry(config, invocation)
             if not get_manager().mark_ping_running(
                 conv_id, ping_invocation_id, running_entry_id
             ):
@@ -1012,7 +1264,27 @@ async def invoke_agent(
                 invoked_at=invocation.invoked_at,
                 running_entry_id=running_entry_id,
                 ping_invocation_id=ping_invocation_id,
+                control_invocation_id=invocation.control_invocation_id,
             )
+        except asyncio.CancelledError:
+            if ping_coro is not None:
+                close = getattr(ping_coro, "close", None)
+                if close is not None:
+                    close()
+            if running_entry_id is not None:
+                await running_agents.unregister(running_entry_id)
+            if invocation.control_invocation_id:
+                await _finalize_direct_interruption(
+                    control_invocation_id=str(invocation.control_invocation_id),
+                    agent_name=name,
+                    conversation_id=conv_id,
+                    lock_id=lock_id,
+                    invoked_at=invocation.invoked_at,
+                    ping_invocation_id=ping_invocation_id,
+                )
+            else:
+                _release_thread_lock(conv_id, lock_id)
+            raise
         except Exception as e:
             if ping_coro is not None:
                 close = getattr(ping_coro, "close", None)
@@ -1032,6 +1304,10 @@ async def invoke_agent(
                 completed_at=datetime.utcnow(),
                 error=f"Ping task launch failed before ack: {e}",
                 conversation_id=conv_id,
+            )
+            finalized = None
+            expected_ping_state = (
+                "interrupted_uncertain" if resume_ping_invocation_id else "error"
             )
             try:
                 if resume_ping_invocation_id:
@@ -1061,6 +1337,24 @@ async def invoke_agent(
                     exc_info=True,
                 )
                 _release_thread_lock(conv_id, lock_id)
+            if invocation.control_invocation_id:
+                finalization_proved = _thread_finalization_proved(
+                    finalized,
+                    ping_terminal_state=expected_ping_state,
+                )
+                await get_controller().finalize(
+                    invocation.control_invocation_id,
+                    (
+                        "error"
+                        if finalization_proved and expected_ping_state == "error"
+                        else "interrupted_uncertain"
+                    ),
+                    cleanup_state=(
+                        "complete"
+                        if finalization_proved and expected_ping_state == "error"
+                        else "uncertain"
+                    ),
+                )
             return {
                 "error": f"Ping task launch failed before ack: {e}",
                 "conversation_id": conv_id,
@@ -1080,8 +1374,21 @@ async def invoke_agent(
 
     elif mode in (InvocationMode.TRUST, InvocationMode.SCHEDULED):
         try:
-            running_entry_id = await _register_running_agent_entry(config, invocation)
-        except Exception:
+            if running_entry_id is None:
+                running_entry_id = await _register_running_agent_entry(config, invocation)
+        except asyncio.CancelledError:
+            if invocation.control_invocation_id:
+                await _finalize_direct_interruption(
+                    control_invocation_id=str(invocation.control_invocation_id),
+                    agent_name=name,
+                    conversation_id=conv_id,
+                    lock_id=lock_id,
+                    invoked_at=invocation.invoked_at,
+                )
+            else:
+                _release_thread_lock(conv_id, lock_id)
+            raise
+        except Exception as e:
             if scheduled_attempt_id:
                 _finalize_scheduler_attempt(
                     scheduled_task_id,
@@ -1091,7 +1398,39 @@ async def invoke_agent(
                     error_code="inner_launch_failed",
                     conversation_id=conv_id,
                 )
-            _release_thread_lock(conv_id, lock_id)
+            if invocation.control_invocation_id:
+                failure = AgentResult(
+                    agent=name,
+                    status="error",
+                    response="",
+                    started_at=invocation.invoked_at,
+                    completed_at=datetime.utcnow(),
+                    error=f"{mode.value.title()} task launch failed before ack: {e}",
+                    conversation_id=conv_id,
+                    invocation_id=invocation.control_invocation_id,
+                )
+                try:
+                    finalized = await _finalize_thread_turn(
+                        conv_id, lock_id, name, failure
+                    )
+                except Exception as finalize_error:
+                    logger.error(
+                        "Failed to finalize %s pre-ack launch failure for agent '%s': %s",
+                        mode.value,
+                        name,
+                        finalize_error,
+                        exc_info=True,
+                    )
+                    _release_thread_lock(conv_id, lock_id)
+                    finalized = None
+                finalization_proved = _thread_finalization_proved(finalized)
+                await get_controller().finalize(
+                    invocation.control_invocation_id,
+                    "error" if finalization_proved else "interrupted_uncertain",
+                    cleanup_state="complete" if finalization_proved else "uncertain",
+                )
+            else:
+                _release_thread_lock(conv_id, lock_id)
             return {
                 "error": f"{mode.value.title()} task launch failed before ack",
                 "conversation_id": conv_id,
@@ -1115,7 +1454,24 @@ async def invoke_agent(
                 running_entry_id=running_entry_id,
                 scheduled_task_id=scheduled_task_id,
                 scheduled_attempt_id=scheduled_attempt_id,
+                control_invocation_id=invocation.control_invocation_id,
             )
+        except asyncio.CancelledError:
+            close = getattr(bg_coro, "close", None)
+            if close is not None:
+                close()
+            await running_agents.unregister(running_entry_id)
+            if invocation.control_invocation_id:
+                await _finalize_direct_interruption(
+                    control_invocation_id=str(invocation.control_invocation_id),
+                    agent_name=name,
+                    conversation_id=conv_id,
+                    lock_id=lock_id,
+                    invoked_at=invocation.invoked_at,
+                )
+            else:
+                _release_thread_lock(conv_id, lock_id)
+            raise
         except Exception as e:
             close = getattr(bg_coro, "close", None)
             if close is not None:
@@ -1134,7 +1490,27 @@ async def invoke_agent(
                 error=f"{mode.value.title()} task launch failed before ack: {e}",
                 conversation_id=conv_id,
             )
-            await _finalize_thread_turn(conv_id, lock_id, name, failure)
+            try:
+                finalized = await _finalize_thread_turn(
+                    conv_id, lock_id, name, failure
+                )
+            except Exception as finalize_error:
+                logger.error(
+                    "Failed to finalize %s task creation failure for agent '%s': %s",
+                    mode.value,
+                    name,
+                    finalize_error,
+                    exc_info=True,
+                )
+                _release_thread_lock(conv_id, lock_id)
+                finalized = None
+            if invocation.control_invocation_id:
+                finalization_proved = _thread_finalization_proved(finalized)
+                await get_controller().finalize(
+                    invocation.control_invocation_id,
+                    "error" if finalization_proved else "interrupted_uncertain",
+                    cleanup_state="complete" if finalization_proved else "uncertain",
+                )
             if scheduled_attempt_id:
                 _finalize_scheduler_attempt(
                     scheduled_task_id,
@@ -1153,6 +1529,11 @@ async def invoke_agent(
             "agent": name,
             "mode": mode.value,
             "conversation_id": conv_id,
+            **(
+                {"invocation_id": invocation.control_invocation_id}
+                if invocation.control_invocation_id
+                else {}
+            ),
             "message": f"Agent '{name}' is working on your task.",
         }
 
@@ -1274,16 +1655,17 @@ async def _setup_conversation(
     }
 
 
-def _release_thread_lock(conversation_id: str, lock_id: str) -> None:
-    """Best-effort lock release (never raises)."""
+def _release_thread_lock(conversation_id: str, lock_id: str) -> bool:
+    """Best-effort exact lock release, returning whether cleanup was proved."""
     try:
         from agent_conversation_manager import get_manager
-        get_manager().release_lock(conversation_id, lock_id)
+        return bool(get_manager().release_lock(conversation_id, lock_id))
     except Exception as e:
         logger.warning(
             f"Failed to release lock on {conversation_id} "
             f"(lock_id={lock_id}): {e}"
         )
+        return False
 
 
 def _ping_terminal_state(result: AgentResult) -> str:
@@ -1348,6 +1730,7 @@ def _create_background_invocation_task(
     ping_invocation_id: Optional[str] = None,
     scheduled_task_id: Optional[str] = None,
     scheduled_attempt_id: Optional[str] = None,
+    control_invocation_id: Optional[str] = None,
 ) -> asyncio.Task:
     """Create a detached invocation task with durable cleanup on failure.
 
@@ -1363,6 +1746,8 @@ def _create_background_invocation_task(
         if failure_state["recorded"]:
             return
         failure_state["recorded"] = True
+        cleanup_complete = True
+        manager_cancel_requested = False
 
         if scheduled_task_id and scheduled_attempt_id:
             try:
@@ -1386,50 +1771,110 @@ def _create_background_invocation_task(
             try:
                 await running_agents.unregister(running_entry_id)
             except Exception as unregister_error:
+                cleanup_complete = False
                 logger.error(
                     f"Failed to unregister running agent entry {running_entry_id} "
                     f"after background {mode} failure: {unregister_error}",
                     exc_info=True,
                 )
 
-        if mode == InvocationMode.PING.value and conversation_id and lock_id:
-            failure = AgentResult(
-                agent=agent,
-                status="error",
-                response="",
-                started_at=invoked_at or datetime.utcnow(),
-                completed_at=datetime.utcnow(),
-                error=f"Ping task ended before completion after ack: {reason}",
-                conversation_id=conversation_id,
-            )
+        if conversation_id and lock_id:
+            if control_invocation_id and terminal_state == "cancelled":
+                failure, manager_cancel_requested = await _interruption_audit_result(
+                    control_invocation_id,
+                    agent,
+                    conversation_id,
+                    invoked_at or datetime.utcnow(),
+                )
+            else:
+                failure = AgentResult(
+                    agent=agent,
+                    status="error",
+                    response="",
+                    started_at=invoked_at or datetime.utcnow(),
+                    completed_at=datetime.utcnow(),
+                    error=(
+                        f"{mode.title()} task ended before completion after ack: {reason}"
+                    ),
+                    conversation_id=conversation_id,
+                    invocation_id=control_invocation_id,
+                )
+            expected_ping_state = None
+            if mode == InvocationMode.PING.value and ping_invocation_id:
+                expected_ping_state = terminal_state
+                if control_invocation_id and terminal_state == "cancelled":
+                    expected_ping_state = (
+                        "cancelled"
+                        if manager_cancel_requested
+                        else "interrupted_uncertain"
+                    )
+            finalized = None
             try:
                 finalized = await _finalize_thread_turn(
                     conversation_id,
                     lock_id,
                     agent,
                     failure,
-                    ping_invocation_id=ping_invocation_id,
-                    ping_terminal_state=terminal_state,
+                    ping_invocation_id=(
+                        ping_invocation_id
+                        if mode == InvocationMode.PING.value
+                        else None
+                    ),
+                    ping_terminal_state=(
+                        expected_ping_state
+                        if mode == InvocationMode.PING.value
+                        else None
+                    ),
                 )
-                if ping_invocation_id:
+                if mode == InvocationMode.PING.value and ping_invocation_id:
                     _queue_ping_notification_obligation(
                         conversation_id,
                         ping_invocation_id,
                         (finalized or {}).get("notification"),
                     )
+                if not _thread_finalization_proved(
+                    finalized,
+                    ping_terminal_state=expected_ping_state,
+                ):
+                    cleanup_complete = False
             except Exception as finalize_error:
+                cleanup_complete = False
                 logger.error(
-                    f"Failed to finalize ping failure for agent '{agent}' "
+                    f"Failed to finalize {mode} failure for agent '{agent}' "
                     f"on thread {conversation_id}: {finalize_error}",
                     exc_info=True,
                 )
                 _release_thread_lock(conversation_id, lock_id)
-        elif conversation_id and lock_id:
-            logger.error(
-                f"Background {mode} task for agent '{agent}' ended before normal "
-                f"thread finalization ({reason}); releasing lock on {conversation_id}"
-            )
-            _release_thread_lock(conversation_id, lock_id)
+            if (
+                control_invocation_id
+                and mode == InvocationMode.PING.value
+                and ping_invocation_id
+                and not _thread_finalization_proved(
+                    finalized,
+                    ping_terminal_state=expected_ping_state,
+                )
+            ):
+                try:
+                    from agent_conversation_manager import get_manager
+
+                    finalized = get_manager().interrupt_ping_invocation(
+                        conversation_id,
+                        ping_invocation_id,
+                        lock_id=lock_id,
+                    )
+                    _queue_ping_notification_obligation(
+                        conversation_id,
+                        ping_invocation_id,
+                        (finalized or {}).get("notification"),
+                    )
+                except Exception as interrupt_error:
+                    logger.error(
+                        "Background ping guard %s could not persist uncertainty: %s",
+                        ping_invocation_id,
+                        interrupt_error,
+                        exc_info=True,
+                    )
+                    _release_thread_lock(conversation_id, lock_id)
 
         if (
             mode == InvocationMode.PING.value
@@ -1452,10 +1897,30 @@ def _create_background_invocation_task(
                     completed_at=datetime.utcnow(),
                 )
             except Exception as notify_error:
+                cleanup_complete = False
                 logger.error(
                     f"Failed to queue ping failure notification for agent '{agent}': "
                     f"{notify_error}"
                 )
+
+        if control_invocation_id:
+            if terminal_state == "cancelled":
+                control_state = (
+                    "cancelled"
+                    if manager_cancel_requested and cleanup_complete
+                    else "interrupted_uncertain"
+                )
+            else:
+                control_state = terminal_state
+            cleanup_state = "complete" if cleanup_complete else "uncertain"
+            if not cleanup_complete or control_state == "interrupted_uncertain":
+                control_state = "interrupted_uncertain"
+                cleanup_state = "uncertain"
+            await get_controller().finalize(
+                control_invocation_id,
+                control_state,
+                cleanup_state=cleanup_state,
+            )
 
     async def guarded() -> None:
         try:
@@ -1467,7 +1932,21 @@ def _create_background_invocation_task(
             await record_failure("uncaught exception", terminal_state="error")
             raise
 
+    owner_task = asyncio.current_task()
     task = asyncio.create_task(guarded())
+    if control_invocation_id:
+        if owner_task is None:
+            task.cancel()
+            raise RuntimeError("direct background invocation has no owning request task")
+        try:
+            get_controller().transfer_task_now(
+                control_invocation_id,
+                from_task=owner_task,
+                to_task=task,
+            )
+        except Exception:
+            task.cancel()
+            raise
     _BACKGROUND_INVOCATION_TASKS.add(task)
 
     def on_done(done_task: asyncio.Task) -> None:
@@ -1567,6 +2046,7 @@ async def _finalize_thread_turn(
         return finalized
 
     persisted = False
+    lock_released = False
     try:
         manager.append_message(
             conversation_id,
@@ -1582,12 +2062,15 @@ async def _finalize_thread_turn(
         if require_persistence:
             raise
     finally:
-        _release_thread_lock(conversation_id, lock_id)
+        lock_released = _release_thread_lock(conversation_id, lock_id)
 
     # Titler runs asynchronously — never block the caller on it.
     if persisted:
         asyncio.create_task(_maybe_retitle_thread(conversation_id))
-    return {"persisted": persisted}
+    return {
+        "persisted": persisted,
+        "lock_released": lock_released,
+    }
 
 
 async def _maybe_retitle_thread(conversation_id: str) -> None:
@@ -1681,6 +2164,7 @@ async def _register_running_agent_entry(config: AgentConfig, invocation: AgentIn
         agent=config.name,
         kind=_infer_kind(invocation),
         task_summary="" if invocation.scheduled_attempt_id else (invocation.prompt or ""),
+        entry_id=invocation.control_invocation_id,
         source_chat_id=invocation.source_chat_id,
         conversation_id=invocation.conversation_id,
         salon_id=invocation.salon_id,
@@ -1762,6 +2246,10 @@ async def _run_agent(
     """
     started_at = datetime.utcnow()
     async with _running_agent_scope(config, invocation, running_entry_id) as active_running_entry_id:
+        if invocation.control_invocation_id:
+            await get_controller().mark_execution_started(
+                invocation.control_invocation_id
+            )
         try:
             if config.type == AgentType.SDK:
                 response, transcript, blocks = await _run_anthropic_sdk_agent(
@@ -1784,6 +2272,7 @@ async def _run_agent(
                 completed_at=datetime.utcnow(),
                 transcript=transcript,
                 blocks=blocks,
+                invocation_id=invocation.control_invocation_id,
             )
 
         except asyncio.TimeoutError:
@@ -1793,7 +2282,8 @@ async def _run_agent(
                 response="",
                 started_at=started_at,
                 completed_at=datetime.utcnow(),
-                error=f"Agent timed out after {config.timeout_seconds} seconds"
+                error=f"Agent timed out after {config.timeout_seconds} seconds",
+                invocation_id=invocation.control_invocation_id,
             )
 
         except Exception as e:
@@ -1804,7 +2294,8 @@ async def _run_agent(
                 response="",
                 started_at=started_at,
                 completed_at=datetime.utcnow(),
-                error=str(e)
+                error=str(e),
+                invocation_id=invocation.control_invocation_id,
             )
 
 
@@ -1848,13 +2339,51 @@ async def _run_ping_agent(
     finalized: Optional[Dict[str, Any]] = None
     if conversation_id and lock_id:
         result.conversation_id = conversation_id
-        finalized = await _finalize_thread_turn(
-            conversation_id,
-            lock_id,
-            config.name,
-            result,
-            ping_invocation_id=ping_invocation_id,
-        )
+        try:
+            finalized = await _finalize_thread_turn(
+                conversation_id,
+                lock_id,
+                config.name,
+                result,
+                ping_invocation_id=ping_invocation_id,
+            )
+        except Exception as finalize_error:
+            logger.error(
+                "Ping invocation for agent '%s' could not finalize thread %s: %s",
+                config.name,
+                conversation_id,
+                finalize_error,
+                exc_info=True,
+            )
+            _release_thread_lock(conversation_id, lock_id)
+
+    ping_terminal_state = _ping_terminal_state(result)
+    finalization_proved = _thread_finalization_proved(
+        finalized,
+        ping_terminal_state=ping_terminal_state,
+    )
+    if (
+        invocation.control_invocation_id
+        and conversation_id
+        and ping_invocation_id
+        and not finalization_proved
+    ):
+        try:
+            from agent_conversation_manager import get_manager
+
+            finalized = get_manager().interrupt_ping_invocation(
+                conversation_id,
+                ping_invocation_id,
+                lock_id=lock_id,
+            )
+        except Exception as interrupt_error:
+            logger.error(
+                "Ping invocation %s could not persist interrupted uncertainty: %s",
+                ping_invocation_id,
+                interrupt_error,
+                exc_info=True,
+            )
+            _release_thread_lock(conversation_id, lock_id)
 
     if conversation_id and ping_invocation_id:
         _queue_ping_notification_obligation(
@@ -1886,6 +2415,18 @@ async def _run_ping_agent(
             )
 
     _log_execution(invocation, result)
+    if invocation.control_invocation_id:
+        if not finalization_proved and conversation_id and lock_id:
+            _release_thread_lock(conversation_id, lock_id)
+        await get_controller().finalize(
+            invocation.control_invocation_id,
+            (
+                _control_terminal_state(result)
+                if finalization_proved
+                else "interrupted_uncertain"
+            ),
+            cleanup_state="complete" if finalization_proved else "uncertain",
+        )
 
 
 
@@ -2394,10 +2935,10 @@ async def _run_background_agent(
                     f"attempt={invocation.scheduled_attempt_id}",
                     exc_info=True,
                 )
-        if conversation_id and lock_id:
+        if conversation_id and lock_id and not invocation.control_invocation_id:
             _release_thread_lock(conversation_id, lock_id)
         raise
-    except Exception:
+    except Exception as exc:
         logger.error(
             f"Background task for agent '{config.name}' failed before result",
             exc_info=True,
@@ -2416,14 +2957,26 @@ async def _run_background_agent(
                     f"be persisted task={invocation.scheduled_task_id} "
                     f"attempt={invocation.scheduled_attempt_id}"
                 )
-        if conversation_id and lock_id:
-            _release_thread_lock(conversation_id, lock_id)
-        return
+        if not invocation.control_invocation_id:
+            if conversation_id and lock_id:
+                _release_thread_lock(conversation_id, lock_id)
+            return
+        result = AgentResult(
+            agent=config.name,
+            status="error",
+            response="",
+            started_at=invocation.invoked_at,
+            completed_at=datetime.utcnow(),
+            error=f"Background task failed before completion: {exc}",
+            conversation_id=conversation_id,
+            invocation_id=invocation.control_invocation_id,
+        )
 
+    finalized: Optional[Dict[str, Any]] = None
     if conversation_id and lock_id:
         result.conversation_id = conversation_id
         try:
-            await _finalize_thread_turn(
+            finalized = await _finalize_thread_turn(
                 conversation_id,
                 lock_id,
                 config.name,
@@ -2442,6 +2995,13 @@ async def _run_background_agent(
                     error_class="delivery",
                     error_code="thread_finalization_failed",
                 )
+            if invocation.control_invocation_id:
+                _release_thread_lock(conversation_id, lock_id)
+                await get_controller().finalize(
+                    invocation.control_invocation_id,
+                    "interrupted_uncertain",
+                    cleanup_state="uncertain",
+                )
             return
     elif invocation.scheduled_attempt_id:
         _finalize_invocation_attempt(
@@ -2449,6 +3009,16 @@ async def _run_background_agent(
             "failed",
             error_class="delivery",
             error_code="thread_finalization_failed",
+        )
+        return
+
+    if invocation.control_invocation_id and not _thread_finalization_proved(finalized):
+        if conversation_id and lock_id:
+            _release_thread_lock(conversation_id, lock_id)
+        await get_controller().finalize(
+            invocation.control_invocation_id,
+            "interrupted_uncertain",
+            cleanup_state="uncertain",
         )
         return
 
@@ -2470,6 +3040,12 @@ async def _run_background_agent(
                 error_code="runner_error",
             )
     _log_execution(invocation, result)
+    if invocation.control_invocation_id:
+        await get_controller().finalize(
+            invocation.control_invocation_id,
+            _control_terminal_state(result),
+            cleanup_state="complete",
+        )
 
 
 async def _run_codex_agent(
@@ -2757,11 +3333,19 @@ async def _run_codex_agent(
                     if stream_callback is not None:
                         await stream_callback(snapshot)
 
-                result = await run_codex_app_server(
-                    options,
-                    stream_callback=_app_stream_callback,
-                    event_callback=_app_event,
-                )
+                try:
+                    result = await run_codex_app_server(
+                        options,
+                        stream_callback=_app_stream_callback,
+                        event_callback=_app_event,
+                    )
+                except asyncio.CancelledError:
+                    # The current App Server adapter closes its owned runtime
+                    # after requesting an exact interrupt, but does not
+                    # propagate whether the protocol accepted that request.
+                    # Keep provider-stop certainty at its honest default
+                    # ("unknown") until that protected contract proves ack.
+                    raise
                 result_has_visible_work = bool(result.blocks) or bool((result.response or "").strip())
                 should_fallback = (
                     result.returncode != 0

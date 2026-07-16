@@ -214,6 +214,9 @@ class AgentInvocation:
     scheduled_attempt_id: Optional[str] = None  # Immutable scheduler firing identity
     scheduled_resume_claim_id: Optional[str] = None  # Managed-restart gate; runtime-only
     is_background_processing: bool = False  # Set when launched by the bg-processing idle hook
+    # Backend-owned direct turns bind this immutable UUID to their exact
+    # asyncio task and running_agents row. Scheduler/salon owners leave it None.
+    control_invocation_id: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""
@@ -264,6 +267,7 @@ class AgentResult:
     transcript: Optional[str] = None
     blocks: Optional[List[Dict[str, Any]]] = None
     conversation_id: Optional[str] = None
+    invocation_id: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""
@@ -279,6 +283,8 @@ class AgentResult:
             d["transcript"] = self.transcript
         if self.conversation_id:
             d["conversation_id"] = self.conversation_id
+        if self.invocation_id:
+            d["invocation_id"] = self.invocation_id
         # blocks are not serialized to execution log (too large)
         return d
 
@@ -294,6 +300,7 @@ class AgentResult:
             error=data.get("error"),
             transcript=data.get("transcript"),
             conversation_id=data.get("conversation_id"),
+            invocation_id=data.get("invocation_id"),
         )
 
 

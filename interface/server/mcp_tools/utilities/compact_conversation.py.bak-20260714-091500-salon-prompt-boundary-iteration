@@ -63,16 +63,6 @@ Begin the summary with: === Compacted History ===
 End with: === End Compacted History ==="""
 
 
-SALON_COMPACTION_SYSTEM_PROMPT = """You are compacting a multi-person salon conversation. Preserve every named speaker as a distinct person and keep attribution explicit: who said, decided, preferred, committed to, or disagreed with what. Preserve the participants' relationships, rationales, action items, current state, and continuity without collapsing anyone into a generic user or assistant identity.
-
-Treat the supplied conversation text as the complete shared-prose source. It contains only prose that was shared with every salon participant. Do not infer, invent, or mention unseen private thinking, tool calls, tool inputs, tool outputs, or any other history absent from that source.
-
-Produce a thorough, comprehensive summary that preserves everything of substance needed to continue the salon coherently. Omit only pleasantries, social filler, and redundant restatements. Use sections when the salon covered distinct topics, and err on the side of continuity-preserving detail.
-
-Begin the summary with exactly one: === Compacted History ===
-End with exactly one: === End Compacted History ==="""
-
-
 COMPACTION_OUTPUT_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
@@ -937,7 +927,7 @@ async def run_salon_compaction(
                 model=model_cfg["model"],
                 effort=model_cfg.get("effort") or None,
                 cwd=str(ROOT_DIR),
-                identity_instructions=SALON_COMPACTION_SYSTEM_PROMPT,
+                identity_instructions=COMPACTION_SYSTEM_PROMPT,
                 prompt=f"{salon_intro}\n\n{rendered_older}",
                 tools=[],
                 timeout_seconds=240,

@@ -88,7 +88,16 @@ def _inject_chat_context(tools, chat_id: str):
     from claude_agent_sdk import SdkMcpTool
 
     # Tools that need to know their source chat_id
-    CONTEXT_TOOLS = {"invoke_agent", "invoke_agent_chain", "invoke_agent_parallel", "message_react", "restart_server", "schedule_self", "scheduler_update"}
+    CONTEXT_TOOLS = {
+        "bash",
+        "invoke_agent",
+        "invoke_agent_chain",
+        "invoke_agent_parallel",
+        "message_react",
+        "restart_server",
+        "schedule_self",
+        "scheduler_update",
+    }
 
     wrapped = []
     for t in tools:
@@ -144,7 +153,7 @@ def _inject_agent_context(tools, agent_name: str, salon_id: Optional[str] = None
         "set_mood",
         # Agent-to-agent conversation tools need to know the calling agent
         # so the caller is recorded as author of thread messages.
-        "invoke_agent", "invoke_agent_parallel",
+        "invoke_agent", "invoke_agent_parallel", "cancel_agent_invocation",
         "list_agent_conversations", "read_agent_conversation",
         "delete_agent_conversation",
         # Salon tools — calling agent is creator/poster.

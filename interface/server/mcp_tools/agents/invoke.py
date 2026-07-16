@@ -212,17 +212,24 @@ def _validate_worktree_request_for_mcp(
         base_ref=request.get("worktree_base_ref") or "main",
     )
 
-def _append_conversation_footer(text: str, conversation_id: Optional[str]) -> str:
-    """Append the machine-readable conversation footer so callers can resume.
+def _append_invocation_footer(
+    text: str,
+    conversation_id: Optional[str],
+    invocation_id: Optional[str] = None,
+) -> str:
+    """Append stable machine-readable control/thread identities.
 
-    Footer format: ``---\\n[conversation_id: <uuid>]`` — appears at the very
-    end of the agent's text response. MCP tool responses are text-only, so a
-    parseable sentinel beats trying to smuggle structured fields.
+    ``conversation_id`` remains the final line for thread-continuity clients.
+    Direct backend responses put the exact invocation id immediately before it.
     """
-    if not conversation_id:
+    if not conversation_id and not invocation_id:
         return text
-    text = (text or "").rstrip()
-    return f"{text}\n\n---\n[conversation_id: {conversation_id}]"
+    lines = [(text or "").rstrip(), "", "---"]
+    if invocation_id:
+        lines.append(f"[invocation_id: {invocation_id}]")
+    if conversation_id:
+        lines.append(f"[conversation_id: {conversation_id}]")
+    return "\n".join(lines)
 
 
 def _running_under_codex_stdio_bridge() -> bool:
@@ -250,8 +257,8 @@ def _running_in_backend_process() -> bool:
 
 
 def _should_relay_agent_invoke_to_backend(mode: str) -> bool:
-    """Caller-owned MCP processes must not create invisible live invocations."""
-    return mode in BACKEND_RELAY_MODES and _should_relay_ping_to_backend()
+    """All direct modes enter through the one backend control authority."""
+    return mode in BACKEND_RELAY_MODES
 
 
 def _should_relay_ping_to_backend() -> bool:
@@ -319,6 +326,93 @@ async def _relay_agent_invoke_to_backend(payload: Dict[str, Any]) -> Dict[str, A
 
 async def _relay_ping_to_backend(payload: Dict[str, Any]) -> Dict[str, Any]:
     return await _relay_agent_invoke_to_backend(payload)
+
+
+def _post_internal_agent_cancel(payload: Dict[str, Any]) -> Dict[str, Any]:
+    token = _get_internal_agent_invoke_token()
+    if not token:
+        return {"error": "internal agent cancellation relay token unavailable"}
+    base_url = os.environ.get("SECOND_BRAIN_INTERNAL_BASE_URL", "http://127.0.0.1:8000")
+    url = base_url.rstrip("/") + "/api/internal/agent-invocation/cancel"
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "X-Second-Brain-Internal-Token": token,
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(
+            request, timeout=DETACHED_RELAY_TIMEOUT_SECONDS
+        ) as response:
+            raw = response.read().decode("utf-8")
+            return json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as exc:
+        if exc.code in {403, 404}:
+            return {"error": "not found or not authorized"}
+        return {"error": f"internal agent cancellation relay failed ({exc.code})"}
+    except Exception as exc:
+        return {"error": f"internal agent cancellation relay failed: {exc}"}
+
+
+@register_tool("agents")
+@tool(
+    name="cancel_agent_invocation",
+    description=(
+        "Patch-only: cooperatively cancel one exact backend-owned direct agent "
+        "invocation by its immutable invocation_id. Scheduled and salon work "
+        "are unsupported. The receipt remains honest about cleanup, provider "
+        "acknowledgement, and possible prior side effects."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "invocation_id": {
+                "type": "string",
+                "description": "Exact immutable UUID shown by invoke_agent/running_agents.",
+            },
+            "reason": {
+                "type": "string",
+                "description": "Brief auditable reason for the manager cancellation.",
+            },
+        },
+        "required": ["invocation_id", "reason"],
+        "additionalProperties": False,
+    },
+)
+async def cancel_agent_invocation(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Relay one Patch-authorized exact-id cancellation to the backend owner."""
+    caller_agent = args.pop("_agent_name", None)
+    args.pop("_source_chat_id", None)
+    if caller_agent != "patch":
+        return {
+            "content": [{"type": "text", "text": "Error: not found or not authorized"}],
+            "is_error": True,
+        }
+    invocation_id = str(args.get("invocation_id") or "")
+    reason = str(args.get("reason") or "").strip()
+    if not invocation_id or not reason:
+        return {
+            "content": [{"type": "text", "text": "Error: invocation_id and reason are required"}],
+            "is_error": True,
+        }
+    result = await asyncio.to_thread(
+        _post_internal_agent_cancel,
+        {"invocation_id": invocation_id, "reason": reason, "actor": "patch"},
+    )
+    if result.get("error"):
+        return {
+            "content": [{"type": "text", "text": f"Error: {result['error']}"}],
+            "is_error": True,
+        }
+    return {
+        "content": [{
+            "type": "text",
+            "text": json.dumps(result, sort_keys=True, separators=(",", ":")),
+        }]
+    }
 
 
 @register_tool("agents")
@@ -417,23 +511,25 @@ async def invoke_agent(args: Dict[str, Any]) -> Dict[str, Any]:
             # AgentResult object
             if hasattr(result, "status"):
                 conv_id = getattr(result, "conversation_id", None)
+                invocation_id = getattr(result, "invocation_id", None)
                 if result.status == "success":
                     body = result.transcript or result.response
-                    return {"content": [{"type": "text", "text": _append_conversation_footer(body, conv_id)}]}
+                    return {"content": [{"type": "text", "text": _append_invocation_footer(body, conv_id, invocation_id)}]}
                 else:
                     error_msg = f"Agent {agent_name} failed: {result.error or result.status}"
                     return {
-                        "content": [{"type": "text", "text": _append_conversation_footer(error_msg, conv_id)}],
+                        "content": [{"type": "text", "text": _append_invocation_footer(error_msg, conv_id, invocation_id)}],
                         "is_error": True,
                     }
             elif isinstance(result, dict) and "status" in result:
                 conv_id = result.get("conversation_id")
+                invocation_id = result.get("invocation_id")
                 if result.get("status") == "success":
                     body = result.get("transcript") or result.get("response") or ""
-                    return {"content": [{"type": "text", "text": _append_conversation_footer(body, conv_id)}]}
+                    return {"content": [{"type": "text", "text": _append_invocation_footer(body, conv_id, invocation_id)}]}
                 error_msg = f"Agent {agent_name} failed: {result.get('error') or result.get('status')}"
                 return {
-                    "content": [{"type": "text", "text": _append_conversation_footer(error_msg, conv_id)}],
+                    "content": [{"type": "text", "text": _append_invocation_footer(error_msg, conv_id, invocation_id)}],
                     "is_error": True,
                 }
             else:
@@ -441,7 +537,7 @@ async def invoke_agent(args: Dict[str, Any]) -> Dict[str, Any]:
                 if "error" in result:
                     conv_id = result.get("conversation_id")
                     return {
-                        "content": [{"type": "text", "text": _append_conversation_footer(result["error"], conv_id)}],
+                        "content": [{"type": "text", "text": _append_invocation_footer(result["error"], conv_id, result.get("invocation_id"))}],
                         "is_error": True,
                     }
                 return {"content": [{"type": "text", "text": str(result)}]}
@@ -450,12 +546,12 @@ async def invoke_agent(args: Dict[str, Any]) -> Dict[str, Any]:
             if "error" in result:
                 conv_id = result.get("conversation_id")
                 return {
-                    "content": [{"type": "text", "text": _append_conversation_footer(result["error"], conv_id)}],
+                    "content": [{"type": "text", "text": _append_invocation_footer(result["error"], conv_id, result.get("invocation_id"))}],
                     "is_error": True,
                 }
             message = result.get("message", f"Agent {agent_name} is working on your task.")
             conv_id = result.get("conversation_id")
-            return {"content": [{"type": "text", "text": _append_conversation_footer(message, conv_id)}]}
+            return {"content": [{"type": "text", "text": _append_invocation_footer(message, conv_id, result.get("invocation_id"))}]}
 
     except Exception as e:
         import traceback
@@ -803,36 +899,43 @@ async def invoke_agent_parallel(args: Dict[str, Any]) -> Dict[str, Any]:
                     # Extract response + conversation_id from AgentResult or dict
                     if hasattr(result, "status"):
                         conv_id = getattr(result, "conversation_id", None)
+                        invocation_id = getattr(result, "invocation_id", None)
                         if result.status == "success":
                             return {
                                 "idx": idx, "status": "success",
                                 "response": result.transcript or result.response,
                                 "duration": duration, "conversation_id": conv_id,
+                                "invocation_id": invocation_id,
                             }
                         else:
                             error_msg = result.error or result.status
                             return {
                                 "idx": idx, "status": "error", "error": error_msg,
                                 "duration": duration, "conversation_id": conv_id,
+                                "invocation_id": invocation_id,
                             }
                     elif isinstance(result, dict) and "status" in result:
                         conv_id = result.get("conversation_id")
+                        invocation_id = result.get("invocation_id")
                         if result.get("status") == "success":
                             return {
                                 "idx": idx, "status": "success",
                                 "response": result.get("transcript") or result.get("response") or "",
                                 "duration": duration, "conversation_id": conv_id,
+                                "invocation_id": invocation_id,
                             }
                         return {
                             "idx": idx, "status": "error",
                             "error": result.get("error") or result.get("status"),
                             "duration": duration, "conversation_id": conv_id,
+                            "invocation_id": invocation_id,
                         }
                     elif isinstance(result, dict) and result.get("error"):
                         return {
                             "idx": idx, "status": "error", "error": result["error"],
                             "duration": duration,
                             "conversation_id": result.get("conversation_id"),
+                            "invocation_id": result.get("invocation_id"),
                         }
                     else:
                         return {"idx": idx, "status": "success", "response": str(result), "duration": duration}
@@ -910,6 +1013,9 @@ def _format_parallel_results(
         conv_id = r.get("conversation_id")
         if conv_id:
             parts.append(f"> **conversation_id**: `{conv_id}`")
+        invocation_id = r.get("invocation_id")
+        if invocation_id:
+            parts.append(f"> **invocation_id**: `{invocation_id}`")
         parts.append("")
 
         if r["status"] == "success":

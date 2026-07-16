@@ -24,6 +24,10 @@ for _path in (SERVER_DIR, AGENTS_DIR):
 
 logger = logging.getLogger("mcp_tools.stdio_server")
 
+LEGACY_FALLBACK_TEXT_LIMIT_BYTES = 32 * 1024
+LEGACY_FALLBACK_ITEM_LIMIT_BYTES = 4 * 1024
+LEGACY_FALLBACK_TRUNCATION_MARKER = "\n[unsupported tool content truncated]"
+
 
 def _load_env_files() -> None:
     """Load local secret env files for MCP subprocesses without exposing them in CLI args."""
@@ -79,6 +83,118 @@ def _as_text_content(result: Any) -> str:
     return str(result)
 
 
+def _utf8_bounded(text: str, limit: int) -> str:
+    if limit <= 0:
+        return ""
+    encoded = text.encode("utf-8")
+    if len(encoded) <= limit:
+        return text
+    marker = LEGACY_FALLBACK_TRUNCATION_MARKER
+    marker_bytes = marker.encode("utf-8")
+    if len(marker_bytes) >= limit:
+        return marker_bytes[:limit].decode("utf-8", errors="ignore")
+    prefix_limit = max(0, limit - len(marker_bytes))
+    prefix = encoded[:prefix_limit].decode("utf-8", errors="ignore")
+    return prefix + marker
+
+
+def _is_text_item(item: Any) -> bool:
+    return (
+        isinstance(item, dict)
+        and item.get("type") == "text"
+        and item.get("text") is not None
+    )
+
+
+def _is_image_item(item: Any) -> bool:
+    return (
+        isinstance(item, dict)
+        and item.get("type") == "image"
+        and isinstance(item.get("data"), str)
+        and bool(item.get("data"))
+        and isinstance(item.get("mimeType"), str)
+        and bool(item.get("mimeType"))
+    )
+
+
+def _fallback_item_text(item: Any) -> str:
+    """Represent legacy/unknown content without dumping binary-like fields."""
+    if isinstance(item, dict):
+        if item.get("text") is not None:
+            return _utf8_bounded(
+                str(item.get("text")),
+                LEGACY_FALLBACK_ITEM_LIMIT_BYTES,
+            )
+        item_type = str(item.get("type") or "unknown")
+        keys = ",".join(sorted(str(key) for key in item.keys())[:32])
+        return f"Unsupported tool content item (type={item_type}; keys={keys})"
+    if isinstance(item, (bytes, bytearray, memoryview)):
+        return f"Unsupported binary tool content ({len(item)} bytes omitted)"
+    text = str(item)
+    if text.lstrip().startswith("data:"):
+        return "Unsupported data URL tool content omitted"
+    return _utf8_bounded(text, LEGACY_FALLBACK_ITEM_LIMIT_BYTES)
+
+
+def _as_mcp_content(result: Any) -> List[Any]:
+    """Preserve typed MCP images while retaining all-text compatibility."""
+    from mcp.types import ImageContent, TextContent
+
+    content = result.get("content") if isinstance(result, dict) else None
+    if not isinstance(content, list):
+        return [
+            TextContent(
+                type="text",
+                text=_utf8_bounded(
+                    _fallback_item_text(content if content is not None else result),
+                    LEGACY_FALLBACK_TEXT_LIMIT_BYTES,
+                ),
+            )
+        ]
+
+    if all(_is_text_item(item) for item in content):
+        return [TextContent(type="text", text=_as_text_content(result))]
+
+    has_typed_image = any(_is_image_item(item) for item in content)
+    if not has_typed_image:
+        fallback = "\n".join(
+            str(item.get("text")) if _is_text_item(item) else _fallback_item_text(item)
+            for item in content
+        )
+        return [
+            TextContent(
+                type="text",
+                text=_utf8_bounded(fallback, LEGACY_FALLBACK_TEXT_LIMIT_BYTES),
+            )
+        ]
+
+    converted: List[Any] = []
+    fallback_bytes = 0
+    for item in content:
+        if _is_text_item(item):
+            converted.append(TextContent(type="text", text=str(item.get("text"))))
+            continue
+        if _is_image_item(item):
+            converted.append(
+                ImageContent(
+                    type="image",
+                    data=str(item.get("data")),
+                    mimeType=str(item.get("mimeType")),
+                )
+            )
+            continue
+        remaining = LEGACY_FALLBACK_TEXT_LIMIT_BYTES - fallback_bytes
+        if remaining <= 0:
+            continue
+        fallback_text = _utf8_bounded(
+            _fallback_item_text(item),
+            min(LEGACY_FALLBACK_ITEM_LIMIT_BYTES, remaining),
+        )
+        fallback_bytes += len(fallback_text.encode("utf-8"))
+        converted.append(TextContent(type="text", text=fallback_text))
+    return converted
+
+
 async def main() -> None:
     _load_env_files()
 
@@ -94,7 +210,7 @@ async def main() -> None:
     try:
         from mcp.server import Server
         from mcp.server.stdio import stdio_server
-        from mcp.types import TextContent, Tool
+        from mcp.types import Tool
     except Exception as exc:
         raise RuntimeError(
             "The Python 'mcp' package is required for Codex stdio MCP bridging. "
@@ -143,7 +259,7 @@ async def main() -> None:
             call_args["_restart_consumer"] = args.restart_consumer or "none"
         with contextlib.redirect_stdout(sys.stderr):
             result = await by_name[name].handler(call_args)
-        return [TextContent(type="text", text=_as_text_content(result))]
+        return _as_mcp_content(result)
 
     async with stdio_server() as (read_stream, write_stream):
         await server.run(read_stream, write_stream, server.create_initialization_options())

@@ -9,6 +9,200 @@ const SESSION_KEY = 'second_brain_session_id';
 const PENDING_MSG_KEY = 'second_brain_pending_message';
 const LAST_SYNC_KEY = 'second_brain_last_sync';
 
+export const FOREGROUND_STATE_RESPONSE_TIMEOUT_MS = 2000;
+
+type RecoveryTimeout = ReturnType<typeof setTimeout>;
+
+export interface ForegroundRecoveryScheduler {
+  setTimeout: (callback: () => void, delay: number) => RecoveryTimeout;
+  clearTimeout: (timeout: RecoveryTimeout) => void;
+}
+
+interface PendingRecoveryTimeout {
+  timeout: RecoveryTimeout | null;
+}
+
+interface ForegroundProbe<Socket> extends PendingRecoveryTimeout {
+  socket: Socket;
+  sessionId: string;
+}
+
+export type ForegroundRecoveryAction = 'ignored' | 'connect' | 'wait' | 'probe' | 'probe-pending';
+
+export const getForegroundRecoveryAction = (readyState: number | null): ForegroundRecoveryAction => {
+  // WebSocket ready-state values are fixed by the platform: CONNECTING=0, OPEN=1,
+  // CLOSING=2, CLOSED=3. Missing/closing/closed sockets can be replaced now;
+  // an existing connection attempt must be allowed to finish.
+  if (readyState === 1) return 'probe';
+  if (readyState === 0) return 'wait';
+  return 'connect';
+};
+
+export const isActiveWebSocket = (
+  activeSocket: WebSocket | null,
+  candidateSocket: WebSocket,
+  enabled: boolean,
+): boolean => enabled && activeSocket === candidateSocket;
+
+export const detachWebSocketHandlers = (socket: WebSocket): void => {
+  socket.onopen = null;
+  socket.onmessage = null;
+  socket.onerror = null;
+  socket.onclose = null;
+};
+
+/**
+ * Per-hook owner for reconnect backoff and foreground liveness deadlines.
+ * The hook supplies socket/session identity checks so an expired timer can only
+ * act on the exact transport and subscription that created it.
+ */
+export class ForegroundSocketRecovery<Socket extends { readyState: number }> {
+  private reconnectTimer: PendingRecoveryTimeout | null = null;
+  private foregroundProbe: ForegroundProbe<Socket> | null = null;
+
+  constructor(
+    private readonly scheduler: ForegroundRecoveryScheduler = {
+      setTimeout: (callback, delay) => setTimeout(callback, delay),
+      clearTimeout: (timeout) => clearTimeout(timeout),
+    },
+  ) {}
+
+  hasReconnectTimer(): boolean {
+    return this.reconnectTimer !== null;
+  }
+
+  hasForegroundProbe(socket?: Socket, sessionId?: string): boolean {
+    const probe = this.foregroundProbe;
+    if (!probe) return false;
+    if (socket !== undefined && probe.socket !== socket) return false;
+    if (sessionId !== undefined && probe.sessionId !== sessionId) return false;
+    return true;
+  }
+
+  getForegroundProbe(): { socket: Socket; sessionId: string } | null {
+    const probe = this.foregroundProbe;
+    return probe ? { socket: probe.socket, sessionId: probe.sessionId } : null;
+  }
+
+  clearReconnectTimer(): void {
+    const pending = this.reconnectTimer;
+    this.reconnectTimer = null;
+    if (pending?.timeout !== null && pending?.timeout !== undefined) {
+      this.scheduler.clearTimeout(pending.timeout);
+    }
+  }
+
+  scheduleReconnect(delay: number, callback: () => void): void {
+    this.clearReconnectTimer();
+    const pending: PendingRecoveryTimeout = { timeout: null };
+    this.reconnectTimer = pending;
+    pending.timeout = this.scheduler.setTimeout(() => {
+      if (this.reconnectTimer !== pending) return;
+      this.reconnectTimer = null;
+      callback();
+    }, delay);
+  }
+
+  clearForegroundProbe(socket?: Socket, sessionId?: string): boolean {
+    const probe = this.foregroundProbe;
+    if (!probe) return false;
+    if (socket !== undefined && probe.socket !== socket) return false;
+    if (sessionId !== undefined && probe.sessionId !== sessionId) return false;
+
+    this.foregroundProbe = null;
+    if (probe.timeout !== null) {
+      this.scheduler.clearTimeout(probe.timeout);
+    }
+    return true;
+  }
+
+  acknowledgeForegroundState(socket: Socket, sessionId: string): boolean {
+    return this.clearForegroundProbe(socket, sessionId);
+  }
+
+  private armForegroundProbe(
+    socket: Socket,
+    sessionId: string,
+    isStillCurrent: () => boolean,
+    onTimeout: () => void,
+    timeoutMs: number,
+  ): void {
+    this.clearForegroundProbe();
+    const probe: ForegroundProbe<Socket> = { socket, sessionId, timeout: null };
+    this.foregroundProbe = probe;
+    probe.timeout = this.scheduler.setTimeout(() => {
+      if (this.foregroundProbe !== probe) return;
+      this.foregroundProbe = null;
+      if (isStillCurrent()) {
+        onTimeout();
+      }
+    }, timeoutMs);
+  }
+
+  handleForeground(options: {
+    enabled: boolean;
+    visible: boolean;
+    socket: Socket | null;
+    sessionId: string;
+    isStillCurrent: () => boolean;
+    sendSubscribe: (socket: Socket, sessionId: string) => void;
+    connect: () => void;
+    replaceSocket: (socket: Socket) => void;
+    timeoutMs?: number;
+  }): ForegroundRecoveryAction {
+    if (!options.enabled || !options.visible) return 'ignored';
+
+    const action = getForegroundRecoveryAction(options.socket?.readyState ?? null);
+    if (action === 'connect') {
+      this.clearReconnectTimer();
+      this.clearForegroundProbe();
+      options.connect();
+      return action;
+    }
+    if (action === 'wait') {
+      // A socket is already connecting. Remove any obsolete close-backoff timer,
+      // but do not replace the in-flight attempt.
+      this.clearReconnectTimer();
+      return action;
+    }
+
+    const socket = options.socket;
+    if (!socket || !options.sessionId || options.sessionId === 'new') {
+      this.clearForegroundProbe();
+      return 'ignored';
+    }
+
+    this.clearReconnectTimer();
+    if (this.hasForegroundProbe(socket, options.sessionId)) {
+      return 'probe-pending';
+    }
+
+    this.armForegroundProbe(
+      socket,
+      options.sessionId,
+      options.isStillCurrent,
+      () => options.replaceSocket(socket),
+      options.timeoutMs ?? FOREGROUND_STATE_RESPONSE_TIMEOUT_MS,
+    );
+
+    try {
+      options.sendSubscribe(socket, options.sessionId);
+    } catch (error) {
+      this.clearForegroundProbe(socket, options.sessionId);
+      if (options.isStillCurrent()) {
+        options.replaceSocket(socket);
+      }
+      console.warn('[WS] Foreground liveness subscribe failed:', error);
+    }
+    return action;
+  }
+
+  cleanup(): void {
+    this.clearReconnectTimer();
+    this.clearForegroundProbe();
+  }
+}
+
 export const DEFAULT_CHAT_HELPER_SETTINGS: ChatHelperSettings = {
   titler: { paused: false },
   contextual_memory: { mode: 'auto', manual_query: '', last_auto_query: '' },
@@ -215,7 +409,11 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
 
   const ws = useRef<WebSocket | null>(null);
   const reconnectAttempts = useRef(0);
-  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const socketRecoveryRef = useRef<ForegroundSocketRecovery<WebSocket> | null>(null);
+  if (!socketRecoveryRef.current) {
+    socketRecoveryRef.current = new ForegroundSocketRecovery<WebSocket>();
+  }
+  const socketRecovery = socketRecoveryRef.current;
 
   // Refs for multi-instance support (needed in stale closures)
   const enabledRef = useRef(enabled);
@@ -491,35 +689,50 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
     return true;
   }, [currentAgent]);
 
+  const retireSocket = useCallback((socket: WebSocket) => {
+    detachWebSocketHandlers(socket);
+    if (ws.current === socket) {
+      ws.current = null;
+    }
+    if (socket.readyState !== WebSocket.CLOSING && socket.readyState !== WebSocket.CLOSED) {
+      socket.close();
+    }
+  }, []);
+
   const connect = useCallback(() => {
     // Skip connection when instance is disabled (e.g., split view not yet open)
     if (!enabledRef.current) return;
-    if (ws.current?.readyState === WebSocket.OPEN) return;
+
+    // Any direct connection attempt supersedes a delayed close-backoff. Preserve
+    // an OPEN socket and let an existing CONNECTING socket finish.
+    socketRecovery.clearReconnectTimer();
+    if (ws.current?.readyState === WebSocket.OPEN || ws.current?.readyState === WebSocket.CONNECTING) return;
+
+    socketRecovery.clearForegroundProbe();
 
     // CRITICAL FIX: Close the old socket and remove its handlers before creating a new one
     // This prevents duplicate event processing when reconnecting
     if (ws.current) {
-      // Remove handlers to prevent them from firing during close
-      ws.current.onmessage = null;
-      ws.current.onclose = null;
-      ws.current.onerror = null;
-      // Close if not already closed
-      if (ws.current.readyState !== WebSocket.CLOSED) {
-        ws.current.close();
-      }
+      retireSocket(ws.current);
     }
 
     setConnectionStatus('connecting');
     const socket = new WebSocket(`${WS_URL}/ws/chat`);
+    // Establish identity before callbacks are attached so every handler can
+    // reject callbacks queued by a superseded socket.
+    ws.current = socket;
 
     socket.onopen = () => {
+      if (!isActiveWebSocket(ws.current, socket, enabledRef.current)) return;
+
       setConnectionStatus('connected');
       reconnectAttempts.current = 0;
+      socketRecovery.clearReconnectTimer();
 
       // SIMPLE ARCHITECTURE: Just subscribe and let server send us the state.
       // No complex sync logic, no race conditions, no multiple sources of truth.
       // Server is the ONLY source of truth.
-      const currentSessionId = localStorage.getItem(sessionKey) || sessionId;
+      const currentSessionId = sessionIdRef.current;
 
       // Send subscribe - server will respond with full state
       socket.send(JSON.stringify({
@@ -531,7 +744,7 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
     socket.onmessage = (event) => {
       // CRITICAL FIX: Ignore messages if this socket is no longer the active one
       // This prevents duplicate event processing during reconnect
-      if (ws.current !== socket) {
+      if (!isActiveWebSocket(ws.current, socket, enabledRef.current)) {
         console.log('[WS] Ignoring message from stale socket');
         return;
       }
@@ -542,6 +755,29 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
       } catch (e) {
         console.error('[WS] Failed to parse message:', e);
         return;
+      }
+
+      if (data.type === 'state') {
+        const foregroundProbe = socketRecovery.getForegroundProbe();
+        if (foregroundProbe?.socket === socket) {
+          if (foregroundProbe.sessionId !== sessionIdRef.current) {
+            // A chat switch happened after the foreground subscribe. The server
+            // handles subscribe actions serially, so discard that now-stale state;
+            // the newer chat's authoritative state follows on the same socket.
+            socketRecovery.clearForegroundProbe(socket, foregroundProbe.sessionId);
+            if (data.sessionId === foregroundProbe.sessionId) {
+              console.log('[WS] Ignoring foreground state for a superseded session');
+              return;
+            }
+          } else if (data.sessionId === foregroundProbe.sessionId) {
+            socketRecovery.acknowledgeForegroundState(socket, data.sessionId);
+          } else {
+            // A liveness acknowledgment must be for the probed session. Do not
+            // let an unrelated snapshot cancel recovery or replace visible state.
+            console.log('[WS] Ignoring non-matching foreground state response');
+            return;
+          }
+        }
       }
 
       // Multi-chat concurrent streaming: filter out events for other sessions.
@@ -1573,19 +1809,34 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
     };
 
     socket.onclose = () => {
+      if (!isActiveWebSocket(ws.current, socket, enabledRef.current)) return;
+
+      socketRecovery.clearForegroundProbe(socket);
+      detachWebSocketHandlers(socket);
+      ws.current = null;
       setConnectionStatus('disconnected');
       reconnectAttempts.current++;
       const delay = Math.min(3000 * reconnectAttempts.current, 30000);
       console.log(`WebSocket closed. Reconnecting in ${delay / 1000}s...`);
-      reconnectTimeoutRef.current = setTimeout(connect, delay);
+      socketRecovery.scheduleReconnect(delay, connect);
     };
 
     socket.onerror = () => {
+      if (!isActiveWebSocket(ws.current, socket, enabledRef.current)) return;
       setConnectionStatus('disconnected');
     };
+  }, [retireSocket, socketRecovery]);
 
-    ws.current = socket;
-  }, []);
+  const replaceUnresponsiveSocket = useCallback((socket: WebSocket) => {
+    if (!isActiveWebSocket(ws.current, socket, enabledRef.current)) return;
+
+    console.warn('[WS] Foreground state probe timed out; replacing unresponsive socket');
+    socketRecovery.clearReconnectTimer();
+    socketRecovery.clearForegroundProbe(socket);
+    retireSocket(socket);
+    setConnectionStatus('disconnected');
+    connect();
+  }, [connect, retireSocket, socketRecovery]);
 
   useEffect(() => {
     if (!enabled) {
@@ -1595,39 +1846,46 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
 
     connect();
 
-    // Handle visibility changes (tab switching, window dragging between monitors)
-    // Don't close WebSocket on visibility change - just let it reconnect if needed
+    // Foreground recovery keeps a responsive socket, but requires an authoritative
+    // state reply before trusting an OPEN socket that may have gone half-dead while
+    // a mobile browser was suspended.
     const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible') {
-        if (ws.current?.readyState !== WebSocket.OPEN) {
-          // WebSocket dropped while tab was hidden — full reconnect
-          console.log('Tab visible again, reconnecting WebSocket...');
-          connect();
-        } else {
-          // WebSocket still open — re-subscribe to get latest state
-          // (tool calls, text segments, etc. may have completed while tab was hidden)
-          const currentId = sessionIdRef.current;
-          if (currentId && currentId !== 'new') {
-            console.log('Tab visible again, re-subscribing to', currentId);
-            ws.current.send(JSON.stringify({
-              action: 'subscribe',
-              sessionId: currentId
-            }));
-          }
-        }
+      const socket = ws.current;
+      const currentId = sessionIdRef.current;
+      const action = socketRecovery.handleForeground({
+        enabled: enabledRef.current,
+        visible: document.visibilityState === 'visible',
+        socket,
+        sessionId: currentId,
+        isStillCurrent: () => (
+          enabledRef.current &&
+          document.visibilityState === 'visible' &&
+          ws.current === socket &&
+          sessionIdRef.current === currentId
+        ),
+        sendSubscribe: (activeSocket, activeSessionId) => {
+          console.log('Tab visible again, validating WebSocket for', activeSessionId);
+          activeSocket.send(JSON.stringify({
+            action: 'subscribe',
+            sessionId: activeSessionId,
+          }));
+        },
+        connect,
+        replaceSocket: replaceUnresponsiveSocket,
+      });
+
+      if (action === 'connect') {
+        console.log('Tab visible again, reconnecting WebSocket...');
       }
-      // Don't do anything when hidden - let the connection stay open
+      // Hidden transitions intentionally leave the connection alone.
     };
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
-      // Cancel any pending reconnect timeout
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current);
-        reconnectTimeoutRef.current = null;
-      }
+      // Cancel both timer types owned by this hook instance.
+      socketRecovery.cleanup();
       // Cancel any pending delta flush RAF
       if (rafId.current) {
         cancelAnimationFrame(rafId.current);
@@ -1635,14 +1893,10 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
       }
       // Clear handlers before closing to prevent any stray events
       if (ws.current) {
-        ws.current.onmessage = null;
-        ws.current.onclose = null;
-        ws.current.onerror = null;
-        ws.current.close();
-        ws.current = null;
+        retireSocket(ws.current);
       }
     };
-  }, [connect, enabled]);
+  }, [connect, enabled, replaceUnresponsiveSocket, retireSocket, socketRecovery]);
 
   // Handle visibility changes for notification suppression
   const handleVisibilityStateChange = useCallback((state: VisibilityState) => {
@@ -2060,6 +2314,7 @@ export const useClaude = (options: ClaudeOptions = {}): ClaudeHook => {
     isUserInitiatedLoad.current = true;
     setMessages([]);
     setSessionId('new');
+    sessionIdRef.current = 'new';
     setStatus('idle');
     setStatusText('');
     setActiveTools(new Map());

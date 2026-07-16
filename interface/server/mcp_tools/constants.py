@@ -180,12 +180,14 @@ CHESS_TOOLS = [
 ]
 
 IMAGE_TOOLS = [
+    "inspect_images",
     "fal_text_to_image",
     "fal_image_to_image",
     "fal_multi_ref_image",
     "fal_reference_to_video",
     "fal_list_models",
     "atlas_multi_ref_image",
+    "atlas_generate_images_parallel",
     "atlas_reference_to_video",
 ]
 

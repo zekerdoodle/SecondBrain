@@ -6,13 +6,13 @@ generation endpoints, polls prediction status, and downloads outputs locally.
 """
 
 import asyncio
-import hashlib
 import json
 import logging
 import mimetypes
 import os
 import re
 import time
+import uuid
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
@@ -266,8 +266,8 @@ def _extension_from_url(
 
 def _generate_filename(prefix: str, extension: str) -> str:
     ts = time.strftime("%Y%m%d_%H%M%S")
-    short_hash = hashlib.md5(f"{time.time()}".encode()).hexdigest()[:8]
-    return f"{ts}_{short_hash}_{prefix}{extension}"
+    random_token = uuid.uuid4().hex[:8]
+    return f"{ts}_{random_token}_{prefix}{extension}"
 
 
 def _resolve_output_path(

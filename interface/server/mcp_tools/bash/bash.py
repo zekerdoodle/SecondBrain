@@ -5,8 +5,8 @@ Provides controlled shell access with:
 - Blocklist-based security (permissive by default)
 - Sudo allowlist for common system operations
 - Environment variable filtering
-- Token-aware output truncation
-- Full output logging when truncated
+- UTF-8-byte-budgeted model output
+- Atomic full-output receipts when truncated or failed
 """
 
 import asyncio
@@ -14,10 +14,17 @@ import os
 import re
 import shlex
 import time
+import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 from claude_agent_sdk import tool
+
+from tool_output_artifacts import (
+    MODEL_VISIBLE_TOOL_OUTPUT_LIMIT_BYTES,
+    REPO_ROOT,
+    format_model_visible_tool_output,
+)
 
 from ..registry import register_tool
 
@@ -126,9 +133,8 @@ ENV_ALLOWLIST_PATTERNS = [
 ]
 
 # Output configuration
-MAX_OUTPUT_CHARS = 50000  # ~12k tokens
-LOG_DIR = Path("/home/debian/second_brain/.claude/logs")
-DEFAULT_CWD = "/home/debian/second_brain"
+MAX_MODEL_VISIBLE_OUTPUT_BYTES = MODEL_VISIBLE_TOOL_OUTPUT_LIMIT_BYTES
+DEFAULT_CWD = str(REPO_ROOT)
 DEFAULT_TIMEOUT = 120
 MAX_TIMEOUT = 600
 
@@ -219,77 +225,19 @@ def _filter_env(env: Dict[str, str]) -> Dict[str, str]:
     return filtered
 
 
-def _truncate_output(text: str, max_chars: int = MAX_OUTPUT_CHARS) -> Tuple[str, bool]:
-    """Truncate output with head+tail strategy.
-
-    Returns (truncated_text, was_truncated)
-    """
-    if len(text) <= max_chars:
-        return text, False
-
-    lines = text.splitlines()
-    total_lines = len(lines)
-
-    # Use head+tail strategy
-    head_count = 150
-    tail_count = 150
-
-    if total_lines <= head_count + tail_count:
-        # Just truncate by chars if not many lines
-        half = max_chars // 2
-        return text[:half] + f"\n\n... [{len(text) - max_chars} chars truncated] ...\n\n" + text[-half:], True
-
-    head_lines = lines[:head_count]
-    tail_lines = lines[-tail_count:]
-    middle_count = total_lines - head_count - tail_count
-
-    truncated = "\n".join(head_lines) + \
-                f"\n\n... [{middle_count} lines truncated] ...\n\n" + \
-                "\n".join(tail_lines)
-
-    return truncated, True
-
-
-def _cleanup_old_logs(max_age_days: int = 7, max_total_mb: int = 100):
-    """Remove old bash log files to prevent unbounded disk growth."""
-    try:
-        cutoff = time.time() - (max_age_days * 86400)
-        log_files = sorted(LOG_DIR.glob("bash_*.log"), key=lambda p: p.stat().st_mtime)
-
-        # Delete files older than max_age_days
-        for f in log_files:
-            if f.stat().st_mtime < cutoff:
-                f.unlink()
-
-        # If still over budget, delete oldest until under max_total_mb
-        remaining = sorted(LOG_DIR.glob("bash_*.log"), key=lambda p: p.stat().st_mtime)
-        total = sum(f.stat().st_size for f in remaining)
-        while remaining and total > max_total_mb * 1024 * 1024:
-            oldest = remaining.pop(0)
-            total -= oldest.stat().st_size
-            oldest.unlink()
-    except Exception:
-        pass  # Best-effort cleanup
-
-
-async def _save_full_output(command: str, output: str) -> Optional[str]:
-    """Save full output to log file and return path."""
-    try:
-        LOG_DIR.mkdir(parents=True, exist_ok=True)
-        timestamp = int(time.time())
-        filename = f"bash_{timestamp}.log"
-        path = LOG_DIR / filename
-
-        # Include command at top of log
-        content = f"# Command: {command}\n# Timestamp: {timestamp}\n\n{output}"
-        path.write_text(content, encoding="utf-8")
-
-        # Opportunistic cleanup after saving
-        _cleanup_old_logs()
-
-        return str(path)
-    except Exception as e:
-        return None
+def _tool_result(args: Dict[str, Any], text: str, *, is_error: bool) -> Dict[str, Any]:
+    """Apply the shared provider-facing receipt/budget contract."""
+    bounded = format_model_visible_tool_output(
+        chat_id=args.get("_source_chat_id") or "unknown-chat",
+        tool_call_id=args.get("_tool_call_id") or f"bash-{uuid.uuid4().hex}",
+        tool_name="bash",
+        output=text,
+        is_error=is_error,
+    )
+    return {
+        "content": [{"type": "text", "text": bounded}],
+        "is_error": is_error,
+    }
 
 
 # =============================================================================
@@ -316,8 +264,9 @@ Blocked by security policy:
 - Kernel module manipulation
 
 Output:
-- Truncated at ~50k chars with head+tail strategy
-- Full output saved to .claude/logs/ when truncated
+- Complete when the full model-visible result fits within 32 KiB UTF-8
+- Larger results use a bounded head/tail view and an atomic receipt under .claude/tool_outputs/
+- Failed commands also receive a durable receipt; the receipt pointer is the final line
 
 Examples:
 - "ls -la /home/debian"
@@ -365,27 +314,22 @@ async def bash(args: Dict[str, Any]) -> Dict[str, Any]:
 
     # Validate command is not empty
     if not command.strip():
-        return {
-            "content": [{"type": "text", "text": "Error: empty command"}],
-            "is_error": True
-        }
+        return _tool_result(args, "Error: empty command", is_error=True)
 
     # Security check: blocklist
     blocked_pattern = _is_blocked(command)
     if blocked_pattern:
-        return {
-            "content": [{"type": "text", "text": f"Blocked by security policy (matched pattern: {blocked_pattern})"}],
-            "is_error": True
-        }
+        return _tool_result(
+            args,
+            f"Blocked by security policy (matched pattern: {blocked_pattern})",
+            is_error=True,
+        )
 
     # Security check: sudo validation
     if "sudo" in command:
         allowed, error = _validate_sudo(command)
         if not allowed:
-            return {
-                "content": [{"type": "text", "text": f"Sudo not allowed: {error}"}],
-                "is_error": True
-            }
+            return _tool_result(args, f"Sudo not allowed: {error}", is_error=True)
 
     # Prepare environment
     base_env = dict(os.environ)
@@ -424,10 +368,11 @@ async def bash(args: Dict[str, Any]) -> Dict[str, Any]:
         except asyncio.TimeoutError:
             proc.kill()
             await proc.wait()
-            return {
-                "content": [{"type": "text", "text": f"Command timed out after {timeout}s"}],
-                "is_error": True
-            }
+            return _tool_result(
+                args,
+                f"Command timed out after {timeout}s",
+                is_error=True,
+            )
 
         duration_ms = int((time.time() - start) * 1000)
 
@@ -443,31 +388,11 @@ async def bash(args: Dict[str, Any]) -> Dict[str, Any]:
             else:
                 full_output = "[stderr]\n" + stderr_text
 
-        # Truncate if needed
-        output, truncated = _truncate_output(full_output)
-
-        # Save full output if truncated
-        log_path = None
-        if truncated:
-            log_path = await _save_full_output(command, full_output)
-
         # Build result
         status = "PASS" if proc.returncode == 0 else "FAIL"
         summary = f"{status} (exit {proc.returncode}), {duration_ms}ms"
-        if truncated and log_path:
-            summary += f" [truncated, full output: {log_path}]"
-        elif truncated:
-            summary += " [truncated]"
-
-        result = f"{summary}\n\n{output}"
-
-        return {
-            "content": [{"type": "text", "text": result}],
-            "is_error": proc.returncode != 0
-        }
+        result = f"{summary}\n\n{full_output}"
+        return _tool_result(args, result, is_error=proc.returncode != 0)
 
     except Exception as e:
-        return {
-            "content": [{"type": "text", "text": f"Execution error: {str(e)}"}],
-            "is_error": True
-        }
+        return _tool_result(args, f"Execution error: {str(e)}", is_error=True)
