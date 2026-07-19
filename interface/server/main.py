@@ -84,9 +84,12 @@ from tool_output_artifacts import (
     DEFAULT_DISPLAY_LIMIT_CHARS,
     compact_tool_output_for_display,
     maybe_write_raw_tool_output_artifact,
+    raw_output_write_failure_metadata,
+    refresh_compact_tool_output_for_display,
     with_truncation_flags,
 )
 import restart_provenance as restart_provenance
+import managed_load_operations
 from block_normalization import canonicalize_blocks
 from process_registry import register_process, deregister_by_pid, clear_registry
 import running_agents
@@ -892,6 +895,23 @@ def save_continuation_on_shutdown(signal_number: int | None = None):
     chat and lose concurrently running agent work.
     """
     shutdown_provenance = _classify_shutdown_restart_provenance(signal_number)
+    recent_intent = shutdown_provenance.get("recent_intent") or {}
+    if recent_intent.get("matched") and recent_intent.get("load_operation_id"):
+        try:
+            if int(recent_intent.get("old_process_pid") or 0) != os.getpid():
+                raise RuntimeError(
+                    "managed-load intent old PID does not match shutting-down backend"
+                )
+            managed_load_operations.get_store().record_old_process_shutdown(
+                recent_intent["load_operation_id"],
+                source_fingerprint=recent_intent["source_fingerprint"],
+                restart_attempt_id=recent_intent["restart_attempt_id"],
+                old_process_pid=recent_intent["old_process_pid"],
+            )
+        except Exception as exc:
+            logger.error(
+                "Shutdown: managed-load backend-hook evidence failed closed: %s", exc
+            )
     try:
         running_invocations = running_agents.snapshot_all_sync()
     except Exception:
@@ -5380,7 +5400,15 @@ def _maybe_write_tool_output_artifact_for_history(
         return raw_output_artifact
     except Exception as artifact_err:
         logger.warning(f"Tool output artifact write failed: {artifact_err}")
-        return None
+        failed_metadata = raw_output_write_failure_metadata(
+            tool_output_raw,
+            is_error=_tool_output_artifact_error_flag(tool_name, tool_output_raw, is_error),
+        )
+        return with_truncation_flags(
+            failed_metadata,
+            display_truncated=len(tool_output_raw) > DEFAULT_DISPLAY_LIMIT_CHARS,
+            history_truncated=len(tool_output_raw) > 500,
+        )
 
 
 def _restart_tool_result_allows_finalizer(tool_output: Any, is_error: bool) -> bool:
@@ -5450,6 +5478,10 @@ async def _load_fresh_pending_restart_config(trigger_time: float) -> Dict[str, A
 # This is the SINGLE SOURCE OF TRUTH for what the client should display during streaming.
 # Uses a block-based model where each assistant message contains ordered content blocks.
 
+LIVE_TOOL_OUTPUT_DISPLAY_LIMIT_CHARS = DEFAULT_DISPLAY_LIMIT_CHARS
+LIVE_TOOL_OUTPUT_PENDING_MARKER = "\n[output continues; final raw receipt pending]"
+
+
 def _gen_block_id() -> str:
     return f"blk_{uuid.uuid4().hex[:12]}"
 
@@ -5482,6 +5514,10 @@ class ContentBlock:
             d["is_error"] = self.is_error
             if self.raw_output:
                 d["raw_output"] = self.raw_output
+                d["content"] = refresh_compact_tool_output_for_display(
+                    self.content,
+                    self.raw_output,
+                )
         elif self.type == "thinking":
             if self.started_at is not None:
                 d["started_at"] = self.started_at
@@ -5509,6 +5545,7 @@ class SessionStreamingState:
     # Internal tracking (not sent to clients)
     _current_blocks: List[ContentBlock] = field(default_factory=list)
     _current_msg_id: Optional[str] = None
+    _bounded_tool_output_ids: Set[str] = field(default_factory=set)
     # Whether this SS was initialized with full message history from disk.
     # If True, serialized SS messages are the complete display_messages (no merge needed).
     # If False (late init / empty init), SS only has current-turn messages and needs
@@ -5614,6 +5651,7 @@ class SessionStreamingState:
         })
         self._current_msg_id = None
         self._current_blocks = []
+        self._bounded_tool_output_ids.clear()
         return events
 
     def snapshot(self) -> dict:
@@ -5676,6 +5714,8 @@ def _build_tool_output_delta_events(
 ) -> List[dict]:
     if not tool_call_id or not text:
         return []
+    if tool_call_id in ss._bounded_tool_output_ids:
+        return []
 
     existing = ss.find_tool_result_block(tool_call_id)
     if existing and existing.status == "complete":
@@ -5695,14 +5735,25 @@ def _build_tool_output_delta_events(
             "block": result_block.to_dict(),
         })
 
-    result_block.content += text
+    marker = LIVE_TOOL_OUTPUT_PENDING_MARKER
+    raw_budget = max(0, LIVE_TOOL_OUTPUT_DISPLAY_LIMIT_CHARS - len(marker))
+    remaining = max(0, raw_budget - len(result_block.content))
+    visible = text[:remaining]
+    delta = visible
+    if len(visible) < len(text):
+        delta += marker
+        ss._bounded_tool_output_ids.add(tool_call_id)
+    if not delta:
+        return events
+
+    result_block.content += delta
     events.append({
         "type": "block_delta",
         "seq": ss._next_seq(),
         "sessionId": state_key,
         "message_id": msg_id_blk,
         "block_id": result_block.id,
-        "delta": text,
+        "delta": delta,
     })
     return events
 
@@ -5718,6 +5769,8 @@ def _build_tool_end_block_events(
     raw_output_text: str = "",
 ) -> List[dict]:
     msg_id_blk, events = _ensure_assistant_message_events(ss, state_key)
+    if tool_call_id:
+        ss._bounded_tool_output_ids.discard(tool_call_id)
 
     for block in ss._current_blocks:
         if block.type == "tool_use" and block.tool_call_id == tool_call_id:
@@ -6101,6 +6154,30 @@ def _display_messages_for_save(
     return _dedupe_display_messages_by_id(merged, session_id)
 
 
+def _refresh_raw_output_display_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Refresh receipt availability phrases in block messages without reading bodies."""
+    refreshed: List[Dict[str, Any]] = []
+    for message in messages:
+        if not isinstance(message, dict) or not isinstance(message.get("blocks"), list):
+            refreshed.append(message)
+            continue
+        message_copy = dict(message)
+        blocks = []
+        for block in message["blocks"]:
+            if not isinstance(block, dict) or not block.get("raw_output"):
+                blocks.append(block)
+                continue
+            block_copy = dict(block)
+            block_copy["content"] = refresh_compact_tool_output_for_display(
+                block_copy.get("content", ""),
+                block_copy["raw_output"],
+            )
+            blocks.append(block_copy)
+        message_copy["blocks"] = blocks
+        refreshed.append(message_copy)
+    return refreshed
+
+
 def _messages_for_display(chat_data: Dict[str, Any], session_id: Optional[str] = None) -> List[Dict[str, Any]]:
     """Return UI-facing messages without letting stale display_messages hide flat history.
 
@@ -6109,8 +6186,10 @@ def _messages_for_display(chat_data: Dict[str, Any], session_id: Optional[str] =
     represented by id, role/content, or a block-model assistant turn. Tool/system
     internals stay out of the UI.
     """
-    flat_messages = list(chat_data.get("messages") or [])
-    display_messages = list(chat_data.get("display_messages") or [])
+    flat_messages = _refresh_raw_output_display_messages(list(chat_data.get("messages") or []))
+    display_messages = _refresh_raw_output_display_messages(
+        list(chat_data.get("display_messages") or [])
+    )
     if not display_messages:
         return flat_messages
     if not flat_messages:
@@ -10655,6 +10734,7 @@ async def _reconcile_direct_invocation_claims(
     ]
     reconciliation = await get_controller().reconcile_startup(direct_ids)
     resumable = set(reconciliation.get("resumable") or [])
+    settled = set(reconciliation.get("settled") or [])
     blocked = list(reconciliation.get("blocked") or [])
     blocked_set = set(blocked)
     prepared: List[Dict[str, Any]] = []
@@ -10665,6 +10745,13 @@ async def _reconcile_direct_invocation_claims(
             prepared.append(entry)
             continue
         invocation_id = entry.get("id")
+        if invocation_id in settled:
+            logger.info(
+                "Invocation control: direct notification claim %s already terminal; "
+                "skipping model replay",
+                invocation_id,
+            )
+            continue
         if invocation_id in resumable:
             entry["_control_invocation_id"] = invocation_id
             prepared.append(entry)
@@ -10683,7 +10770,12 @@ async def _reconcile_direct_invocation_claims(
     return prepared, reconciliation
 
 
-async def _resume_agent_invocation_after_restart(entry: Dict[str, Any], reason: str, source: str) -> bool:
+async def _resume_agent_invocation_after_restart(
+    entry: Dict[str, Any],
+    reason: str,
+    source: str,
+    managed_load: Optional[Dict[str, Any]] = None,
+) -> bool:
     agent = entry.get("agent")
     kind = entry.get("kind")
     conversation_id = entry.get("conversation_id")
@@ -10716,6 +10808,28 @@ async def _resume_agent_invocation_after_restart(entry: Dict[str, Any], reason: 
     direct_running_entry_id = None
     background_owns_row = False
     try:
+        if managed_load:
+            owner_kind = "scheduled" if entry.get("scheduled_attempt_id") else "direct"
+            owner_id = (
+                entry.get("scheduled_attempt_id")
+                if owner_kind == "scheduled"
+                else control_invocation_id
+            )
+            claim_id = (
+                entry.get("_scheduled_resume_claim_id")
+                or control_invocation_id
+                or entry.get("id")
+            )
+            if not owner_id or not claim_id:
+                raise RuntimeError("managed-load continuation owner identity is missing")
+            managed_load_operations.get_store().claim_continuation(
+                managed_load["load_operation_id"],
+                source_fingerprint=managed_load["source_fingerprint"],
+                owner_kind=owner_kind,
+                owner_id=str(owner_id),
+                conversation_id=conversation_id,
+                claim_id=str(claim_id),
+            )
         agents_dir = Path(ROOT_DIR) / ".claude" / "agents"
         if str(agents_dir) not in sys.path:
             sys.path.insert(0, str(agents_dir))
@@ -10725,7 +10839,10 @@ async def _resume_agent_invocation_after_restart(entry: Dict[str, Any], reason: 
             control_receipt = await get_controller().get(control_invocation_id)
             if control_receipt is None:
                 raise RuntimeError("restart continuation lost its control receipt")
-            mode = "trust" if control_receipt.get("mode") == "trust" else "ping"
+            if control_receipt.get("notification_ids"):
+                mode = "foreground"
+            else:
+                mode = "trust" if control_receipt.get("mode") == "trust" else "ping"
             current_task = asyncio.current_task()
             if current_task is None:
                 raise RuntimeError("restart continuation has no owning task")
@@ -10863,6 +10980,7 @@ async def restart_continuation_wakeup():
     agent_invocations = continuation.get("agent_invocations", [])
     reason = continuation.get("reason", "Server restart")
     source = continuation.get("source", "unknown")
+    managed_load = continuation.get("managed_load")
     continuation_prompt = continuation.get("continuation_prompt", "Restart completed. Please continue.")
 
     if not sessions and not agent_invocations:
@@ -11012,7 +11130,23 @@ async def restart_continuation_wakeup():
     resumed_agents = 0
     failed_agent_invocations = []
     for entry in agent_invocations:
-        ok = await _resume_agent_invocation_after_restart(entry, reason, source)
+        resume_task = asyncio.create_task(
+            _resume_agent_invocation_after_restart(entry, reason, source, managed_load)
+        )
+        try:
+            ok = await resume_task
+        except asyncio.CancelledError:
+            current = asyncio.current_task()
+            if resume_task.cancelled() and (current is None or current.cancelling() == 0):
+                logger.warning(
+                    "Restart continuation: exact child resume task was cancelled "
+                    "claim=%s; continuation owner remains durable",
+                    entry.get("id") or entry.get("scheduled_attempt_id"),
+                )
+                ok = False
+            else:
+                resume_task.cancel()
+                raise
         if ok:
             resumed_agents += 1
         else:
@@ -11371,6 +11505,7 @@ async def agent_notification_wakeup_loop():
 
             queue = get_notification_queue()
 
+            await _settle_ready_agent_thread_notification_controls(queue)
             _recover_stale_delivering_notifications(queue)
             pending = queue.get_pending()
 
@@ -11410,28 +11545,12 @@ async def agent_notification_wakeup_loop():
             # Process each agent-thread batch first. These are silent scheduled
             # caller continuations, not UI chat wake-ups.
             for (caller_agent, conversation_id), notifications in by_agent_thread.items():
-                try:
-                    async with asyncio.timeout(NOTIFICATION_BATCH_TIMEOUT):
-                        await _process_agent_thread_notification_batch(
-                            caller_agent, conversation_id, notifications, queue
-                        )
-                except TimeoutError:
-                    agent_names = [n.agent for n in notifications]
-                    try:
-                        queue.release_delivery([n.id for n in notifications])
-                    except Exception:
-                        pass
-                    logger.error(
-                        f"Agent-thread notification batch timed out after "
-                        f"{NOTIFICATION_BATCH_TIMEOUT}s for {caller_agent} "
-                        f"thread {conversation_id} (agents: {agent_names})"
-                    )
-                except Exception as e:
-                    logger.error(
-                        f"Error processing agent-thread notification batch for "
-                        f"{caller_agent} thread {conversation_id}: {e}",
-                        exc_info=True,
-                    )
+                await _run_agent_thread_notification_callback_task(
+                    caller_agent,
+                    conversation_id,
+                    notifications,
+                    queue,
+                )
 
             # Process each chat's batch of notifications
             for chat_id, notifications in by_chat.items():
@@ -11452,6 +11571,56 @@ async def agent_notification_wakeup_loop():
             logger.error(f"Agent Notification Wake-up Error: {e}", exc_info=True)
 
 
+async def _run_agent_thread_notification_callback_task(
+    caller_agent: str,
+    conversation_id: str,
+    notifications: list,
+    queue,
+    *,
+    timeout_seconds: Optional[float] = None,
+) -> None:
+    """Give one claimed callback its own cancellable task boundary.
+
+    Exact Patch cancellation and callback timeout target only this child task;
+    the immortal notification service loop remains alive for other people.
+    """
+    timeout = NOTIFICATION_BATCH_TIMEOUT if timeout_seconds is None else timeout_seconds
+    callback_task = asyncio.create_task(
+        _process_agent_thread_notification_batch(
+            caller_agent, conversation_id, notifications, queue
+        )
+    )
+    try:
+        await asyncio.wait_for(callback_task, timeout=timeout)
+    except TimeoutError:
+        logger.error(
+            "Agent-thread notification callback timed out after %ss for %s thread %s",
+            timeout,
+            caller_agent,
+            conversation_id,
+        )
+    except asyncio.CancelledError:
+        current = asyncio.current_task()
+        if callback_task.cancelled() and (current is None or current.cancelling() == 0):
+            logger.warning(
+                "Exact agent-thread notification callback was cancelled for %s thread %s; "
+                "notification service loop remains active",
+                caller_agent,
+                conversation_id,
+            )
+            return
+        callback_task.cancel()
+        raise
+    except Exception as exc:
+        logger.error(
+            "Error processing agent-thread notification callback for %s thread %s: %s",
+            caller_agent,
+            conversation_id,
+            exc,
+            exc_info=True,
+        )
+
+
 async def _process_agent_thread_notification_batch(
     caller_agent: str,
     conversation_id: str,
@@ -11470,6 +11639,21 @@ async def _process_agent_thread_notification_batch(
         return
     notifications = claimed
     claimed_ids = [n.id for n in claimed]
+    claim_generation = max(
+        int(getattr(n, "delivery_attempts", 1) or 1) for n in claimed
+    )
+    control_invocation_id = str(
+        uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            "second-brain:agent-notification:"
+            + caller_agent
+            + ":"
+            + conversation_id
+            + ":"
+            + ",".join(sorted(claimed_ids))
+            + f":attempt:{claim_generation}",
+        )
+    )
 
     if _is_pseudo_agent_thread_caller(caller_agent):
         queue.mark_expired(claimed_ids)
@@ -11518,6 +11702,30 @@ async def _process_agent_thread_notification_batch(
 
 You are being re-invoked because you requested ping mode from a silent or scheduled agent context. Continue the existing agent-to-agent thread, review the completed response(s), and take any necessary follow-up action. If no action is needed, finish briefly.'''
 
+        controller = get_controller()
+        await controller.create_notification_delivery(
+            invocation_id=control_invocation_id,
+            caller_agent="agent_notification_wakeup",
+            target_agent=caller_agent,
+            conversation_id=conversation_id,
+            notification_ids=claimed_ids,
+        )
+        current_task = asyncio.current_task()
+        if current_task is None:
+            raise RuntimeError("notification callback has no exact owning task")
+        await controller.bind_task(control_invocation_id, current_task)
+        running_entry_id = await running_agents.register(
+            agent=caller_agent,
+            kind="invoke_foreground",
+            task_summary="",
+            entry_id=control_invocation_id,
+            source_chat_id=_format_agent_thread_notification_source(
+                caller_agent, conversation_id
+            ),
+            conversation_id=conversation_id,
+            caller_agent="agent_notification_wakeup",
+        )
+
         result = await invoke_agent(
             name=caller_agent,
             prompt=notification_prompt,
@@ -11525,6 +11733,8 @@ You are being re-invoked because you requested ping mode from a silent or schedu
             source_chat_id=_format_agent_thread_notification_source(caller_agent, conversation_id),
             conversation_id=conversation_id,
             caller_agent="agent_notification_wakeup",
+            running_entry_id=running_entry_id,
+            control_invocation_id=control_invocation_id,
         )
 
         result_status = (
@@ -11542,21 +11752,118 @@ You are being re-invoked because you requested ping mode from a silent or schedu
                 f"Failed to resume caller agent '{caller_agent}' for ping "
                 f"thread {conversation_id}: {result_error or result_status}"
             )
+            await running_agents.unregister(control_invocation_id)
+            await controller.mark_notification_delivery(
+                control_invocation_id, "uncertain"
+            )
             queue.release_delivery(claimed_ids)
             return
 
-        queue.mark_delivered(claimed_ids)
+        await running_agents.unregister(control_invocation_id)
+        receipt = await controller.get(control_invocation_id)
+        if not receipt or receipt.get("notification_delivery_state") != "ready":
+            raise RuntimeError(
+                "notification callback returned without terminal thread/control proof"
+            )
+        await _settle_one_agent_thread_notification_control(receipt, queue)
         logger.info(
             f"Completed agent-thread ping wake-up for {caller_agent} on "
             f"thread {conversation_id} ({agent_names_str})"
         )
+    except asyncio.CancelledError:
+        try:
+            await running_agents.unregister(control_invocation_id)
+        except Exception:
+            pass
+        try:
+            receipt = await get_controller().get(control_invocation_id)
+            if receipt and receipt.get("notification_delivery_state") == "ready":
+                await _settle_one_agent_thread_notification_control(receipt, queue)
+            else:
+                if receipt and receipt.get("state") not in {
+                    "succeeded", "error", "timeout", "cancelled",
+                    "interrupted_uncertain",
+                }:
+                    await get_controller().finalize(
+                        control_invocation_id,
+                        "interrupted_uncertain",
+                        cleanup_state="uncertain",
+                    )
+                queue.release_delivery(claimed_ids)
+        except Exception:
+            logger.error(
+                "Cancelled notification callback %s could not persist bounded uncertainty",
+                control_invocation_id,
+                exc_info=True,
+            )
+            try:
+                queue.release_delivery(claimed_ids)
+            except Exception:
+                pass
+        raise
     except Exception as e:
-        queue.release_delivery(claimed_ids)
+        try:
+            await running_agents.unregister(control_invocation_id)
+        except Exception:
+            pass
+        receipt = await get_controller().get(control_invocation_id)
+        if receipt and receipt.get("notification_delivery_state") == "ready":
+            try:
+                await _settle_one_agent_thread_notification_control(receipt, queue)
+            except Exception:
+                logger.error(
+                    "Terminal notification control %s could not settle queue rows",
+                    control_invocation_id,
+                    exc_info=True,
+                )
+        else:
+            if receipt and receipt.get("state") not in {
+                "succeeded", "error", "timeout", "cancelled",
+                "interrupted_uncertain",
+            }:
+                try:
+                    await get_controller().finalize(
+                        control_invocation_id,
+                        "interrupted_uncertain",
+                        cleanup_state="uncertain",
+                    )
+                except Exception:
+                    logger.error(
+                        "Notification control %s could not persist failure uncertainty",
+                        control_invocation_id,
+                        exc_info=True,
+                    )
+            queue.release_delivery(claimed_ids)
         logger.error(
             f"Agent-thread ping wake-up failed for {caller_agent} "
             f"thread {conversation_id} ({agent_names_str}): {e}",
             exc_info=True,
         )
+
+
+async def _settle_ready_agent_thread_notification_controls(queue) -> int:
+    """Settle queue truth only after exact terminal thread/control persistence."""
+    settled = 0
+    for receipt in await get_controller().notification_deliveries_ready():
+        notification_ids = list(receipt.get("notification_ids") or [])
+        if not notification_ids:
+            continue
+        await _settle_one_agent_thread_notification_control(receipt, queue)
+        settled += len(notification_ids)
+    return settled
+
+
+async def _settle_one_agent_thread_notification_control(receipt, queue) -> None:
+    """Join load acknowledgement and queue delivery after terminal thread proof."""
+    managed_load_operations.get_store().acknowledge_owner(
+        owner_kind="direct",
+        owner_id=receipt["invocation_id"],
+        conversation_id=receipt["conversation_id"],
+    )
+    queue.mark_delivered(list(receipt.get("notification_ids") or []))
+    await get_controller().mark_notification_delivery(
+        receipt["invocation_id"], "delivered"
+    )
 
 
 async def _process_notification_batch(chat_id: str, notifications: list, queue) -> None:
@@ -11950,6 +12257,55 @@ Please review the agent response(s) and take any necessary follow-up action. If 
             logger.info(f"Wake-up notification: {decision.reason} (toast={decision.use_toast}, push={decision.use_push})")
 
 
+def _reconcile_managed_load_startup(
+    continuation: Dict[str, Any],
+    *,
+    environ: Optional[Dict[str, str]] = None,
+    process_pid: Optional[int] = None,
+    old_process_alive: Optional[bool] = None,
+) -> Optional[Dict[str, Any]]:
+    """Join the new generation to one exact managed-load marker.
+
+    The first load is intentionally mixed-generation: the old backend may only
+    merge its legacy shutdown provenance.  Exact old-PID absence is therefore
+    proved by the existing restart script or, if that post-kill write was lost,
+    by this new generation.  No claim is made that the old hook ran new code.
+    """
+    managed_load = continuation.get("managed_load") or {}
+    if not managed_load.get("load_operation_id"):
+        return None
+    env = os.environ if environ is None else environ
+    operation_id = env.get(managed_load_operations.ENV_OPERATION_ID)
+    fingerprint = env.get(managed_load_operations.ENV_SOURCE_FINGERPRINT)
+    attempt_id_env = env.get(restart_provenance.ENV_ATTEMPT_ID)
+    old_pid = env.get(managed_load_operations.ENV_OLD_PROCESS_PID)
+    if (
+        operation_id != managed_load.get("load_operation_id")
+        or fingerprint != managed_load.get("source_fingerprint")
+        or attempt_id_env != managed_load.get("restart_attempt_id")
+        or str(old_pid or "") != str(managed_load.get("old_process_pid") or "")
+    ):
+        raise RuntimeError(
+            "managed-load startup provenance does not match continuation marker"
+        )
+    receipt = managed_load_operations.get_store().record_startup_observed(
+        operation_id,
+        source_fingerprint=fingerprint,
+        restart_attempt_id=attempt_id_env,
+        old_process_pid=old_pid,
+        startup_process_pid=process_pid or os.getpid(),
+        old_process_alive=old_process_alive,
+    )
+    for key in (
+        managed_load_operations.ENV_OPERATION_ID,
+        managed_load_operations.ENV_SOURCE_FINGERPRINT,
+        managed_load_operations.ENV_OLD_PROCESS_PID,
+        restart_provenance.ENV_ATTEMPT_ID,
+    ):
+        env.pop(key, None)
+    return receipt
+
+
 @app.on_event("startup")
 async def startup_event():
     global server_restart_info, restart_continuation
@@ -12001,9 +12357,23 @@ async def startup_event():
         logger.info(f"Had {len(previous_state.get('active_sessions', []))} active sessions")
         server_restart_info = previous_state
 
+    # Prove and terminalize only the narrow journal-before-script crash gap.
+    # Corrupt receipt state remains visible and blocks future managed spawns;
+    # it does not make the whole backend unavailable.
+    try:
+        managed_load_operations.get_store().reconcile_startup_pre_spawn(
+            os.getpid()
+        )
+    except Exception as exc:
+        logger.error(
+            "Managed-load startup pre-spawn reconciliation failed closed: %s",
+            exc,
+        )
+
     # Check for restart continuation (Claude-initiated restart)
     restart_continuation = load_restart_continuation()
     if restart_continuation:
+        _reconcile_managed_load_startup(restart_continuation)
         sessions = restart_continuation.get("sessions", [])
         provenance = restart_continuation.get("restart_provenance") or {}
         shutdown_provenance = restart_continuation.get("shutdown_provenance") or {}

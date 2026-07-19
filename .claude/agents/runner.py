@@ -40,6 +40,7 @@ if _server_dir not in sys.path:
 from process_registry import register_process, deregister_process
 import running_agents
 from agent_invocation_control import get_controller
+import managed_load_operations
 
 
 PROJECT_OUTPUT_CONTRACT_AGENT_OUTPUTS = "agent_outputs"
@@ -231,6 +232,55 @@ def _finalize_invocation_attempt(
         conversation_id=invocation.conversation_id,
     )
 
+
+def _acknowledge_managed_load_after_thread_persistence(
+    invocation: AgentInvocation,
+) -> None:
+    if not invocation.scheduled_attempt_id or not invocation.conversation_id:
+        return
+    try:
+        managed_load_operations.get_store().acknowledge_owner(
+            owner_kind="scheduled",
+            owner_id=invocation.scheduled_attempt_id,
+            conversation_id=invocation.conversation_id,
+        )
+    except Exception:
+        logger.error(
+            "Scheduled managed-load acknowledgement failed after terminal thread "
+            "and scheduler persistence task=%s attempt=%s",
+            invocation.scheduled_task_id,
+            invocation.scheduled_attempt_id,
+            exc_info=True,
+        )
+
+
+def _acknowledge_direct_managed_load_after_thread_persistence(
+    invocation: AgentInvocation,
+) -> None:
+    if not invocation.control_invocation_id or not invocation.conversation_id:
+        return
+    _acknowledge_direct_managed_load_owner(
+        invocation.control_invocation_id,
+        invocation.conversation_id,
+    )
+
+
+def _acknowledge_direct_managed_load_owner(
+    owner_id: str,
+    conversation_id: str,
+) -> None:
+    try:
+        managed_load_operations.get_store().acknowledge_owner(
+            owner_kind="direct",
+            owner_id=owner_id,
+            conversation_id=conversation_id,
+        )
+    except Exception:
+        logger.error(
+            "Direct managed-load acknowledgement failed after terminal thread persistence id=%s",
+            owner_id,
+            exc_info=True,
+        )
 # Synthetic source used when ping mode is requested by an agent that has no
 # foreground chat to wake. main.py consumes these durable notifications and
 # resumes the caller on the same agent-conversation thread.
@@ -390,7 +440,13 @@ async def _finalize_direct_interruption(
         control_invocation_id,
         state,
         cleanup_state="complete" if state == "cancelled" else "uncertain",
+        terminal_persistence_proved=finalization_proved,
     )
+    if state == "cancelled":
+        _acknowledge_direct_managed_load_owner(
+            control_invocation_id,
+            conversation_id,
+        )
     return state, finalized
 
 
@@ -766,7 +822,22 @@ def _restart_consumer_for_invocation(
     if config.name != "patch" or not invocation.conversation_id:
         return "none"
     mode = invocation.mode.value if isinstance(invocation.mode, InvocationMode) else str(invocation.mode)
-    return f"agent_managed_restart:{mode}:{invocation.conversation_id}"
+    if (
+        mode == InvocationMode.SCHEDULED.value
+        and invocation.scheduled_task_id
+        and invocation.scheduled_attempt_id
+    ):
+        return f"agent_managed_restart:scheduled:{invocation.conversation_id}"
+    if (
+        mode == InvocationMode.FOREGROUND.value
+        and invocation.control_invocation_id
+        and invocation.caller_agent == "agent_notification_wakeup"
+    ):
+        return f"agent_managed_restart:foreground:{invocation.conversation_id}"
+    # Trust/ping/background/structured Patch work has no complete managed-load
+    # continuation + terminal acknowledgement contract. Keep the tool visible
+    # if configured, but make its restart call fail closed before any receipt.
+    return "none"
 
 
 async def invoke_agent(
@@ -1101,12 +1172,13 @@ async def invoke_agent(
             )
             _release_thread_lock(conv_id, lock_id)
             finalized = None
+        finalization_proved = _thread_finalization_proved(finalized)
         if invocation.control_invocation_id:
-            finalization_proved = _thread_finalization_proved(finalized)
             await get_controller().finalize(
                 invocation.control_invocation_id,
                 "error" if finalization_proved else "interrupted_uncertain",
                 cleanup_state="complete" if finalization_proved else "uncertain",
+                terminal_persistence_proved=finalization_proved,
             )
         if scheduled_attempt_id:
             _finalize_scheduler_attempt(
@@ -1117,6 +1189,11 @@ async def invoke_agent(
                 error_code="inner_setup_rejected",
                 conversation_id=conv_id,
             )
+        if finalization_proved:
+            if invocation.control_invocation_id:
+                _acknowledge_direct_managed_load_after_thread_persistence(invocation)
+            if invocation.scheduled_attempt_id:
+                _acknowledge_managed_load_after_thread_persistence(invocation)
         return _worktree_preparation_error_result(name, mode, error, conv_id)
 
     logger.info(
@@ -1175,7 +1252,10 @@ async def invoke_agent(
                     else "interrupted_uncertain"
                 ),
                 cleanup_state="complete" if finalization_proved else "uncertain",
+                terminal_persistence_proved=finalization_proved,
             )
+            if finalization_proved:
+                _acknowledge_direct_managed_load_after_thread_persistence(invocation)
         return result
 
     elif mode == InvocationMode.PING:
@@ -1354,7 +1434,12 @@ async def invoke_agent(
                         if finalization_proved and expected_ping_state == "error"
                         else "uncertain"
                     ),
+                    terminal_persistence_proved=(
+                        finalization_proved and expected_ping_state == "error"
+                    ),
                 )
+                if finalization_proved and expected_ping_state == "error":
+                    _acknowledge_direct_managed_load_after_thread_persistence(invocation)
             return {
                 "error": f"Ping task launch failed before ack: {e}",
                 "conversation_id": conv_id,
@@ -1428,7 +1513,10 @@ async def invoke_agent(
                     invocation.control_invocation_id,
                     "error" if finalization_proved else "interrupted_uncertain",
                     cleanup_state="complete" if finalization_proved else "uncertain",
+                    terminal_persistence_proved=finalization_proved,
                 )
+                if finalization_proved:
+                    _acknowledge_direct_managed_load_after_thread_persistence(invocation)
             else:
                 _release_thread_lock(conv_id, lock_id)
             return {
@@ -1510,7 +1598,10 @@ async def invoke_agent(
                     invocation.control_invocation_id,
                     "error" if finalization_proved else "interrupted_uncertain",
                     cleanup_state="complete" if finalization_proved else "uncertain",
+                    terminal_persistence_proved=finalization_proved,
                 )
+                if finalization_proved:
+                    _acknowledge_direct_managed_load_after_thread_persistence(invocation)
             if scheduled_attempt_id:
                 _finalize_scheduler_attempt(
                     scheduled_task_id,
@@ -1748,6 +1839,8 @@ def _create_background_invocation_task(
         failure_state["recorded"] = True
         cleanup_complete = True
         manager_cancel_requested = False
+        finalized = None
+        expected_ping_state = None
 
         if scheduled_task_id and scheduled_attempt_id:
             try:
@@ -1799,7 +1892,6 @@ def _create_background_invocation_task(
                     conversation_id=conversation_id,
                     invocation_id=control_invocation_id,
                 )
-            expected_ping_state = None
             if mode == InvocationMode.PING.value and ping_invocation_id:
                 expected_ping_state = terminal_state
                 if control_invocation_id and terminal_state == "cancelled":
@@ -1808,7 +1900,6 @@ def _create_background_invocation_task(
                         if manager_cancel_requested
                         else "interrupted_uncertain"
                     )
-            finalized = None
             try:
                 finalized = await _finalize_thread_turn(
                     conversation_id,
@@ -1916,11 +2007,21 @@ def _create_background_invocation_task(
             if not cleanup_complete or control_state == "interrupted_uncertain":
                 control_state = "interrupted_uncertain"
                 cleanup_state = "uncertain"
+            finalization_proved = _thread_finalization_proved(
+                finalized,
+                ping_terminal_state=expected_ping_state,
+            )
             await get_controller().finalize(
                 control_invocation_id,
                 control_state,
                 cleanup_state=cleanup_state,
+                terminal_persistence_proved=finalization_proved,
             )
+            if finalization_proved and cleanup_state == "complete":
+                _acknowledge_direct_managed_load_owner(
+                    control_invocation_id,
+                    str(conversation_id),
+                )
 
     async def guarded() -> None:
         try:
@@ -2426,7 +2527,10 @@ async def _run_ping_agent(
                 else "interrupted_uncertain"
             ),
             cleanup_state="complete" if finalization_proved else "uncertain",
+            terminal_persistence_proved=finalization_proved,
         )
+        if finalization_proved:
+            _acknowledge_direct_managed_load_after_thread_persistence(invocation)
 
 
 
@@ -3039,13 +3143,17 @@ async def _run_background_agent(
                 error_class="execution",
                 error_code="runner_error",
             )
+        if _thread_finalization_proved(finalized):
+            _acknowledge_managed_load_after_thread_persistence(invocation)
     _log_execution(invocation, result)
     if invocation.control_invocation_id:
         await get_controller().finalize(
             invocation.control_invocation_id,
             _control_terminal_state(result),
             cleanup_state="complete",
+            terminal_persistence_proved=True,
         )
+        _acknowledge_direct_managed_load_after_thread_persistence(invocation)
 
 
 async def _run_codex_agent(

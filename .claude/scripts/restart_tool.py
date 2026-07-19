@@ -134,20 +134,24 @@ def find_server_pid():
 
 
 def find_port_pid(port):
-    """Find process using a specific port."""
+    """Return the one exact positive PID listening on ``port``, if proved."""
     try:
         result = subprocess.run(
             ["fuser", f"{port}/tcp"],
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            stderr=subprocess.STDOUT
         )
-        # fuser outputs like "8765/tcp:   12345"
-        output = result.stdout + result.stderr
-        pids = [p.strip() for p in output.split() if p.strip().isdigit()]
-        return int(pids[0]) if pids else None
-    except Exception:
+    except OSError:
         return None
+
+    if result.returncode != 0 or not isinstance(result.stdout, str):
+        return None
+    tokens = result.stdout.split()
+    if len(tokens) != 1 or not tokens[0].isascii() or not tokens[0].isdigit():
+        return None
+    pid = int(tokens[0])
+    return pid if pid > 0 else None
 
 
 def save_continuation_state(
@@ -255,6 +259,13 @@ def save_continuation_state(
     }
     if restart_provenance:
         continuation["restart_provenance"] = restart_provenance
+        if restart_provenance.get("load_operation_id"):
+            continuation["managed_load"] = {
+                "load_operation_id": restart_provenance.get("load_operation_id"),
+                "source_fingerprint": restart_provenance.get("source_fingerprint"),
+                "restart_attempt_id": restart_provenance.get("restart_attempt_id"),
+                "old_process_pid": restart_provenance.get("old_process_pid"),
+            }
     if shutdown_provenance:
         continuation["shutdown_provenance"] = shutdown_provenance
 

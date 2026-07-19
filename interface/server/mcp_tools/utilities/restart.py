@@ -10,24 +10,21 @@ import asyncio
 import subprocess
 import logging
 import inspect
+import json
 from typing import Any, Dict
 
 from claude_agent_sdk import tool
 
 import restart_provenance as rp
+import managed_load_operations as mlo
 from ..registry import register_tool
 
 logger = logging.getLogger("mcp_tools.restart")
 
 _ALLOWED_RESTART_CONSUMER = "main_streaming_finalizer"
 _AGENT_MANAGED_RESTART_CONSUMER = "agent_managed_restart"
-_AGENT_MANAGED_RESTART_KINDS = frozenset({
-    "invoke_foreground",
-    "invoke_ping",
-    "invoke_trust",
-    "background_processing",
-    "agent_conversation_join",
-})
+_AGENT_MANAGED_DIRECT_KIND = "invoke_foreground"
+_AGENT_MANAGED_SCHEDULED_KIND = "invoke_trust"
 
 
 def _summarize_running_entry(entry: dict[str, Any]) -> str:
@@ -66,31 +63,30 @@ def _agent_managed_restart_error(
     if source_agent != "patch":
         return "agent-managed restarts are Patch-only"
 
-    current_entries = []
+    current_entry, owner_error = _agent_managed_current_entry(
+        restart_consumer, source_agent, running_invocations
+    )
+    if owner_error:
+        return owner_error
     scheduled_wrappers = []
     unexpected_entries = []
     for entry in running_invocations:
-        if (
-            entry.get("agent") == source_agent
-            and entry.get("conversation_id") == conversation_id
-            and entry.get("kind") in _AGENT_MANAGED_RESTART_KINDS
-        ):
-            current_entries.append(entry)
+        if entry.get("id") == (current_entry or {}).get("id"):
+            continue
         elif (
             mode == "scheduled"
             and entry.get("agent") == source_agent
             and entry.get("kind") == "scheduled"
             and not entry.get("conversation_id")
+            and entry.get("scheduled_task_id")
+            == (current_entry or {}).get("scheduled_task_id")
+            and entry.get("scheduled_attempt_id")
+            == (current_entry or {}).get("scheduled_attempt_id")
         ):
             scheduled_wrappers.append(entry)
         else:
             unexpected_entries.append(entry)
 
-    if len(current_entries) != 1:
-        return (
-            "authoritative running_agents did not show exactly one current "
-            f"Patch invocation for thread {conversation_id}"
-        )
     if len(scheduled_wrappers) > 1:
         return "authoritative running_agents showed multiple scheduled Patch wrappers"
     if unexpected_entries:
@@ -103,6 +99,234 @@ def _agent_managed_restart_error(
 def _is_agent_managed_restart_consumer(restart_consumer: str) -> bool:
     mode, conversation_id = _parse_agent_managed_restart_consumer(restart_consumer)
     return bool(mode and conversation_id)
+
+
+def _agent_managed_current_entry(
+    restart_consumer: str,
+    source_agent: str,
+    running_invocations: list[dict[str, Any]],
+) -> tuple[dict[str, Any] | None, str | None]:
+    mode, conversation_id = _parse_agent_managed_restart_consumer(restart_consumer)
+    if not mode or not conversation_id:
+        return None, "agent-managed restart consumer is malformed"
+    if source_agent != "patch":
+        return None, "agent-managed restarts are Patch-only"
+    if mode == "scheduled":
+        matches = [
+            entry
+            for entry in running_invocations
+            if entry.get("agent") == "patch"
+            and entry.get("conversation_id") == conversation_id
+            and entry.get("kind") == _AGENT_MANAGED_SCHEDULED_KIND
+            and entry.get("scheduled_task_id")
+            and entry.get("scheduled_attempt_id")
+        ]
+    elif mode == "foreground":
+        matches = [
+            entry
+            for entry in running_invocations
+            if entry.get("agent") == "patch"
+            and entry.get("conversation_id") == conversation_id
+            and entry.get("kind") == _AGENT_MANAGED_DIRECT_KIND
+            and not entry.get("scheduled_task_id")
+            and not entry.get("scheduled_attempt_id")
+            and entry.get("caller_agent") == "agent_notification_wakeup"
+        ]
+    else:
+        return None, (
+            "unsupported Patch managed-load owner mode; only exact notification "
+            "foreground callbacks and scheduler attempts are accepted"
+        )
+    if len(matches) != 1:
+        return None, (
+            "authoritative running_agents did not show exactly one current "
+            f"Patch invocation for thread {conversation_id}"
+        )
+    return dict(matches[0]), None
+
+
+def _managed_load_binding(
+    restart_consumer: str,
+    source_agent: str,
+    current_entry: dict[str, Any],
+    *,
+    source_fingerprint: str,
+    required_artifact_checkpoints: Any,
+) -> dict[str, Any]:
+    mode, conversation_id = _parse_agent_managed_restart_consumer(restart_consumer)
+    if not mode or not conversation_id:
+        raise mlo.ManagedLoadError("agent-managed restart consumer is malformed")
+    scheduled = mode == "scheduled"
+    scheduled_task_id = current_entry.get("scheduled_task_id") if scheduled else None
+    scheduled_attempt_id = current_entry.get("scheduled_attempt_id") if scheduled else None
+    if scheduled and (not scheduled_task_id or not scheduled_attempt_id):
+        raise mlo.ManagedLoadError(
+            "scheduled managed load requires exact task and attempt identity"
+        )
+    owner_id = scheduled_attempt_id if scheduled else current_entry.get("id")
+    if not owner_id:
+        raise mlo.ManagedLoadError("managed-load current owner identity is missing")
+    return {
+        "source_fingerprint": mlo.normalize_source_fingerprint(source_fingerprint),
+        "consumer_kind": "scheduled" if scheduled else "invoked",
+        "conversation_id": conversation_id,
+        "owner_kind": "scheduled" if scheduled else "direct",
+        "owner_id": str(owner_id),
+        "caller_agent": source_agent,
+        "scheduled_task_id": scheduled_task_id,
+        "scheduled_attempt_id": scheduled_attempt_id,
+        "required_artifact_checkpoints": mlo.normalize_checkpoints(
+            required_artifact_checkpoints
+        ),
+    }
+
+
+async def _validate_managed_load_owner(
+    restart_consumer: str,
+    current_entry: dict[str, Any],
+    binding: dict[str, Any],
+) -> None:
+    """Require one durable terminal owner before receipt preparation."""
+    mode, _ = _parse_agent_managed_restart_consumer(restart_consumer)
+    if mode == "scheduled":
+        if (
+            current_entry.get("caller_agent") != "scheduler"
+            or binding.get("owner_kind") != "scheduled"
+            or binding.get("owner_id") != current_entry.get("scheduled_attempt_id")
+        ):
+            raise mlo.ManagedLoadError(
+                "scheduled managed load lacks exact scheduler attempt ownership"
+            )
+        return
+    if mode != "foreground":
+        raise mlo.ManagedLoadError("unsupported managed-load continuation owner")
+
+    from agent_invocation_control import get_controller
+
+    owner_id = mlo._canonical_uuid(
+        binding.get("owner_id"), field="direct managed-load owner_id"
+    )
+    receipt = await get_controller().get(owner_id)
+    if not receipt:
+        raise mlo.ManagedLoadError(
+            "foreground managed load lacks a durable notification control receipt"
+        )
+    if (
+        receipt.get("invocation_id") != owner_id
+        or receipt.get("live_row_id") != owner_id
+        or receipt.get("target_agent") != "patch"
+        or receipt.get("caller_agent") != "agent_notification_wakeup"
+        or receipt.get("conversation_id") != binding.get("conversation_id")
+        or receipt.get("mode") != "foreground"
+        or receipt.get("state") not in {"accepted", "running", "continuing"}
+        or receipt.get("notification_delivery_state") != "claimed"
+        or not receipt.get("notification_ids")
+    ):
+        raise mlo.ManagedLoadError(
+            "foreground managed load control receipt is not an exact nonterminal callback owner"
+        )
+
+
+def _managed_load_receipt_result(
+    receipt: dict[str, Any], *, existing: bool
+) -> dict[str, Any]:
+    disposition = "existing receipt returned; no restart replayed" if existing else "restart accepted"
+    return {
+        "content": [{
+            "type": "text",
+            "text": (
+                f"Managed load {disposition}.\n"
+                f"Load operation: {receipt['load_operation_id']}\n"
+                f"Source fingerprint: {receipt['source_fingerprint']}\n"
+                f"State: {receipt['state']}\n"
+                f"Restart attempt: {receipt['restart_attempt_id']}\n"
+                f"Process replacement: old={receipt['old_process_pid']} "
+                f"new={receipt.get('new_process_pid') or 'not-proved'}\n"
+                "Required checkpoints: "
+                f"{', '.join(receipt['required_artifact_checkpoints'])}\n"
+                "Completed checkpoints: "
+                f"{', '.join(sorted(receipt['completed_artifact_checkpoints'])) or 'none'}"
+            ),
+        }],
+        "managed_load_receipt": receipt,
+    }
+
+
+def _managed_load_existing_terminal_result(receipt: dict[str, Any]) -> dict[str, Any]:
+    projection = {
+        "load_operation_id": receipt["load_operation_id"],
+        "source_fingerprint": receipt["source_fingerprint"],
+        "state": receipt["state"],
+        "restart_attempt_id": receipt["restart_attempt_id"],
+        "old_process_pid": receipt["old_process_pid"],
+        "new_process_pid": receipt["new_process_pid"],
+        "required_artifact_checkpoints": list(
+            receipt["required_artifact_checkpoints"]
+        ),
+        "completed_artifact_checkpoints": sorted(
+            receipt["completed_artifact_checkpoints"]
+        ),
+        "existing_operation": True,
+        "restart_replayed": False,
+        "receipt_unchanged": True,
+    }
+    return {
+        "content": [{
+            "type": "text",
+            "text": (
+                "Managed load operation was already completed; no restart was replayed.\n"
+                f"Load operation: {projection['load_operation_id']}\n"
+                f"Source fingerprint: {projection['source_fingerprint']}\n"
+                f"State: {projection['state']}\n"
+                f"Historical restart attempt: {projection['restart_attempt_id']}\n"
+                "Historical process replacement: "
+                f"old={projection['old_process_pid']} new={projection['new_process_pid']}\n"
+                "Required checkpoints: "
+                f"{', '.join(projection['required_artifact_checkpoints'])}\n"
+                "Completed checkpoints: "
+                f"{', '.join(projection['completed_artifact_checkpoints'])}"
+            ),
+        }],
+        "managed_load_receipt": projection,
+    }
+
+
+def _handle_managed_load_action(args: Dict[str, Any]) -> Dict[str, Any]:
+    if args.get("_agent_name") != "patch":
+        raise mlo.ManagedLoadError("managed-load status/checkpoints are Patch-only")
+    operation_id = args.get("load_operation_id")
+    fingerprint = mlo.normalize_source_fingerprint(args.get("source_fingerprint"))
+    store = mlo.get_store()
+    receipt = store.get(operation_id)
+    if receipt is None:
+        raise mlo.ManagedLoadError("unknown managed-load operation")
+    if receipt["source_fingerprint"] != fingerprint:
+        raise mlo.ManagedLoadError("managed-load source fingerprint conflict")
+    action = args.get("managed_load_action")
+    if action == "checkpoint":
+        checkpoints = args.get("artifact_checkpoints")
+        if not isinstance(checkpoints, list) or not checkpoints:
+            raise mlo.ManagedLoadError(
+                "artifact_checkpoints must be a non-empty array for checkpoint action"
+            )
+        for item in checkpoints:
+            if not isinstance(item, dict) or set(item) != {"name", "path"}:
+                raise mlo.ManagedLoadError(
+                    "each artifact checkpoint must contain exactly name and path"
+                )
+            relative_path, digest = mlo.verify_artifact_path(
+                receipt["load_operation_id"],
+                str(item["name"]),
+                str(item["path"]),
+            )
+            receipt = store.record_artifact_checkpoint(
+                receipt["load_operation_id"],
+                source_fingerprint=fingerprint,
+                checkpoint=str(item["name"]),
+                relative_path=relative_path,
+                sha256=digest,
+            )
+    return _managed_load_receipt_result(receipt, existing=True)
 
 
 def _spawn_managed_restart_subprocess(
@@ -177,20 +401,80 @@ IMPORTANT: This tool will:
 4. Restart the server with your changes applied
 5. Automatically continue ALL active conversations after restart (both yours and any other agents)
 
-You will receive a system message after restart confirming it worked. Use this to verify your changes.""",
+For Patch agent-managed loads, the restart action additionally requires a stable
+load_operation_id, ordered source-manifest source_fingerprint, and exact allowlisted
+required_artifact_checkpoints. Repeating that exact operation returns its durable
+receipt and never spawns again. Patch may use managed_load_action=status or checkpoint
+to read truth or verify declared codebase artifacts without restarting.
+At a later natural-load boundary, existing_terminal_only=true lets a different exact
+current Patch owner assert only the same fully artifacts_reconciled operation. Any
+absence, conflict, or nonterminal state stops without preparation or replacement.
+
+You will receive a system message after restart confirming it worked. Use the managed
+load receipt—not later uptime or an intent marker—as process/load truth.""",
     input_schema={
         "type": "object",
         "properties": {
             "session_id": {"type": "string", "description": "Current session ID to continue after restart (auto-detected if not provided)"},
             "reason": {"type": "string", "description": "Why you're restarting — describe the change you made or why the restart is needed. Defaults to a generic message if omitted."},
             "rebuild": {"type": "boolean", "description": "If true, rebuild frontend before restart. Use when frontend code changed. Default: false (quick restart).", "default": False},
-            "pending_messages": {"type": "array", "description": "Messages not yet saved (will be preserved)", "items": {"type": "object"}}
+            "pending_messages": {"type": "array", "description": "Messages not yet saved (will be preserved)", "items": {"type": "object"}},
+            "managed_load_action": {
+                "type": "string",
+                "enum": ["restart", "status", "checkpoint"],
+                "default": "restart",
+                "description": "Patch-only managed-load action. status/checkpoint never restart."
+            },
+            "existing_terminal_only": {
+                "type": "boolean",
+                "default": False,
+                "description": (
+                    "Patch-only assertion for agent-managed quick restart calls: "
+                    "return only an exact artifacts_reconciled operation without "
+                    "creating, advancing, or replaying a restart."
+                )
+            },
+            "load_operation_id": {
+                "type": "string",
+                "description": "Stable caller-persisted canonical UUID required for Patch agent-managed restart/status/checkpoint."
+            },
+            "source_fingerprint": {
+                "type": "string",
+                "description": "Ordered accepted source-manifest digest as sha256:<64 lowercase hex>; required for Patch managed-load actions."
+            },
+            "required_artifact_checkpoints": {
+                "type": "array",
+                "items": {"type": "string", "enum": sorted(mlo.ALLOWED_ARTIFACT_CHECKPOINTS)},
+                "description": "Exact unique non-empty checkpoint set required for Patch agent-managed restart."
+            },
+            "artifact_checkpoints": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {"name": {"type": "string"}, "path": {"type": "string"}},
+                    "required": ["name", "path"],
+                    "additionalProperties": False
+                },
+                "description": "For checkpoint action only: existing codebase files that already contain the exact operation UUID."
+            }
         }
     }
 )
 async def restart_server(args: Dict[str, Any]) -> Dict[str, Any]:
     """Restart the server with conversation continuity."""
     try:
+        managed_load_action = args.get("managed_load_action", "restart")
+        if managed_load_action not in {"restart", "status", "checkpoint"}:
+            raise mlo.ManagedLoadError("unsupported managed_load_action")
+        existing_terminal_only = args.get("existing_terminal_only", False)
+        if not isinstance(existing_terminal_only, bool):
+            raise mlo.ManagedLoadError("existing_terminal_only must be a boolean")
+        if existing_terminal_only and managed_load_action != "restart":
+            raise mlo.ManagedLoadError(
+                "existing_terminal_only is valid only for managed restart assertions"
+            )
+        if managed_load_action != "restart":
+            return _handle_managed_load_action(args)
         session_id = args.get("session_id")
         source_chat_id = args.get("_source_chat_id")
         calling_agent_name = args.get("_agent_name")
@@ -198,6 +482,19 @@ async def restart_server(args: Dict[str, Any]) -> Dict[str, Any]:
         rebuild = args.get("rebuild", False)
         restart_consumer = args.get("_restart_consumer") or "none"
         agent_managed_consumer = _is_agent_managed_restart_consumer(restart_consumer)
+        if existing_terminal_only:
+            if not agent_managed_consumer:
+                raise mlo.ManagedLoadError(
+                    "existing_terminal_only requires a Patch agent-managed restart consumer"
+                )
+            if rebuild is not False:
+                raise mlo.ManagedLoadError(
+                    "existing_terminal_only requires rebuild=false"
+                )
+            if "artifact_checkpoints" in args:
+                raise mlo.ManagedLoadError(
+                    "existing_terminal_only cannot include artifact_checkpoints"
+                )
 
         # Import tools
         import restart_tool as rt
@@ -341,12 +638,78 @@ async def restart_server(args: Dict[str, Any]) -> Dict[str, Any]:
 
         agent_managed_restart = False
         agent_managed_restart_error = ""
+        managed_load_store = None
+        managed_load_binding = None
+        managed_load_receipt = None
+        managed_load_created = False
         if _is_agent_managed_restart_consumer(restart_consumer):
-            agent_managed_restart_error = _agent_managed_restart_error(
+            current_entry, current_entry_error = _agent_managed_current_entry(
+                restart_consumer,
+                source_agent,
+                running_invocations,
+            )
+            if current_entry_error:
+                agent_managed_restart_error = current_entry_error
+            else:
+                try:
+                    managed_load_binding = _managed_load_binding(
+                        restart_consumer,
+                        source_agent,
+                        current_entry or {},
+                        source_fingerprint=args.get("source_fingerprint"),
+                        required_artifact_checkpoints=args.get(
+                            "required_artifact_checkpoints"
+                        ),
+                    )
+                    await _validate_managed_load_owner(
+                        restart_consumer,
+                        current_entry or {},
+                        managed_load_binding,
+                    )
+                    operation_id = mlo._canonical_uuid(
+                        args.get("load_operation_id"), field="load_operation_id"
+                    )
+                    managed_load_store = mlo.get_store()
+                    if not existing_terminal_only:
+                        managed_load_store.assert_store_readable()
+                        managed_load_receipt = managed_load_store.get(operation_id)
+                        if managed_load_receipt is not None:
+                            managed_load_store.validate_binding(
+                                managed_load_receipt, **managed_load_binding
+                            )
+                            return _managed_load_receipt_result(
+                                managed_load_receipt, existing=True
+                            )
+                except mlo.ManagedLoadError as exc:
+                    agent_managed_restart_error = str(exc)
+            safety_error = _agent_managed_restart_error(
                 restart_consumer=restart_consumer,
                 source_agent=source_agent,
                 running_invocations=running_invocations,
             ) or ""
+            if not agent_managed_restart_error:
+                agent_managed_restart_error = safety_error
+            if existing_terminal_only and not agent_managed_restart_error:
+                try:
+                    assert managed_load_store is not None
+                    assert managed_load_binding is not None
+                    managed_load_receipt = (
+                        managed_load_store.assert_existing_terminal(
+                            operation_id,
+                            source_fingerprint=managed_load_binding[
+                                "source_fingerprint"
+                            ],
+                            required_artifact_checkpoints=managed_load_binding[
+                                "required_artifact_checkpoints"
+                            ],
+                        )
+                    )
+                except mlo.ManagedLoadError as exc:
+                    agent_managed_restart_error = str(exc)
+                else:
+                    return _managed_load_existing_terminal_result(
+                        managed_load_receipt
+                    )
             agent_managed_restart = not agent_managed_restart_error
 
         acceptance_mode = None
@@ -403,6 +766,18 @@ async def restart_server(args: Dict[str, Any]) -> Dict[str, Any]:
                 "is_error": True,
             }
         if agent_managed_restart:
+            if rebuild:
+                return {
+                    "content": [{
+                        "type": "text",
+                        "text": (
+                            "Error: Patch managed loads currently support the quick "
+                            "backend restart path only. No marker, intent, or process "
+                            "replacement was created."
+                        ),
+                    }],
+                    "is_error": True,
+                }
             running_agents_bootstrap_note = (
                 "\nManaged restart accepted from a scheduled/invoked Patch context. "
                 "Authoritative running_agents shows no protected active work beyond "
@@ -450,14 +825,46 @@ async def restart_server(args: Dict[str, Any]) -> Dict[str, Any]:
             wait_time = 5
 
         log_file = rt.CLAUDE_DIR / "server_restart.log"
+        old_process_pid = None
+        if agent_managed_restart:
+            old_process_pid = rt.find_port_pid(8000)
+            if not old_process_pid:
+                raise mlo.ManagedLoadError(
+                    "cannot prepare managed load without the exact listening backend PID"
+                )
         restart_provenance = rp.build_managed_restart_provenance(
             reason=reason,
             restart_script=str(restart_script),
             acceptance_mode=acceptance_mode,
             restart_consumer=restart_consumer,
+            load_operation_id=args.get("load_operation_id") if agent_managed_restart else None,
+            source_fingerprint=(
+                managed_load_binding["source_fingerprint"]
+                if agent_managed_restart and managed_load_binding
+                else None
+            ),
+            old_process_pid=old_process_pid,
         )
         restart_provenance_env = rp.safe_env_from_record(restart_provenance)
         restart_attempt_id = restart_provenance["restart_attempt_id"]
+        if agent_managed_restart:
+            assert managed_load_store is not None and managed_load_binding is not None
+            managed_load_receipt, managed_load_created = managed_load_store.prepare(
+                load_operation_id=args.get("load_operation_id"),
+                accepted_restart_consumer=restart_consumer,
+                restart_attempt_id=restart_attempt_id,
+                old_process_pid=old_process_pid,
+                **managed_load_binding,
+            )
+            if not managed_load_created:
+                return _managed_load_receipt_result(managed_load_receipt, existing=True)
+            restart_provenance_env.update(
+                mlo.managed_load_env(
+                    load_operation_id=managed_load_receipt["load_operation_id"],
+                    source_fingerprint=managed_load_receipt["source_fingerprint"],
+                    old_process_pid=old_process_pid,
+                )
+            )
 
         # Save the continuation marker and pending restart config as one
         # logical operation. If the second write fails, remove the marker this
@@ -501,6 +908,10 @@ async def restart_server(args: Dict[str, Any]) -> Dict[str, Any]:
                 "restart_provenance": restart_provenance,
                 "restart_provenance_env": restart_provenance_env,
             }))
+            if agent_managed_restart:
+                managed_load_receipt = managed_load_store.mark_restart_accepted(
+                    managed_load_receipt["load_operation_id"], restart_attempt_id
+                )
         except Exception:
             try:
                 pending_restart_file.unlink()
@@ -511,6 +922,13 @@ async def restart_server(args: Dict[str, Any]) -> Dict[str, Any]:
                     rt.RESTART_MARKER.unlink()
                 except FileNotFoundError:
                     pass
+            if managed_load_created and managed_load_store and managed_load_receipt:
+                managed_load_store.mark_failure(
+                    managed_load_receipt["load_operation_id"],
+                    restart_attempt_id=restart_attempt_id,
+                    phase="pre_spawn",
+                    code="marker_or_acceptance_write_failed",
+                )
             raise
 
         if agent_managed_restart:
@@ -519,6 +937,9 @@ async def restart_server(args: Dict[str, Any]) -> Dict[str, Any]:
             except FileNotFoundError:
                 pass
             try:
+                managed_load_receipt = managed_load_store.mark_spawn_dispatched(
+                    managed_load_receipt["load_operation_id"], restart_attempt_id
+                )
                 logger.info(
                     "RESTART: spawning agent-managed restart subprocess "
                     "(attempt_id=%s, script=%s)",
@@ -531,14 +952,12 @@ async def restart_server(args: Dict[str, Any]) -> Dict[str, Any]:
                     provenance_env=restart_provenance_env,
                 )
             except Exception:
-                try:
-                    pending_restart_file.unlink()
-                except FileNotFoundError:
-                    pass
-                try:
-                    rt.RESTART_MARKER.unlink()
-                except FileNotFoundError:
-                    pass
+                managed_load_store.mark_failure(
+                    managed_load_receipt["load_operation_id"],
+                    restart_attempt_id=restart_attempt_id,
+                    phase="replacement",
+                    code="spawn_dispatch_uncertain",
+                )
                 raise
 
         agent_invocation_count = len(continuation.get("agent_invocations", []))
@@ -549,6 +968,9 @@ async def restart_server(args: Dict[str, Any]) -> Dict[str, Any]:
             bystander_note = f"\n{bystander_count} other active session(s) will also be resumed after restart."
         if agent_invocation_count > 0:
             bystander_note += f"\n{agent_invocation_count} active agent invocation(s) will also be resumed after restart."
+
+        if agent_managed_restart:
+            return _managed_load_receipt_result(managed_load_receipt, existing=False)
 
         return {
             "content": [{
