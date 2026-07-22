@@ -75,6 +75,14 @@ process_alive() {
     [ -n "${1:-}" ] && kill -0 "$1" 2>/dev/null
 }
 
+close_exact_startup_lock_fd() {
+    local fd_target
+    fd_target="$(readlink "/proc/$$/fd/9" 2>/dev/null || true)"
+    if [ "$fd_target" = "/tmp/second-brain-startup.lock" ]; then
+        exec 9>&-
+    fi
+}
+
 write_restart_provenance_intent() {
     ensure_restart_attempt_id
     echo "Restart provenance: attempt_id=$SECOND_BRAIN_RESTART_ATTEMPT_ID source=$SECOND_BRAIN_RESTART_PROVENANCE_SOURCE"
@@ -250,6 +258,7 @@ fi
 echo "Starting server on port $PORT..."
 
 # Run in background with proper daemonization - use uvicorn directly
+close_exact_startup_lock_fd
 nohup setsid uvicorn main:app --host 0.0.0.0 --port $PORT > "$LOG_FILE" 2>&1 < /dev/null &
 SERVER_PID=$!
 

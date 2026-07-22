@@ -9,6 +9,9 @@ into conversation context on subsequent turns.
 from typing import Any, Callable, Dict, Optional
 import json
 import logging
+import re
+import uuid
+from datetime import datetime, timedelta
 
 from tool_output_artifacts import format_raw_output_pointer
 
@@ -505,6 +508,312 @@ def serialize_restart_server(args: dict, output: str, is_error: bool) -> dict:
     return {"args": {}, "output_summary": "restart request finished"}
 
 
+_SCHEDULER_STATUS_SCHEMA = "second_brain.scheduler_status.v1"
+_SCHEDULER_STATUS_FALLBACK = "scheduler_status result unavailable"
+_SCHEDULER_STATUS_TASK_ID_RE = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9._:@/+\-]{0,255}$"
+)
+_SCHEDULER_STATUS_ATTEMPT_ID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+)
+_SCHEDULER_STATUS_CODES = frozenset({
+    "task_status",
+    "attempt_status",
+    "invalid_request",
+    "invalid_task_id",
+    "invalid_attempt_id",
+    "task_not_found",
+    "attempt_not_found",
+    "task_attempt_mismatch",
+    "task_identity_conflict",
+    "attempt_identity_conflict",
+    "store_malformed",
+    "store_unavailable",
+})
+_SCHEDULER_STATUS_STATES = frozenset({
+    "claimed", "running", "succeeded", "failed", "malformed",
+})
+_SCHEDULER_STATUS_RECEIPT_STATUSES = frozenset({
+    "no_attempts",
+    "legacy_no_execution_receipt",
+    "attempts",
+    "attempts_with_malformed",
+    "malformed_only",
+})
+_SCHEDULER_STATUS_ERROR_CLASSES = frozenset({
+    "validation",
+    "launch",
+    "execution",
+    "timeout",
+    "cancelled",
+    "interrupted",
+    "delivery",
+    "unknown",
+})
+_SCHEDULER_STATUS_ERROR_CODES = frozenset({
+    "missing_agent",
+    "target_room_missing",
+    "inner_setup_rejected",
+    "inner_launch_failed",
+    "outer_correlation_failed",
+    "running_gate_failed",
+    "runner_error",
+    "runner_timeout",
+    "runner_cancelled",
+    "wrapper_timeout",
+    "wrapper_cancelled",
+    "output_save_failed",
+    "thread_finalization_failed",
+    "interrupted_before_start",
+    "interrupted_uncertain",
+    "stale_live_row",
+    "malformed_receipt",
+    "unknown",
+})
+_SCHEDULER_STATUS_TOP_KEYS = frozenset({
+    "schema", "ok", "code", "query", "task", "attempts", "attempt",
+})
+_SCHEDULER_STATUS_ATTEMPT_KEYS = frozenset({
+    "task_id",
+    "attempt_id",
+    "state",
+    "claimed_at",
+    "running_at",
+    "terminal_at",
+    "updated_at",
+    "resume_count",
+    "error_class",
+    "error_code",
+    "receipt_error",
+})
+
+
+def _scheduler_status_is_task_id(value: Any) -> bool:
+    return isinstance(value, str) and bool(_SCHEDULER_STATUS_TASK_ID_RE.fullmatch(value))
+
+
+def _scheduler_status_is_canonical_attempt_id(value: Any) -> bool:
+    if not isinstance(value, str) or not _SCHEDULER_STATUS_ATTEMPT_ID_RE.fullmatch(value):
+        return False
+    try:
+        return str(uuid.UUID(value)) == value
+    except (TypeError, ValueError, AttributeError):
+        return False
+
+
+def _scheduler_status_is_output_attempt_id(value: Any) -> bool:
+    if not _scheduler_status_is_task_id(value):
+        return False
+    try:
+        uuid.UUID(value)
+    except (TypeError, ValueError, AttributeError):
+        return False
+    return True
+
+
+def _scheduler_status_safe_args(args: dict) -> dict:
+    safe = {}
+    task_id = args.get("task_id") if isinstance(args, dict) else None
+    attempt_id = args.get("attempt_id") if isinstance(args, dict) else None
+    if _scheduler_status_is_task_id(task_id):
+        safe["task_id"] = task_id
+    if _scheduler_status_is_canonical_attempt_id(attempt_id):
+        safe["attempt_id"] = attempt_id
+    return safe
+
+
+def _scheduler_status_is_timestamp(value: Any) -> bool:
+    if value is None:
+        return True
+    if (
+        not isinstance(value, str)
+        or not value.endswith("Z")
+        or len(value) > 40
+        or not re.fullmatch(r"[0-9T:.\-]+Z", value)
+    ):
+        return False
+    try:
+        parsed = datetime.fromisoformat(value[:-1] + "+00:00")
+    except ValueError:
+        return False
+    return parsed.utcoffset() == timedelta(0)
+
+
+def _scheduler_status_attempt_projection(value: Any) -> Optional[dict]:
+    if not isinstance(value, dict) or set(value) != _SCHEDULER_STATUS_ATTEMPT_KEYS:
+        return None
+    task_id = value.get("task_id")
+    if task_id is not None and not _scheduler_status_is_task_id(task_id):
+        return None
+    if not _scheduler_status_is_output_attempt_id(value.get("attempt_id")):
+        return None
+    state = value.get("state")
+    if state not in _SCHEDULER_STATUS_STATES:
+        return None
+    for key in ("claimed_at", "running_at", "terminal_at", "updated_at"):
+        if not _scheduler_status_is_timestamp(value.get(key)):
+            return None
+    resume_count = value.get("resume_count")
+    if type(resume_count) is not int or resume_count < 0:
+        return None
+    error_class = value.get("error_class")
+    error_code = value.get("error_code")
+    receipt_error = value.get("receipt_error")
+    if state == "malformed":
+        if any(value.get(key) is not None for key in (
+            "claimed_at", "running_at", "terminal_at", "updated_at",
+        )):
+            return None
+        if (
+            resume_count != 0
+            or error_class != "validation"
+            or error_code != "malformed_receipt"
+            or receipt_error != "malformed_receipt"
+        ):
+            return None
+    else:
+        if value.get("claimed_at") is None or value.get("updated_at") is None:
+            return None
+        if receipt_error is not None:
+            return None
+        if error_class is not None and error_class not in _SCHEDULER_STATUS_ERROR_CLASSES:
+            return None
+        if error_code is not None and error_code not in _SCHEDULER_STATUS_ERROR_CODES:
+            return None
+
+    return {key: value[key] for key in (
+        "task_id",
+        "attempt_id",
+        "state",
+        "claimed_at",
+        "running_at",
+        "terminal_at",
+        "updated_at",
+        "resume_count",
+        "error_class",
+        "error_code",
+        "receipt_error",
+    )}
+
+
+def _scheduler_status_closed_projection(value: Any, safe_args: dict) -> Optional[dict]:
+    if not isinstance(value, dict) or set(value) != _SCHEDULER_STATUS_TOP_KEYS:
+        return None
+    if value.get("schema") != _SCHEDULER_STATUS_SCHEMA:
+        return None
+    if type(value.get("ok")) is not bool or value.get("code") not in _SCHEDULER_STATUS_CODES:
+        return None
+    code = value["code"]
+    if value["ok"] != (code in {"task_status", "attempt_status"}):
+        return None
+
+    query = value.get("query")
+    if not isinstance(query, dict) or set(query) - {"task_id", "attempt_id"}:
+        return None
+    if query != safe_args:
+        return None
+
+    task = value.get("task")
+    projected_task = None
+    if task is not None:
+        if not isinstance(task, dict) or set(task) != {"task_id", "definition_state"}:
+            return None
+        if (
+            not _scheduler_status_is_task_id(task.get("task_id"))
+            or task.get("definition_state") not in {"active", "inactive"}
+        ):
+            return None
+        projected_task = {
+            "task_id": task["task_id"],
+            "definition_state": task["definition_state"],
+        }
+
+    attempts = value.get("attempts")
+    projected_attempts = None
+    if attempts is not None:
+        if not isinstance(attempts, dict) or set(attempts) != {
+            "receipt_status", "retained_count", "state_counts", "latest",
+        }:
+            return None
+        if attempts.get("receipt_status") not in _SCHEDULER_STATUS_RECEIPT_STATUSES:
+            return None
+        retained_count = attempts.get("retained_count")
+        if type(retained_count) is not int or retained_count < 0:
+            return None
+        state_counts = attempts.get("state_counts")
+        if not isinstance(state_counts, dict) or set(state_counts) != _SCHEDULER_STATUS_STATES:
+            return None
+        if any(type(count) is not int or count < 0 for count in state_counts.values()):
+            return None
+        if sum(state_counts.values()) != retained_count:
+            return None
+        latest = attempts.get("latest")
+        projected_latest = (
+            None if latest is None else _scheduler_status_attempt_projection(latest)
+        )
+        if latest is not None and (
+            projected_latest is None or projected_latest["state"] == "malformed"
+        ):
+            return None
+        projected_attempts = {
+            "receipt_status": attempts["receipt_status"],
+            "retained_count": retained_count,
+            "state_counts": {
+                state: state_counts[state]
+                for state in ("claimed", "running", "succeeded", "failed", "malformed")
+            },
+            "latest": projected_latest,
+        }
+
+    exact_attempt = value.get("attempt")
+    projected_exact_attempt = (
+        None if exact_attempt is None else _scheduler_status_attempt_projection(exact_attempt)
+    )
+    if exact_attempt is not None and projected_exact_attempt is None:
+        return None
+
+    if code == "task_status":
+        if projected_task is None or projected_attempts is None or projected_exact_attempt is not None:
+            return None
+    elif code == "attempt_status":
+        if projected_attempts is not None or projected_exact_attempt is None:
+            return None
+    elif any(item is not None for item in (
+        projected_task, projected_attempts, projected_exact_attempt,
+    )):
+        return None
+
+    return {
+        "schema": _SCHEDULER_STATUS_SCHEMA,
+        "ok": value["ok"],
+        "code": code,
+        "query": dict(query),
+        "task": projected_task,
+        "attempts": projected_attempts,
+        "attempt": projected_exact_attempt,
+    }
+
+
+def serialize_scheduler_status(args: dict, output: str, is_error: bool) -> dict:
+    safe_args = _scheduler_status_safe_args(args)
+    try:
+        parsed = json.loads(output)
+    except (json.JSONDecodeError, TypeError):
+        return {"args": safe_args, "output_summary": _SCHEDULER_STATUS_FALLBACK}
+    projection = _scheduler_status_closed_projection(parsed, safe_args)
+    if projection is None:
+        return {"args": safe_args, "output_summary": _SCHEDULER_STATUS_FALLBACK}
+    return {
+        "args": safe_args,
+        "output_summary": json.dumps(
+            projection,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ),
+    }
+
+
 
 
 # ── Registry ──
@@ -551,6 +860,7 @@ TOOL_SERIALIZERS: Dict[str, Callable[[dict, str, bool], dict]] = {
     "ytmusic_delete_playlist": serialize_ytmusic_delete_playlist,
     "schedule_self": serialize_schedule_self,
     "schedule_agent": serialize_schedule_agent,
+    "scheduler_status": serialize_scheduler_status,
     "scheduler_update": serialize_scheduler_update,
     "scheduler_remove": serialize_scheduler_remove,
     "forms_save": serialize_forms_save,
@@ -635,8 +945,12 @@ def serialize_tool_call(
     try:
         result = serializer(args, output or "", is_error)
     except Exception as e:
-        logger.warning(f"Serializer error for {tool_name}: {e}")
-        result = _default_serializer(args, output or "", is_error)
+        if lookup_name == "scheduler_status":
+            logger.warning("Serializer error for scheduler_status")
+            result = {"args": {}, "output_summary": _SCHEDULER_STATUS_FALLBACK}
+        else:
+            logger.warning(f"Serializer error for {tool_name}: {e}")
+            result = _default_serializer(args, output or "", is_error)
 
     message = {
         "role": "tool_call",
@@ -647,7 +961,7 @@ def serialize_tool_call(
         "output_summary": result.get("output_summary", ""),
         "is_error": is_error,
     }
-    if raw_output:
+    if raw_output and lookup_name != "scheduler_status":
         raw_output_metadata = dict(raw_output)
         raw_output_metadata["history_truncated"] = result.get("output_summary", "") != (output or "")
         message["raw_output"] = raw_output_metadata

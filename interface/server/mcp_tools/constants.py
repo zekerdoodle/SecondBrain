@@ -94,6 +94,7 @@ SNAPTRADE_TOOLS = [
 SCHEDULER_TOOLS = [
     "schedule_self",
     "scheduler_list",
+    "scheduler_status",
     "scheduler_update",
     "scheduler_remove",
 ]

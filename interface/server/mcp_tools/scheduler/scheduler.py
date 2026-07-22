@@ -4,6 +4,7 @@ Scheduler tools.
 Tools for managing automated scheduled tasks.
 """
 
+import json
 import os
 import sys
 from typing import Any, Dict
@@ -111,6 +112,81 @@ async def scheduler_list(args: Dict[str, Any]) -> Dict[str, Any]:
         return {"content": [{"type": "text", "text": result}]}
     except Exception as e:
         return {"content": [{"type": "text", "text": f"Error: {str(e)}"}], "is_error": True}
+
+
+@register_tool("scheduler")
+@tool(
+    name="scheduler_status",
+    description="""Read bounded content-free status for one already-known scheduler identity.
+
+Use task_id for effective definition state plus fixed receipt counts and one latest valid
+attempt. Use attempt_id for one exact receipt. Supply both IDs to prove ownership. This
+tool never lists unrelated definitions; use scheduler_list only for intentional catalog
+browsing.""",
+    input_schema={
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256,
+                "pattern": r"^[A-Za-z0-9][A-Za-z0-9._:@/+\-]{0,255}$",
+                "description": "One exact bounded scheduler task ID.",
+            },
+            "attempt_id": {
+                "type": "string",
+                "minLength": 36,
+                "maxLength": 36,
+                "pattern": r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "description": "One exact canonical lowercase hyphenated UUID attempt ID.",
+            },
+        },
+        "anyOf": [
+            {"required": ["task_id"]},
+            {"required": ["attempt_id"]},
+        ],
+    },
+)
+async def scheduler_status(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Return canonical JSON from the dedicated exact status projector."""
+    fixed_unavailable = {
+        "schema": "second_brain.scheduler_status.v1",
+        "ok": False,
+        "code": "store_unavailable",
+        "query": {},
+        "task": None,
+        "attempts": None,
+        "attempt": None,
+    }
+    try:
+        import scheduler_tool
+
+        if not isinstance(args, dict):
+            result = scheduler_tool.invalid_exact_status_request()
+        elif set(args) - {"task_id", "attempt_id"}:
+            result = scheduler_tool.invalid_exact_status_request(
+                task_id=args.get("task_id"),
+                attempt_id=args.get("attempt_id"),
+            )
+        else:
+            result = scheduler_tool.get_exact_status(
+                task_id=args.get("task_id"),
+                attempt_id=args.get("attempt_id"),
+            )
+    except Exception:
+        result = fixed_unavailable
+
+    rendered = json.dumps(
+        result,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    response = {"content": [{"type": "text", "text": rendered}]}
+    if not result.get("ok", False):
+        response["is_error"] = True
+    return response
 
 
 @register_tool("scheduler")

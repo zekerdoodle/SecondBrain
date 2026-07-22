@@ -30,6 +30,7 @@ from worktree_manager import (  # noqa: E402
     WorktreeManager,
     WorktreeValidationError,
 )
+import running_agents  # noqa: E402
 
 _ALLOWED_ACTIONS = {"cleanup", "force", "abandon"}
 _DEFAULT_HISTORY_LIMIT = 10
@@ -108,6 +109,10 @@ def _inspection_to_dict(manager: WorktreeManager, agent: str, slug: str) -> Dict
             "git_worktree_present": False,
             "dirty": None,
             "dirty_status": "",
+            "raw_dirty": None,
+            "normalized_status": None,
+            "manifest_valid": False,
+            "baseline_clean": None,
             "problems": [f"inspection-error: {exc}"],
             "stale": True,
         }
@@ -161,12 +166,31 @@ def _count_stale(inspections: Iterable[Dict[str, Any]]) -> int:
     return sum(1 for item in inspections if item.get("stale"))
 
 
+def _authoritative_running_rows() -> list[Dict[str, Any]]:
+    """Read live-row truth or fail closed before cleanup can mutate state."""
+    try:
+        rows = running_agents.list_source_of_truth_sync()
+    except Exception as exc:
+        raise WorktreeCleanupError(
+            "authoritative running-row truth is unavailable; "
+            "cleanup refused without mutation"
+        ) from exc
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+        raise WorktreeCleanupError(
+            "authoritative running-row truth is inconclusive; "
+            "cleanup refused without mutation"
+        )
+    return rows
+
+
 _INSPECT_DESCRIPTION = """Patch-only read-only inspection for active coder worktrees.
 
 With no agent/slug, inspects every active canonical registry record. With both
 agent and slug, inspects that single record and returns diagnostics even when it
-is missing or stale. This tool never mutates registry, locks, history, branches,
-or worktree directories.
+is missing, preparing, old, tampered, or stale. It recomputes both manifest
+digests and reports manifest_valid, raw_dirty, and tri-state baseline_clean
+separately. This tool never mutates registry, locks, history, branches, or
+worktree directories.
 """
 
 _INSPECT_SCHEMA = {
@@ -298,6 +322,7 @@ async def coder_worktree_cleanup(args: Dict[str, Any]) -> Dict[str, Any]:
             slug,
             force=action == "force",
             abandon=action == "abandon",
+            live_rows_provider=_authoritative_running_rows,
         )
         inspection_after = manager.inspect_active_worktree(agent, slug).to_dict()
     except WorktreeCleanupError as exc:

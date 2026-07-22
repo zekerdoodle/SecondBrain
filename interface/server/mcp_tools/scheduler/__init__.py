@@ -7,6 +7,7 @@ from . import scheduler as sched_module
 from .scheduler import (
     schedule_self,
     scheduler_list,
+    scheduler_status,
     scheduler_update,
     scheduler_remove,
 )
@@ -14,6 +15,7 @@ from .scheduler import (
 __all__ = [
     "schedule_self",
     "scheduler_list",
+    "scheduler_status",
     "scheduler_update",
     "scheduler_remove",
 ]

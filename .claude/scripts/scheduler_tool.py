@@ -82,6 +82,11 @@ _ATTEMPT_FIELDS = frozenset({
     "error_code",
 })
 _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@/+\-]{0,255}$")
+_CANONICAL_ATTEMPT_ID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+)
+_STATUS_SCHEMA = "second_brain.scheduler_status.v1"
+_STATUS_STATE_KEYS = ("claimed", "running", "succeeded", "failed", "malformed")
 
 
 class OneTimeScheduleError(ValueError):
@@ -90,6 +95,14 @@ class OneTimeScheduleError(ValueError):
 
 class SchedulerAttemptError(RuntimeError):
     """A scheduler attempt receipt or lifecycle transition is invalid."""
+
+
+class _SchedulerStatusStoreError(RuntimeError):
+    """Internal fixed-code failure from the read-only status snapshot boundary."""
+
+    def __init__(self, code):
+        self.code = code
+        super().__init__(code)
 
 
 def _utc_timestamp(now=None):
@@ -124,6 +137,15 @@ def _validate_safe_id(value, *, field, nullable=False):
         return
     if not isinstance(value, str) or not _SAFE_ID_RE.fullmatch(value):
         raise SchedulerAttemptError(f"{field} must be a bounded content-free identifier")
+
+
+def _is_canonical_attempt_id(value):
+    if not isinstance(value, str) or not _CANONICAL_ATTEMPT_ID_RE.fullmatch(value):
+        return False
+    try:
+        return str(uuid.UUID(value)) == value
+    except (TypeError, ValueError, AttributeError):
+        return False
 
 
 def _validate_attempt(attempt, *, expected_task_id=None):
@@ -368,6 +390,25 @@ def _normalize_once_schedule(schedule_text, *, allow_legacy_gap=False):
 
 def _load_tasks():
     return load_json(TASKS_FILE, default=[])
+
+
+def _read_status_tasks():
+    """Read one scheduler snapshot without locks, writes, or fallback coercion."""
+    try:
+        with TASKS_FILE.open("r", encoding="utf-8") as handle:
+            tasks = json.load(handle)
+    except FileNotFoundError:
+        return []
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
+        raise _SchedulerStatusStoreError("store_malformed") from exc
+    except OSError as exc:
+        raise _SchedulerStatusStoreError("store_unavailable") from exc
+    except Exception as exc:
+        raise _SchedulerStatusStoreError("store_unavailable") from exc
+
+    if not isinstance(tasks, list):
+        raise _SchedulerStatusStoreError("store_malformed")
+    return tasks
 
 
 def _save_tasks(tasks):
@@ -690,6 +731,234 @@ def _legacy_attempt_projection(task):
         "error_code": None,
         "receipt_error": "legacy_no_execution_receipt",
     }
+
+
+def _status_query(task_id=None, attempt_id=None):
+    query = {}
+    if isinstance(task_id, str) and _SAFE_ID_RE.fullmatch(task_id):
+        query["task_id"] = task_id
+    if _is_canonical_attempt_id(attempt_id):
+        query["attempt_id"] = attempt_id
+    return query
+
+
+def _status_result(*, ok, code, query, task=None, attempts=None, attempt=None):
+    return {
+        "schema": _STATUS_SCHEMA,
+        "ok": ok,
+        "code": code,
+        "query": dict(query),
+        "task": task,
+        "attempts": attempts,
+        "attempt": attempt,
+    }
+
+
+def invalid_exact_status_request(task_id=None, attempt_id=None):
+    """Return the fixed refusal used when the MCP request shape is invalid."""
+    return _status_result(
+        ok=False,
+        code="invalid_request",
+        query=_status_query(task_id, attempt_id),
+    )
+
+
+def _status_task_projection(task):
+    task_id = task.get("id") if isinstance(task, dict) else None
+    if not isinstance(task_id, str) or not _SAFE_ID_RE.fullmatch(task_id):
+        return None
+    return {
+        "task_id": task_id,
+        "definition_state": "active" if bool(task.get("active", True)) else "inactive",
+    }
+
+
+def _status_attempt_projection(task, raw, *, exact_attempt_id=None):
+    task_id = task.get("id") if isinstance(task, dict) else None
+    try:
+        validated = _validate_attempt(raw, expected_task_id=task_id)
+    except SchedulerAttemptError:
+        safe_task_id = (
+            task_id
+            if isinstance(task_id, str) and _SAFE_ID_RE.fullmatch(task_id)
+            else None
+        )
+        safe_attempt_id = exact_attempt_id if _is_canonical_attempt_id(exact_attempt_id) else None
+        return {
+            "task_id": safe_task_id,
+            "attempt_id": safe_attempt_id,
+            "state": "malformed",
+            "claimed_at": None,
+            "running_at": None,
+            "terminal_at": None,
+            "updated_at": None,
+            "resume_count": 0,
+            "error_class": "validation",
+            "error_code": "malformed_receipt",
+            "receipt_error": "malformed_receipt",
+        }
+
+    return {
+        "task_id": validated["task_id"],
+        "attempt_id": validated["attempt_id"],
+        "state": validated["state"],
+        "claimed_at": validated["claimed_at"],
+        "running_at": validated["running_at"],
+        "terminal_at": validated["terminal_at"],
+        "updated_at": validated["updated_at"],
+        "resume_count": validated["resume_count"],
+        "error_class": validated["error_class"],
+        "error_code": validated["error_code"],
+        "receipt_error": None,
+    }
+
+
+def _status_raw_attempts(task):
+    if "execution_attempts" not in task:
+        return []
+    attempts = task.get("execution_attempts")
+    return attempts if isinstance(attempts, list) else [attempts]
+
+
+def _status_task_matches(tasks, task_id):
+    return [
+        (index, task)
+        for index, task in enumerate(tasks)
+        if isinstance(task, dict) and task.get("id") == task_id
+    ]
+
+
+def _status_attempt_matches(tasks, attempt_id):
+    matches = []
+    for task_index, task in enumerate(tasks):
+        if not isinstance(task, dict):
+            continue
+        for raw in _status_raw_attempts(task):
+            if isinstance(raw, dict) and raw.get("attempt_id") == attempt_id:
+                matches.append((task_index, task, raw))
+    return matches
+
+
+def _status_task_attempts_projection(task):
+    raw_attempts = _status_raw_attempts(task)
+    counts = {state: 0 for state in _STATUS_STATE_KEYS}
+    valid = []
+    for raw in raw_attempts:
+        projection = _status_attempt_projection(task, raw)
+        counts[projection["state"]] += 1
+        if projection["state"] != "malformed":
+            valid.append(projection)
+
+    latest = None
+    if valid:
+        latest = max(
+            valid,
+            key=lambda row: (
+                _parse_utc_timestamp(row["claimed_at"], field="claimed_at"),
+                row["attempt_id"],
+            ),
+        )
+
+    malformed_count = counts["malformed"]
+    if not raw_attempts:
+        schedule = str(task.get("schedule", ""))
+        is_legacy = not bool(task.get("active", True)) and bool(
+            _ONCE_PREFIX_RE.match(schedule)
+        )
+        receipt_status = (
+            "legacy_no_execution_receipt" if is_legacy else "no_attempts"
+        )
+    elif valid and malformed_count:
+        receipt_status = "attempts_with_malformed"
+    elif valid:
+        receipt_status = "attempts"
+    else:
+        receipt_status = "malformed_only"
+
+    return {
+        "receipt_status": receipt_status,
+        "retained_count": len(raw_attempts),
+        "state_counts": counts,
+        "latest": latest,
+    }
+
+
+def get_exact_status(task_id=None, attempt_id=None):
+    """Return one bounded exact-ID scheduler status projection.
+
+    Caller input is validated before the dedicated read-only snapshot boundary.
+    This path never calls ``list_tasks`` or enters ``_transact_tasks``.
+    """
+    query = _status_query(task_id, attempt_id)
+    if task_id is None and attempt_id is None:
+        return _status_result(ok=False, code="invalid_request", query=query)
+    if task_id is not None and query.get("task_id") != task_id:
+        return _status_result(ok=False, code="invalid_task_id", query=query)
+    if attempt_id is not None and query.get("attempt_id") != attempt_id:
+        return _status_result(ok=False, code="invalid_attempt_id", query=query)
+
+    try:
+        tasks = _read_status_tasks()
+    except _SchedulerStatusStoreError as exc:
+        return _status_result(ok=False, code=exc.code, query=query)
+
+    task_match = None
+    if task_id is not None:
+        task_matches = _status_task_matches(tasks, task_id)
+        if not task_matches:
+            return _status_result(ok=False, code="task_not_found", query=query)
+        if len(task_matches) != 1:
+            return _status_result(ok=False, code="task_identity_conflict", query=query)
+        task_match = task_matches[0]
+
+    if attempt_id is None:
+        _, task = task_match
+        return _status_result(
+            ok=True,
+            code="task_status",
+            query=query,
+            task=_status_task_projection(task),
+            attempts=_status_task_attempts_projection(task),
+        )
+
+    attempt_matches = _status_attempt_matches(tasks, attempt_id)
+    if not attempt_matches:
+        return _status_result(ok=False, code="attempt_not_found", query=query)
+    if len(attempt_matches) != 1:
+        return _status_result(
+            ok=False,
+            code="attempt_identity_conflict",
+            query=query,
+        )
+
+    owner_index, owner_task, raw_attempt = attempt_matches[0]
+    if task_match is not None and task_match[0] != owner_index:
+        return _status_result(
+            ok=False,
+            code="task_attempt_mismatch",
+            query=query,
+        )
+
+    owner_task_id = owner_task.get("id")
+    if isinstance(owner_task_id, str) and _SAFE_ID_RE.fullmatch(owner_task_id):
+        if len(_status_task_matches(tasks, owner_task_id)) != 1:
+            return _status_result(
+                ok=False,
+                code="task_identity_conflict",
+                query=query,
+            )
+
+    return _status_result(
+        ok=True,
+        code="attempt_status",
+        query=query,
+        task=_status_task_projection(owner_task),
+        attempt=_status_attempt_projection(
+            owner_task,
+            raw_attempt,
+            exact_attempt_id=attempt_id,
+        ),
+    )
 
 
 def _list_execution_attempts_from_tasks(tasks, *, limit=20):

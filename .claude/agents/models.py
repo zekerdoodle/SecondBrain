@@ -210,6 +210,16 @@ class AgentInvocation:
     worktree_slug: Optional[str] = None
     worktree_base_ref: Optional[str] = None
     worktree_path: Optional[str] = None
+    worktree_route_mode: Optional[str] = None
+    worktree_path_manifest: Optional[Dict[str, Any]] = None
+    worktree_request_manifest_digest: Optional[str] = None
+    expected_baseline_manifest_digest: Optional[str] = None
+    worktree_baseline_manifest_digest: Optional[str] = None
+    # Runtime-only route proof. The full preflight object and admission token
+    # never enter execution logs; they bind the exact row/route/thread until
+    # the last pre-Codex validation.
+    worktree_preflight: Optional[Any] = None
+    worktree_admission_token: Optional[Dict[str, Any]] = None
     scheduled_task_id: Optional[str] = None  # Set when launched via a scheduled-task firing
     scheduled_attempt_id: Optional[str] = None  # Immutable scheduler firing identity
     scheduled_resume_claim_id: Optional[str] = None  # Managed-restart gate; runtime-only
@@ -235,6 +245,11 @@ class AgentInvocation:
             "worktree_slug",
             "worktree_base_ref",
             "worktree_path",
+            "worktree_route_mode",
+            "worktree_path_manifest",
+            "worktree_request_manifest_digest",
+            "expected_baseline_manifest_digest",
+            "worktree_baseline_manifest_digest",
         ):
             value = getattr(self, key)
             if value is not None:

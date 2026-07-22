@@ -3074,6 +3074,10 @@ class InternalAgentInvokeRequest(BaseModel):
     worktree_slug: Optional[str] = None
     worktree_base_ref: Optional[str] = None
     worktree_path: Optional[str] = None
+    worktree_route_mode: Optional[str] = None
+    worktree_path_manifest: Optional[Dict[str, Any]] = None
+    worktree_request_manifest_digest: Optional[str] = None
+    expected_baseline_manifest_digest: Optional[str] = None
 
 
 class InternalAgentCancelRequest(BaseModel):
@@ -3461,6 +3465,43 @@ async def internal_agent_invoke(req: InternalAgentInvokeRequest, request: Reques
             detail="internal_agent_invoke supports foreground, ping, and trust modes",
         )
 
+    route_values = (
+        req.worktree_branch,
+        req.worktree_slug,
+        req.worktree_base_ref,
+        req.worktree_path,
+        req.worktree_route_mode,
+        req.worktree_path_manifest,
+        req.worktree_request_manifest_digest,
+        req.expected_baseline_manifest_digest,
+    )
+    if any(value is not None for value in route_values):
+        if (req.caller_agent or "").strip().lower() != "patch":
+            raise HTTPException(status_code=400, detail="coder worktree requests are Patch-only")
+        enabled = os.environ.get("SECOND_BRAIN_CODER_WORKTREES", "").strip().lower()
+        if enabled not in {"1", "true", "yes", "on", "enabled"}:
+            raise HTTPException(status_code=400, detail="coder worktree routing is disabled")
+        try:
+            from worktree_manager import metadata_for_request
+
+            normalized_route = metadata_for_request(
+                req.agent,
+                req.worktree_branch,
+                req.worktree_slug,
+                base_ref=req.worktree_base_ref or "main",
+                route_mode=req.worktree_route_mode,
+                path_manifest=req.worktree_path_manifest,
+                expected_baseline_manifest_digest=req.expected_baseline_manifest_digest,
+            )
+            if req.worktree_route_mode == "reuse_baseline_clean" and not req.conversation_id:
+                raise ValueError("reuse_baseline_clean requires an existing conversation_id")
+            for key, expected in normalized_route.items():
+                supplied = getattr(req, key, None)
+                if supplied != expected:
+                    raise ValueError(f"internal route metadata mismatch: {key}")
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     agents_dir = Path(ROOT_DIR) / ".claude" / "agents"
     if str(agents_dir) not in sys.path:
         sys.path.insert(0, str(agents_dir))
@@ -3485,22 +3526,39 @@ async def internal_agent_invoke(req: InternalAgentInvokeRequest, request: Reques
         if request_task is None:
             raise RuntimeError("internal agent invoke has no request task")
         await controller.bind_task(invocation_id, request_task)
-        running_entry_id = await running_agents.register(
+        try:
+            running_entry_id = await running_agents.admit_target_scoped(
             agent=req.agent,
             kind=(
                 "agent_conversation_join"
                 if req.conversation_id
                 else f"invoke_{req.mode}"
             ),
-            task_summary=req.prompt,
-            entry_id=invocation_id,
-            source_chat_id=req.source_chat_id,
-            conversation_id=req.conversation_id,
-            caller_agent=req.caller_agent,
-            worktree_branch=req.worktree_branch,
-            worktree_slug=req.worktree_slug,
-            worktree_path=req.worktree_path,
-        )
+                task_summary=req.prompt,
+                entry_id=invocation_id,
+                source_chat_id=req.source_chat_id,
+                conversation_id=req.conversation_id,
+                caller_agent=req.caller_agent,
+                worktree_branch=req.worktree_branch,
+                worktree_slug=req.worktree_slug,
+                worktree_base_ref=req.worktree_base_ref,
+                worktree_route_mode=req.worktree_route_mode,
+                worktree_path=req.worktree_path,
+                worktree_request_manifest_digest=req.worktree_request_manifest_digest,
+                worktree_baseline_manifest_digest=req.expected_baseline_manifest_digest,
+            )
+        except Exception as admission_error:
+            candidate_absent = await running_agents.get_entry(invocation_id) is None
+            await controller.finalize(
+                invocation_id,
+                "error" if candidate_absent else "interrupted_uncertain",
+                cleanup_state="complete" if candidate_absent else "uncertain",
+                terminal_persistence_proved=False,
+            )
+            return {
+                "error": str(admission_error),
+                "invocation_id": invocation_id,
+            }
         result = await invoke_agent(
             name=req.agent,
             prompt=req.prompt,
@@ -3515,6 +3573,10 @@ async def internal_agent_invoke(req: InternalAgentInvokeRequest, request: Reques
             worktree_slug=req.worktree_slug,
             worktree_base_ref=req.worktree_base_ref,
             worktree_path=req.worktree_path,
+            worktree_route_mode=req.worktree_route_mode,
+            worktree_path_manifest=req.worktree_path_manifest,
+            worktree_request_manifest_digest=req.worktree_request_manifest_digest,
+            expected_baseline_manifest_digest=req.expected_baseline_manifest_digest,
             running_entry_id=running_entry_id,
             control_invocation_id=invocation_id,
         )
@@ -3545,8 +3607,11 @@ async def internal_agent_invoke(req: InternalAgentInvokeRequest, request: Reques
         logger.error("Internal agent launch failed for agent %s: %s", req.agent, e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
     finally:
+        row_cleanup_proved = True
         if running_entry_id is not None and not background_owns_row:
-            await running_agents.unregister(running_entry_id)
+            row_cleanup_proved = await running_agents.unregister_and_prove_absent(
+                running_entry_id
+            )
         receipt = await controller.get(invocation_id)
         if receipt and receipt.get("state") not in {
             "succeeded",
@@ -3560,6 +3625,7 @@ async def internal_agent_invoke(req: InternalAgentInvokeRequest, request: Reques
                 cleanup_proved = (
                     receipt.get("conversation_id") is None
                     and receipt.get("execution_started_at") is None
+                    and row_cleanup_proved
                 )
                 manager_requested = bool(cancellation.get("requested"))
                 await controller.finalize(
@@ -3574,11 +3640,13 @@ async def internal_agent_invoke(req: InternalAgentInvokeRequest, request: Reques
                         if manager_requested and cleanup_proved
                         else "uncertain"
                     ),
+                    terminal_persistence_proved=False,
                 )
             elif pending_terminal_state:
                 pre_thread_terminal = (
                     receipt.get("conversation_id") is None
                     and receipt.get("execution_started_at") is None
+                    and row_cleanup_proved
                 )
                 await controller.finalize(
                     invocation_id,
@@ -3588,6 +3656,7 @@ async def internal_agent_invoke(req: InternalAgentInvokeRequest, request: Reques
                         else "interrupted_uncertain"
                     ),
                     cleanup_state="complete" if pre_thread_terminal else "uncertain",
+                    terminal_persistence_proved=False,
                 )
 
 

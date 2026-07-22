@@ -549,6 +549,10 @@ WORKTREE_REQUEST_FIELDS = (
     "worktree_slug",
     "worktree_base_ref",
     "worktree_path",
+    "worktree_route_mode",
+    "worktree_path_manifest",
+    "worktree_request_manifest_digest",
+    "expected_baseline_manifest_digest",
 )
 
 
@@ -562,10 +566,23 @@ def _has_worktree_request(
     worktree_slug: Optional[str],
     worktree_base_ref: Optional[str],
     worktree_path: Optional[str],
+    worktree_route_mode: Optional[str] = None,
+    worktree_path_manifest: Optional[Dict[str, Any]] = None,
+    worktree_request_manifest_digest: Optional[str] = None,
+    expected_baseline_manifest_digest: Optional[str] = None,
 ) -> bool:
     return any(
         value is not None
-        for value in (worktree_branch, worktree_slug, worktree_base_ref, worktree_path)
+        for value in (
+            worktree_branch,
+            worktree_slug,
+            worktree_base_ref,
+            worktree_path,
+            worktree_route_mode,
+            worktree_path_manifest,
+            worktree_request_manifest_digest,
+            expected_baseline_manifest_digest,
+        )
     )
 
 
@@ -594,9 +611,21 @@ def _validate_worktree_invocation_metadata(
     worktree_slug: Optional[str],
     worktree_base_ref: Optional[str],
     worktree_path: Optional[str],
-) -> Dict[str, str]:
+    worktree_route_mode: Optional[str],
+    worktree_path_manifest: Optional[Dict[str, Any]],
+    worktree_request_manifest_digest: Optional[str],
+    expected_baseline_manifest_digest: Optional[str],
+    conversation_id: Optional[str],
+) -> Dict[str, Any]:
     if not _has_worktree_request(
-        worktree_branch, worktree_slug, worktree_base_ref, worktree_path
+        worktree_branch,
+        worktree_slug,
+        worktree_base_ref,
+        worktree_path,
+        worktree_route_mode,
+        worktree_path_manifest,
+        worktree_request_manifest_digest,
+        expected_baseline_manifest_digest,
     ):
         return {}
 
@@ -609,6 +638,12 @@ def _validate_worktree_invocation_metadata(
         )
     if not worktree_branch or not worktree_slug:
         raise ValueError("worktree_branch and worktree_slug are required together")
+    if worktree_route_mode is None or worktree_path_manifest is None:
+        raise ValueError(
+            "routed work requires worktree_route_mode and worktree_path_manifest"
+        )
+    if worktree_route_mode == "reuse_baseline_clean" and not conversation_id:
+        raise ValueError("reuse_baseline_clean requires an existing conversation_id")
 
     from worktree_manager import metadata_for_request
 
@@ -617,6 +652,9 @@ def _validate_worktree_invocation_metadata(
         worktree_branch,
         worktree_slug,
         base_ref=worktree_base_ref or "main",
+        route_mode=worktree_route_mode,
+        path_manifest=worktree_path_manifest,
+        expected_baseline_manifest_digest=expected_baseline_manifest_digest,
     )
     if worktree_path is not None:
         requested = Path(worktree_path).expanduser().resolve(strict=False)
@@ -625,31 +663,125 @@ def _validate_worktree_invocation_metadata(
             raise ValueError(
                 f"worktree_path does not match derived path for request: {requested}"
             )
+    if (
+        worktree_request_manifest_digest is not None
+        and worktree_request_manifest_digest
+        != metadata["worktree_request_manifest_digest"]
+    ):
+        raise ValueError("worktree request manifest digest mismatch")
     return metadata
 
 
-def _prepare_worktree_for_invocation(invocation: AgentInvocation) -> None:
-    """Create/register the requested coder worktree before process launch."""
+def _worktree_row_lease_validator(
+    invocation: AgentInvocation,
+    *,
+    baseline_manifest_digest: Optional[str] = None,
+) -> Callable[[], bool]:
+    def validate() -> bool:
+        if not invocation.control_invocation_id:
+            return False
+        return running_agents.validate_route_lease_sync(
+            str(invocation.control_invocation_id),
+            agent=invocation.agent,
+            conversation_id=str(invocation.conversation_id or ""),
+            branch=str(invocation.worktree_branch or ""),
+            slug=str(invocation.worktree_slug or ""),
+            path=str(invocation.worktree_path or ""),
+            route_mode=str(invocation.worktree_route_mode or ""),
+            request_manifest_digest=str(
+                invocation.worktree_request_manifest_digest or ""
+            ),
+            baseline_manifest_digest=baseline_manifest_digest,
+        )
+
+    return validate
+
+
+def _preflight_worktree_for_invocation(invocation: AgentInvocation) -> None:
+    """Run the authoritative read-only route preflight before any prompt write."""
     if not _has_worktree_request(
         invocation.worktree_branch,
         invocation.worktree_slug,
         invocation.worktree_base_ref,
         invocation.worktree_path,
+        invocation.worktree_route_mode,
+        invocation.worktree_path_manifest,
+        invocation.worktree_request_manifest_digest,
+        invocation.expected_baseline_manifest_digest,
     ):
         return
-    if not invocation.worktree_branch or not invocation.worktree_slug:
-        raise ValueError("worktree_branch and worktree_slug are required together")
+    if not all((
+        invocation.worktree_branch,
+        invocation.worktree_slug,
+        invocation.worktree_route_mode,
+        invocation.worktree_path_manifest is not None,
+        invocation.conversation_id,
+        invocation.control_invocation_id,
+    )):
+        raise ValueError("routed work lacks complete route/thread/control identity")
 
     from worktree_manager import WorktreeManager
 
     manager = WorktreeManager()
-    record = manager.prepare_worktree(
+    invocation.worktree_preflight = manager.preflight_worktree(
         invocation.agent,
         invocation.worktree_branch,
         invocation.worktree_slug,
+        route_mode=invocation.worktree_route_mode,
+        path_manifest=invocation.worktree_path_manifest,
+        expected_baseline_manifest_digest=invocation.expected_baseline_manifest_digest,
+        conversation_id=invocation.conversation_id,
+        invocation_id=invocation.control_invocation_id,
         base_ref=invocation.worktree_base_ref or "main",
         source_repo=manager.canonical_state_root(),
     )
+
+
+def _prepare_worktree_for_invocation(invocation: AgentInvocation) -> None:
+    """Create or exact-reuse, then retain the atomic admission token."""
+    if invocation.worktree_preflight is None:
+        return
+    from worktree_manager import WorktreeManager
+
+    manager = WorktreeManager()
+    lease_digest = (
+        invocation.expected_baseline_manifest_digest
+        if invocation.worktree_route_mode == "reuse_baseline_clean"
+        else None
+    )
+    validator = _worktree_row_lease_validator(
+        invocation,
+        baseline_manifest_digest=lease_digest,
+    )
+    if invocation.worktree_route_mode == "create":
+        record = manager.prepare_worktree(
+            invocation.agent,
+            str(invocation.worktree_branch),
+            str(invocation.worktree_slug),
+            base_ref=invocation.worktree_base_ref or "main",
+            source_repo=manager.canonical_state_root(),
+            path_manifest=invocation.worktree_path_manifest,
+            conversation_id=invocation.conversation_id,
+            invocation_id=invocation.control_invocation_id,
+            preflight=invocation.worktree_preflight,
+            row_lease_validator=validator,
+        )
+    else:
+        record = manager.reuse_active_worktree(
+            invocation.agent,
+            str(invocation.worktree_branch),
+            str(invocation.worktree_slug),
+            base_ref=invocation.worktree_base_ref or "main",
+            source_repo=manager.canonical_state_root(),
+            path_manifest=invocation.worktree_path_manifest,
+            expected_baseline_manifest_digest=str(
+                invocation.expected_baseline_manifest_digest
+            ),
+            conversation_id=str(invocation.conversation_id),
+            invocation_id=str(invocation.control_invocation_id),
+            preflight=invocation.worktree_preflight,
+            row_lease_validator=validator,
+        )
     prepared_path = Path(record.worktree_path).expanduser().resolve(strict=False)
     if invocation.worktree_path is not None:
         requested_path = Path(invocation.worktree_path).expanduser().resolve(strict=False)
@@ -659,6 +791,22 @@ def _prepare_worktree_for_invocation(invocation: AgentInvocation) -> None:
             )
     invocation.worktree_path = record.worktree_path
     invocation.worktree_base_ref = record.base_ref
+    invocation.worktree_baseline_manifest_digest = record.baseline_manifest_digest
+    invocation.worktree_admission_token = record.admission_token
+
+
+def _validate_worktree_admission_token(invocation: AgentInvocation) -> bool:
+    if invocation.worktree_admission_token is None:
+        return not bool(invocation.worktree_route_mode)
+    from worktree_manager import WorktreeManager
+
+    return WorktreeManager().validate_admission_token(
+        invocation.worktree_admission_token,
+        row_lease_validator=_worktree_row_lease_validator(
+            invocation,
+            baseline_manifest_digest=invocation.worktree_baseline_manifest_digest,
+        ),
+    )
 
 
 def _worktree_preparation_error_result(
@@ -681,6 +829,162 @@ def _worktree_preparation_error_result(
     if conversation_id:
         result["conversation_id"] = conversation_id
     return result
+
+
+def _release_routed_thread_lock(conversation_id: str, lock_id: str) -> bool:
+    try:
+        from agent_conversation_manager import get_manager
+
+        return bool(get_manager().release_lock_proved(conversation_id, lock_id))
+    except Exception:
+        logger.error(
+            "Exact routed thread-lock release failed for %s", conversation_id,
+            exc_info=True,
+        )
+        return False
+
+
+async def _finalize_routed_preprompt_failure(
+    *,
+    name: str,
+    mode: InvocationMode,
+    error: str,
+    control_invocation_id: Optional[str],
+    running_entry_id: Optional[str],
+    conversation_id: Optional[str],
+    lock_id: Optional[str],
+    route_cleanup_proved: bool,
+) -> Union[AgentResult, Dict[str, str]]:
+    """Prove route, exact lock release, exact row absence, then receipt."""
+    lock_cleanup_proved = True
+    if conversation_id and lock_id:
+        lock_cleanup_proved = _release_routed_thread_lock(conversation_id, lock_id)
+    row_cleanup_proved = True
+    if running_entry_id:
+        try:
+            row_cleanup_proved = await running_agents.unregister_and_prove_absent(
+                running_entry_id
+            )
+        except Exception:
+            row_cleanup_proved = False
+            logger.error(
+                "Exact routed row cleanup failed for %s", running_entry_id,
+                exc_info=True,
+            )
+    complete = route_cleanup_proved and lock_cleanup_proved and row_cleanup_proved
+    if control_invocation_id:
+        await get_controller().finalize(
+            control_invocation_id,
+            "error" if complete else "interrupted_uncertain",
+            cleanup_state="complete" if complete else "uncertain",
+            terminal_persistence_proved=False,
+        )
+    return _worktree_preparation_error_result(
+        name, mode, error, conversation_id
+    )
+
+
+async def _finalize_routed_postprompt_failure(
+    *,
+    name: str,
+    mode: InvocationMode,
+    error: str,
+    control_invocation_id: Optional[str],
+    running_entry_id: Optional[str],
+    conversation_id: str,
+    lock_id: str,
+    prompt_message_id: str,
+) -> Union[AgentResult, Dict[str, str]]:
+    """Persist the sole failed-before-Codex turn, then prove row cleanup."""
+    terminal_proved = False
+    lock_cleanup_proved = False
+    try:
+        from agent_conversation_manager import get_manager
+
+        finalized = get_manager().finalize_failed_before_codex(
+            conversation_id,
+            prompt_message_id=prompt_message_id,
+            lock_id=lock_id,
+            target_agent=name,
+            error=error,
+            invocation_id=control_invocation_id,
+        )
+        terminal_proved = finalized.get("persisted") is True
+        lock_cleanup_proved = finalized.get("lock_released") is True
+    except Exception:
+        logger.error(
+            "Failed to persist failed_before_codex for %s on %s",
+            name,
+            conversation_id,
+            exc_info=True,
+        )
+        lock_cleanup_proved = _release_routed_thread_lock(conversation_id, lock_id)
+    row_cleanup_proved = True
+    if running_entry_id:
+        try:
+            row_cleanup_proved = await running_agents.unregister_and_prove_absent(
+                running_entry_id
+            )
+        except Exception:
+            row_cleanup_proved = False
+    complete = terminal_proved and lock_cleanup_proved and row_cleanup_proved
+    if control_invocation_id:
+        await get_controller().finalize(
+            control_invocation_id,
+            "error" if complete else "interrupted_uncertain",
+            cleanup_state="complete" if complete else "uncertain",
+            terminal_persistence_proved=complete,
+        )
+    return _worktree_preparation_error_result(name, mode, error, conversation_id)
+
+
+def _append_routed_caller_prompt(
+    *,
+    target_agent: str,
+    caller_agent: str,
+    prompt: str,
+    conversation_id: str,
+    mode: InvocationMode,
+    model_override: Optional[str],
+    project: Optional[Any],
+) -> Dict[str, Any]:
+    from agent_conversation_manager import (
+        ConversationAppendError,
+        build_history_prompt,
+        get_manager,
+    )
+
+    manager = get_manager()
+    proof = manager.append_message_atomic_proved(
+        conversation_id,
+        from_agent=caller_agent,
+        content=prompt,
+        mode=mode.value,
+        model_override=model_override,
+        project=project,
+    )
+    try:
+        data = manager.load(conversation_id)
+        if data is None:
+            raise RuntimeError("committed caller prompt could not be reloaded")
+        history = dict(data)
+        messages = list(history.get("messages") or [])
+        if not messages or messages[-1].get("id") != proof["message_id"]:
+            raise RuntimeError("committed caller prompt is not the exact final message")
+        history["messages"] = messages[:-1]
+        prompt_for_agent = build_history_prompt(
+            data=history,
+            target_agent=target_agent,
+            caller_agent=caller_agent,
+            current_prompt=prompt,
+        )
+    except Exception as exc:
+        raise ConversationAppendError(
+            f"Caller prompt committed but history preparation failed: {exc}",
+            unchanged_proved=False,
+            committed_message_id=str(proof["message_id"]),
+        ) from exc
+    return {**proof, "prompt_for_agent": prompt_for_agent}
 
 # External MCP servers config file (alongside this file)
 EXTERNAL_MCP_CONFIG = Path(__file__).parent / "external_mcp_servers.json"
@@ -855,6 +1159,10 @@ async def invoke_agent(
     worktree_slug: Optional[str] = None,
     worktree_base_ref: Optional[str] = None,
     worktree_path: Optional[str] = None,
+    worktree_route_mode: Optional[str] = None,
+    worktree_path_manifest: Optional[Dict[str, Any]] = None,
+    worktree_request_manifest_digest: Optional[str] = None,
+    expected_baseline_manifest_digest: Optional[str] = None,
     salon_id: Optional[str] = None,
     scheduled_task_id: Optional[str] = None,
     scheduled_attempt_id: Optional[str] = None,
@@ -887,9 +1195,9 @@ async def invoke_agent(
         caller_agent: Name of the agent (or caller identity) that initiated
             this invocation. Recorded as the author of the prompt message in
             the thread. Defaults to "caller" for legacy/unsourced callers.
-        worktree_branch/worktree_slug/worktree_base_ref/worktree_path: Optional
-            coder-worktree request metadata. Validated up front and, when
-            enabled, prepared before Codex process launch.
+        worktree_branch/worktree_slug/worktree_base_ref/worktree_path plus
+            route mode, manifest, and expected baseline digest: Patch-only
+            coder route contract, proved before prompt persistence and launch.
         salon_id: If set, this invocation is part of a salon dispatch. The
             agent_conversations thread machinery is bypassed entirely — the
             ``prompt`` is used as-is (caller is responsible for rendering salon
@@ -949,9 +1257,24 @@ async def invoke_agent(
             worktree_slug=worktree_slug,
             worktree_base_ref=worktree_base_ref,
             worktree_path=worktree_path,
+            worktree_route_mode=worktree_route_mode,
+            worktree_path_manifest=worktree_path_manifest,
+            worktree_request_manifest_digest=worktree_request_manifest_digest,
+            expected_baseline_manifest_digest=expected_baseline_manifest_digest,
+            conversation_id=conversation_id,
         )
     except Exception as e:
         return _worktree_request_error_result(name, mode, str(e))
+    if worktree_metadata and (
+        not control_invocation_id
+        or not running_entry_id
+        or running_entry_id != control_invocation_id
+    ):
+        return _worktree_request_error_result(
+            name,
+            mode,
+            "routed work requires the exact backend control/running-row admission",
+        )
 
     # Get agent config
     registry = get_registry()
@@ -1041,10 +1364,10 @@ async def invoke_agent(
             history_messages=history_messages,
         )
 
-    # Conversation setup: resolve / create thread + acquire invocation lock.
-    # Runs synchronously for all three modes so ping/trust calls can return
-    # the conversation_id in their ack and so lock contention shows up to the
-    # caller immediately (not after N minutes of background work).
+    routed = bool(worktree_metadata)
+    # Routed setup is deliberately zero-turn: resolve/create the header and
+    # acquire the lock, but do not persist the caller prompt until the route is
+    # fully ready. Non-routed behavior retains the existing combined setup.
     effective_caller = caller_agent or "caller"
     thread_ctx = await _setup_conversation(
         target_agent=name,
@@ -1055,6 +1378,7 @@ async def invoke_agent(
         mode=mode,
         model_override=model_override,
         project=project,
+        append_prompt=not routed,
     )
     if "error" in thread_ctx:
         if scheduled_attempt_id:
@@ -1066,11 +1390,23 @@ async def invoke_agent(
                 error_code="inner_setup_rejected",
                 conversation_id=thread_ctx.get("conversation_id"),
             )
+        if routed:
+            return await _finalize_routed_preprompt_failure(
+                name=name,
+                mode=mode,
+                error=thread_ctx["error"],
+                control_invocation_id=control_invocation_id,
+                running_entry_id=running_entry_id,
+                conversation_id=thread_ctx.get("conversation_id"),
+                lock_id=thread_ctx.get("lock_id"),
+                route_cleanup_proved=True,
+            )
         if control_invocation_id:
             await get_controller().finalize(
                 control_invocation_id,
                 "error",
                 cleanup_state="complete",
+                terminal_persistence_proved=False,
             )
         if mode == InvocationMode.FOREGROUND:
             return AgentResult(
@@ -1088,18 +1424,48 @@ async def invoke_agent(
         }
 
     conv_id = thread_ctx["conversation_id"]
-    lock_id = thread_ctx["lock_id"]
-    prompt_for_agent = thread_ctx["prompt_for_agent"]
+    lock_id = thread_ctx.get("lock_id")
+    prompt_for_agent = thread_ctx.get("prompt_for_agent", prompt)
     prompt_message_id = thread_ctx.get("prompt_message_id")
 
     if control_invocation_id:
         try:
-            await get_controller().update_conversation(control_invocation_id, conv_id)
+            control_binding = await get_controller().update_conversation(
+                control_invocation_id, conv_id
+            )
+            if routed and (
+                not isinstance(control_binding, dict)
+                or control_binding.get("conversation_id") != conv_id
+            ):
+                raise RuntimeError(
+                    "durable control receipt did not retain resolved conversation"
+                )
             if running_entry_id:
                 await running_agents.update(
                     running_entry_id, conversation_id=conv_id
                 )
+                if routed:
+                    bound_row = await running_agents.get_entry(running_entry_id)
+                    if (
+                        not isinstance(bound_row, dict)
+                        or bound_row.get("conversation_id") != conv_id
+                    ):
+                        raise RuntimeError(
+                            "running row did not retain resolved conversation"
+                        )
         except asyncio.CancelledError:
+            if routed:
+                await _finalize_routed_preprompt_failure(
+                    name=name,
+                    mode=mode,
+                    error="Routed conversation binding was cancelled",
+                    control_invocation_id=control_invocation_id,
+                    running_entry_id=running_entry_id,
+                    conversation_id=conv_id,
+                    lock_id=lock_id,
+                    route_cleanup_proved=True,
+                )
+                raise
             owned_row_cleanup_proved = True
             if running_entry_id:
                 try:
@@ -1122,9 +1488,38 @@ async def invoke_agent(
                 owned_row_cleanup_proved=owned_row_cleanup_proved,
             )
             raise
-        except Exception:
+        except Exception as binding_error:
+            if routed:
+                return await _finalize_routed_preprompt_failure(
+                    name=name,
+                    mode=mode,
+                    error=f"Failed to bind routed conversation identity: {binding_error}",
+                    control_invocation_id=control_invocation_id,
+                    running_entry_id=running_entry_id,
+                    conversation_id=conv_id,
+                    lock_id=lock_id,
+                    route_cleanup_proved=True,
+                )
             _release_thread_lock(conv_id, lock_id)
             raise
+
+    if routed:
+        lock_ctx = _acquire_routed_conversation_lock(
+            conv_id,
+            caller_agent=effective_caller,
+        )
+        if "error" in lock_ctx:
+            return await _finalize_routed_preprompt_failure(
+                name=name,
+                mode=mode,
+                error=lock_ctx["error"],
+                control_invocation_id=control_invocation_id,
+                running_entry_id=running_entry_id,
+                conversation_id=conv_id,
+                lock_id=None,
+                route_cleanup_proved=True,
+            )
+        lock_id = lock_ctx["lock_id"]
 
     # Create invocation record — the prompt sent to the SDK is the one with
     # history injected (so the agent sees the full thread context).
@@ -1147,54 +1542,137 @@ async def invoke_agent(
         control_invocation_id=control_invocation_id,
     )
 
-    try:
-        _prepare_worktree_for_invocation(invocation)
-    except Exception as e:
-        error = str(e)
-        failure = AgentResult(
-            agent=name,
-            status="error",
-            response="",
-            started_at=invocation.invoked_at,
-            completed_at=datetime.utcnow(),
-            error=error,
-            conversation_id=conv_id,
-        )
+    if routed:
+        # Read-only preflight failures inherit the proved no-mutation boundary.
+        # Once create/reuse begins, an unclassified exception is uncertain;
+        # only an explicit boolean cleanup proof may improve that outcome.
+        route_cleanup_proved = True
         try:
-            finalized = await _finalize_thread_turn(conv_id, lock_id, name, failure)
-        except Exception as finalize_error:
-            logger.error(
-                "Worktree setup failure for agent '%s' could not finalize thread %s: %s",
-                name,
-                conv_id,
-                finalize_error,
-                exc_info=True,
+            _preflight_worktree_for_invocation(invocation)
+            route_cleanup_proved = False
+            _prepare_worktree_for_invocation(invocation)
+            await running_agents.update(
+                str(running_entry_id),
+                worktree_baseline_manifest_digest=(
+                    invocation.worktree_baseline_manifest_digest
+                ),
             )
-            _release_thread_lock(conv_id, lock_id)
-            finalized = None
-        finalization_proved = _thread_finalization_proved(finalized)
-        if invocation.control_invocation_id:
-            await get_controller().finalize(
-                invocation.control_invocation_id,
-                "error" if finalization_proved else "interrupted_uncertain",
-                cleanup_state="complete" if finalization_proved else "uncertain",
-                terminal_persistence_proved=finalization_proved,
-            )
-        if scheduled_attempt_id:
-            _finalize_scheduler_attempt(
-                scheduled_task_id,
-                scheduled_attempt_id,
-                "failed",
-                error_class="launch",
-                error_code="inner_setup_rejected",
+            if not _validate_worktree_admission_token(invocation):
+                raise RuntimeError("atomic route/row admission-token recheck failed")
+        except Exception as route_error:
+            try:
+                explicit_cleanup_proof = getattr(
+                    route_error, "cleanup_proved", None
+                )
+            except Exception:
+                explicit_cleanup_proof = None
+            if type(explicit_cleanup_proof) is bool:
+                route_cleanup_proved = explicit_cleanup_proof
+            if scheduled_attempt_id:
+                _finalize_scheduler_attempt(
+                    scheduled_task_id,
+                    scheduled_attempt_id,
+                    "failed",
+                    error_class="launch",
+                    error_code="inner_setup_rejected",
+                    conversation_id=conv_id,
+                )
+            return await _finalize_routed_preprompt_failure(
+                name=name,
+                mode=mode,
+                error=str(route_error),
+                control_invocation_id=control_invocation_id,
+                running_entry_id=running_entry_id,
                 conversation_id=conv_id,
+                lock_id=lock_id,
+                route_cleanup_proved=route_cleanup_proved,
             )
-        if finalization_proved:
-            if invocation.control_invocation_id:
-                _acknowledge_direct_managed_load_after_thread_persistence(invocation)
-            if invocation.scheduled_attempt_id:
-                _acknowledge_managed_load_after_thread_persistence(invocation)
-        return _worktree_preparation_error_result(name, mode, error, conv_id)
+
+        try:
+            prompt_commit = _append_routed_caller_prompt(
+                target_agent=name,
+                caller_agent=effective_caller,
+                prompt=prompt,
+                conversation_id=conv_id,
+                mode=mode,
+                model_override=model_override,
+                project=project,
+            )
+            prompt_message_id = prompt_commit["message_id"]
+            prompt_for_agent = prompt_commit["prompt_for_agent"]
+            invocation.prompt = prompt_for_agent
+        except Exception as append_error:
+            committed_message_id = getattr(
+                append_error, "committed_message_id", None
+            )
+            if committed_message_id:
+                return await _finalize_routed_postprompt_failure(
+                    name=name,
+                    mode=mode,
+                    error=str(append_error),
+                    control_invocation_id=control_invocation_id,
+                    running_entry_id=running_entry_id,
+                    conversation_id=conv_id,
+                    lock_id=lock_id,
+                    prompt_message_id=str(committed_message_id),
+                )
+            unchanged = bool(getattr(append_error, "unchanged_proved", False))
+            try:
+                route_proved = _validate_worktree_admission_token(invocation)
+            except Exception:
+                route_proved = False
+            return await _finalize_routed_preprompt_failure(
+                name=name,
+                mode=mode,
+                error=str(append_error),
+                control_invocation_id=control_invocation_id,
+                running_entry_id=running_entry_id,
+                conversation_id=conv_id,
+                lock_id=lock_id,
+                route_cleanup_proved=route_proved and unchanged,
+            )
+
+        try:
+            token_valid = _validate_worktree_admission_token(invocation)
+        except Exception as token_error:
+            return await _finalize_routed_postprompt_failure(
+                name=name,
+                mode=mode,
+                error=(
+                    "Route admission-token validation failed after prompt commit: "
+                    f"{token_error}"
+                ),
+                control_invocation_id=control_invocation_id,
+                running_entry_id=running_entry_id,
+                conversation_id=conv_id,
+                lock_id=lock_id,
+                prompt_message_id=str(prompt_message_id),
+            )
+        if not token_valid:
+            return await _finalize_routed_postprompt_failure(
+                name=name,
+                mode=mode,
+                error="Route admission token became invalid before Codex admission",
+                control_invocation_id=control_invocation_id,
+                running_entry_id=running_entry_id,
+                conversation_id=conv_id,
+                lock_id=lock_id,
+                prompt_message_id=str(prompt_message_id),
+            )
+        try:
+            if control_invocation_id and mode == InvocationMode.FOREGROUND:
+                await get_controller().mark_execution_started(control_invocation_id)
+        except Exception as admission_error:
+            return await _finalize_routed_postprompt_failure(
+                name=name,
+                mode=mode,
+                error=f"Codex admission failed after prompt commit: {admission_error}",
+                control_invocation_id=control_invocation_id,
+                running_entry_id=running_entry_id,
+                conversation_id=conv_id,
+                lock_id=lock_id,
+                prompt_message_id=str(prompt_message_id),
+            )
 
     logger.info(
         f"Invoking agent '{name}' in {mode.value} mode"
@@ -1242,19 +1720,24 @@ async def invoke_agent(
         result.invocation_id = invocation.control_invocation_id
         if invocation.control_invocation_id:
             finalization_proved = _thread_finalization_proved(finalized)
+            row_absence_proved = (
+                running_entry_id is None
+                or await running_agents.get_entry(running_entry_id) is None
+            )
+            complete = finalization_proved and row_absence_proved
             if not finalization_proved:
                 _release_thread_lock(conv_id, lock_id)
             await get_controller().finalize(
                 invocation.control_invocation_id,
                 (
                     _control_terminal_state(result)
-                    if finalization_proved
+                    if complete
                     else "interrupted_uncertain"
                 ),
-                cleanup_state="complete" if finalization_proved else "uncertain",
-                terminal_persistence_proved=finalization_proved,
+                cleanup_state="complete" if complete else "uncertain",
+                terminal_persistence_proved=(finalization_proved if complete else False),
             )
-            if finalization_proved:
+            if complete:
                 _acknowledge_direct_managed_load_after_thread_persistence(invocation)
         return result
 
@@ -1283,6 +1766,17 @@ async def invoke_agent(
                         f"via thread {conv_id}"
                     )
             else:
+                if routed:
+                    return await _finalize_routed_postprompt_failure(
+                        name=name,
+                        mode=mode,
+                        error="source_chat_id required for ping mode",
+                        control_invocation_id=control_invocation_id,
+                        running_entry_id=running_entry_id,
+                        conversation_id=conv_id,
+                        lock_id=lock_id,
+                        prompt_message_id=str(prompt_message_id),
+                    )
                 _release_thread_lock(conv_id, lock_id)
                 return {
                     "error": "source_chat_id required for ping mode",
@@ -1311,6 +1805,17 @@ async def invoke_agent(
                 f"on thread {conv_id}: {e}",
                 exc_info=True,
             )
+            if routed:
+                return await _finalize_routed_postprompt_failure(
+                    name=name,
+                    mode=mode,
+                    error=f"Failed to durably admit ping after prompt commit: {e}",
+                    control_invocation_id=control_invocation_id,
+                    running_entry_id=running_entry_id,
+                    conversation_id=conv_id,
+                    lock_id=lock_id,
+                    prompt_message_id=str(prompt_message_id),
+                )
             _release_thread_lock(conv_id, lock_id)
             return {
                 "error": f"Failed to durably accept ping before launch: {e}",
@@ -1318,6 +1823,8 @@ async def invoke_agent(
             }
 
         ping_coro = None
+        ping_task = None
+        admission_gate = asyncio.Event() if routed else None
         try:
             if running_entry_id is None:
                 running_entry_id = await _register_running_agent_entry(config, invocation)
@@ -1334,7 +1841,7 @@ async def invoke_agent(
                 running_entry_id=running_entry_id,
                 ping_invocation_id=ping_invocation_id,
             )
-            _create_background_invocation_task(
+            ping_task = _create_background_invocation_task(
                 ping_coro,
                 agent=name,
                 mode=mode.value,
@@ -1345,12 +1852,31 @@ async def invoke_agent(
                 running_entry_id=running_entry_id,
                 ping_invocation_id=ping_invocation_id,
                 control_invocation_id=invocation.control_invocation_id,
+                start_gate=admission_gate,
             )
+            if routed and control_invocation_id:
+                await get_controller().mark_execution_started(control_invocation_id)
+                admission_gate.set()
         except asyncio.CancelledError:
+            if ping_task is not None and admission_gate is not None and not admission_gate.is_set():
+                ping_task.cancel()
+                await asyncio.gather(ping_task, return_exceptions=True)
             if ping_coro is not None:
                 close = getattr(ping_coro, "close", None)
                 if close is not None:
                     close()
+            if routed:
+                await _finalize_routed_postprompt_failure(
+                    name=name,
+                    mode=mode,
+                    error="Ping admission was cancelled before Codex",
+                    control_invocation_id=control_invocation_id,
+                    running_entry_id=running_entry_id,
+                    conversation_id=conv_id,
+                    lock_id=lock_id,
+                    prompt_message_id=str(prompt_message_id),
+                )
+                raise
             if running_entry_id is not None:
                 await running_agents.unregister(running_entry_id)
             if invocation.control_invocation_id:
@@ -1366,16 +1892,30 @@ async def invoke_agent(
                 _release_thread_lock(conv_id, lock_id)
             raise
         except Exception as e:
+            if ping_task is not None and admission_gate is not None and not admission_gate.is_set():
+                ping_task.cancel()
+                await asyncio.gather(ping_task, return_exceptions=True)
             if ping_coro is not None:
                 close = getattr(ping_coro, "close", None)
                 if close is not None:
                     close()
-            if running_entry_id is not None:
-                await running_agents.unregister(running_entry_id)
             logger.error(
                 f"Failed to launch ping task for agent '{name}' on thread {conv_id}: {e}",
                 exc_info=True,
             )
+            if routed:
+                return await _finalize_routed_postprompt_failure(
+                    name=name,
+                    mode=mode,
+                    error=f"Ping task launch failed before Codex: {e}",
+                    control_invocation_id=control_invocation_id,
+                    running_entry_id=running_entry_id,
+                    conversation_id=conv_id,
+                    lock_id=lock_id,
+                    prompt_message_id=str(prompt_message_id),
+                )
+            if running_entry_id is not None:
+                await running_agents.unregister(running_entry_id)
             failure = AgentResult(
                 agent=name,
                 status="error",
@@ -1462,6 +2002,18 @@ async def invoke_agent(
             if running_entry_id is None:
                 running_entry_id = await _register_running_agent_entry(config, invocation)
         except asyncio.CancelledError:
+            if routed:
+                await _finalize_routed_postprompt_failure(
+                    name=name,
+                    mode=mode,
+                    error=f"{mode.value.title()} admission was cancelled before Codex",
+                    control_invocation_id=control_invocation_id,
+                    running_entry_id=running_entry_id,
+                    conversation_id=conv_id,
+                    lock_id=lock_id,
+                    prompt_message_id=str(prompt_message_id),
+                )
+                raise
             if invocation.control_invocation_id:
                 await _finalize_direct_interruption(
                     control_invocation_id=str(invocation.control_invocation_id),
@@ -1474,6 +2026,17 @@ async def invoke_agent(
                 _release_thread_lock(conv_id, lock_id)
             raise
         except Exception as e:
+            if routed:
+                return await _finalize_routed_postprompt_failure(
+                    name=name,
+                    mode=mode,
+                    error=f"{mode.value.title()} admission failed before Codex: {e}",
+                    control_invocation_id=control_invocation_id,
+                    running_entry_id=running_entry_id,
+                    conversation_id=conv_id,
+                    lock_id=lock_id,
+                    prompt_message_id=str(prompt_message_id),
+                )
             if scheduled_attempt_id:
                 _finalize_scheduler_attempt(
                     scheduled_task_id,
@@ -1530,8 +2093,10 @@ async def invoke_agent(
             lock_id=lock_id,
             running_entry_id=running_entry_id,
         )
+        bg_task = None
+        admission_gate = asyncio.Event() if routed else None
         try:
-            _create_background_invocation_task(
+            bg_task = _create_background_invocation_task(
                 bg_coro,
                 agent=name,
                 mode=mode.value,
@@ -1543,11 +2108,30 @@ async def invoke_agent(
                 scheduled_task_id=scheduled_task_id,
                 scheduled_attempt_id=scheduled_attempt_id,
                 control_invocation_id=invocation.control_invocation_id,
+                start_gate=admission_gate,
             )
+            if routed and control_invocation_id:
+                await get_controller().mark_execution_started(control_invocation_id)
+                admission_gate.set()
         except asyncio.CancelledError:
+            if bg_task is not None and admission_gate is not None and not admission_gate.is_set():
+                bg_task.cancel()
+                await asyncio.gather(bg_task, return_exceptions=True)
             close = getattr(bg_coro, "close", None)
             if close is not None:
                 close()
+            if routed:
+                await _finalize_routed_postprompt_failure(
+                    name=name,
+                    mode=mode,
+                    error=f"{mode.value.title()} admission was cancelled before Codex",
+                    control_invocation_id=control_invocation_id,
+                    running_entry_id=running_entry_id,
+                    conversation_id=conv_id,
+                    lock_id=lock_id,
+                    prompt_message_id=str(prompt_message_id),
+                )
+                raise
             await running_agents.unregister(running_entry_id)
             if invocation.control_invocation_id:
                 await _finalize_direct_interruption(
@@ -1561,14 +2145,28 @@ async def invoke_agent(
                 _release_thread_lock(conv_id, lock_id)
             raise
         except Exception as e:
+            if bg_task is not None and admission_gate is not None and not admission_gate.is_set():
+                bg_task.cancel()
+                await asyncio.gather(bg_task, return_exceptions=True)
             close = getattr(bg_coro, "close", None)
             if close is not None:
                 close()
-            await running_agents.unregister(running_entry_id)
             logger.error(
                 f"Failed to launch {mode.value} task for agent '{name}' on thread {conv_id}: {e}",
                 exc_info=True,
             )
+            if routed:
+                return await _finalize_routed_postprompt_failure(
+                    name=name,
+                    mode=mode,
+                    error=f"{mode.value.title()} task launch failed before Codex: {e}",
+                    control_invocation_id=control_invocation_id,
+                    running_entry_id=running_entry_id,
+                    conversation_id=conv_id,
+                    lock_id=lock_id,
+                    prompt_message_id=str(prompt_message_id),
+                )
+            await running_agents.unregister(running_entry_id)
             failure = AgentResult(
                 agent=name,
                 status="error",
@@ -1637,6 +2235,32 @@ async def invoke_agent(
 # Agent-to-Agent Conversation helpers (threading support)
 # =============================================================================
 
+def _acquire_routed_conversation_lock(
+    conversation_id: str,
+    *,
+    caller_agent: str,
+) -> Dict[str, Any]:
+    """Acquire the routed thread lock only after control/row identity binding."""
+    from agent_conversation_manager import get_manager
+
+    manager = get_manager()
+    data = manager.load(conversation_id)
+    if data is None:
+        return {
+            "error": f"Conversation '{conversation_id}' disappeared before lock acquisition"
+        }
+    lock_id = manager.acquire_lock(conversation_id, caller_agent)
+    if lock_id is None:
+        lock_info = data.get("lock") or {}
+        return {
+            "error": (
+                f"Thread '{conversation_id}' is currently being processed "
+                f"(held by '{lock_info.get('locked_by', 'unknown')}'). "
+                "Retry once it completes."
+            )
+        }
+    return {"lock_id": lock_id}
+
 async def _setup_conversation(
     target_agent: str,
     caller_agent: str,
@@ -1646,9 +2270,15 @@ async def _setup_conversation(
     mode: InvocationMode,
     model_override: Optional[str],
     project: Optional[Any],
+    append_prompt: bool = True,
 ) -> Dict[str, Any]:
-    """Resolve / create the thread, acquire the invocation lock, append the
-    caller's prompt, and build the history-injected prompt for the SDK query.
+    """Resolve/create a thread; legacy callers also lock and append here.
+
+    Non-routed callers retain the historical combined append/history behavior.
+    Routed callers set ``append_prompt=False``. They bind the resolved identity
+    into the control receipt and running row, then acquire the lock separately,
+    then commit only after route readiness through
+    ``_append_routed_caller_prompt``.
 
     Returns a dict with keys:
         - ``conversation_id``: resolved or newly created thread ID
@@ -1675,6 +2305,8 @@ async def _setup_conversation(
                     f"or omit conversation_id to start a new one."
                 ),
             }
+        if not append_prompt:
+            return {"conversation_id": conversation_id, "zero_turn": True}
         lock_id = manager.acquire_lock(conversation_id, caller_agent)
         if lock_id is None:
             lock_info = data.get("lock") or {}
@@ -1692,6 +2324,8 @@ async def _setup_conversation(
             initiator=caller_agent,
             source_chat_id=source_chat_id,
         )
+        if not append_prompt:
+            return {"conversation_id": resolved_id, "zero_turn": True}
         lock_id = manager.acquire_lock(resolved_id, caller_agent)
         if lock_id is None:
             # Should not happen for a fresh thread, but guard anyway.
@@ -1703,8 +2337,7 @@ async def _setup_conversation(
                 "conversation_id": resolved_id,
             }
 
-    # Append caller's prompt BEFORE running the agent — if the agent crashes,
-    # the question is still preserved in the thread.
+    # Legacy/non-routed behavior preserves the caller prompt before execution.
     try:
         prompt_message_id = manager.append_message(
             resolved_id,
@@ -1822,6 +2455,7 @@ def _create_background_invocation_task(
     scheduled_task_id: Optional[str] = None,
     scheduled_attempt_id: Optional[str] = None,
     control_invocation_id: Optional[str] = None,
+    start_gate: Optional[asyncio.Event] = None,
 ) -> asyncio.Task:
     """Create a detached invocation task with durable cleanup on failure.
 
@@ -2025,8 +2659,12 @@ def _create_background_invocation_task(
 
     async def guarded() -> None:
         try:
+            if start_gate is not None:
+                await start_gate.wait()
             await coro
         except asyncio.CancelledError:
+            if start_gate is not None and not start_gate.is_set():
+                raise
             await record_failure("cancelled", terminal_state="cancelled")
             raise
         except Exception:
@@ -2261,7 +2899,7 @@ async def _register_running_agent_entry(config: AgentConfig, invocation: AgentIn
     restart snapshots can see the work immediately, even before the event loop
     first schedules the background coroutine.
     """
-    return await running_agents.register(
+    return await running_agents.admit_target_scoped(
         agent=config.name,
         kind=_infer_kind(invocation),
         task_summary="" if invocation.scheduled_attempt_id else (invocation.prompt or ""),
@@ -2274,7 +2912,15 @@ async def _register_running_agent_entry(config: AgentConfig, invocation: AgentIn
         caller_agent=invocation.caller_agent,
         worktree_branch=invocation.worktree_branch,
         worktree_slug=invocation.worktree_slug,
+        worktree_base_ref=invocation.worktree_base_ref,
+        worktree_route_mode=invocation.worktree_route_mode,
         worktree_path=invocation.worktree_path,
+        worktree_request_manifest_digest=(
+            invocation.worktree_request_manifest_digest
+        ),
+        worktree_baseline_manifest_digest=(
+            invocation.worktree_baseline_manifest_digest
+        ),
         timeout_seconds=config.timeout_seconds,
     )
 
@@ -2321,7 +2967,10 @@ async def _running_agent_scope(
                 raise
         yield running_entry_id
     finally:
-        await running_agents.unregister(running_entry_id)
+        if not await running_agents.unregister_and_prove_absent(running_entry_id):
+            raise RuntimeError(
+                f"running-agent row absence could not be proved: {running_entry_id}"
+            )
 
 
 async def _run_agent(
@@ -2347,7 +2996,7 @@ async def _run_agent(
     """
     started_at = datetime.utcnow()
     async with _running_agent_scope(config, invocation, running_entry_id) as active_running_entry_id:
-        if invocation.control_invocation_id:
+        if invocation.control_invocation_id and not invocation.worktree_route_mode:
             await get_controller().mark_execution_started(
                 invocation.control_invocation_id
             )

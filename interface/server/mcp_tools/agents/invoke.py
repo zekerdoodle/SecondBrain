@@ -58,6 +58,32 @@ def _build_invoke_tool_schema():
 
     _, agent_names = build_agent_list_block()
 
+    absent_declaration = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {"state": {"type": "string", "enum": ["absent"]}},
+        "required": ["state"],
+    }
+    regular_declaration = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "state": {"type": "string", "enum": ["regular"]},
+            "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "mode": {"type": "string", "pattern": "^[0-7]{4}$"},
+        },
+        "required": ["state", "sha256", "mode"],
+    }
+    directory_declaration = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "state": {"type": "string", "enum": ["directory"]},
+            "mode": {"type": "string", "pattern": "^[0-7]{4}$"},
+        },
+        "required": ["state", "mode"],
+    }
+
     description = """Invoke a single specialized agent to handle a task.
 
 IMPORTANT: This tool is for PARALLEL/INDEPENDENT agent invocations. If you need to run
@@ -146,19 +172,90 @@ Use case examples:
             },
             "worktree_branch": {
                 "type": "string",
-                "description": "Optional Patch-only Phase 1A coder-worktree request branch. Requires SECOND_BRAIN_CODER_WORKTREES and does not change cwd yet."
+                "description": "Patch-only coder route branch. Requires an explicit route mode and manifest; Codex runs from the proved route cwd."
             },
             "worktree_slug": {
                 "type": "string",
-                "description": "Optional Patch-only Phase 1A coder-worktree request slug used to derive the worktree path. Requires worktree_branch."
+                "description": "Patch-only coder route slug used to derive the exact worktree path."
             },
             "worktree_base_ref": {
                 "type": "string",
-                "description": "Optional Patch-only Phase 1A base ref for coder worktree metadata. Defaults to main when omitted."
+                "description": "Patch-only base ref resolved once to an immutable SHA. Defaults to main."
+            },
+            "worktree_route_mode": {
+                "type": "string",
+                "enum": ["create", "reuse_baseline_clean"],
+                "description": "Explicit route operation. Reuse is exact same-thread baseline-clean continuation and never falls back to create or cleanup."
+            },
+            "worktree_path_manifest": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "manifest_version": {"type": "integer", "enum": [1]},
+                    "paths": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "properties": {
+                                "path": {"type": "string"},
+                                "strategy": {
+                                    "type": "string",
+                                    "enum": [
+                                        "require_base_parity",
+                                        "bootstrap_live",
+                                        "require_absent",
+                                        "bootstrap_tombstone",
+                                    ],
+                                },
+                                "canonical": {
+                                    "oneOf": [
+                                        absent_declaration,
+                                        regular_declaration,
+                                    ]
+                                },
+                            },
+                            "required": ["path", "strategy", "canonical"],
+                        },
+                    },
+                    "parents": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "properties": {
+                                "path": {"type": "string"},
+                                "strategy": {
+                                    "type": "string",
+                                    "enum": [
+                                        "require_directory",
+                                        "bootstrap_live_directory",
+                                        "require_absent",
+                                    ],
+                                },
+                                "canonical": {
+                                    "oneOf": [
+                                        absent_declaration,
+                                        directory_declaration,
+                                    ]
+                                },
+                            },
+                            "required": ["path", "strategy", "canonical"],
+                        },
+                    },
+                },
+                "required": ["manifest_version", "paths", "parents"],
+                "description": "Closed manifest-v1 declaring exact live canonical path/parent states and strategies."
+            },
+            "expected_baseline_manifest_digest": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$",
+                "description": "Required only for reuse_baseline_clean; copied from argument-free inspect."
             }
 
         },
-        "required": ["agent", "prompt"]
+        "required": ["agent", "prompt"],
+        "additionalProperties": False,
     }
 
     return description, schema
@@ -167,7 +264,14 @@ Use case examples:
 _INVOKE_DESCRIPTION, _INVOKE_SCHEMA = _build_invoke_tool_schema()
 
 
-WORKTREE_REQUEST_FIELDS = ("worktree_branch", "worktree_slug", "worktree_base_ref")
+WORKTREE_REQUEST_FIELDS = (
+    "worktree_branch",
+    "worktree_slug",
+    "worktree_base_ref",
+    "worktree_route_mode",
+    "worktree_path_manifest",
+    "expected_baseline_manifest_digest",
+)
 
 
 def _coder_worktrees_enabled() -> bool:
@@ -175,7 +279,7 @@ def _coder_worktrees_enabled() -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on", "enabled"}
 
 
-def _extract_worktree_request(args: Dict[str, Any]) -> Dict[str, Optional[str]]:
+def _extract_worktree_request(args: Dict[str, Any]) -> Dict[str, Any]:
     return {
         field: args.get(field)
         for field in WORKTREE_REQUEST_FIELDS
@@ -187,8 +291,9 @@ def _validate_worktree_request_for_mcp(
     *,
     caller_agent: str,
     agent_name: str,
-    request: Dict[str, Optional[str]],
-) -> Dict[str, str]:
+    request: Dict[str, Any],
+    conversation_id: Optional[str],
+) -> Dict[str, Any]:
     if not request:
         return {}
     if (caller_agent or "").strip().lower() != "patch":
@@ -196,12 +301,26 @@ def _validate_worktree_request_for_mcp(
     if not _coder_worktrees_enabled():
         raise ValueError(
             "coder worktree requests are disabled; set "
-            "SECOND_BRAIN_CODER_WORKTREES=1 to enable Phase 1A plumbing"
+            "SECOND_BRAIN_CODER_WORKTREES=1 to enable coder route admission"
+        )
+    from worktree_manager import CODER_AGENTS
+
+    if agent_name not in CODER_AGENTS:
+        raise ValueError(
+            f"worktrees are only allowed for coder agents: {sorted(CODER_AGENTS)}"
         )
     branch = request.get("worktree_branch")
     slug = request.get("worktree_slug")
     if not branch or not slug:
         raise ValueError("worktree_branch and worktree_slug are required together")
+    route_mode = request.get("worktree_route_mode")
+    manifest = request.get("worktree_path_manifest")
+    if route_mode is None or manifest is None:
+        raise ValueError(
+            "routed work requires worktree_route_mode and worktree_path_manifest"
+        )
+    if route_mode == "reuse_baseline_clean" and not conversation_id:
+        raise ValueError("reuse_baseline_clean requires an existing conversation_id")
 
     from worktree_manager import metadata_for_request
 
@@ -210,6 +329,11 @@ def _validate_worktree_request_for_mcp(
         branch,
         slug,
         base_ref=request.get("worktree_base_ref") or "main",
+        route_mode=route_mode,
+        path_manifest=manifest,
+        expected_baseline_manifest_digest=request.get(
+            "expected_baseline_manifest_digest"
+        ),
     )
 
 def _append_invocation_footer(
@@ -463,6 +587,7 @@ async def invoke_agent(args: Dict[str, Any]) -> Dict[str, Any]:
                 caller_agent=caller_agent,
                 agent_name=agent_name,
                 request=_extract_worktree_request(args),
+                conversation_id=conversation_id,
             )
         except Exception as e:
             return {
