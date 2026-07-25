@@ -25,6 +25,18 @@ _ALLOWED_RESTART_CONSUMER = "main_streaming_finalizer"
 _AGENT_MANAGED_RESTART_CONSUMER = "agent_managed_restart"
 _AGENT_MANAGED_DIRECT_KIND = "invoke_foreground"
 _AGENT_MANAGED_SCHEDULED_KIND = "invoke_trust"
+_OWNER_LOSS_PUBLIC_FIELDS = frozenset(
+    {
+        "managed_load_action",
+        "load_operation_id",
+        "source_fingerprint",
+        "required_artifact_checkpoints",
+        "owner_loss_reconciliation",
+    }
+)
+_OWNER_LOSS_INTERNAL_FIELDS = frozenset(
+    {"_agent_name", "_restart_consumer", "_source_chat_id"}
+)
 
 
 def _summarize_running_entry(entry: dict[str, Any]) -> str:
@@ -291,6 +303,135 @@ def _managed_load_existing_terminal_result(receipt: dict[str, Any]) -> dict[str,
     }
 
 
+def _managed_load_owner_loss_result(
+    receipt: dict[str, Any], *, created: bool
+) -> dict[str, Any]:
+    disposition = (
+        "reconciled once without restart"
+        if created
+        else "existing exact reconciliation returned unchanged"
+    )
+    return {
+        "content": [{
+            "type": "text",
+            "text": (
+                f"Managed load owner loss {disposition}.\n"
+                f"Load operation: {receipt['load_operation_id']}\n"
+                f"Source fingerprint: {receipt['source_fingerprint']}\n"
+                f"State: {receipt['state']}\n"
+                f"Completion basis: {receipt['completion_basis']}\n"
+                f"Historical owner: {receipt['owner_kind']}/{receipt['owner_id']}\n"
+                "Historical continuation claim: none\n"
+                "Historical caller acknowledgement: none\n"
+                f"Restart replayed: false\n"
+                f"Receipt changed by this call: {'true' if created else 'false'}"
+            ),
+        }],
+        "managed_load_receipt": receipt,
+    }
+
+
+def _validate_owner_loss_action_args(args: Dict[str, Any]) -> dict[str, Any]:
+    fields = set(args)
+    unknown_internal = {
+        field
+        for field in fields
+        if field.startswith("_") and field not in _OWNER_LOSS_INTERNAL_FIELDS
+    }
+    public = fields - _OWNER_LOSS_INTERNAL_FIELDS
+    if unknown_internal or public != _OWNER_LOSS_PUBLIC_FIELDS:
+        extra = sorted(public - _OWNER_LOSS_PUBLIC_FIELDS)
+        missing = sorted(_OWNER_LOSS_PUBLIC_FIELDS - public)
+        raise mlo.ManagedLoadError(
+            "reconcile_owner_loss request fields are closed "
+            f"(missing={missing}, extra={extra}, internal={sorted(unknown_internal)})"
+        )
+    if args.get("_agent_name") != "patch":
+        raise mlo.ManagedLoadError("reconcile_owner_loss is Patch-only")
+    return mlo.normalize_owner_loss_request(
+        load_operation_id=args.get("load_operation_id"),
+        source_fingerprint=args.get("source_fingerprint"),
+        required_artifact_checkpoints=args.get(
+            "required_artifact_checkpoints"
+        ),
+        owner_loss_reconciliation=args.get("owner_loss_reconciliation"),
+    )
+
+
+async def _derive_owner_loss_repair_authority(
+    args: Dict[str, Any],
+    request: dict[str, Any],
+) -> dict[str, Any]:
+    import running_agents
+
+    restart_consumer = args.get("_restart_consumer") or "none"
+    source_agent = args.get("_agent_name")
+    running_invocations = await running_agents.list_source_of_truth()
+    current_entry, owner_error = _agent_managed_current_entry(
+        restart_consumer,
+        source_agent,
+        running_invocations,
+    )
+    if owner_error:
+        raise mlo.ManagedLoadError(f"current_owner_invalid: {owner_error}")
+    binding = _managed_load_binding(
+        restart_consumer,
+        source_agent,
+        current_entry or {},
+        source_fingerprint=request["source_fingerprint"],
+        required_artifact_checkpoints=request[
+            "required_artifact_checkpoints"
+        ],
+    )
+    await _validate_managed_load_owner(
+        restart_consumer,
+        current_entry or {},
+        binding,
+    )
+    safety_error = _agent_managed_restart_error(
+        restart_consumer=restart_consumer,
+        source_agent=source_agent,
+        running_invocations=running_invocations,
+    )
+    if safety_error:
+        raise mlo.ManagedLoadError(f"concurrent_live_work: {safety_error}")
+    return mlo.normalize_repair_authority(
+        {
+            "schema": "second_brain.managed_load_repair_authority.v1",
+            "caller_agent": source_agent,
+            "owner_kind": binding["owner_kind"],
+            "owner_id": binding["owner_id"],
+            "running_entry_id": current_entry.get("id"),
+            "conversation_id": binding["conversation_id"],
+            "scheduled_task_id": binding["scheduled_task_id"],
+            "scheduled_attempt_id": binding["scheduled_attempt_id"],
+            "restart_consumer": restart_consumer,
+        }
+    )
+
+
+async def _handle_owner_loss_reconciliation(
+    args: Dict[str, Any],
+) -> Dict[str, Any]:
+    request = _validate_owner_loss_action_args(args)
+    store = mlo.get_store()
+    authority = await _derive_owner_loss_repair_authority(args, request)
+
+    async def revalidate() -> dict[str, Any]:
+        return await _derive_owner_loss_repair_authority(args, request)
+
+    project_root = os.environ.get(
+        "SECOND_BRAIN_OWNER_LOSS_PROJECT_ROOT", str(mlo.PROJECT_ROOT)
+    )
+    receipt, created = await store.reconcile_owner_loss(
+        request,
+        repair_authority=authority,
+        project_root=project_root,
+        revalidate_current_authority=revalidate,
+    )
+    return _managed_load_owner_loss_result(receipt, created=created)
+
+
 def _handle_managed_load_action(args: Dict[str, Any]) -> Dict[str, Any]:
     if args.get("_agent_name") != "patch":
         raise mlo.ManagedLoadError("managed-load status/checkpoints are Patch-only")
@@ -406,6 +547,11 @@ load_operation_id, ordered source-manifest source_fingerprint, and exact allowli
 required_artifact_checkpoints. Repeating that exact operation returns its durable
 receipt and never spawns again. Patch may use managed_load_action=status or checkpoint
 to read truth or verify declared codebase artifacts without restarting.
+The exceptional reconcile_owner_loss action is a closed, monotonic,
+schema-versioned no-restart transition for one already-proved process_replaced
+receipt whose exact historical direct owner is durably lost. It requires pinned
+source, provenance, authority, preimage, and artifact evidence; preserves the
+historical owner/claim/ack fields; and cannot prepare or replay a load.
 At a later natural-load boundary, existing_terminal_only=true lets a different exact
 current Patch owner assert only the same fully artifacts_reconciled operation. Any
 absence, conflict, or nonterminal state stops without preparation or replacement.
@@ -421,9 +567,17 @@ load receipt—not later uptime or an intent marker—as process/load truth.""",
             "pending_messages": {"type": "array", "description": "Messages not yet saved (will be preserved)", "items": {"type": "object"}},
             "managed_load_action": {
                 "type": "string",
-                "enum": ["restart", "status", "checkpoint"],
+                "enum": [
+                    "restart",
+                    "status",
+                    "checkpoint",
+                    "reconcile_owner_loss",
+                ],
                 "default": "restart",
-                "description": "Patch-only managed-load action. status/checkpoint never restart."
+                "description": (
+                    "Patch-only managed-load action. status, checkpoint, and "
+                    "reconcile_owner_loss never restart."
+                )
             },
             "existing_terminal_only": {
                 "type": "boolean",
@@ -456,6 +610,112 @@ load receipt—not later uptime or an intent marker—as process/load truth.""",
                     "additionalProperties": False
                 },
                 "description": "For checkpoint action only: existing codebase files that already contain the exact operation UUID."
+            },
+            "owner_loss_reconciliation": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "schema": {
+                        "type": "string",
+                        "enum": [mlo.OWNER_LOSS_REQUEST_SCHEMA],
+                    },
+                    "restart_attempt_id": {
+                        "type": "string",
+                        "format": "uuid",
+                    },
+                    "receipt_preimage_sha256": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{64}$",
+                    },
+                    "accepted_source_manifest": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": mlo.MAX_SOURCE_MANIFEST_ENTRIES,
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "properties": {
+                                "path": {"type": "string"},
+                                "sha256": {
+                                    "type": "string",
+                                    "pattern": "^[0-9a-f]{64}$",
+                                },
+                            },
+                            "required": ["path", "sha256"],
+                        },
+                    },
+                    "checkpoint_manifest": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": mlo.MAX_CHECKPOINT_MANIFEST_ENTRIES,
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "properties": {
+                                "name": {
+                                    "type": "string",
+                                    "enum": sorted(
+                                        mlo.ALLOWED_ARTIFACT_CHECKPOINTS
+                                    ),
+                                },
+                                "path": {"type": "string"},
+                                "sha256": {
+                                    "type": "string",
+                                    "pattern": "^[0-9a-f]{64}$",
+                                },
+                            },
+                            "required": ["name", "path", "sha256"],
+                        },
+                    },
+                    "evidence": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "schema": {
+                                "type": "string",
+                                "enum": [mlo.OWNER_LOSS_EVIDENCE_SCHEMA],
+                            },
+                            "control_record_sha256": {
+                                "type": "string",
+                                "pattern": "^[0-9a-f]{64}$",
+                            },
+                            "notification_store_sha256": {
+                                "type": "string",
+                                "pattern": "^[0-9a-f]{64}$",
+                            },
+                            "notification_id": {
+                                "type": "string",
+                                "format": "uuid",
+                            },
+                            "notification_delivery_attempt": {
+                                "type": "integer",
+                                "minimum": 1,
+                            },
+                            "conversation_store_sha256": {
+                                "type": "string",
+                                "pattern": "^[0-9a-f]{64}$",
+                            },
+                            "scheduler_store_sha256": {
+                                "type": "string",
+                                "pattern": "^[0-9a-f]{64}$",
+                            },
+                            "intent_ledger_sha256": {
+                                "type": "string",
+                                "pattern": "^[0-9a-f]{64}$",
+                            },
+                            "restart_log_sha256": {
+                                "type": "string",
+                                "pattern": "^[0-9a-f]{64}$",
+                            },
+                        },
+                        "required": sorted(mlo.OWNER_LOSS_EVIDENCE_FIELDS),
+                    },
+                },
+                "required": sorted(mlo.OWNER_LOSS_REQUEST_FIELDS),
+                "description": (
+                    "Closed v1 evidence contract required only for "
+                    "managed_load_action=reconcile_owner_loss."
+                ),
             }
         }
     }
@@ -464,8 +724,15 @@ async def restart_server(args: Dict[str, Any]) -> Dict[str, Any]:
     """Restart the server with conversation continuity."""
     try:
         managed_load_action = args.get("managed_load_action", "restart")
-        if managed_load_action not in {"restart", "status", "checkpoint"}:
+        if managed_load_action not in {
+            "restart",
+            "status",
+            "checkpoint",
+            "reconcile_owner_loss",
+        }:
             raise mlo.ManagedLoadError("unsupported managed_load_action")
+        if managed_load_action == "reconcile_owner_loss":
+            return await _handle_owner_loss_reconciliation(args)
         existing_terminal_only = args.get("existing_terminal_only", False)
         if not isinstance(existing_terminal_only, bool):
             raise mlo.ManagedLoadError("existing_terminal_only must be a boolean")
