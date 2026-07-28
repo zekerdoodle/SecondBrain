@@ -11,6 +11,7 @@ import subprocess
 import logging
 import inspect
 import json
+import math
 from typing import Any, Dict
 
 from claude_agent_sdk import tool
@@ -36,6 +37,36 @@ _OWNER_LOSS_PUBLIC_FIELDS = frozenset(
 )
 _OWNER_LOSS_INTERNAL_FIELDS = frozenset(
     {"_agent_name", "_restart_consumer", "_source_chat_id"}
+)
+_RUNNING_ROW_FIELDS = frozenset(
+    {
+        "id",
+        "agent",
+        "kind",
+        "started_at",
+        "task_summary",
+        "source_chat_id",
+        "conversation_id",
+        "salon_id",
+        "scheduled_task_id",
+        "scheduled_attempt_id",
+        "caller_agent",
+        "worktree_branch",
+        "worktree_slug",
+        "worktree_base_ref",
+        "worktree_route_mode",
+        "worktree_path",
+        "worktree_request_manifest_digest",
+        "worktree_baseline_manifest_digest",
+        "timeout_seconds",
+        "deadline_at",
+        "process_id",
+    }
+)
+_RUNNING_ROW_PROJECTION_FIELDS = tuple(
+    field
+    for field in sorted(_RUNNING_ROW_FIELDS)
+    if field != "task_summary"
 )
 
 
@@ -358,7 +389,77 @@ def _validate_owner_loss_action_args(args: Dict[str, Any]) -> dict[str, Any]:
     )
 
 
-async def _derive_owner_loss_repair_authority(
+def _running_rows_projection(
+    running_invocations: Any,
+) -> dict[str, Any]:
+    if not isinstance(running_invocations, list):
+        raise mlo.ManagedLoadError(
+            "current_owner_invalid: running_agents did not return an array"
+        )
+    projected: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw in running_invocations:
+        if (
+            not isinstance(raw, dict)
+            or set(raw) - _RUNNING_ROW_FIELDS
+            or not {"id", "agent", "kind", "started_at", "task_summary"} <= set(raw)
+        ):
+            raise mlo.ManagedLoadError(
+                "current_owner_invalid: running row fields are unrecognized"
+            )
+        row_id = mlo._canonical_uuid(raw.get("id"), field="running row id")
+        if row_id in seen:
+            raise mlo.ManagedLoadError(
+                "current_owner_invalid: duplicate running row identity"
+            )
+        seen.add(row_id)
+        started_at = raw.get("started_at")
+        if (
+            type(started_at) not in {int, float}
+            or not math.isfinite(started_at)
+        ):
+            raise mlo.ManagedLoadError(
+                "current_owner_invalid: running row timestamp is invalid"
+            )
+        task_summary = raw.get("task_summary")
+        if not isinstance(task_summary, str) or len(task_summary) > 2000:
+            raise mlo.ManagedLoadError(
+                "current_owner_invalid: running row summary is invalid"
+            )
+        row: dict[str, Any] = {"id": row_id}
+        for field in _RUNNING_ROW_PROJECTION_FIELDS:
+            if field == "id":
+                continue
+            value = raw.get(field)
+            if field in {"started_at", "timeout_seconds", "deadline_at"}:
+                if value is not None and (
+                    type(value) not in {int, float}
+                    or not math.isfinite(value)
+                ):
+                    raise mlo.ManagedLoadError(
+                        f"current_owner_invalid: running row {field} is invalid"
+                    )
+            elif value is not None and (
+                not isinstance(value, str)
+                or len(value) > 800
+                or "\n" in value
+                or "\r" in value
+                or "\x00" in value
+            ):
+                raise mlo.ManagedLoadError(
+                    f"current_owner_invalid: running row {field} is invalid"
+                )
+            row[field] = value
+        projected.append(row)
+    projected.sort(key=lambda row: row["id"])
+    return {
+        "schema": "second_brain.managed_load_running_agents_projection.v1",
+        "row_count": len(projected),
+        "rows": projected,
+    }
+
+
+async def _derive_owner_loss_repair_context(
     args: Dict[str, Any],
     request: dict[str, Any],
 ) -> dict[str, Any]:
@@ -395,7 +496,7 @@ async def _derive_owner_loss_repair_authority(
     )
     if safety_error:
         raise mlo.ManagedLoadError(f"concurrent_live_work: {safety_error}")
-    return mlo.normalize_repair_authority(
+    authority = mlo.normalize_repair_authority(
         {
             "schema": "second_brain.managed_load_repair_authority.v1",
             "caller_agent": source_agent,
@@ -408,6 +509,15 @@ async def _derive_owner_loss_repair_authority(
             "restart_consumer": restart_consumer,
         }
     )
+    projection = _running_rows_projection(running_invocations)
+    return mlo.normalize_repair_context(
+        {
+            "repair_authority": authority,
+            "running_agents_projection_sha256": mlo._canonical_json_sha256(
+                projection
+            ),
+        }
+    )
 
 
 async def _handle_owner_loss_reconciliation(
@@ -415,19 +525,25 @@ async def _handle_owner_loss_reconciliation(
 ) -> Dict[str, Any]:
     request = _validate_owner_loss_action_args(args)
     store = mlo.get_store()
-    authority = await _derive_owner_loss_repair_authority(args, request)
+    request_schema = request["owner_loss_reconciliation"]["schema"]
+    if request_schema == mlo.OWNER_LOSS_REQUEST_SCHEMA_V1:
+        request = store.preflight_owner_loss_request(request)
+        context = await _derive_owner_loss_repair_context(args, request)
+    else:
+        context = await _derive_owner_loss_repair_context(args, request)
+        request = store.preflight_owner_loss_request(request)
 
     async def revalidate() -> dict[str, Any]:
-        return await _derive_owner_loss_repair_authority(args, request)
+        return await _derive_owner_loss_repair_context(args, request)
 
     project_root = os.environ.get(
         "SECOND_BRAIN_OWNER_LOSS_PROJECT_ROOT", str(mlo.PROJECT_ROOT)
     )
     receipt, created = await store.reconcile_owner_loss(
         request,
-        repair_authority=authority,
+        repair_context=context,
         project_root=project_root,
-        revalidate_current_authority=revalidate,
+        revalidate_current_context=revalidate,
     )
     return _managed_load_owner_loss_result(receipt, created=created)
 
@@ -526,6 +642,144 @@ if SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, SCRIPTS_DIR)
 
 
+def _owner_loss_manifest_schema(*, checkpoint: bool) -> dict[str, Any]:
+    properties: dict[str, Any] = {
+        "path": {"type": "string"},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    }
+    required = ["path", "sha256"]
+    if checkpoint:
+        properties["name"] = {
+            "type": "string",
+            "enum": sorted(mlo.ALLOWED_ARTIFACT_CHECKPOINTS),
+        }
+        required = ["name", "path", "sha256"]
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": properties,
+        "required": required,
+    }
+
+
+def _owner_loss_evidence_schema_v1() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "schema": {
+                "type": "string",
+                "enum": [mlo.OWNER_LOSS_EVIDENCE_SCHEMA_V1],
+            },
+            "control_record_sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$",
+            },
+            "notification_store_sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$",
+            },
+            "notification_id": {"type": "string", "format": "uuid"},
+            "notification_delivery_attempt": {
+                "type": "integer",
+                "minimum": 1,
+            },
+            "conversation_store_sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$",
+            },
+            "scheduler_store_sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$",
+            },
+            "intent_ledger_sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$",
+            },
+            "restart_log_sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$",
+            },
+        },
+        "required": sorted(mlo.OWNER_LOSS_EVIDENCE_FIELDS_V1),
+    }
+
+
+def _owner_loss_evidence_schema_v2() -> dict[str, Any]:
+    digest = {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "schema": {
+                "type": "string",
+                "enum": [mlo.OWNER_LOSS_EVIDENCE_SCHEMA_V2],
+            },
+            "control_record_sha256": dict(digest),
+            "notification_id": {"type": "string", "format": "uuid"},
+            "notification_delivery_attempt": {
+                "type": "integer",
+                "minimum": 1,
+            },
+            "notification_authority_projection_sha256": dict(digest),
+            "intent_record_projection_sha256": dict(digest),
+            "restart_sequence_projection_sha256": dict(digest),
+            "historical_evidence_identity_sha256": dict(digest),
+        },
+        "required": sorted(mlo.OWNER_LOSS_EVIDENCE_FIELDS_V2),
+    }
+
+
+def _owner_loss_request_branch(
+    *, request_schema: str, evidence_schema: dict[str, Any]
+) -> dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "schema": {"type": "string", "enum": [request_schema]},
+            "restart_attempt_id": {"type": "string", "format": "uuid"},
+            "receipt_preimage_sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$",
+            },
+            "accepted_source_manifest": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": mlo.MAX_SOURCE_MANIFEST_ENTRIES,
+                "items": _owner_loss_manifest_schema(checkpoint=False),
+            },
+            "checkpoint_manifest": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": mlo.MAX_CHECKPOINT_MANIFEST_ENTRIES,
+                "items": _owner_loss_manifest_schema(checkpoint=True),
+            },
+            "evidence": evidence_schema,
+        },
+        "required": sorted(mlo.OWNER_LOSS_REQUEST_FIELDS),
+    }
+
+
+def _owner_loss_public_request_schema() -> dict[str, Any]:
+    return {
+        "oneOf": [
+            _owner_loss_request_branch(
+                request_schema=mlo.OWNER_LOSS_REQUEST_SCHEMA_V1,
+                evidence_schema=_owner_loss_evidence_schema_v1(),
+            ),
+            _owner_loss_request_branch(
+                request_schema=mlo.OWNER_LOSS_REQUEST_SCHEMA_V2,
+                evidence_schema=_owner_loss_evidence_schema_v2(),
+            ),
+        ],
+        "description": (
+            "Closed owner-loss union: v2 is required for first use; v1 is "
+            "accepted only as an exact existing v1 terminal repeat."
+        ),
+    }
+
+
 @register_tool("utilities")
 @tool(
     name="restart_server",
@@ -549,9 +803,11 @@ receipt and never spawns again. Patch may use managed_load_action=status or chec
 to read truth or verify declared codebase artifacts without restarting.
 The exceptional reconcile_owner_loss action is a closed, monotonic,
 schema-versioned no-restart transition for one already-proved process_replaced
-receipt whose exact historical direct owner is durably lost. It requires pinned
-source, provenance, authority, preimage, and artifact evidence; preserves the
-historical owner/claim/ack fields; and cannot prepare or replay a load.
+receipt whose exact historical direct owner is durably lost. V2 first use pins
+review-stable target history while the action recomputes current typed authority
+twice and seals file generations before its one receipt write. V1 is accepted
+only as an exact repeat of an existing v1 exceptional terminal. The action
+preserves historical owner/claim/ack fields and cannot prepare or replay a load.
 At a later natural-load boundary, existing_terminal_only=true lets a different exact
 current Patch owner assert only the same fully artifacts_reconciled operation. Any
 absence, conflict, or nonterminal state stops without preparation or replacement.
@@ -611,112 +867,7 @@ load receipt—not later uptime or an intent marker—as process/load truth.""",
                 },
                 "description": "For checkpoint action only: existing codebase files that already contain the exact operation UUID."
             },
-            "owner_loss_reconciliation": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "schema": {
-                        "type": "string",
-                        "enum": [mlo.OWNER_LOSS_REQUEST_SCHEMA],
-                    },
-                    "restart_attempt_id": {
-                        "type": "string",
-                        "format": "uuid",
-                    },
-                    "receipt_preimage_sha256": {
-                        "type": "string",
-                        "pattern": "^[0-9a-f]{64}$",
-                    },
-                    "accepted_source_manifest": {
-                        "type": "array",
-                        "minItems": 1,
-                        "maxItems": mlo.MAX_SOURCE_MANIFEST_ENTRIES,
-                        "items": {
-                            "type": "object",
-                            "additionalProperties": False,
-                            "properties": {
-                                "path": {"type": "string"},
-                                "sha256": {
-                                    "type": "string",
-                                    "pattern": "^[0-9a-f]{64}$",
-                                },
-                            },
-                            "required": ["path", "sha256"],
-                        },
-                    },
-                    "checkpoint_manifest": {
-                        "type": "array",
-                        "minItems": 1,
-                        "maxItems": mlo.MAX_CHECKPOINT_MANIFEST_ENTRIES,
-                        "items": {
-                            "type": "object",
-                            "additionalProperties": False,
-                            "properties": {
-                                "name": {
-                                    "type": "string",
-                                    "enum": sorted(
-                                        mlo.ALLOWED_ARTIFACT_CHECKPOINTS
-                                    ),
-                                },
-                                "path": {"type": "string"},
-                                "sha256": {
-                                    "type": "string",
-                                    "pattern": "^[0-9a-f]{64}$",
-                                },
-                            },
-                            "required": ["name", "path", "sha256"],
-                        },
-                    },
-                    "evidence": {
-                        "type": "object",
-                        "additionalProperties": False,
-                        "properties": {
-                            "schema": {
-                                "type": "string",
-                                "enum": [mlo.OWNER_LOSS_EVIDENCE_SCHEMA],
-                            },
-                            "control_record_sha256": {
-                                "type": "string",
-                                "pattern": "^[0-9a-f]{64}$",
-                            },
-                            "notification_store_sha256": {
-                                "type": "string",
-                                "pattern": "^[0-9a-f]{64}$",
-                            },
-                            "notification_id": {
-                                "type": "string",
-                                "format": "uuid",
-                            },
-                            "notification_delivery_attempt": {
-                                "type": "integer",
-                                "minimum": 1,
-                            },
-                            "conversation_store_sha256": {
-                                "type": "string",
-                                "pattern": "^[0-9a-f]{64}$",
-                            },
-                            "scheduler_store_sha256": {
-                                "type": "string",
-                                "pattern": "^[0-9a-f]{64}$",
-                            },
-                            "intent_ledger_sha256": {
-                                "type": "string",
-                                "pattern": "^[0-9a-f]{64}$",
-                            },
-                            "restart_log_sha256": {
-                                "type": "string",
-                                "pattern": "^[0-9a-f]{64}$",
-                            },
-                        },
-                        "required": sorted(mlo.OWNER_LOSS_EVIDENCE_FIELDS),
-                    },
-                },
-                "required": sorted(mlo.OWNER_LOSS_REQUEST_FIELDS),
-                "description": (
-                    "Closed v1 evidence contract required only for "
-                    "managed_load_action=reconcile_owner_loss."
-                ),
-            }
+            "owner_loss_reconciliation": _owner_loss_public_request_schema(),
         }
     }
 )
