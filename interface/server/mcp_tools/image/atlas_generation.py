@@ -466,6 +466,7 @@ def _is_list_media_param(param_name: str) -> bool:
     normalized = param_name.strip().lower()
     return normalized in {
         "images",
+        "reference_images",
         "image_urls",
         "videos",
         "video_urls",
@@ -477,6 +478,8 @@ def _video_media_config(model: str, image_param_name: Optional[str]) -> Dict[str
         mode = "list" if _is_list_media_param(image_param_name) else "single"
         return {"param": image_param_name, "mode": mode}
     normalized = model.rstrip("/")
+    if normalized == "bytedance/seedance-2.0/reference-to-video":
+        return {"param": "reference_images", "mode": "list"}
     if normalized.endswith("/image-to-video") or "image-to-video" in normalized:
         return {"param": DEFAULT_VIDEO_IMAGE_PARAM, "mode": "single"}
     return {"param": DEFAULT_VIDEO_REFERENCE_PARAM, "mode": "list"}
@@ -632,9 +635,11 @@ Local references are uploaded to Atlas Cloud, URL references pass through
 unchanged, and returned video outputs are downloaded to
 05_App_Data/generated_images/. The default model is
 vidu/q3/reference-to-video, which supports 1-4 reference images. Use model
-overrides for image-to-video endpoints such as vidu/image-to-video-2.0; those
-default to a single image parameter named image. Reference-to-video models
-default to a list parameter named images. Requires ATLASCLOUD_API_KEY.""",
+overrides for image-to-video endpoints such as vidu/image-to-video-2.0 or
+bytedance/seedance-2.0/image-to-video; those default to a single image parameter
+named image. bytedance/seedance-2.0/reference-to-video uses the list parameter
+reference_images; other reference-to-video models default to the list parameter
+images. Requires ATLASCLOUD_API_KEY.""",
     input_schema={
         "type": "object",
         "properties": {
@@ -667,7 +672,7 @@ default to a list parameter named images. Requires ATLASCLOUD_API_KEY.""",
             },
             "image_param_name": {
                 "type": "string",
-                "description": "Override the model-specific image URL parameter name. List parameters such as images/image_urls receive all references; single parameters such as image receive only the first.",
+                "description": "Override the model-specific image URL parameter name. List parameters such as images/reference_images/image_urls receive all references; single parameters such as image receive only the first.",
             },
             "output_path": {
                 "type": "string",

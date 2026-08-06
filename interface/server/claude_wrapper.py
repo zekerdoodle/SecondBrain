@@ -118,6 +118,14 @@ logger = logging.getLogger(__name__)
 RILEY_ANTHROPIC_PROXY_BASE_PATH = "/internal/anthropic-proxy"
 SECOND_BRAIN_ROOT = Path(__file__).resolve().parents[2]
 CLAUDE_CODE_CLI_PATH = SECOND_BRAIN_ROOT / "node_modules" / ".bin" / "claude"
+ISOLATED_DEVELOPMENT = os.environ.get("SECOND_BRAIN_ENV") == "development-isolated"
+DEV_SAFE_AGENT_NAMES = frozenset({"patch"})
+DEV_AUTH_REQUIRED_TEXT = (
+    "DEV Codex authentication is required. Run "
+    "HOME=/home/debian/second-brain-dev/.dev/home "
+    "CODEX_HOME=/home/debian/second-brain-dev/.dev/codex-home codex login, "
+    "then retry this turn. The isolated server and saved chat remain available."
+)
 
 
 def _current_claude_code_cli_path() -> Path:
@@ -210,18 +218,24 @@ THINKING_DEFAULTS = {
     },
 }
 
-# Import custom MCP tools
-try:
-    from mcp_tools import (
-        create_mcp_server,
-        MCP_PREFIX,
-    )
-    # Per-agent MCP servers are created dynamically in _build_options()
-    logger.info("MCP tools module loaded successfully")
-except Exception as e:
-    logger.warning(f"Could not load Second Brain MCP tools: {e}")
+# Import custom MCP tools only in production. The DEV materializer omits the
+# implementation tree and the wrapper never registers an internal MCP server.
+if ISOLATED_DEVELOPMENT:
     create_mcp_server = None
     MCP_PREFIX = "mcp__brain__"
+    logger.info("Isolated DEV: MCP tool loading is disabled")
+else:
+    try:
+        from mcp_tools import (
+            create_mcp_server,
+            MCP_PREFIX,
+        )
+        # Per-agent MCP servers are created dynamically in _build_options()
+        logger.info("MCP tools module loaded successfully")
+    except Exception as e:
+        logger.warning(f"Could not load Second Brain MCP tools: {e}")
+        create_mcp_server = None
+        MCP_PREFIX = "mcp__brain__"
 
 
 def _resolve_external_env(value: str) -> str:
@@ -238,6 +252,8 @@ def _resolve_external_env(value: str) -> str:
 
 
 def _load_external_mcp_servers(cwd: Path) -> Dict[str, Dict[str, Any]]:
+    if ISOLATED_DEVELOPMENT:
+        return {}
     config_path = cwd / ".claude" / "agents" / "external_mcp_servers.json"
     if not config_path.exists():
         return {}
@@ -576,6 +592,26 @@ class ClaudeWrapper:
 
     def _build_codex_identity_and_tools(self, agent_config) -> tuple[str, List[str], Any, bool]:
         """Build Codex identity instructions and the effective legacy tool list."""
+        if ISOLATED_DEVELOPMENT:
+            if agent_config.name not in DEV_SAFE_AGENT_NAMES:
+                raise RuntimeError(
+                    f"Agent '{agent_config.name}' is not admitted in isolated development"
+                )
+            parts: List[str] = []
+            if agent_config.prompt:
+                parts.append(agent_config.prompt)
+            import prompt_assembly
+            parts.extend(
+                prompt_assembly.load_global_instruction_parts(
+                    Path(self.cwd) / ".claude" / "agents",
+                    is_visible=True,
+                    read_instruction_file=self._load_global_instructions,
+                )
+            )
+            # No native, MCP, skill, memory, integration, scheduler, or
+            # multi-agent capability crosses the initial DEV boundary.
+            return "\n".join(parts), [], "NO_SKILLS", False
+
         agent_tools = agent_config.tools or []
         mcp_tool_names = [t for t in agent_tools if t.startswith("mcp__")]
         internal_mcp_tool_names = [t for t in mcp_tool_names if t.startswith(MCP_PREFIX)]
@@ -829,6 +865,8 @@ class ClaudeWrapper:
         helper_settings: Optional[Dict[str, Any]] = None,
     ) -> AsyncIterator[Dict[str, Any]]:
         """Dispatch chat turns to the configured chattable runtime."""
+        if ISOLATED_DEVELOPMENT and getattr(agent_config, "name", None) not in DEV_SAFE_AGENT_NAMES:
+            raise RuntimeError("Only the DEV Patch agent is admitted in isolated development")
         runtime_config = _resolve_chat_runtime_config(agent_config)
         runtime_type = getattr(getattr(runtime_config, "type", None), "value", getattr(runtime_config, "type", "codex"))
         if runtime_type == "sdk":
@@ -861,6 +899,9 @@ class ClaudeWrapper:
         helper_settings: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Append contextual memory according to this chat's helper settings."""
+        if ISOLATED_DEVELOPMENT:
+            logger.info("Isolated DEV: contextual memory retrieval is disabled")
+            return
         memory_settings = (helper_settings or {}).get("contextual_memory") or {}
         mode = memory_settings.get("mode", "auto")
         if mode not in {"auto", "off", "manual"}:
@@ -1428,7 +1469,8 @@ class ClaudeWrapper:
 
                 result_has_visible_work = bool(result.blocks) or bool((result.response or "").strip())
                 should_fallback = (
-                    result.returncode != 0
+                    not ISOLATED_DEVELOPMENT
+                    and result.returncode != 0
                     and not app_visible_work
                     and not app_tool_started
                     and not result_has_visible_work
@@ -1470,6 +1512,15 @@ class ClaudeWrapper:
                 if result.returncode != 0:
                     error_text = result.stderr or f"Codex App Server exited with {result.returncode}"
                     error_event: Dict[str, Any] = {"type": "error", "text": error_text}
+                    if ISOLATED_DEVELOPMENT and any(
+                        marker in error_text.casefold()
+                        for marker in ("auth.json", "subscription auth", "unauthorized", "login required")
+                    ):
+                        error_event.update({
+                            "text": DEV_AUTH_REQUIRED_TEXT,
+                            "error_kind": "development_auth_required",
+                            "recoverable": True,
+                        })
                     if app_visible_work or app_tool_started:
                         error_text = (
                             "Codex App Server failed after visible work; not falling back to codex exec "
@@ -1508,7 +1559,20 @@ class ClaudeWrapper:
                         await _run_exec_path(run_options)
                 except Exception as exc:
                     logger.error(f"Agent chat Codex error: {exc}", exc_info=True)
-                    await event_queue.put({"type": "error", "text": str(exc)})
+                    error_text = str(exc)
+                    if ISOLATED_DEVELOPMENT and (
+                        "auth.json" in error_text
+                        or "subscription auth" in error_text.casefold()
+                        or "unauthorized" in error_text.casefold()
+                    ):
+                        await event_queue.put({
+                            "type": "error",
+                            "text": DEV_AUTH_REQUIRED_TEXT,
+                            "error_kind": "development_auth_required",
+                            "recoverable": True,
+                        })
+                    else:
+                        await event_queue.put({"type": "error", "text": error_text})
                 finally:
                     await event_queue.put(None)
 

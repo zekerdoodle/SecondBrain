@@ -38,6 +38,214 @@ from contextlib import asynccontextmanager
 from collections import defaultdict, deque
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+ISOLATED_DEVELOPMENT_ENV_VALUE = "development-isolated"
+EXPECTED_ISOLATED_DEVELOPMENT_ROOT = Path("/home/debian/second-brain-dev")
+DEV_SAFE_AGENT_NAMES = frozenset({"patch"})
+
+
+class DevelopmentIsolationError(RuntimeError):
+    """The real backend was started with an incomplete DEV isolation contract."""
+
+
+def _absolute_lexical_path(value: str | os.PathLike[str]) -> Path:
+    return Path(os.path.abspath(os.fspath(value)))
+
+
+def _path_is_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def _request_path_is_admitted(path: str | os.PathLike[str], root: str | os.PathLike[str]) -> bool:
+    """Keep production compatibility while making isolated DEV symlink-safe."""
+    target = _absolute_lexical_path(path)
+    boundary = _absolute_lexical_path(root)
+    if not ISOLATED_DEVELOPMENT:
+        # Preserve the production route contract; isolated mode receives the
+        # stronger resolved-boundary check below.
+        return os.fspath(target).startswith(os.fspath(boundary))
+    try:
+        resolved_target = target.resolve(strict=False)
+        resolved_boundary = boundary.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return False
+    return _path_is_within(resolved_target, resolved_boundary)
+
+
+def isolated_development_mode(environ: dict[str, str] | None = None) -> bool:
+    env = os.environ if environ is None else environ
+    return env.get("SECOND_BRAIN_ENV") == ISOLATED_DEVELOPMENT_ENV_VALUE
+
+
+def validate_isolated_development_environment(
+    repo_root: Path = REPO_ROOT,
+    environ: dict[str, str] | None = None,
+    *,
+    verify_filesystem: bool = True,
+) -> bool:
+    """Validate every inherited mutable/auth home before importing the app."""
+    env = os.environ if environ is None else environ
+    if not isolated_development_mode(env):
+        return False
+
+    root = _absolute_lexical_path(repo_root)
+    if root != EXPECTED_ISOLATED_DEVELOPMENT_ROOT:
+        raise DevelopmentIsolationError(
+            f"isolated DEV server must execute from {EXPECTED_ISOLATED_DEVELOPMENT_ROOT}; got {root}"
+        )
+    configured_root = _absolute_lexical_path(env.get("SECOND_BRAIN_DEV_ROOT", ""))
+    if configured_root != root:
+        raise DevelopmentIsolationError(
+            f"SECOND_BRAIN_DEV_ROOT must be exactly {root}; got {configured_root}"
+        )
+
+    expected_paths = {
+        "HOME": root / ".dev/home",
+        "XDG_CACHE_HOME": root / ".dev/xdg-cache",
+        "XDG_CONFIG_HOME": root / ".dev/xdg-config",
+        "XDG_DATA_HOME": root / ".dev/xdg-data",
+        "TMPDIR": root / ".dev/tmp",
+        "VIRTUAL_ENV": root / ".dev/venv",
+        "CODEX_HOME": root / ".dev/codex-home",
+        "SECOND_BRAIN_MCP_PYTHON": root / ".dev/venv/bin/python",
+        "SECOND_BRAIN_SERVER_LOG": root / ".dev/logs/backend-internal.log",
+        "SECOND_BRAIN_CODEX_APP_SERVER_CODEX_HOME": root / ".dev/codex-app-server-home",
+        "SECOND_BRAIN_CODEX_APP_SERVER_AUTH_JSON": root / ".dev/codex-home/auth.json",
+    }
+    for name, expected in expected_paths.items():
+        raw_value = env.get(name)
+        if not raw_value:
+            raise DevelopmentIsolationError(f"isolated DEV requires {name}")
+        actual = _absolute_lexical_path(raw_value)
+        if actual != expected or not _path_is_within(actual, root):
+            raise DevelopmentIsolationError(
+                f"isolated DEV requires {name}={expected}; got {actual}"
+            )
+
+    if verify_filesystem:
+        try:
+            resolved_root = root.resolve(strict=True)
+        except (OSError, RuntimeError) as exc:
+            raise DevelopmentIsolationError(
+                f"isolated DEV root cannot be resolved: {exc}"
+            ) from exc
+        if resolved_root != root or not resolved_root.is_dir():
+            raise DevelopmentIsolationError(
+                f"isolated DEV root must be a real directory: {root}"
+            )
+
+        directory_names = {
+            "HOME",
+            "XDG_CACHE_HOME",
+            "XDG_CONFIG_HOME",
+            "XDG_DATA_HOME",
+            "TMPDIR",
+            "VIRTUAL_ENV",
+            "CODEX_HOME",
+            "SECOND_BRAIN_CODEX_APP_SERVER_CODEX_HOME",
+        }
+        for name in directory_names:
+            path = expected_paths[name]
+            try:
+                resolved = path.resolve(strict=True)
+            except (OSError, RuntimeError) as exc:
+                raise DevelopmentIsolationError(
+                    f"isolated DEV path {name} cannot be resolved: {exc}"
+                ) from exc
+            if resolved != path or not resolved.is_dir():
+                raise DevelopmentIsolationError(
+                    f"isolated DEV path {name} must be a real directory: {path}"
+                )
+
+        for name in (
+            "SECOND_BRAIN_MCP_PYTHON",
+            "SECOND_BRAIN_SERVER_LOG",
+            "SECOND_BRAIN_CODEX_APP_SERVER_AUTH_JSON",
+        ):
+            path = expected_paths[name]
+            try:
+                resolved_parent = path.parent.resolve(strict=True)
+            except (OSError, RuntimeError) as exc:
+                raise DevelopmentIsolationError(
+                    f"isolated DEV parent for {name} cannot be resolved: {exc}"
+                ) from exc
+            if resolved_parent != path.parent:
+                raise DevelopmentIsolationError(
+                    f"isolated DEV parent for {name} is aliased: {path.parent}"
+                )
+
+        mcp_python = expected_paths["SECOND_BRAIN_MCP_PYTHON"]
+        try:
+            resolved_python = mcp_python.resolve(strict=True)
+        except (OSError, RuntimeError) as exc:
+            raise DevelopmentIsolationError(
+                f"isolated DEV Python cannot be resolved: {exc}"
+            ) from exc
+        production_root = Path("/home/debian/second-brain")
+        if not resolved_python.is_file() or _path_is_within(resolved_python, production_root):
+            raise DevelopmentIsolationError(
+                f"isolated DEV Python is unsafe: {resolved_python}"
+            )
+
+        for name in (
+            "SECOND_BRAIN_SERVER_LOG",
+            "SECOND_BRAIN_CODEX_APP_SERVER_AUTH_JSON",
+        ):
+            path = expected_paths[name]
+            if path.exists() or path.is_symlink():
+                if path.is_symlink() or not path.is_file():
+                    raise DevelopmentIsolationError(
+                        f"isolated DEV file {name} is not a regular file: {path}"
+                    )
+                resolved = path.resolve(strict=True)
+                if not _path_is_within(resolved, root):
+                    raise DevelopmentIsolationError(
+                        f"isolated DEV file {name} escapes the DEV root: {resolved}"
+                    )
+
+    expected_values = {
+        "SECOND_BRAIN_DISABLE_SIDE_EFFECTS": "1",
+        "SECOND_BRAIN_INTERNAL_BASE_URL": "http://127.0.0.1:18000",
+        "SECOND_BRAIN_CODEX_APP_SERVER": "1",
+        "SECOND_BRAIN_CODEX_APP_SERVER_AGENTS": "patch",
+    }
+    for name, expected in expected_values.items():
+        if env.get(name) != expected:
+            raise DevelopmentIsolationError(
+                f"isolated DEV requires {name}={expected!r}"
+            )
+    for forbidden in ("PYTHONHOME", "PYTHONPATH"):
+        if env.get(forbidden):
+            raise DevelopmentIsolationError(
+                f"isolated DEV forbids inherited {forbidden}"
+            )
+    production_root = Path("/home/debian/second-brain")
+    runtime_path = env.get("PATH")
+    if not runtime_path:
+        raise DevelopmentIsolationError("isolated DEV requires an explicit PATH")
+    executable_paths = runtime_path.split(os.pathsep)
+    codex_bin = env.get("SECOND_BRAIN_CODEX_BIN")
+    if codex_bin:
+        executable_paths.append(codex_bin)
+    for raw_path in executable_paths:
+        actual = _absolute_lexical_path(raw_path)
+        try:
+            resolved = actual.resolve(strict=False)
+        except (OSError, RuntimeError) as exc:
+            raise DevelopmentIsolationError(
+                f"isolated DEV cannot resolve executable path {actual}: {exc}"
+            ) from exc
+        if _path_is_within(actual, production_root) or _path_is_within(resolved, production_root):
+            raise DevelopmentIsolationError(
+                f"isolated DEV executable path enters production: {actual}"
+            )
+    return True
+
+
+ISOLATED_DEVELOPMENT = validate_isolated_development_environment()
 
 
 def _load_startup_env_file(env_path):
@@ -66,7 +274,11 @@ def _load_startup_env_file(env_path):
 
 
 STARTUP_ENV_FILE = REPO_ROOT / ".env"
-STARTUP_ENV_KEYS, STARTUP_ENV_ERROR = _load_startup_env_file(STARTUP_ENV_FILE)
+if ISOLATED_DEVELOPMENT:
+    # Production .env and credentials are never read by the DEV process.
+    STARTUP_ENV_KEYS, STARTUP_ENV_ERROR = [], None
+else:
+    STARTUP_ENV_KEYS, STARTUP_ENV_ERROR = _load_startup_env_file(STARTUP_ENV_FILE)
 
 from claude_wrapper import ClaudeWrapper, ChatManager, ConversationState
 from codex_app_server_backend import APP_SERVER_TURN_RECEIPT_EVENT_TYPE
@@ -134,6 +346,11 @@ class ClientSession:
 from logging.handlers import RotatingFileHandler
 
 SERVER_DIR = Path(__file__).resolve().parent
+SERVER_LOG_FILE = (
+    Path(os.environ["SECOND_BRAIN_SERVER_LOG"])
+    if ISOLATED_DEVELOPMENT
+    else SERVER_DIR / "server.log"
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -141,7 +358,7 @@ logging.basicConfig(
     handlers=[
         logging.StreamHandler(),
         RotatingFileHandler(
-            SERVER_DIR / "server.log",
+            SERVER_LOG_FILE,
             maxBytes=10 * 1024 * 1024,  # 10 MB per file
             backupCount=3,              # Keep 3 rotated files (40 MB max total)
         )
@@ -254,6 +471,50 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def _development_request_is_disabled(method: str, path: str) -> bool:
+    if not ISOLATED_DEVELOPMENT:
+        return False
+    normalized_method = method.upper()
+    always_blocked_prefixes = (
+        "/api/auth/google",
+        "/api/internal/",
+        "/api/plaid/",
+        "/api/push/",
+        "/api/chat/search",
+        "/api/patch-visibility/",
+        "/internal/anthropic-proxy",
+    )
+    if path.startswith(always_blocked_prefixes):
+        return True
+    if path.startswith(("/api/app-bridge/ask-claude", "/api/app-bridge/ask-agent")):
+        return True
+    if path.startswith("/api/salons") and normalized_method not in {"GET", "HEAD"}:
+        return True
+    if path == "/api/agents" and normalized_method not in {"GET", "HEAD"}:
+        return True
+    if path.startswith("/api/agents/") and normalized_method not in {"GET", "HEAD"}:
+        return True
+    return False
+
+
+@app.middleware("http")
+async def isolated_development_side_effect_guard(request: Request, call_next):
+    if _development_request_is_disabled(request.method, request.url.path):
+        return JSONResponse(
+            status_code=403,
+            content={
+                "detail": "This integration or autonomous surface is disabled in isolated DEV.",
+                "environment": ISOLATED_DEVELOPMENT_ENV_VALUE,
+                "recoverable": True,
+            },
+        )
+    response = await call_next(request)
+    if ISOLATED_DEVELOPMENT:
+        response.headers["X-Second-Brain-Environment"] = ISOLATED_DEVELOPMENT_ENV_VALUE
+        response.headers["Cache-Control"] = response.headers.get("Cache-Control", "no-store")
+    return response
 
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"))
 UI_CONFIG_FILE = os.path.join(ROOT_DIR, ".claude", "ui_config.json")
@@ -1212,6 +1473,8 @@ async def _run_titler_background(
     is_retitle: bool = False
 ):
     """Run the Titler agent in the background and push update via WebSocket."""
+    if ISOLATED_DEVELOPMENT:
+        return
     try:
         scripts_dir = os.path.join(ROOT_DIR, ".claude", "scripts")
         if scripts_dir not in sys.path:
@@ -1296,7 +1559,7 @@ def _maybe_trigger_background_processing(
     agent_name: Optional[str],
 ):
     """Check if background processing should fire after an exchange."""
-    if not agent_name:
+    if ISOLATED_DEVELOPMENT or not agent_name:
         return
 
     bg_config = _get_bg_config(agent_name)
@@ -2006,6 +2269,16 @@ def restart_server_endpoint(rebuild: bool = False, reason: str = None):
 @app.get("/api/health")
 async def get_backend_health():
     payload = _build_backend_health_payload()
+    if ISOLATED_DEVELOPMENT:
+        payload.update(
+            {
+                "environment": ISOLATED_DEVELOPMENT_ENV_VALUE,
+                "isolated": True,
+                "root": ROOT_DIR,
+                "scheduler_enabled": False,
+                "autonomous_work_enabled": False,
+            }
+        )
     status_code = 200 if payload.get("status") == "ok" else 503
     return JSONResponse(content=payload, status_code=status_code)
 
@@ -2035,7 +2308,7 @@ def _file_response_with_etag(target_path: str, request: Request) -> Response:
 @app.get("/api/files")
 def list_files(path: str = ""):
     target_dir = os.path.join(ROOT_DIR, path)
-    if not os.path.abspath(target_dir).startswith(ROOT_DIR):
+    if not _request_path_is_admitted(target_dir, ROOT_DIR):
         raise HTTPException(status_code=403, detail="Access denied")
 
     cfg = load_ui_config()
@@ -2059,7 +2332,7 @@ def list_files(path: str = ""):
 @app.get("/api/file/{file_path:path}")
 def read_file(file_path: str, request: Request):
     target_path = os.path.join(ROOT_DIR, file_path)
-    if not os.path.abspath(target_path).startswith(ROOT_DIR):
+    if not _request_path_is_admitted(target_path, ROOT_DIR):
         raise HTTPException(status_code=403, detail="Access denied")
     if not os.path.exists(target_path):
         raise HTTPException(status_code=404)
@@ -2083,7 +2356,7 @@ def read_file(file_path: str, request: Request):
 def raw_file(file_path: str, request: Request):
     """Serve a file as-is (binary-safe) for images, PDFs, etc."""
     target_path = os.path.join(ROOT_DIR, file_path)
-    if not os.path.abspath(target_path).startswith(ROOT_DIR):
+    if not _request_path_is_admitted(target_path, ROOT_DIR):
         raise HTTPException(status_code=403, detail="Access denied")
     if not os.path.exists(target_path):
         raise HTTPException(status_code=404)
@@ -2093,7 +2366,7 @@ def raw_file(file_path: str, request: Request):
 @app.post("/api/file/{file_path:path}")
 def save_file(file_path: str, req: FileRequest):
     target_path = os.path.join(ROOT_DIR, file_path)
-    if not os.path.abspath(target_path).startswith(ROOT_DIR):
+    if not _request_path_is_admitted(target_path, ROOT_DIR):
         raise HTTPException(status_code=403, detail="Access denied")
     os.makedirs(os.path.dirname(target_path), exist_ok=True)
     with open(target_path, 'w', encoding='utf-8') as f:
@@ -2116,7 +2389,7 @@ def activity_ping(req: ActivityPingRequest):
 async def upload_files(dir_path: str, files: List[UploadFile] = FastAPIFile(...)):
     """Upload one or more files to a directory."""
     target_dir = os.path.join(ROOT_DIR, dir_path) if dir_path else ROOT_DIR
-    if not os.path.abspath(target_dir).startswith(ROOT_DIR):
+    if not _request_path_is_admitted(target_dir, ROOT_DIR):
         raise HTTPException(status_code=403, detail="Access denied")
     os.makedirs(target_dir, exist_ok=True)
 
@@ -2124,7 +2397,7 @@ async def upload_files(dir_path: str, files: List[UploadFile] = FastAPIFile(...)
     for file in files:
         filename = os.path.basename(file.filename or "upload")
         target_path = os.path.join(target_dir, filename)
-        if not os.path.abspath(target_path).startswith(ROOT_DIR):
+        if not _request_path_is_admitted(target_path, ROOT_DIR):
             raise HTTPException(status_code=403, detail="Access denied")
         content = await file.read()
         with open(target_path, 'wb') as f:
@@ -2291,10 +2564,12 @@ async def chat_image_gc(delete: bool = False, min_age_days: float = 7.0):
 @app.delete("/api/file/{file_path:path}")
 def delete_file(file_path: str):
     target_path = os.path.join(ROOT_DIR, file_path)
+    if ISOLATED_DEVELOPMENT and not _request_path_is_admitted(target_path, ROOT_DIR):
+        raise HTTPException(status_code=403, detail="Access denied")
     if not os.path.exists(target_path):
         raise HTTPException(status_code=404, detail="File not found")
 
-    if not os.path.abspath(target_path).startswith(ROOT_DIR):
+    if not _request_path_is_admitted(target_path, ROOT_DIR):
         raise HTTPException(status_code=403, detail="Access denied")
 
     try:
@@ -2320,8 +2595,8 @@ def rename_file(req: RenameRequest):
         new_path = os.path.join(parent_dir, req.new_name)
 
     # Authorization/bounds check FIRST — prevents info disclosure via 404 on traversal attempts
-    if not os.path.abspath(old_path).startswith(ROOT_DIR) or \
-       not os.path.abspath(new_path).startswith(ROOT_DIR):
+    if not _request_path_is_admitted(old_path, ROOT_DIR) or \
+       not _request_path_is_admitted(new_path, ROOT_DIR):
         raise HTTPException(status_code=403, detail="Access denied")
 
     if not os.path.exists(old_path):
@@ -2342,12 +2617,18 @@ def move_file(req: MoveRequest):
     src_path = os.path.join(ROOT_DIR, req.source)
     dest_dir = os.path.join(ROOT_DIR, req.destination) if req.destination else ROOT_DIR
 
+    if ISOLATED_DEVELOPMENT and (
+        not _request_path_is_admitted(src_path, ROOT_DIR)
+        or not _request_path_is_admitted(dest_dir, ROOT_DIR)
+    ):
+        raise HTTPException(status_code=403, detail="Access denied")
+
     if not os.path.exists(src_path):
         raise HTTPException(status_code=404, detail="Source not found")
 
     # Security: ensure both paths are within ROOT_DIR
-    if not os.path.abspath(src_path).startswith(ROOT_DIR) or \
-       not os.path.abspath(dest_dir).startswith(ROOT_DIR):
+    if not _request_path_is_admitted(src_path, ROOT_DIR) or \
+       not _request_path_is_admitted(dest_dir, ROOT_DIR):
         raise HTTPException(status_code=403, detail="Access denied")
 
     # Can't move into itself or its own children
@@ -2909,7 +3190,7 @@ def validate_app_path(path: str) -> str:
     abs_path = os.path.abspath(os.path.join(APP_DATA_DIR, normalized))
 
     # Ensure path stays within APP_DATA_DIR
-    if not abs_path.startswith(APP_DATA_DIR):
+    if not _request_path_is_admitted(abs_path, APP_DATA_DIR):
         raise HTTPException(status_code=403, detail="Access denied: path outside app data directory")
 
     return abs_path
@@ -3792,6 +4073,8 @@ def list_agents(all: bool = False):
         agents = list(registry.get_all_configs().values()) + list(registry.get_all_background_configs().values())
     else:
         agents = registry.get_chattable_agents()
+    if ISOLATED_DEVELOPMENT:
+        agents = [agent for agent in agents if agent.name in DEV_SAFE_AGENT_NAMES]
     return {"agents": [
         {
             "name": a.name,
@@ -3811,6 +4094,8 @@ def list_agents(all: bool = False):
 @app.get("/api/agents/{name}")
 def get_agent_detail(name: str):
     """Get full agent detail including raw config and prompt."""
+    if ISOLATED_DEVELOPMENT and name not in DEV_SAFE_AGENT_NAMES:
+        raise HTTPException(status_code=404, detail=f"Agent '{name}' is not admitted in isolated DEV")
     import yaml as _yaml
     agents_dir = Path(ROOT_DIR) / ".claude" / "agents"
     if str(agents_dir) not in sys.path:
@@ -3830,6 +4115,14 @@ def get_agent_detail(name: str):
     config_yaml = {}
     if (agent_dir / "config.yaml").exists():
         config_yaml = _yaml.safe_load((agent_dir / "config.yaml").read_text()) or {}
+    if ISOLATED_DEVELOPMENT:
+        config_yaml = {
+            **config_yaml,
+            "tools": [],
+            "direct_tools": [],
+            "skills": [],
+            "background_processing": {"enabled": False},
+        }
     prompt_content = ""
     prompt_path = agent_dir / "prompt.md"
     if prompt_path.exists():
@@ -4102,6 +4395,8 @@ def list_native_tools():
     new Codex capability or mapped compatibility label should become available
     in the builder. Frontend falls back to a local copy if this endpoint fails.
     """
+    if ISOLATED_DEVELOPMENT:
+        return {"groups": []}
     agents_dir = Path(ROOT_DIR) / ".claude" / "agents"
     if str(agents_dir) not in sys.path:
         sys.path.insert(0, str(agents_dir))
@@ -4147,6 +4442,8 @@ def save_system_models(req: _SystemModelsReq):
 @app.get("/api/tools/categories")
 def list_tool_categories():
     """List available MCP tool categories for the Agent Builder."""
+    if ISOLATED_DEVELOPMENT:
+        return {"categories": []}
     try:
         from mcp_tools.constants import TOOL_CATEGORIES
         # Hide internal categories and parent "memory" (subcategories cover it fully)
@@ -5389,7 +5686,8 @@ def _get_valid_agent_names() -> set:
             sys.path.insert(0, str(agents_dir))
         from registry import get_registry
         registry = get_registry()
-        return set(registry.list_all())
+        names = set(registry.list_all())
+        return names & DEV_SAFE_AGENT_NAMES if ISOLATED_DEVELOPMENT else names
     except Exception as e:
         logger.warning(f"Failed to get agent names for mention parsing: {e}")
         return set()
@@ -6504,6 +6802,8 @@ _IMAGE_GC_MIN_AGE_DAYS = 7  # Only delete orphans older than 7 days
 
 async def _maybe_run_image_gc():
     """Run chat image garbage collection if enough time has passed (once daily)."""
+    if ISOLATED_DEVELOPMENT:
+        return
     global _last_image_gc_time
     now = time.time()
 
@@ -7405,6 +7705,11 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
             stored = chat_manager.load_chat(stored_chat_id)
             if stored:
                 agent_name = stored.get("agent")
+
+    if ISOLATED_DEVELOPMENT and agent_name not in DEV_SAFE_AGENT_NAMES:
+        # The materializer admits only DEV Patch, and the runtime repeats that
+        # boundary so malformed/new chat payloads cannot name another agent.
+        agent_name = "patch"
 
     # Look up agent config from registry — ALL agents go through this path
     try:
@@ -8659,7 +8964,7 @@ async def _handle_message_inner(websocket: WebSocket, data: dict, session_id: st
     # all state is cleanly saved to disk (display_messages with block model,
     # conv.messages with interleaved segments/tool calls, WAL cleaned up),
     # we can safely kill the server.
-    if restart_after_save:
+    if restart_after_save and not ISOLATED_DEVELOPMENT:
         try:
             import subprocess as _restart_sp
             restart_config = await _load_fresh_pending_restart_config(restart_trigger_time)
@@ -12375,9 +12680,48 @@ def _reconcile_managed_load_startup(
     return receipt
 
 
+async def _isolated_development_startup() -> None:
+    """Boot only the request-serving core; no scheduler or autonomous owners."""
+    _start_backend_health_heartbeat()
+
+    from desk_broker import register_broadcast
+    register_broadcast(broadcast_to_all_clients)
+
+    wal = get_wal()
+    wal.clear_stale_on_restart()
+    wal.clear_old_entries(max_age_hours=24)
+
+    try:
+        clear_registry()
+        register_process("primary_claude", task="development-isolated")
+    except Exception as exc:
+        logger.warning("DEV process-registry initialization failed: %s", exc)
+
+    try:
+        await running_agents.clear_all()
+    except Exception as exc:
+        logger.warning("DEV running-agents initialization failed: %s", exc)
+
+    if os.path.exists(CLIENT_BUILD_DIR):
+        app.mount(
+            "/assets",
+            StaticFiles(directory=os.path.join(CLIENT_BUILD_DIR, "assets")),
+            name="assets",
+        )
+    logger.info(
+        "SECOND BRAIN real backend started in isolated DEV mode; "
+        "scheduler, continuations, salons, notifications, background processing, "
+        "external integrations, and MCP tools are disabled"
+    )
+
+
 @app.on_event("startup")
 async def startup_event():
     global server_restart_info, restart_continuation
+
+    if ISOLATED_DEVELOPMENT:
+        await _isolated_development_startup()
+        return
 
     # Setup signal handlers for graceful shutdown
     setup_signal_handlers()
@@ -12627,6 +12971,16 @@ async def startup_event():
 async def shutdown_event():
     """Save state on graceful shutdown."""
     logger.info("Server shutting down, saving state...")
+    if ISOLATED_DEVELOPMENT:
+        await _stop_backend_health_heartbeat()
+        await _drain_app_server_turn_receipt_writes()
+        await _drain_performance_timing_writes()
+        save_server_state()
+        try:
+            deregister_by_pid()
+        except Exception as exc:
+            logger.warning("DEV process-registry cleanup failed: %s", exc)
+        return
     await _stop_backend_health_heartbeat()
     await _salon_dispatcher_mod.shutdown_dispatcher()
     await _drain_app_server_turn_receipt_writes()
@@ -12828,7 +13182,7 @@ def google_auth_callback(code: str = None, state: str = None, error: str = None)
 @app.get("/file/{file_path:path}")
 def serve_file(file_path: str, request: Request):
     target_path = os.path.join(ROOT_DIR, file_path)
-    if not os.path.abspath(target_path).startswith(ROOT_DIR):
+    if not _request_path_is_admitted(target_path, ROOT_DIR):
         raise HTTPException(status_code=403, detail="Access denied")
     if not os.path.exists(target_path) or not os.path.isfile(target_path):
         raise HTTPException(status_code=404, detail="File not found")
@@ -12842,7 +13196,7 @@ async def serve_spa(full_path: str):
         raise HTTPException(status_code=404)
 
     file_path = os.path.abspath(os.path.join(CLIENT_BUILD_DIR, full_path))
-    if not file_path.startswith(CLIENT_BUILD_DIR):
+    if not _request_path_is_admitted(file_path, CLIENT_BUILD_DIR):
         raise HTTPException(status_code=403, detail="Path traversal blocked")
     if os.path.isfile(file_path):
         return FileResponse(file_path)
